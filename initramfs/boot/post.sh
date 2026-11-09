@@ -97,9 +97,14 @@ upper_mnt=/.s3-upper
 platform_mnt=/.s3-platform
 sys_mnt=/.s3-sys
 mkdir -p "${upper_mnt}" "${platform_mnt}" "${sys_mnt}" || fail mountpoint-create-failed
-mount -o ro,"subvol=/${upper}" "${shared_dev}" "${upper_mnt}" || fail remount-upper-failed
-mount -o ro,"subvol=/@platform" "${slot_dev}" "${platform_mnt}" || fail remount-platform-failed
-mount -o ro,"subvol=/@sys" "${slot_dev}" "${sys_mnt}" || fail remount-sys-failed
+[ -b "${shared_dev}" ] || fail shared-device-missing
+[ -b "${slot_dev}" ] || fail slot-device-missing
+# btrfs reports ENOENT both for a missing device and for a missing subvolume, so the
+# subvolume name is printed before each attempt to keep the two distinguishable.
+log "reopening ${shared_dev}:${upper} and ${slot_dev} read-only"
+mount -o "ro,subvol=${upper}" "${shared_dev}" "${upper_mnt}" || fail remount-upper-failed
+mount -o "ro,subvol=@platform" "${slot_dev}" "${platform_mnt}" || fail remount-platform-failed
+mount -o "ro,subvol=@sys" "${slot_dev}" "${sys_mnt}" || fail remount-sys-failed
 
 [ -f "${upper_mnt}/upper${probe}" ] || fail probe-not-in-upper
 [ -f "${upper_mnt}/upper${new_file}" ] || fail newfile-not-in-upper
