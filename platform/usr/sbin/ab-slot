@@ -1,0 +1,392 @@
+#!/bin/sh
+# ab-slot - inspect and advance the A/B slot state.
+#
+# The state file lives on the ESP at ab/state.json and is the single source of truth
+# for which slot is committed, which slot is pending and which writable layer each
+# slot uses:
+#
+#   {
+#     "generation": 2,
+#     "committed": "b",
+#     "pending": null,
+#     "slots": {
+#       "a": { "rootfs": "25.12.3", "upper": "@overlay-25.12.3" },
+#       "b": { "rootfs": "25.12.2", "upper": "@overlay-25.12.2" }
+#     }
+#   }
+#
+# `generation` is an integer that only grows: it orders writable layers and drives
+# reclamation, because version names do not sort correctly. The layer name is never
+# derived from it.
+#
+# Every write is atomic: render to a temporary file in the same directory, sync, then
+# rename over the state file. Concurrent invocations are excluded by an ESP directory
+# lock (mkdir is atomic on vfat).
+#
+# Subcommands:
+#   status                 one machine readable line plus a human summary on stderr
+#   commit [slot]          set committed, clear pending (default: the running slot)
+#   pending <slot>         set pending, after checking the slot payload exists
+#   abandon                clear pending, leave committed alone
+#   rollback               commit the other slot
+#   gc [--dry-run]         reap writable layers that nothing references
+#   rootfs [slot]          print the upstream version that slot carries
+#   log [--prev|--upgrade] print the ESP ring log
+#
+# Environment:
+#   AB_ESP   ESP mount point            (default /boot)
+#   AB_P4    writable partition mount   (default /mnt/p4)
+#   AB_CMD   /proc/cmdline equivalent   (default /proc/cmdline, for tests)
+
+set -u
+# Keep whatever PATH we were given in front: the running system already supplies
+# these directories, and a test or a chroot can provide its own btrfs.
+PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+AB_ESP="${AB_ESP:-/boot}"
+AB_P4="${AB_P4:-/mnt/p4}"
+AB_CMD="${AB_CMD:-/proc/cmdline}"
+STATE="${AB_ESP}/ab/state.json"
+LOGDIR="${AB_ESP}/ab/log"
+LOCKDIR="${AB_ESP}/ab/.lock"
+
+say() {
+    printf '%s\n' "$*" >&2
+}
+
+die() {
+    say "ab-slot: $*"
+    exit 1
+}
+
+usage() {
+    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|gc [--dry-run]|rootfs [slot]|log [--prev|--upgrade]"
+    exit 2
+}
+
+# --------------------------------------------------------------------------- #
+# State reading
+#
+# Same sed-on-squeezed-JSON approach as the boot initramfs, so one format has one
+# parser. Every reader returns non-zero instead of guessing.
+# --------------------------------------------------------------------------- #
+
+squeeze() {
+    tr -d ' \t\r\n' <"${STATE}"
+}
+
+state_field() {
+    squeeze | sed -n "s/.*\"$1\":\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+state_slot_field() {
+    _obj="$(squeeze | sed -n "s/.*\"$1\":{\\([^}]*\\)}.*/\\1/p")"
+    [ -n "${_obj}" ] || return 1
+    printf '%s' "${_obj}" | sed -n "s/.*\"$2\":\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+state_number() {
+    squeeze | sed -n "s/.*\"$1\":\\([0-9][0-9]*\\).*/\\1/p"
+}
+
+state_committed() {
+    _v="$(state_field committed)" || return 1
+    [ -n "${_v}" ] || return 1
+    printf '%s' "${_v}"
+}
+
+# state_pending: "none" when the pending field is null.
+state_pending() {
+    _raw="$(squeeze)"
+    case "${_raw}" in
+        *'"pending":null'*) printf 'none' ;;
+        *'"pending":"'*)
+            printf '%s' "${_raw}" | sed -n 's/.*"pending":"\([^"]*\)".*/\1/p'
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+state_generation() {
+    _v="$(state_number generation)" || return 1
+    [ -n "${_v}" ] || return 1
+    printf '%s' "${_v}"
+}
+
+state_upper() {
+    _v="$(state_slot_field "$1" upper)" || return 1
+    [ -n "${_v}" ] || return 1
+    printf '%s' "${_v}"
+}
+
+state_rootfs() {
+    _v="$(state_slot_field "$1" rootfs)" || return 1
+    [ -n "${_v}" ] || return 1
+    printf '%s' "${_v}"
+}
+
+require_state() {
+    [ -f "${STATE}" ] || die "state file not found: ${STATE}"
+}
+
+# --------------------------------------------------------------------------- #
+# State writing
+# --------------------------------------------------------------------------- #
+
+lock_state() {
+    mkdir -p "${AB_ESP}/ab" || die "cannot create ${AB_ESP}/ab"
+    if ! mkdir "${LOCKDIR}" 2>/dev/null; then
+        # A lock older than a minute is stale: the writer either died or finished.
+        if [ -d "${LOCKDIR}" ] && [ -n "$(find "${LOCKDIR}" -mmin +1 2>/dev/null)" ]; then
+            say "ab-slot: removing a stale lock"
+            rmdir "${LOCKDIR}" 2>/dev/null
+        fi
+        mkdir "${LOCKDIR}" 2>/dev/null || die "state is locked by another process"
+    fi
+    trap 'rmdir "${LOCKDIR}" 2>/dev/null' EXIT INT TERM
+}
+
+# write_state <generation> <committed> <pending|none>
+write_state() {
+    _gen="$1"
+    _committed="$2"
+    _pending="$3"
+    _rootfs_a="$(state_rootfs a)" || die "state has no rootfs for slot a"
+    _rootfs_b="$(state_rootfs b)" || die "state has no rootfs for slot b"
+    _upper_a="$(state_upper a)" || die "state has no layer for slot a"
+    _upper_b="$(state_upper b)" || die "state has no layer for slot b"
+
+    _tmp="${STATE}.tmp.$$"
+    {
+        printf '{\n'
+        printf '  "generation": %s,\n' "${_gen}"
+        printf '  "committed": "%s",\n' "${_committed}"
+        if [ "${_pending}" = "none" ]; then
+            printf '  "pending": null,\n'
+        else
+            printf '  "pending": "%s",\n' "${_pending}"
+        fi
+        printf '  "slots": {\n'
+        printf '    "a": { "rootfs": "%s", "upper": "%s" },\n' "${_rootfs_a}" "${_upper_a}"
+        printf '    "b": { "rootfs": "%s", "upper": "%s" }\n' "${_rootfs_b}" "${_upper_b}"
+        printf '  }\n'
+        printf '}\n'
+    } >"${_tmp}" || die "cannot write ${_tmp}"
+    sync
+    mv "${_tmp}" "${STATE}" || die "cannot replace ${STATE}"
+    sync
+}
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+# running_slot: the slot the kernel command line says we booted, falling back to the
+# committed slot. GRUB passes ab.slot=<a|b>; without it the committed slot is the
+# honest assumption.
+running_slot() {
+    _committed="$(state_committed)" || die "state has no committed slot"
+    _from_cmd=""
+    for _arg in $(cat "${AB_CMD}" 2>/dev/null); do
+        case "${_arg}" in
+            ab.slot=*) _from_cmd="${_arg#ab.slot=}" ;;
+        esac
+    done
+    case "${_from_cmd}" in
+        a | b) printf '%s' "${_from_cmd}" ;;
+        "") printf '%s' "${_committed}" ;;
+        *) die "invalid ab.slot=${_from_cmd} on the kernel command line" ;;
+    esac
+}
+
+other_slot() {
+    case "$1" in
+        a) printf 'b' ;;
+        b) printf 'a' ;;
+        *) die "invalid slot: $1" ;;
+    esac
+}
+
+# slot_payload_present <slot>: the ESP carries the kernel and initrd for that slot.
+slot_payload_present() {
+    [ -f "${AB_ESP}/vmlinuz-$1" ] && [ -f "${AB_ESP}/initrd-$1" ]
+}
+
+# p4_state: ok when the writable partition is mounted, degraded otherwise.
+p4_state() {
+    if awk -v mp="${AB_P4}" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+        printf 'ok'
+    else
+        printf 'degraded'
+    fi
+}
+
+# --------------------------------------------------------------------------- #
+# Subcommands
+# --------------------------------------------------------------------------- #
+
+cmd_status() {
+    require_state
+    _slot="$(running_slot)"
+    _committed="$(state_committed)" || die "state has no committed slot"
+    _pending="$(state_pending)" || die "state has no pending field"
+    _generation="$(state_generation)" || die "state has no generation"
+    _upper="$(state_upper "${_slot}")" || die "state has no layer for slot ${_slot}"
+    _p4="$(p4_state)"
+
+    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s\n' \
+        "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}"
+    say "ab-slot: running slot ${_slot} (${_upper}), generation ${_generation}"
+    say "ab-slot: committed ${_committed}, pending ${_pending}, writable layer ${_p4}"
+}
+
+cmd_commit() {
+    require_state
+    _slot="${1:-$(running_slot)}"
+    case "${_slot}" in
+        a | b) : ;;
+        *) die "invalid slot: ${_slot}" ;;
+    esac
+    lock_state
+    _generation="$(state_generation)" || die "state has no generation"
+    write_state "${_generation}" "${_slot}" "none"
+    say "ab-slot: committed slot ${_slot}, pending cleared"
+}
+
+cmd_pending() {
+    require_state
+    [ "$#" -ge 1 ] || die "pending needs a slot"
+    _slot="$1"
+    case "${_slot}" in
+        a | b) : ;;
+        *) die "invalid slot: ${_slot}" ;;
+    esac
+    slot_payload_present "${_slot}" \
+        || die "slot ${_slot} has no kernel or initrd on ${AB_ESP}, refusing to mark it pending"
+    lock_state
+    _generation="$(state_generation)" || die "state has no generation"
+    _committed="$(state_committed)" || die "state has no committed slot"
+    write_state "${_generation}" "${_committed}" "${_slot}"
+    say "ab-slot: slot ${_slot} is pending, next boot will try it"
+}
+
+cmd_abandon() {
+    require_state
+    lock_state
+    _generation="$(state_generation)" || die "state has no generation"
+    _committed="$(state_committed)" || die "state has no committed slot"
+    write_state "${_generation}" "${_committed}" "none"
+    say "ab-slot: pending cleared, slot ${_committed} stays committed"
+}
+
+cmd_rollback() {
+    require_state
+    lock_state
+    _generation="$(state_generation)" || die "state has no generation"
+    _committed="$(state_committed)" || die "state has no committed slot"
+    _target="$(other_slot "${_committed}")"
+    write_state "${_generation}" "${_target}" "none"
+    say "ab-slot: rolled back from slot ${_committed} to slot ${_target}"
+}
+
+# cmd_gc [--dry-run]
+#
+# Reference set: the layers named by both slots plus the pending slot. Anything else
+# on the writable partition is unreachable and gets deleted. Four safety rules:
+#   1. never delete a layer that is currently mounted
+#   2. never delete the layer referenced by pending
+#   3. delete with -C and follow with a sync, so space actually comes back
+#   4. never run a balance here; it needs free space it may not have
+cmd_gc() {
+    require_state
+    _dry_run=0
+    for _arg in "$@"; do
+        case "${_arg}" in
+            --dry-run) _dry_run=1 ;;
+            *) die "unknown argument: ${_arg}" ;;
+        esac
+    done
+    [ -d "${AB_P4}" ] || die "writable partition is not mounted at ${AB_P4}"
+
+    _keep_a="$(state_upper a)" || die "state has no layer for slot a"
+    _keep_b="$(state_upper b)" || die "state has no layer for slot b"
+    _pending="$(state_pending)" || die "state has no pending field"
+
+    _layers="$(btrfs subvolume list "${AB_P4}" 2>/dev/null | sed -n 's/.* path @overlay-.*/&/p' | sed -n 's/.* path //p' | sort)"
+    [ -n "${_layers}" ] || { say "ab-slot: no writable layers found"; return 0; }
+
+    for _layer in ${_layers}; do
+        _referenced=0
+        [ "${_layer}" = "${_keep_a}" ] && _referenced=1
+        [ "${_layer}" = "${_keep_b}" ] && _referenced=1
+        if [ "${_pending}" != "none" ] && [ "${_layer}" = "$(state_upper "${_pending}" 2>/dev/null)" ]; then
+            _referenced=1
+        fi
+        if [ "${_referenced}" = "1" ]; then
+            say "ab-slot: keep ${_layer} (referenced)"
+            continue
+        fi
+        if awk -v want="${_layer}" 'index($0, "/" want) { found = 1 } END { exit !found }' /proc/mounts; then
+            say "ab-slot: keep ${_layer} (mounted)"
+            continue
+        fi
+        if [ "${_dry_run}" = "1" ]; then
+            say "ab-slot: would delete ${_layer}"
+            continue
+        fi
+        say "ab-slot: deleting ${_layer}"
+        btrfs subvolume delete -C "${AB_P4}/${_layer}" >/dev/null || die "cannot delete ${_layer}"
+        btrfs subvolume sync "${AB_P4}" >/dev/null 2>&1
+    done
+}
+
+# cmd_rootfs [slot]: the upstream version a slot carries.
+cmd_rootfs() {
+    _slot="${1:-}"
+    if [ -z "${_slot}" ]; then
+        _slot="$(running_slot)"
+    fi
+    case "${_slot}" in
+        a | b) : ;;
+        *) die "invalid slot: ${_slot}" ;;
+    esac
+    state_rootfs "${_slot}" || die "state has no rootfs for slot ${_slot}"
+}
+
+# cmd_log [--prev|--upgrade]
+cmd_log() {
+    _target="boot-0.log"
+    for _arg in "$@"; do
+        case "${_arg}" in
+            --prev) _target="boot-1.log" ;;
+            --upgrade) _target="upgrade.log" ;;
+            *) die "unknown argument: ${_arg}" ;;
+        esac
+    done
+    [ -f "${LOGDIR}/${_target}" ] || {
+        say "ab-slot: no ${_target} in ${LOGDIR}"
+        exit 1
+    }
+    cat "${LOGDIR}/${_target}"
+}
+
+main() {
+    [ "$#" -ge 1 ] || usage
+    _cmd="$1"
+    shift
+    case "${_cmd}" in
+        status) cmd_status "$@" ;;
+        commit) cmd_commit "$@" ;;
+        pending) cmd_pending "$@" ;;
+        abandon) cmd_abandon "$@" ;;
+        rollback) cmd_rollback "$@" ;;
+        gc) cmd_gc "$@" ;;
+        rootfs) require_state; cmd_rootfs "$@" ;;
+        log) cmd_log "$@" ;;
+        -h | --help | help) usage ;;
+        *) say "ab-slot: unknown command ${_cmd}"; usage ;;
+    esac
+}
+
+main "$@"

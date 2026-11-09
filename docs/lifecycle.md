@@ -60,11 +60,19 @@ Runs after `done` completes, with a 150 second timeout:
 | Probe | Passes when |
 |---|---|
 | `overlay-writable` | `/overlay` is writable with more than 5% free |
-| `fw4-present` | the firewall process exists and the nft ruleset is non-empty |
-| `wan-present` | the WAN device exists |
+| `fw4-present` | the nft ruleset is non-empty and the `inet fw4` table is present |
+| `wan-present` | a device referenced by `network.wan` exists |
 
 All probes must pass before commit. Any failure abandons the pending slot and reboots into
 the committed slot.
+
+`fw4-present` does not look for a daemon: in ImmortalWrt 25.12 `fw4` is a one-shot renderer
+that loads the ruleset and exits, so the observable state is the ruleset itself. A slot with
+an empty ruleset is the failure this probe exists to catch.
+
+`wan-present` needs a network configuration to name a device. The upstream image has no
+`/etc/config/network` before first boot, so tests supply one through the same writable layer
+the user would.
 
 ## Reclamation
 

@@ -46,17 +46,25 @@ if [ -d "${CI_REPO_ROOT}/initramfs" ]; then
         init_scripts+=("${path}")
     done < <(find "${CI_REPO_ROOT}/initramfs" -type f ! -name '*.md' | LC_ALL=C sort)
 fi
-# Test scripts under tests/modules/image run in either dialect, so the shebang
-# decides; only that module is linted here, the rest of tests/ is owned elsewhere.
+# Test scripts under tests/modules/{image,ab} run in either dialect, so the shebang
+# decides; only those modules are linted here, the rest of tests/ is owned elsewhere.
 bash_test_scripts=()
-if [ -d "${CI_REPO_ROOT}/tests/modules/image" ]; then
+# The platform layer ships shell that runs on the target, so it is linted as POSIX sh
+# together with the initramfs: it must run under busybox.
+if [ -d "${CI_REPO_ROOT}/platform" ]; then
+    while IFS= read -r path; do
+        init_scripts+=("${path}")
+    done < <(find "${CI_REPO_ROOT}/platform" -type f ! -name '*.md' ! -name 'platform-release' | LC_ALL=C sort)
+fi
+for module in image ab; do
+    [ -d "${CI_REPO_ROOT}/tests/modules/${module}" ] || continue
     while IFS= read -r path; do
         case "$(head -n 1 "${path}")" in
             *bash*) bash_test_scripts+=("${path}") ;;
             *) init_scripts+=("${path}") ;;
         esac
-    done < <(find "${CI_REPO_ROOT}/tests/modules/image" -maxdepth 1 -type f -name '*.sh' | LC_ALL=C sort)
-fi
+    done < <(find "${CI_REPO_ROOT}/tests/modules/${module}" -maxdepth 1 -type f -name '*.sh' | LC_ALL=C sort)
+done
 ci_log "checking ${#script_files[@]} stage script(s) and ${#init_scripts[@]} initramfs script(s)"
 
 # --------------------------------------------------------------------------- #

@@ -134,6 +134,31 @@ on:
         required: false
         type: string
         default: ""
+      s4_result:
+        description: "Job result of the S4 three-boot state machine run"
+        required: false
+        type: string
+        default: ""
+      s4_line_commit_a:
+        description: "Judge line: commit slot a"
+        required: false
+        type: string
+        default: ""
+      s4_line_abandon_b:
+        description: "Judge line: abandon slot b"
+        required: false
+        type: string
+        default: ""
+      s4_line_commit_b:
+        description: "Judge line: commit slot b"
+        required: false
+        type: string
+        default: ""
+      s4_committed_final:
+        description: "Slot committed after the last S4 boot"
+        required: false
+        type: string
+        default: ""
       upstream_version:
         description: "Resolved upstream version"
         required: false
@@ -240,6 +265,11 @@ jobs:
       CI_S3_LINE_BOOT2: ${{ inputs.s3_line_boot2 }}
       CI_S3_SLOT: ${{ inputs.s3_slot }}
       CI_S3_UPPER: ${{ inputs.s3_upper }}
+      CI_S4_RESULT: ${{ inputs.s4_result }}
+      CI_S4_LINE_COMMIT_A: ${{ inputs.s4_line_commit_a }}
+      CI_S4_LINE_ABANDON_B: ${{ inputs.s4_line_abandon_b }}
+      CI_S4_LINE_COMMIT_B: ${{ inputs.s4_line_commit_b }}
+      CI_S4_COMMITTED_FINAL: ${{ inputs.s4_committed_final }}
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_VERSION_SOURCE: ${{ inputs.version_source }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}

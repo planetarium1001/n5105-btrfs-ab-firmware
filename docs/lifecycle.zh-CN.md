@@ -57,10 +57,16 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 | 探针 | 通过条件 |
 |---|---|
 | `overlay-writable` | `/overlay` 可写且剩余空间大于 5% |
-| `fw4-present` | 防火墙进程存在且 nft ruleset 非空 |
-| `wan-present` | WAN 设备存在 |
+| `fw4-present` | nft ruleset 非空且存在 `inet fw4` 表 |
+| `wan-present` | `network.wan` 引用的设备存在 |
 
 全部通过才提交。任一失败则放弃待提交槽，重启回到已提交槽。
+
+`fw4-present` 不找常驻进程：ImmortalWrt 25.12 的 `fw4` 是一次性渲染器，加载 ruleset 后就退出，
+可观测的状态就是 ruleset 本身。空 ruleset 正是这个探针要抓的故障。
+
+`wan-present` 需要一个网络配置来指认设备。上游镜像首次启动前没有 `/etc/config/network`，
+测试通过用户同样的可写层注入一份。
 
 ## 回收
 

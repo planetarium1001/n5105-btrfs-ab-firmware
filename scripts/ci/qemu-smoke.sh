@@ -19,7 +19,10 @@
 #   CI_QEMU_DISK      use this prepared raw image as the virtio disk instead of
 #                     building a throwaway test filesystem (S2 and later)
 #   CI_QEMU_INIT      rdinit= path inside the initramfs (default: /init)
-#   CI_JUDGE_PREFIX   judge line prefix to assert (default: S1-RESULT)
+#   CI_JUDGE_PREFIX   judge line prefix to assert (default: S1-RESULT, empty = the
+#                     caller grades the run itself, e.g. by reading the image back)
+#   CI_QEMU_STOP_PATTERN  serial pattern that means "the guest is done"
+#                     (default: ^<judge prefix>=)
 #   CI_QEMU_APPEND_EXTRA extra kernel parameters, appended verbatim
 #
 # Outputs: serial_log, judge_line, boot_seconds, qemu_mode, judge_prefix
@@ -43,7 +46,12 @@ mem="${CI_QEMU_MEM:-1024}"
 case_label="${CI_QEMU_CASE:-${CI_S1_CASE:-s1}}"
 given_disk="${CI_QEMU_DISK:-}"
 init_path="${CI_QEMU_INIT:-}"
-judge_prefix="${CI_JUDGE_PREFIX:-S1-RESULT}"
+judge_prefix="${CI_JUDGE_PREFIX-S1-RESULT}"
+stop_pattern="${CI_QEMU_STOP_PATTERN:-}"
+if [ -z "${stop_pattern}" ] && [ -n "${judge_prefix}" ]; then
+    stop_pattern="^${judge_prefix}="
+fi
+[ -n "${stop_pattern}" ] || ci_die "either CI_JUDGE_PREFIX or CI_QEMU_STOP_PATTERN is required"
 append_extra="${CI_QEMU_APPEND_EXTRA:-}"
 
 [ -f "${kernel}" ] || ci_die "kernel image not found: ${kernel}"
@@ -124,6 +132,9 @@ qemu_args=(
     -initrd "${initramfs}"
     -append "${append}"
     -drive "file=${image},if=virtio,format=raw,cache=unsafe"
+    # The health check looks for a wan device; virtio_net is built into this kernel.
+    -netdev "user,id=n0"
+    -device "virtio-net-pci,netdev=n0"
 )
 
 if [ "${mode}" = "uefi" ]; then
@@ -156,7 +167,7 @@ qemu_pid=$!
 stopped_on_judge=0
 deadline=$((started + timeout_s))
 while kill -0 "${qemu_pid}" 2>/dev/null; do
-    if grep -q "^${judge_prefix}=" "${serial}" 2>/dev/null; then
+    if grep -Eq "${stop_pattern}" "${serial}" 2>/dev/null; then
         stopped_on_judge=1
         sleep 1
         kill "${qemu_pid}" 2>/dev/null
@@ -181,8 +192,13 @@ fi
 # Assertion
 # --------------------------------------------------------------------------- #
 
-judge_line="$(grep -m 1 "^${judge_prefix}=" "${serial}" 2>/dev/null || true)"
-count="$(grep -c "^${judge_prefix}=" "${serial}" 2>/dev/null || true)"
+if [ -n "${judge_prefix}" ]; then
+    judge_line="$(grep -m 1 "^${judge_prefix}=" "${serial}" 2>/dev/null || true)"
+    count="$(grep -c "^${judge_prefix}=" "${serial}" 2>/dev/null || true)"
+else
+    judge_line=""
+    count=0
+fi
 [ -n "${count}" ] || count=0
 
 ci_emit_output "serial_log" "${serial}"
@@ -192,14 +208,22 @@ ci_emit_output "qemu_mode" "${mode}"
 ci_emit_output "judge_prefix" "${judge_prefix}"
 ci_emit_output "stopped_on_judge" "${stopped_on_judge}"
 
-if [ "${count}" != "1" ]; then
-    ci_warn "expected exactly one ${judge_prefix} line, found ${count}"
+if [ -n "${judge_prefix}" ]; then
+    if [ "${count}" != "1" ]; then
+        ci_warn "expected exactly one ${judge_prefix} line, found ${count}"
+    fi
+    if [ -z "${judge_line}" ] || [ "${judge_line#"${judge_prefix}"=ok}" = "${judge_line}" ]; then
+        ci_warn "serial log tail:"
+        tail -n 60 "${serial}" 2>/dev/null | sed 's/^/[qemu]   /' || true
+        ci_die "${judge_prefix} failed: '${judge_line:-no ${judge_prefix} line in the serial log}'"
+    fi
+    ci_log "judge line: ${judge_line}"
+else
+    if [ "${stopped_on_judge}" != "1" ]; then
+        ci_warn "serial log tail:"
+        tail -n 60 "${serial}" 2>/dev/null | sed 's/^/[qemu]   /' || true
+        ci_die "the guest never printed the stop pattern"
+    fi
+    ci_log "guest stopped on the stop pattern, the caller grades the run"
 fi
-if [ -z "${judge_line}" ] || [ "${judge_line#"${judge_prefix}"=ok}" = "${judge_line}" ]; then
-    ci_warn "serial log tail:"
-    tail -n 60 "${serial}" 2>/dev/null | sed 's/^/[qemu]   /' || true
-    ci_die "${judge_prefix} failed: '${judge_line:-no ${judge_prefix} line in the serial log}'"
-fi
-
-ci_log "judge line: ${judge_line}"
 ci_log "stage qemu finished"

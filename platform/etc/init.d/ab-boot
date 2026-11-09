@@ -1,0 +1,122 @@
+#!/bin/sh /etc/rc.common
+# ab-boot - early boot bookkeeping for the A/B slots.
+#
+# Runs before the network comes up. It mounts the two ESP-backed surfaces the A/B
+# tooling needs (/boot for the state and the ring log, /mnt/p4 for the writable
+# subvolumes), rotates the boot log, records this boot, and marks a candidate first
+# boot when the pending slot is the slot we just started.
+#
+# The running slot comes from the kernel command line (`ab.slot=<a|b>`), which is what
+# GRUB sets per menu entry; without it the committed slot is the honest assumption.
+#
+# Nothing here may block the boot: every failure is logged and reported through the
+# exit status of the helper, not by refusing to continue.
+
+# START is consumed by /etc/rc.common, not by this file.
+# shellcheck disable=SC2034
+START=15
+
+AB_ESP=/boot
+AB_P4=/mnt/p4
+LOG_MAX=32768
+
+# find_partition <partlabel> <fallback>: resolve a partition device by GPT name when
+# the kernel exposes PARTNAME, falling back to the documented partition order.
+find_partition() {
+	_want="$1"
+	_fallback="$2"
+	for _event in /sys/class/block/*/uevent; do
+		[ -f "${_event}" ] || continue
+		case "$(sed -n 's/^DEVTYPE=//p' "${_event}")" in
+			partition) : ;;
+			*) continue ;;
+		esac
+		if [ "$(sed -n 's/^PARTNAME=//p' "${_event}")" = "${_want}" ]; then
+			printf '/dev/%s' "$(basename "$(dirname "${_event}")")"
+			return 0
+		fi
+	done
+	printf '%s' "${_fallback}"
+}
+
+is_mounted() {
+	awk -v mp="$1" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null
+}
+
+mount_esp() {
+	is_mounted "${AB_ESP}" && return 0
+	mkdir -p "${AB_ESP}"
+	mount -t vfat -o rw,noatime "$(find_partition ab-esp /dev/vda1)" "${AB_ESP}" 2>/dev/null
+}
+
+mount_p4() {
+	is_mounted "${AB_P4}" && return 0
+	mkdir -p "${AB_P4}"
+	mount -o rw,noatime "$(find_partition ab-shared /dev/vda4)" "${AB_P4}" 2>/dev/null
+}
+
+# log_append <line...>: one full-file write with the documented truncation rule.
+log_append() {
+	_log="${AB_ESP}/ab/log/boot-0.log"
+	_tmp="${_log}.tmp.$$"
+	mkdir -p "${AB_ESP}/ab/log"
+	[ -f "${_log}" ] && cat "${_log}" >"${_tmp}"
+	printf '%s\n' "$*" >>"${_tmp}"
+	if [ "$(wc -c <"${_tmp}")" -gt "${LOG_MAX}" ]; then
+		_tail="${_tmp}.tail"
+		tail -c $((LOG_MAX - 512)) "${_tmp}" >"${_tail}"
+		printf 'TRUNCATED=1\n' >>"${_tail}"
+		mv "${_tail}" "${_tmp}"
+	fi
+	sync
+	mv "${_tmp}" "${_log}"
+	sync
+}
+
+rotate_logs() {
+	mkdir -p "${AB_ESP}/ab/log"
+	rm -f "${AB_ESP}/ab/log/boot-2.log"
+	[ -f "${AB_ESP}/ab/log/boot-1.log" ] && mv "${AB_ESP}/ab/log/boot-1.log" "${AB_ESP}/ab/log/boot-2.log"
+	[ -f "${AB_ESP}/ab/log/boot-0.log" ] && mv "${AB_ESP}/ab/log/boot-0.log" "${AB_ESP}/ab/log/boot-1.log"
+}
+
+start() {
+	mount_esp || {
+		echo "ab-boot: cannot mount the ESP, slot bookkeeping disabled"
+		exit 0
+	}
+	mount_p4 || echo "ab-boot: cannot mount the writable partition, reclamation degraded"
+
+	rotate_logs
+
+	status_line="$(ab-slot status 2>/dev/null)"
+	field() {
+		for kv in ${status_line}; do
+			case "${kv}" in
+				"$1="*)
+					printf '%s' "${kv#*=}"
+					return 0
+					;;
+			esac
+		done
+		return 1
+	}
+
+	slot="$(field slot)"
+	upper="$(field upper)"
+	pending="$(field pending)"
+	committed="$(field committed)"
+	generation="$(field generation)"
+	rootfs="$(ab-slot rootfs "${slot}" 2>/dev/null)"
+
+	log_append "stage=boot slot=${slot:-?} upper=${upper:-?} rootfs=${rootfs:-?} result=ok"
+
+	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
+		printf '%s %s\n' "${slot}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${AB_ESP}/ab/candidate"
+		sync
+		log_append "stage=boot slot=${slot} upper=${upper} rootfs=${rootfs:-?} result=ok candidate=1"
+		echo "ab-boot: slot ${slot} is the pending slot, marking a candidate first boot"
+	fi
+
+	echo "ab-boot: running slot ${slot:-?} (${upper:-?}), generation ${generation:-?}, committed ${committed:-?}"
+}

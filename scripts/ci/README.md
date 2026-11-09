@@ -14,6 +14,7 @@ reproduced locally with the same inputs the workflow passes.
 | `.github/workflows/ci-s1.yml` | s1 (module-load probe) |
 | `.github/workflows/ci-s2.yml` | s2 (disk image assembly) |
 | `.github/workflows/ci-s3.yml` | s3 (layered boot) |
+| `.github/workflows/ci-s4.yml` | s4 (slot state machine, three boots) |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -38,6 +39,9 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `esp-prepare.sh` | s2 | take the ESP tree (GRUB) from the upstream combined-EFI image |
 | `disk.sh` | s2 | assemble and compress the four-partition image |
 | `image-verify.sh` | s2 | host-side geometry assertions and the guest expectation file |
+| `grub-render.sh` | s2/s4 | render `boot/grub/grub.cfg` and assert the five GRUB rules |
+| `ab-fixtures.sh` | s4 | shape the test image between boots (network, broken slot, pending) |
+| `ab-phase.sh` | s4 | read the ESP back after a boot and print the frozen S4 judge line |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
 | `diagnostics.sh` | all | environment facts, disk usage and file inventories for failure triage |
 
@@ -225,4 +229,72 @@ Two consequences worth knowing:
   to a default slot. The writable layer is named after the upstream release
   (`@overlay-25.12.2`, or `@overlay-25.12.2-r2` for a re-release); `generation` stays
   an integer because version strings do not sort correctly.
+
+## S4: the slot state machine
+
+The A/B logic lives in `platform/`, which is the source tree of the `@platform` layer
+and is mirrored onto the final filesystem paths:
+
+| Path | Role |
+|---|---|
+| `platform/usr/sbin/ab-slot` | status, commit, pending, abandon, rollback, gc, rootfs, log |
+| `platform/etc/init.d/ab-boot` | `START=15`: mounts `/boot` and `/mnt/p4`, rotates the boot log, marks a candidate first boot |
+| `platform/etc/init.d/ab-commit` | `START=99`: runs the three probes, then commits or abandons |
+| `platform/etc/platform-release` | template rendered with the build's versions |
+
+`ab-slot` reads `ab/state.json` from the ESP (`/boot` by default, `AB_ESP` overrides
+it for tests) and writes it atomically: temporary file in the same directory, `sync`,
+rename, `sync`. Concurrent writers are excluded by a directory lock, because `mkdir`
+is atomic on vfat. The running slot comes from `ab.slot=<a|b>` on the kernel command
+line, which is what GRUB sets per menu entry; without it the committed slot is
+assumed.
+
+### Health check
+
+`ab-commit` runs after `done` with a 150 second budget and logs every probe in the
+frozen format (`probe=<name> result=<pass|fail>`):
+
+| Probe | Passes when |
+|---|---|
+| `overlay-writable` | `/overlay` is writable and more than 5% of it is free |
+| `fw4-present` | `nft list ruleset` is non-empty and the firewall is loaded |
+| `wan-present` | the device named by `network.wan` exists in `/sys/class/net` |
+
+Two notes on `fw4-present`: on this upstream `fw4` is a one-shot renderer — `fw4
+start` pipes the rendered ruleset into `nft` and exits — so there is normally no
+`fw4` process to find. The probe therefore passes when either the `inet fw4` table
+exists or an `fw4` process is running, and it logs which one it saw. `wan-present`
+also needs a `network.wan` interface, and the upstream rootfs ships no
+`/etc/config/network` at all: S5 owns the production config, so the S4 harness writes
+a documented fixture into the writable layer instead of the probe silently passing on
+nothing.
+
+### GRUB
+
+`disk.sh` renders `scripts/ci/grub.cfg.in` into the ESP and refuses to build unless
+all five rules from `docs/boot-overlay.md` hold. `grub-render.sh --check FILE` runs
+the rules alone, which is what `tests/modules/ab/test_grub.sh` uses to prove each rule
+rejects its own mutant. Rule 4 checks the code lines only: the template's header
+comments mention `&&`, `||` and `${x:-y}` on purpose.
+
+### Three boots
+
+The stage boots one image file three times and never wipes it:
+
+| Boot | Setup | Expected |
+|---|---|---|
+| 1 | fresh image, `ab.slot=a` | probes pass, `committed=a`, `pending=none` |
+| 2 | slot b's `nft` broken, `pending=b`, `ab.slot=b` | probes fail, `abandon`, `committed=a`, log has `reason=healthcheck-failed` |
+| 3 | slot b repaired, `pending=b`, `ab.slot=b` | probes pass, `committed=b` |
+
+Breaking `/sbin/init` — the example in the task — would stop the kernel before `rcS`,
+so `ab-commit` would never run and the abandon path would never be exercised; a broken
+`nft` keeps the system bootable and fails exactly one probe. The guest never grades
+itself: each boot stops on the `ab-commit` decision line and `ab-phase.sh` then reads
+the ESP back and prints the frozen line:
+
+```
+S4-RESULT=ok phase=<commit|abandon> slot=<a|b>
+S4-RESULT=fail reason=<token>
+```
 

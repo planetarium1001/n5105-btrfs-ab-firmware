@@ -18,6 +18,8 @@
 #   CI_S2_RESULT, CI_S2_LINE, CI_S2_IMAGE_BYTES, CI_S2_IMAGE_GZ_BYTES,
 #   CI_S2_ROOTFS_FILES, CI_S2_HOST_CHECKS
 #   CI_S3_RESULT, CI_S3_LINE, CI_S3_LINE_BOOT2, CI_S3_SLOT, CI_S3_UPPER
+#   CI_S4_RESULT, CI_S4_LINE_COMMIT_A, CI_S4_LINE_ABANDON_B, CI_S4_LINE_COMMIT_B,
+#   CI_S4_COMMITTED_FINAL
 
 set -euo pipefail
 
@@ -53,6 +55,7 @@ for result in \
     "${CI_S1_RESULT:-}" \
     "${CI_S2_RESULT:-}" \
     "${CI_S3_RESULT:-}" \
+    "${CI_S4_RESULT:-}" \
     "${CI_VERIFY_RESULT:-}"; do
     case "${result}" in
         failure | cancelled | timed_out) overall="failure" ;;
@@ -104,6 +107,8 @@ fi
         "${CI_S2_ROOTFS_FILES:-n/a}" "${CI_S2_HOST_CHECKS:-n/a}"
     printf '| s3 | %s | slot %s, layer %s, two boots |\n' \
         "$(result_cell "${CI_S3_RESULT:-}")" "${CI_S3_SLOT:-n/a}" "${CI_S3_UPPER:-n/a}"
+    printf '| s4 | %s | three boots, committed %s at the end |\n' \
+        "$(result_cell "${CI_S4_RESULT:-}")" "${CI_S4_COMMITTED_FINAL:-n/a}"
     printf '\n'
     printf 'Payload manifest sha256: `%s`\n' "${CI_PAYLOAD_MANIFEST_SHA256:-not produced}"
     if [ -n "${CI_S1_LINE:-}" ]; then
@@ -121,10 +126,19 @@ fi
     if [ -n "${CI_S3_LINE_BOOT2:-}" ]; then
         printf 'S3 judge line (boot 2): `%s`\n' "${CI_S3_LINE_BOOT2}"
     fi
+    if [ -n "${CI_S4_LINE_COMMIT_A:-}" ]; then
+        printf '\nS4 judge line (boot 1): `%s`\n' "${CI_S4_LINE_COMMIT_A}"
+    fi
+    if [ -n "${CI_S4_LINE_ABANDON_B:-}" ]; then
+        printf 'S4 judge line (boot 2): `%s`\n' "${CI_S4_LINE_ABANDON_B}"
+    fi
+    if [ -n "${CI_S4_LINE_COMMIT_B:-}" ]; then
+        printf 'S4 judge line (boot 3): `%s`\n' "${CI_S4_LINE_COMMIT_B}"
+    fi
     printf '\n'
     printf 'Artifacts: `upstream-files` (fetch), `payload` (assemble), '
     printf '`s1-probe` (serial logs, initramfs, module inventory), '
-    printf '`disk-image`, `s2-probe` and `s3-probe` (image, serial logs, dumps), '
+    printf '`disk-image`, `s2-probe`, `s3-probe` and `s4-probe` (image, serial logs, dumps), '
     printf '`diag-<stage>` (logs and inventories from every stage).\n'
 } >"${CI_TMP_ROOT}/report.md"
 

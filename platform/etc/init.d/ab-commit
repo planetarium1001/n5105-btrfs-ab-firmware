@@ -1,0 +1,188 @@
+#!/bin/sh /etc/rc.common
+# ab-commit - health check and slot commit, after the system finished booting.
+#
+# Runs after `done`, which is where the boot reaches its last stage. It runs the three
+# probes from docs/lifecycle.md against the running system and decides the slot state:
+#
+#   probes pass, pending slot is the running slot -> commit that slot
+#   probes fail, pending slot is the running slot -> abandon the pending slot and
+#                                                    reboot into the committed one
+#   probes pass, nothing pending                  -> commit the running slot, so the
+#                                                    first boot of a fresh install
+#                                                    ends up committed
+#   probes fail, nothing pending                  -> log the failure and stay; there is
+#                                                    nothing to abandon and a reboot
+#                                                    loop would help nobody
+#
+# The total budget is 150 seconds. Probe results are logged in the frozen format:
+#   probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
+
+# START is consumed by /etc/rc.common, not by this file.
+# shellcheck disable=SC2034
+START=99
+
+AB_ESP=/boot
+BUDGET=150
+
+# find_partition <partlabel> <fallback>
+find_partition() {
+	for _event in /sys/class/block/*/uevent; do
+		[ -f "${_event}" ] || continue
+		case "$(sed -n 's/^DEVTYPE=//p' "${_event}")" in
+			partition) : ;;
+			*) continue ;;
+		esac
+		if [ "$(sed -n 's/^PARTNAME=//p' "${_event}")" = "$1" ]; then
+			printf '/dev/%s' "$(basename "$(dirname "${_event}")")"
+			return 0
+		fi
+	done
+	printf '%s' "$2"
+}
+
+mount_esp() {
+	awk -v mp="${AB_ESP}" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null && return 0
+	mkdir -p "${AB_ESP}"
+	mount -t vfat -o rw,noatime "$(find_partition ab-esp /dev/vda1)" "${AB_ESP}" 2>/dev/null
+}
+
+log_append() {
+	_log="${AB_ESP}/ab/log/boot-0.log"
+	_tmp="${_log}.tmp.$$"
+	mkdir -p "${AB_ESP}/ab/log"
+	[ -f "${_log}" ] && cat "${_log}" >"${_tmp}"
+	printf '%s\n' "$*" >>"${_tmp}"
+	if [ "$(wc -c <"${_tmp}")" -gt 32768 ]; then
+		_tail="${_tmp}.tail"
+		tail -c 32000 "${_tmp}" >"${_tail}"
+		printf 'TRUNCATED=1\n' >>"${_tail}"
+		mv "${_tail}" "${_tmp}"
+	fi
+	sync
+	mv "${_tmp}" "${_log}"
+	sync
+}
+
+field() {
+	for kv in ${status_line}; do
+		case "${kv}" in
+			"$1="*)
+				printf '%s' "${kv#*=}"
+				return 0
+				;;
+		esac
+	done
+	return 1
+}
+
+# probe_overlay_writable: /overlay is writable and has more than 5% free.
+probe_overlay_writable() {
+	[ -d /overlay ] || return 1
+	_probe_file="/overlay/.ab-probe.$$"
+	: >"${_probe_file}" 2>/dev/null || return 1
+	rm -f "${_probe_file}"
+	_total="$(df -k /overlay 2>/dev/null | awk 'NR == 2 { print $2 }')"
+	_avail="$(df -k /overlay 2>/dev/null | awk 'NR == 2 { print $4 }')"
+	[ -n "${_total}" ] && [ -n "${_avail}" ] || return 1
+	[ "${_total}" -gt 0 ] || return 1
+	[ $((_avail * 100 / _total)) -gt 5 ]
+}
+
+# probe_fw4: the nft ruleset is non-empty and the firewall is actually loaded.
+#
+# fw4 on this upstream is a one-shot renderer: `fw4 start` renders the ruleset, feeds
+# it to nft and exits, so an idle system has no fw4 process to look for. Both shapes
+# pass: a resident firewall process, or the loaded ruleset in the inet fw4 table.
+probe_fw4() {
+	command -v nft >/dev/null 2>&1 || return 1
+	_ruleset="$(nft list ruleset 2>/dev/null)" || return 1
+	[ -n "${_ruleset}" ] || return 1
+	nft list table inet fw4 >/dev/null 2>&1 && return 0
+	pidof fw4 >/dev/null 2>&1 && return 0
+	pgrep -f fw4 >/dev/null 2>&1 && return 0
+	return 1
+}
+
+# probe_wan: the device behind network.wan exists.
+probe_wan() {
+	command -v uci >/dev/null 2>&1 || return 1
+	_dev="$(uci -q get network.wan.device 2>/dev/null)"
+	[ -n "${_dev}" ] || _dev="$(uci -q get network.wan.ifname 2>/dev/null)"
+	[ -n "${_dev}" ] || return 1
+	[ -e "/sys/class/net/${_dev}" ]
+}
+
+run_probe() {
+	_name="$1"
+	_started="$(date +%s)"
+	if "probe_$2"; then
+		_elapsed=$(( $(date +%s) - _started ))
+		log_append "probe=${_name} result=pass"
+		echo "ab-commit: probe ${_name} pass (${_elapsed}s)"
+		return 0
+	fi
+	_elapsed=$(( $(date +%s) - _started ))
+	log_append "probe=${_name} result=fail"
+	echo "ab-commit: probe ${_name} fail (${_elapsed}s)"
+	return 1
+}
+
+start() {
+	mount_esp || {
+		echo "ab-commit: cannot mount the ESP, skipping the health check"
+		exit 0
+	}
+
+	status_line="$(ab-slot status 2>/dev/null)"
+	slot="$(field slot)"
+	pending="$(field pending)"
+	upper="$(field upper)"
+	rootfs="$(ab-slot rootfs "${slot}" 2>/dev/null)"
+	[ -n "${slot}" ] || {
+		echo "ab-commit: cannot determine the running slot"
+		log_append "stage=healthcheck-done slot=? result=fail reason=no-slot"
+		exit 0
+	}
+
+	deadline=$(( $(date +%s) + BUDGET ))
+	failed=""
+	for probe in overlay-writable fw4-present wan-present; do
+		if [ "$(date +%s)" -ge "${deadline}" ]; then
+			failed="healthcheck-timeout"
+			log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=healthcheck-timeout"
+			break
+		fi
+		case "${probe}" in
+			overlay-writable) probe_fn=overlay_writable ;;
+			fw4-present) probe_fn=fw4 ;;
+			wan-present) probe_fn=wan ;;
+		esac
+		run_probe "${probe}" "${probe_fn}" || failed="healthcheck-failed"
+	done
+
+	if [ -z "${failed}" ]; then
+		log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=ok"
+		ab-slot commit "${slot}" || {
+			log_append "stage=commit slot=${slot} result=fail reason=commit-failed"
+			exit 0
+		}
+		rm -f "${AB_ESP}/ab/candidate"
+		sync
+		log_append "stage=commit slot=${slot} upper=${upper} rootfs=${rootfs} result=ok action=commit"
+		echo "ab-commit: committed slot=${slot} upper=${upper}"
+		exit 0
+	fi
+
+	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
+		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed} action=reboot-to-committed"
+		echo "ab-commit: health check failed on the pending slot ${slot} (${failed}), abandoning it"
+		rm -f "${AB_ESP}/ab/candidate"
+		ab-slot abandon
+		sync
+		reboot
+		exit 0
+	fi
+
+	log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}"
+	echo "ab-commit: health check failed on the committed slot ${slot} (${failed}), staying up"
+}

@@ -21,6 +21,7 @@
 # /s3-post.sh, which switch_root hands control to as the new /init.
 #
 # Kernel command line:
+#   ab.slot=<a|b>     slot GRUB selected for this boot (default: the committed slot)
 #   wf.dev=<disk>     disk holding the four partitions   (default /dev/vda)
 #   wf.boot=<n>       test label only, recorded in the probe file (default 1)
 #
@@ -122,10 +123,30 @@ STATE=/esp/ab/state.json
 [ -f "${STATE}" ] || wf_fail state-missing
 
 slot="$(wf_committed "${STATE}")"
+committed_slot="${slot}"
+case "${slot}" in
+    a | b) : ;;
+    *) wf_fail "state-committed-invalid-${slot:-empty}" ;;
+esac
+# GRUB names the slot it booted; without that hint the committed slot is the one we
+# are supposed to be running.
+requested_slot=""
+for arg in $(cat /proc/cmdline); do
+    case "${arg}" in
+        ab.slot=*) requested_slot="${arg#ab.slot=}" ;;
+    esac
+done
+if [ -n "${requested_slot}" ]; then
+    case "${requested_slot}" in
+        a | b) : ;;
+        *) wf_fail "ab-slot-invalid-${requested_slot}" ;;
+    esac
+    slot="${requested_slot}"
+    wf_log "GRUB selected slot ${slot} (committed is ${committed_slot})"
+fi
 case "${slot}" in
     a) slot_dev="${slot_a}" ;;
     b) slot_dev="${slot_b}" ;;
-    *) wf_fail "state-committed-invalid-${slot:-empty}" ;;
 esac
 upper="$(wf_upper "${STATE}" "${slot}")"
 [ -n "${upper}" ] || wf_fail state-upper-invalid

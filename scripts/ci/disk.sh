@@ -22,8 +22,10 @@
 #   CI_INITRAMFS      initramfs image to install as initrd-a/b for now
 #   CI_DISK_DIR       scratch directory (default: $CI_TMP_ROOT/disk)
 #   CI_DISK_OUT       output image path (default: $CI_DISK_DIR/<name>.img)
-#   CI_PLATFORM_VERSION  version recorded in the @platform skeleton
-#   CI_UPSTREAM_VERSION  upstream release label recorded in @platform
+#   CI_PLATFORM_VERSION  version recorded in the platform release file
+#   CI_UPSTREAM_VERSION  upstream release label recorded in the platform release file
+#   CI_PLATFORM_SRC      platform layer source tree (default: platform/)
+#   CI_GRUB_TEMPLATE     GRUB template (default: scripts/ci/grub.cfg.in)
 #
 # Outputs: image_path, image_gz_path, image_bytes, image_gz_bytes, rootfs_files,
 #          rootfs_bytes, esp_bytes, part_layout
@@ -145,6 +147,39 @@ unmount_part() {
 }
 
 # --------------------------------------------------------------------------- #
+# 1b. Platform layer tarball and GRUB configuration
+# --------------------------------------------------------------------------- #
+
+platform_src="${CI_PLATFORM_SRC:-${CI_REPO_ROOT}/platform}"
+[ -d "${platform_src}" ] || ci_die "platform source tree not found: ${platform_src}"
+platform_stage="${disk_dir}/platform-stage"
+rm -rf "${platform_stage}"
+mkdir -p "${platform_stage}"
+cp -a "${platform_src}/." "${platform_stage}/"
+
+# platform/etc/platform-release is a template: the version comes from the build.
+sed -i -e "s|@PLATFORM_VERSION@|${platform_version}|g" \
+    -e "s|@UPSTREAM_VERSION@|${upstream_version}|g" \
+    -e "s|@PLATFORM_STAGE@|image|g" \
+    "${platform_stage}/etc/platform-release"
+if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${platform_stage}/etc/platform-release"; then
+    ci_die "platform-release still carries unreplaced placeholders"
+fi
+
+platform_tar="${disk_dir}/platform.tar"
+( cd "${platform_stage}" && tar --numeric-owner --owner=0 --group=0 -cf "${platform_tar}" . )
+ci_log "platform layer: $(tar -tf "${platform_tar}" | wc -l | tr -d ' ') entries, $(ci_file_size "${platform_tar}") bytes"
+
+grub_output="${disk_dir}/grub.cfg"
+CI_GRUB_OUTPUT="${grub_output}" \
+    CI_GRUB_TEMPLATE="${CI_GRUB_TEMPLATE:-${CI_REPO_ROOT}/scripts/ci/grub.cfg.in}" \
+    CI_COMMITTED_SLOT="${CI_COMMITTED_SLOT:-a}" \
+    bash "${CI_SCRIPT_DIR}/grub-render.sh" >"${disk_dir}/grub-render.log" 2>&1 \
+    || ci_die "GRUB configuration rendering failed, see ${disk_dir}/grub-render.log"
+grub_sha="$(ci_sha256 "${grub_output}")"
+ci_log "GRUB configuration rendered (sha256 ${grub_sha})"
+
+# --------------------------------------------------------------------------- #
 # 2. p1: ESP
 # --------------------------------------------------------------------------- #
 
@@ -155,6 +190,10 @@ p1="${mount_target}"
 
 # The upstream bootloader tree first, then the two slot payloads and the state dirs.
 sudo cp -a "${esp_dir}/." "${p1}/"
+# Our own menu, rendered for the committed slot; the upstream tree supplies the
+# modules and the EFI loader, not the configuration.
+sudo mkdir -p "${p1}/boot/grub"
+sudo cp "${grub_output}" "${p1}/boot/grub/grub.cfg"
 sudo mkdir -p "${p1}/ab/log"
 
 # ab/state.json describes the installed state: both slots on generation 1, slot a
@@ -205,16 +244,15 @@ populate_slot() {
     sudo btrfs subvolume create "${mnt}/@sys" "${mnt}/@platform" >/dev/null
     sudo cp -a "${rootfs_tree}/." "${mnt}/@sys/"
 
-    # @platform is only a skeleton until S5 fills the platform layer; the paths it will
-    # mirror (/usr/sbin, /etc) are already there so the overlay lowerdir is valid.
-    sudo mkdir -p "${mnt}/@platform/usr/sbin" "${mnt}/@platform/etc"
-    sudo touch "${mnt}/@platform/usr/sbin/.keep"
-    {
-        printf 'PLATFORM_VERSION=%s\n' "${platform_version}"
-        printf 'UPSTREAM_VERSION=%s\n' "${upstream_version}"
-        printf 'PLATFORM_STAGE=s2-skeleton\n'
-    } | sudo tee "${mnt}/@platform/etc/platform-release" >/dev/null
-    sudo chmod 0644 "${mnt}/@platform/etc/platform-release"
+    # The platform layer is the source tree under platform/, mirrored onto the final
+    # filesystem paths: /usr/sbin/ab-slot, /etc/init.d/ab-boot, /etc/init.d/ab-commit.
+    sudo tar -xpf "${platform_tar}" -C "${mnt}/@platform"
+    sudo chmod 0755 "${mnt}/@platform/usr/sbin/ab-slot" \
+        "${mnt}/@platform/etc/init.d/ab-boot" \
+        "${mnt}/@platform/etc/init.d/ab-commit"
+    # The init.d hooks need start links so rcS picks them up.
+    sudo ln -sf ../init.d/ab-boot "${mnt}/@platform/etc/rc.d/S15ab-boot"
+    sudo ln -sf ../init.d/ab-commit "${mnt}/@platform/etc/rc.d/S99ab-commit"
 
     unmount_part "${mnt}"
     ci_log "p${tag#p} populated: @sys (${rootfs_files} file(s)) + @platform skeleton"
@@ -255,6 +293,9 @@ gz_bytes="$(ci_file_size "${gz_path}")"
 ci_log "compressed in $(( $(date +%s) - now_start ))s: ${gz_bytes} bytes"
 
 ci_emit_output "overlay_name" "${overlay_name}"
+ci_emit_output "platform_tar" "${platform_tar}"
+ci_emit_output "grub_cfg" "${grub_output}"
+ci_emit_output "grub_cfg_sha256" "${grub_sha}"
 ci_emit_output "image_path" "${image}"
 ci_emit_output "image_gz_path" "${gz_path}"
 ci_emit_output "image_bytes" "${image_bytes}"
