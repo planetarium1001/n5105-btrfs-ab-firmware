@@ -25,8 +25,6 @@ export PATH
 slot="${1:-}"
 upper="${2:-}"
 boot="${3:-1}"
-shared_dev="${4:-}"
-slot_dev="${5:-}"
 
 fail() {
     printf 'S3-RESULT=fail reason=%s\n' "$1"

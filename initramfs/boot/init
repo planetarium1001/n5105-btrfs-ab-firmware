@@ -235,8 +235,8 @@ done
 wf_log "switching root to the overlay"
 # switch_root must be PID 1, and this script is a child of the shell that the kernel
 # started as init, so exec replaces the shell instead of forking a helper.
-exec switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}" \
-    "${shared}" "${slot_dev}"
+# shellcheck disable=SC2093  # exec only returns when it fails; the line below handles that
+exec switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}"
 
 # exec only returns when it fails.
 wf_fail switch-root-failed
