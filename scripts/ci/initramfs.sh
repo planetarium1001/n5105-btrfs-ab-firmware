@@ -17,6 +17,8 @@
 #                      used to stage the guest assertion scripts of later stages
 #   CI_TOOL_BINARIES   space separated host binaries to include together with the
 #                      shared libraries ldd reports (for example btrfs and blkid)
+#   CI_INIT_SCRIPT     which init to install as /init
+#                      (default: initramfs/init, the S1 probe)
 #
 # Outputs: initramfs_path, initramfs_size, initramfs_modules, busybox_version,
 #          initramfs_tools, initramfs_extra_files
@@ -42,6 +44,7 @@ kmods_out="${CI_KMODS_OUT:-${CI_TMP_ROOT}/kmods}"
 kernel_version="${CI_KERNEL_VERSION:?CI_KERNEL_VERSION is required}"
 out_file="${CI_INITRAMFS_OUT:-${CI_TMP_ROOT}/initramfs/initramfs.cpio.gz}"
 busybox="${CI_BUSYBOX:-/bin/busybox}"
+init_script="${CI_INIT_SCRIPT:-${CI_REPO_ROOT}/initramfs/init}"
 
 module_dir="${kmods_out}/modules/lib/modules/${kernel_version}"
 [ -d "${module_dir}" ] || ci_die "module directory not found: ${module_dir}"
@@ -108,7 +111,9 @@ done
 [ ! -L "${stage}/bin/busybox" ] || ci_die "/bin/busybox was replaced by an applet symlink"
 "${stage}/bin/busybox" true || ci_die "staged busybox cannot execute"
 
-install -m 0755 "${CI_REPO_ROOT}/initramfs/init" "${stage}/init"
+[ -f "${init_script}" ] || ci_die "init script not found: ${init_script}"
+install -m 0755 "${init_script}" "${stage}/init"
+ci_log "init: ${init_script#"${CI_REPO_ROOT}"/}"
 
 # Host tools needed by later assertion scripts (btrfs, blkid, sfdisk, ...), copied
 # with exactly the libraries ldd reports so they run inside the guest unchanged.

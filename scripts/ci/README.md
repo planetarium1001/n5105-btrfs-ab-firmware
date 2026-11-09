@@ -13,6 +13,7 @@ reproduced locally with the same inputs the workflow passes.
 | `.github/workflows/ci-assemble.yml` | assemble |
 | `.github/workflows/ci-s1.yml` | s1 (module-load probe) |
 | `.github/workflows/ci-s2.yml` | s2 (disk image assembly) |
+| `.github/workflows/ci-s3.yml` | s3 (layered boot) |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -179,4 +180,47 @@ is complete; S3 replaces them with the real initramfs mount chain. The ESP itsel
 comes from the upstream combined-EFI image, which is why the stage needs no GRUB
 build dependency: upstream types that ESP as a plain Linux filesystem, so the
 partition is found by probing for a FAT signature rather than by trusting the GUID.
+
+## S3: the layered boot initramfs
+
+`initramfs/boot/init` replaces the S1 probe as the image's `initrd-a`/`initrd-b`. It
+reads `ab/state.json` from the ESP, then composes the running root in the order
+`docs/boot-overlay.md` requires:
+
+| Step | Command (abridged) | Why this order |
+|---|---|---|
+| 1 | `mount -o rw,noatime,compress=zstd:6,discard=async,subvol=/@overlay.genNNNN p4 /mnt/p4` | `compress=` is fixed by the first mount of a filesystem |
+| 2 | `mount -o ro,noatime,subvol=/@wf p2 /mnt/@wf` | platform layer, mounted read-only |
+| 3 | `mount -o ro,noatime,subvol=/@sys p2 /mnt/@sys` | upstream layer, mounted read-only |
+| 4 | `mount -t overlay -o lowerdir=/mnt/@wf:/mnt/@sys,upperdir=/mnt/p4/upper,workdir=/mnt/p4/work,index=off overlay /newroot` | platform layer wins the lower merge |
+
+The read-only layers are mounted under `@`-names so the overlay command line carries
+both layer names verbatim, which is what the judge line reports as `lower=wf:sys`.
+
+`switch_root` then hands control to `/s3-post.sh`, which re-checks everything from
+inside the composed root: `/` is the overlay, `@wf` and `@sys` both contribute files,
+probe writes appear in `<generation>/upper` and in neither read-only layer, and the
+probe written by the previous boot is still there. It ends by executing `/sbin/init`,
+so the boot proves the root is a working system; the harness stops the machine as soon
+as the judge line appears.
+
+```
+S3-RESULT=ok slot=<a|b> gen=<N> lower=<wf:sys> upper=<gen> root=<overlay>
+S3-RESULT=fail reason=<token>
+```
+
+The stage boots the same image twice (`wf.boot=1`, then `wf.boot=2`) and both boots
+must pass. Probe markers (`.s3-probe`, `.s3-new-<n>`, `.s3-post`) stay in the
+generation's upper directory, which is what makes the second boot meaningful.
+
+Two consequences worth knowing:
+
+- the ESP needs `vfat`, which the upstream kernel does not build in, so the module
+  closure carries `kmod-fs-vfat` (fat.ko, vfat.ko) plus `kmod-nls-cp437` and
+  `kmod-nls-iso8859-1`; `kmod-nls-base` is virtual. `scripts/ci/kmod-closure.json`
+  therefore pins 18 packages / 20 modules.
+- `ab/state.json` ships in the image with the installation state (both slots on
+  generation 1, slot `a` committed). S4 starts updating it; the parser in
+  `initramfs/lib/wf.sh` fails on an unreadable state rather than falling back to a
+  default slot.
 

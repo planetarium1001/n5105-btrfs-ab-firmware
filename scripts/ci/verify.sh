@@ -44,7 +44,7 @@ init_scripts=()
 if [ -d "${CI_REPO_ROOT}/initramfs" ]; then
     while IFS= read -r path; do
         init_scripts+=("${path}")
-    done < <(find "${CI_REPO_ROOT}/initramfs" -maxdepth 1 -type f ! -name '*.md' | LC_ALL=C sort)
+    done < <(find "${CI_REPO_ROOT}/initramfs" -type f ! -name '*.md' | LC_ALL=C sort)
 fi
 # Test scripts under tests/modules/image run in either dialect, so the shebang
 # decides; only that module is linted here, the rest of tests/ is owned elsewhere.

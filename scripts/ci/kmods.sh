@@ -64,10 +64,14 @@ fi
 # The closure list is the only hand-maintained input. It comes from the DEPENDS graph
 # of package/kernel/linux/modules/*.mk at the pinned upstream tag; the lockfile is
 # derived from it, so a first run only needs this list.
+# Two roots share one list: kmod-fs-btrfs (the system root filesystem) and
+# kmod-fs-vfat (the ESP, which holds ab/state.json). Both arrive as modules because
+# the upstream kernel image carries neither filesystem built in.
 closure_default="kmod-crypto-acompress kmod-crypto-blake2b kmod-crypto-crc32c
-kmod-crypto-hash kmod-crypto-xxhash kmod-fs-btrfs kmod-lib-crc32c kmod-lib-lzo
-kmod-lib-raid6 kmod-lib-xor kmod-lib-xxhash kmod-lib-zlib-deflate
-kmod-lib-zlib-inflate kmod-lib-zstd"
+kmod-crypto-hash kmod-crypto-xxhash kmod-fs-btrfs kmod-fs-vfat kmod-lib-crc32c
+kmod-lib-lzo kmod-lib-raid6 kmod-lib-xor kmod-lib-xxhash kmod-lib-zlib-deflate
+kmod-lib-zlib-inflate kmod-lib-zstd kmod-nls-base kmod-nls-cp437
+kmod-nls-iso8859-1"
 closure_list="${CI_KMODS_CLOSURE:-${closure_default}}"
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +125,13 @@ PYTHON
 }
 
 if [ "${write_lock}" = "true" ]; then
-    if [ -f "${lockfile}" ]; then
+    if [ -n "${CI_KMODS_CLOSURE:-}" ]; then
+        # An explicit closure overrides the lockfile, which is how a new root is
+        # added without hand-editing the lockfile.
+        # shellcheck disable=SC2086  # the closure list is intentionally word-split
+        package_lines="$(resolved_lines ${CI_KMODS_CLOSURE})" || ci_die "could not resolve the given closure from the mirror"
+        ci_log "using CI_KMODS_CLOSURE (${CI_KMODS_CLOSURE})"
+    elif [ -f "${lockfile}" ]; then
         locked_names="$(python3 - "${lockfile}" <<'PYTHON'
 import json, sys
 print(" ".join(pkg["name"] for pkg in json.load(open(sys.argv[1], encoding="utf-8"))["packages"]))

@@ -91,6 +91,27 @@
       ]
     },
     {
+      "name": "kmod-fs-vfat",
+      "version": "6.12.103-r1",
+      "kind": "modules",
+      "sha256": "3d176db6f11b282cfdf0ebdd521bded397245f18b22b9e17cc467b5e3c51806c",
+      "provides": [],
+      "modules": [
+        {
+          "path": "/lib/modules/6.12.103/fat.ko",
+          "size": 110984,
+          "sha256": "05137f0d98166436b0f433e8f03f8ce1133173745212fdb1609180a5b7214126",
+          "vermagic": "6.12.103 SMP mod_unload "
+        },
+        {
+          "path": "/lib/modules/6.12.103/vfat.ko",
+          "size": 28152,
+          "sha256": "a4b3d346d0a8bb2b859065050d7207991c2eabc38c830d9dfb9fc8cee05b5c18",
+          "vermagic": "6.12.103 SMP mod_unload "
+        }
+      ]
+    },
+    {
       "name": "kmod-lib-crc32c",
       "version": "6.12.103-r1",
       "kind": "modules",
@@ -232,6 +253,46 @@
           "path": "/lib/modules/6.12.103/zstd_decompress.ko",
           "size": 140008,
           "sha256": "2b59dbdff332a4061acb512cedab93d2c19e59e7ede9b13057342973123a2836",
+          "vermagic": "6.12.103 SMP mod_unload "
+        }
+      ]
+    },
+    {
+      "name": "kmod-nls-base",
+      "version": "6.12.103-r1",
+      "kind": "virtual",
+      "sha256": "e7308a06cc77598522a3d01ef9073e9bd0ec9e40239f26cef82f39354d25fe1a",
+      "provides": [
+        "kmod-nls-base-any"
+      ],
+      "modules": []
+    },
+    {
+      "name": "kmod-nls-cp437",
+      "version": "6.12.103-r1",
+      "kind": "modules",
+      "sha256": "230d02e1b04e7d42e903a1eef354f84baa1aeb40472b695d1c76931313077522",
+      "provides": [],
+      "modules": [
+        {
+          "path": "/lib/modules/6.12.103/nls_cp437.ko",
+          "size": 9496,
+          "sha256": "48e3e50556c517b86938cd7449a49351aef9fad197bc91dbbb2f10fc36563d44",
+          "vermagic": "6.12.103 SMP mod_unload "
+        }
+      ]
+    },
+    {
+      "name": "kmod-nls-iso8859-1",
+      "version": "6.12.103-r1",
+      "kind": "modules",
+      "sha256": "985416cab16fa31c5d315c70ad2b4020b0526119e59e6b987f9e4ee3bbc4daf4",
+      "provides": [],
+      "modules": [
+        {
+          "path": "/lib/modules/6.12.103/nls_iso8859-1.ko",
+          "size": 7832,
+          "sha256": "e7e05e676652f20f772c40eec6d0e5831c32eb6c06ee4e656f578f479aae8a3a",
           "vermagic": "6.12.103 SMP mod_unload "
         }
       ]

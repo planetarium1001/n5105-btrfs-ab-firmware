@@ -153,6 +153,22 @@ p1="${mount_target}"
 # The upstream bootloader tree first, then the two slot payloads and the state dirs.
 sudo cp -a "${esp_dir}/." "${p1}/"
 sudo mkdir -p "${p1}/ab/log"
+
+# ab/state.json describes the installed state: both slots on generation 1, slot a
+# committed (see the installation row of docs/lifecycle.md). The boot initramfs reads
+# it before it can mount anything, so the image has to ship it; S4 starts updating it.
+sudo tee "${p1}/ab/state.json" >/dev/null <<STATE
+{
+  "generation": 1,
+  "committed": "a",
+  "pending": null,
+  "slots": {
+    "a": { "rootfs": "${upstream_version}", "upper_gen": 1 },
+    "b": { "rootfs": "${upstream_version}", "upper_gen": 1 }
+  }
+}
+STATE
+sudo chmod 0644 "${p1}/ab/state.json"
 sudo cp "${kernel}" "${p1}/vmlinuz-a"
 sudo cp "${kernel}" "${p1}/vmlinuz-b"
 # S2 installs the probe initramfs in both slots; S3 replaces it with the real one.
@@ -160,7 +176,7 @@ sudo cp "${initramfs}" "${p1}/initrd-a"
 sudo cp "${initramfs}" "${p1}/initrd-b"
 sudo chmod 0644 "${p1}/vmlinuz-a" "${p1}/vmlinuz-b" "${p1}/initrd-a" "${p1}/initrd-b"
 unmount_part "${p1}"
-ci_log "p1 populated: ESP tree, ab/, ab/log/, vmlinuz-a/b, initrd-a/b"
+ci_log "p1 populated: ESP tree, ab/state.json, ab/log/, vmlinuz-a/b, initrd-a/b"
 
 # --------------------------------------------------------------------------- #
 # 3. p2 / p3: the two system slots

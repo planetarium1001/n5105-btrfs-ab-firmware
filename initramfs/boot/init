@@ -1,0 +1,227 @@
+#!/bin/sh
+# S3 boot init: read the slot state, mount the three layers, switch_root.
+#
+# Order matters and is asserted, not assumed:
+#
+#   1. p4  @overlay.genNNNN   rw,compress=zstd:6,discard=async  -> /mnt/p4
+#   2. p2  @wf              ro,noatime                          -> /mnt/@wf
+#   3. p2  @sys             ro,noatime                          -> /mnt/@sys
+#   4. overlay lowerdir=/mnt/@wf:/mnt/@sys upperdir=/mnt/p4/upper workdir=/mnt/p4/work
+#
+# The writable layer is mounted first because `compress=` is only applied by the
+# first mount of a filesystem; mounting a read-only layer first would leave the
+# parameter out of the kernel. The read-only layers are mounted under @-names so the
+# overlay command line literally carries both layer names.
+#
+# Everything asserted here is re-checked from inside the composed root by
+# /s3-post.sh, which switch_root hands control to as the new /init.
+#
+# Kernel command line:
+#   wf.dev=<disk>     disk holding the four partitions   (default /dev/vda)
+#   wf.boot=<n>       test label only, recorded in the probe file (default 1)
+#
+# Judge line, frozen:
+#   S3-RESULT=ok slot=<a|b> gen=<N> lower=<wf:sys> upper=<gen> root=<overlay>
+#   S3-RESULT=fail reason=<token>
+
+set -u
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+DEV=/dev/vda
+BOOT=1
+for arg in $(cat /proc/cmdline); do
+    case "${arg}" in
+        wf.dev=*) DEV="${arg#wf.dev=}" ;;
+        wf.boot=*) BOOT="${arg#wf.boot=}" ;;
+    esac
+done
+
+. /lib/wf.sh
+
+wf_log "S3 layered boot, disk ${DEV}, boot ${BOOT}"
+
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+if [ ! -b "${DEV}" ]; then
+    mdev -s 2>/dev/null
+fi
+mkdir -p /mnt /newroot
+
+KVER="$(uname -r)"
+wf_log "kernel ${KVER}"
+
+# --------------------------------------------------------------------------- #
+# Modules: btrfs for the slots and the writable layer, vfat for the ESP
+# --------------------------------------------------------------------------- #
+
+MODDIR="/lib/modules/${KVER}"
+[ -d "${MODDIR}" ] || wf_fail no-module-directory
+loaded=0
+pass=1
+while [ "${pass}" -le 4 ]; do
+    for ko in "${MODDIR}"/*.ko; do
+        [ -f "${ko}" ] || continue
+        name="$(basename "${ko}" .ko | tr '-' '_')"
+        [ -d "/sys/module/${name}" ] && continue
+        if insmod "${ko}" 2>/dev/null; then
+            loaded=$((loaded + 1))
+        fi
+    done
+    if [ -d /sys/module/btrfs ] && [ -d /sys/module/vfat ]; then
+        break
+    fi
+    pass=$((pass + 1))
+done
+wf_log "loaded ${loaded} module(s)"
+[ -d /sys/module/btrfs ] || wf_fail btrfs-not-loaded
+[ -d /sys/module/vfat ] || wf_fail vfat-not-loaded
+[ -b "${DEV}" ] || wf_fail no-block-device
+
+# --------------------------------------------------------------------------- #
+# Partition discovery: PARTNAME when the kernel exposes it, fixed order otherwise
+# --------------------------------------------------------------------------- #
+
+esp="${DEV}1"
+slot_a="${DEV}2"
+slot_b="${DEV}3"
+shared="${DEV}4"
+discovered=""
+for event in /sys/class/block/"$(basename "${DEV}")"*/uevent; do
+    [ -f "${event}" ] || continue
+    part_name="$(sed -n 's/^PARTNAME=//p' "${event}")"
+    part_number="$(sed -n 's/^PARTN=//p' "${event}")"
+    [ -n "${part_number}" ] || continue
+    case "${part_name}" in
+        wf-esp) esp="${DEV}${part_number}" ;;
+        wf-slot-a) slot_a="${DEV}${part_number}" ;;
+        wf-slot-b) slot_b="${DEV}${part_number}" ;;
+        wf-shared) shared="${DEV}${part_number}" ;;
+        *) continue ;;
+    esac
+    discovered="${discovered} ${part_name}=${DEV}${part_number}"
+done
+if [ -n "${discovered}" ]; then
+    wf_log "partitions by PARTNAME:${discovered}"
+else
+    wf_log "PARTNAME not exposed, using the documented partition order 1/2/3/4"
+fi
+
+# --------------------------------------------------------------------------- #
+# 1. State from the ESP
+# --------------------------------------------------------------------------- #
+
+mkdir -p /esp
+mount -t vfat -o ro "${esp}" /esp || wf_fail esp-mount-failed
+STATE=/esp/ab/state.json
+[ -f "${STATE}" ] || wf_fail state-missing
+
+slot="$(wf_committed "${STATE}")"
+case "${slot}" in
+    a) slot_dev="${slot_a}" ;;
+    b) slot_dev="${slot_b}" ;;
+    *) wf_fail "state-committed-invalid-${slot:-empty}" ;;
+esac
+gen="$(wf_upper_gen "${STATE}" "${slot}")"
+case "${gen}" in
+    "" | *[!0-9]*) wf_fail "state-upper-gen-invalid-${gen:-empty}" ;;
+esac
+gen_name="$(wf_gen_name "${gen}")"
+wf_log "state: committed=${slot} upper_gen=${gen} (${gen_name})"
+
+# --------------------------------------------------------------------------- #
+# 2. Mount order: writable layer first, then the read-only layers
+# --------------------------------------------------------------------------- #
+
+mkdir -p /mnt/p4 /mnt/@wf /mnt/@sys
+mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${gen_name}" "${shared}" /mnt/p4 \
+    || wf_fail p4-mount-failed
+p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
+case "${p4_line}" in
+    *compress=*) : ;;
+    *) wf_fail p4-compress-option-missing ;;
+esac
+wf_log "p4 mounted with compress= (${gen_name})"
+
+mount -o ro,noatime,"subvol=/@wf" "${slot_dev}" /mnt/@wf || wf_fail wf-mount-failed
+mount -o ro,noatime,"subvol=/@sys" "${slot_dev}" /mnt/@sys || wf_fail sys-mount-failed
+
+[ -f /mnt/@wf/etc/wf-release ] || wf_fail wf-layer-empty
+[ -x /mnt/@sys/sbin/init ] || wf_fail sys-layer-empty
+wf_log "read-only layers mounted: @wf, @sys from ${slot_dev}"
+
+# --------------------------------------------------------------------------- #
+# 3. Compose the root
+# --------------------------------------------------------------------------- #
+
+mount -t overlay overlay \
+    -o "lowerdir=/mnt/@wf:/mnt/@sys,upperdir=/mnt/p4/upper,workdir=/mnt/p4/work,index=off" \
+    /newroot || wf_fail overlay-mount-failed
+
+overlay_line="$(awk '$2 == "/newroot" { print }' /proc/mounts)"
+case "${overlay_line}" in
+    *lowerdir=/mnt/@wf:/mnt/@sys*) : ;;
+    *) wf_fail overlay-lowerdir-wrong ;;
+esac
+case "${overlay_line}" in
+    *upperdir=/mnt/p4/upper*) : ;;
+    *) wf_fail overlay-upperdir-wrong ;;
+esac
+case "${overlay_line}" in
+    *workdir=/mnt/p4/work*) : ;;
+    *) wf_fail overlay-workdir-wrong ;;
+esac
+case "${overlay_line}" in
+    *index=off*) : ;;
+    *) wf_fail overlay-index-wrong ;;
+esac
+wf_log "overlay composed at /newroot"
+
+# The platform layer must be visible through the merged view.
+[ -f /newroot/etc/wf-release ] || wf_fail wf-release-not-in-root
+
+# --------------------------------------------------------------------------- #
+# 4. Probe writes: they must land in the generation's upper directory
+# --------------------------------------------------------------------------- #
+
+probe=/.s3-probe
+new_file="/.s3-new-${BOOT}"
+
+if [ "${BOOT}" = "2" ]; then
+    [ -f "/newroot${probe}" ] || wf_fail probe-lost-between-boots
+    case "$(cat "/newroot${probe}")" in
+        *boot=1*) wf_log "first boot probe survived: $(cat "/newroot${probe}")" ;;
+        *) wf_fail probe-content-unexpected ;;
+    esac
+fi
+
+printf 'boot=%s slot=%s gen=%s\n' "${BOOT}" "${slot}" "${gen}" >"/newroot${probe}" \
+    || wf_fail probe-write-failed
+printf 'created on boot %s\n' "${BOOT}" >"/newroot${new_file}" \
+    || wf_fail newfile-write-failed
+
+[ -f "/mnt/p4/upper${probe}" ] || wf_fail probe-not-in-upper
+[ -f "/mnt/p4/upper${new_file}" ] || wf_fail newfile-not-in-upper
+[ ! -e "/mnt/@wf${probe}" ] || wf_fail probe-leaked-to-wf
+[ ! -e "/mnt/@sys${probe}" ] || wf_fail probe-leaked-to-sys
+wf_log "probe writes landed in upper, not in the read-only layers"
+
+# --------------------------------------------------------------------------- #
+# 5. Hand over to the composed root
+# --------------------------------------------------------------------------- #
+
+cp /s3-post.sh /newroot/.s3-post || wf_fail post-script-stage-failed
+chmod 0755 /newroot/.s3-post
+umount /esp || wf_log "warning: could not unmount the ESP"
+
+for fs in proc sys dev; do
+    # `-o move` is understood by both busybox and util-linux.
+    mount -o move "/${fs}" "/newroot/${fs}" || wf_fail "move-${fs}-failed"
+done
+
+wf_log "switching root to the overlay"
+switch_root /newroot /bin/sh /.s3-post "${slot}" "${gen}" "${gen_name}" "${BOOT}"
+
+# switch_root replaces this process on success and only returns on failure.
+wf_fail switch-root-failed

@@ -1,0 +1,217 @@
+name: ci-s3
+
+# Stage S3 - layered boot and generation advance.
+#
+# Replaces the S1 probe initramfs with the real boot initramfs: read the slot state
+# from the ESP, mount the writable generation first, then the two read-only layers,
+# compose the overlay root and switch_root into it. The image produced by S2 is
+# attached as /dev/vda and booted twice without wiping it, so persistence across a
+# reboot is part of the assertion.
+#
+# Boot 1 proves: the overlay root is composed in the documented order, @wf and @sys
+# both contribute files, and probe writes land in <generation>/upper. Boot 2 proves
+# the same root comes back with the first boot's writes still present.
+#
+# Both boots must print the frozen line:
+#
+#     S3-RESULT=ok slot=<a|b> gen=<N> lower=<wf:sys> upper=<gen> root=<overlay>
+#
+# The ESP needs vfat, which the upstream kernel does not build in, so the module
+# closure carries kmod-fs-vfat, kmod-nls-base, kmod-nls-cp437 and
+# kmod-nls-iso8859-1 next to the btrfs set.
+
+on:
+  workflow_call:
+    inputs:
+      upstream_version:
+        description: "Resolved upstream version"
+        required: true
+        type: string
+      upstream_base_url:
+        description: "Release directory URL for the target"
+        required: true
+        type: string
+      kmods_dir:
+        description: "Kernel module directory name on the mirror"
+        required: true
+        type: string
+      kernel_package:
+        description: "Kernel package version from the upstream manifest"
+        required: true
+        type: string
+      platform_version:
+        description: "Platform version recorded in the @wf skeleton"
+        required: false
+        type: string
+        default: "0.0.1"
+    outputs:
+      judge_line:
+        description: "Frozen S3 judge line from the first boot"
+        value: ${{ jobs.s3.outputs.judge_line }}
+      judge_line_boot2:
+        description: "Frozen S3 judge line from the second boot"
+        value: ${{ jobs.s3.outputs.judge_line_boot2 }}
+      slot:
+        description: "Slot the boot chain selected"
+        value: ${{ jobs.s3.outputs.slot }}
+      generation:
+        description: "Writable generation the boot chain mounted"
+        value: ${{ jobs.s3.outputs.generation }}
+      module_count:
+        description: "Modules unpacked into the boot initramfs"
+        value: ${{ jobs.s3.outputs.module_count }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  s3:
+    name: layered boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+      CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
+      CI_KMODS_DIR: ${{ inputs.kmods_dir }}
+      CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
+      CI_PLATFORM_VERSION: ${{ inputs.platform_version }}
+    outputs:
+      judge_line: ${{ steps.boot1.outputs.judge_line }}
+      judge_line_boot2: ${{ steps.boot2.outputs.judge_line }}
+      slot: ${{ steps.judge.outputs.slot }}
+      generation: ${{ steps.judge.outputs.generation }}
+      module_count: ${{ steps.kmods.outputs.module_count }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download upstream artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-files
+          path: ${{ runner.temp }}/ci/fetch
+
+      - name: Install image and QEMU tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf
+          if [ ! -x /bin/busybox ]; then
+            sudo apt-get install -y --no-install-recommends busybox-static \
+              || sudo apt-get install -y --no-install-recommends busybox-initramfs
+          fi
+          mkfs.btrfs --version
+          qemu-system-x86_64 --version | head -n 1
+
+      - name: Unpack the btrfs and vfat module closure
+        id: kmods
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+
+      - name: Prepare the ESP from the upstream bootloader
+        id: esp
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/esp.log"
+
+      - name: Build the boot initramfs
+        id: initramfs
+        env:
+          CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
+          CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+          CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
+          CI_EXTRA_FILES: ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+
+      - name: Assemble the disk image
+        id: disk
+        env:
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
+
+      # Boot 1: compose the root and leave probe files behind.
+      - name: Boot 1 - compose the layered root (gating)
+        id: boot1
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_JUDGE_PREFIX: S3-RESULT
+          CI_QEMU_CASE: s3-boot1
+          CI_QEMU_APPEND_EXTRA: wf.boot=1
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot1.log"
+
+      - name: Read the slot and generation from the judge line
+        id: judge
+        env:
+          JUDGE_LINE: ${{ steps.boot1.outputs.judge_line }}
+        run: |
+          slot="$(printf '%s' "${JUDGE_LINE}" | sed -n 's/.*slot=\([ab]\).*/\1/p')"
+          gen="$(printf '%s' "${JUDGE_LINE}" | sed -n 's/.* gen=\([0-9][0-9]*\).*/\1/p')"
+          echo "slot=${slot:-unknown} generation=${gen:-unknown}"
+          {
+            printf 'slot=%s\n' "${slot}"
+            printf 'generation=%s\n' "${gen}"
+          } >>"${GITHUB_OUTPUT}"
+
+      # Boot 2: same image, nothing wiped. The first boot's probe must still be there.
+      - name: Boot 2 - verify persistence (gating)
+        id: boot2
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_JUDGE_PREFIX: S3-RESULT
+          CI_QEMU_CASE: s3-boot2
+          CI_QEMU_APPEND_EXTRA: wf.boot=2
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot2.log"
+
+      - name: Collect diagnostics
+        if: always()
+        continue-on-error: true
+        env:
+          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}" "${CI_DIAG_DIR}"
+          bash scripts/ci/diagnostics.sh s3 "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-probe
+          path: |
+            ${{ runner.temp }}/ci/qemu/serial-*.log
+            ${{ runner.temp }}/ci/qemu/qemu-*.out
+            ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload logs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-s3
+          path: ${{ runner.temp }}/ci/diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

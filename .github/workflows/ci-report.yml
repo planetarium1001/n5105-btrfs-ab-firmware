@@ -109,6 +109,31 @@ on:
         required: false
         type: string
         default: ""
+      s3_result:
+        description: "Job result of the S3 layered boot"
+        required: false
+        type: string
+        default: ""
+      s3_line:
+        description: "Frozen S3 judge line from the first boot"
+        required: false
+        type: string
+        default: ""
+      s3_line_boot2:
+        description: "Frozen S3 judge line from the second boot"
+        required: false
+        type: string
+        default: ""
+      s3_slot:
+        description: "Slot the boot chain selected"
+        required: false
+        type: string
+        default: ""
+      s3_generation:
+        description: "Writable generation the boot chain mounted"
+        required: false
+        type: string
+        default: ""
       upstream_version:
         description: "Resolved upstream version"
         required: false
@@ -210,6 +235,11 @@ jobs:
       CI_S2_IMAGE_GZ_BYTES: ${{ inputs.s2_image_gz_bytes }}
       CI_S2_ROOTFS_FILES: ${{ inputs.s2_rootfs_files }}
       CI_S2_HOST_CHECKS: ${{ inputs.s2_host_checks }}
+      CI_S3_RESULT: ${{ inputs.s3_result }}
+      CI_S3_LINE: ${{ inputs.s3_line }}
+      CI_S3_LINE_BOOT2: ${{ inputs.s3_line_boot2 }}
+      CI_S3_SLOT: ${{ inputs.s3_slot }}
+      CI_S3_GENERATION: ${{ inputs.s3_generation }}
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_VERSION_SOURCE: ${{ inputs.version_source }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}

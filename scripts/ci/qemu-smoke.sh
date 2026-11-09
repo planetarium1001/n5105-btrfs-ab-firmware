@@ -145,13 +145,37 @@ fi
 
 ci_log "booting (${mode}, tcg, ${mem} MiB, limit ${timeout_s}s)"
 started="$(date +%s)"
+
+# The guest may keep running after printing the judge line (S3 hands control to the
+# upstream init), so watch the serial log and stop the machine as soon as the verdict
+# appears instead of always waiting for the timeout.
 set +e
 timeout "${timeout_s}" qemu-system-x86_64 "${qemu_args[@]}" \
-    >"${qemu_dir}/qemu-${mode}.out" 2>&1
+    >"${qemu_dir}/qemu-${mode}.out" 2>&1 &
+qemu_pid=$!
+stopped_on_judge=0
+deadline=$((started + timeout_s))
+while kill -0 "${qemu_pid}" 2>/dev/null; do
+    if grep -q "^${judge_prefix}=" "${serial}" 2>/dev/null; then
+        stopped_on_judge=1
+        sleep 1
+        kill "${qemu_pid}" 2>/dev/null
+        break
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+        break
+    fi
+    sleep 0.5
+done
+wait "${qemu_pid}" 2>/dev/null
 qemu_rc=$?
 set -e
 boot_seconds=$(( $(date +%s) - started ))
-ci_log "qemu exited with ${qemu_rc} after ${boot_seconds}s (124 means the timeout fired)"
+if [ "${stopped_on_judge}" = "1" ]; then
+    ci_log "qemu stopped on the judge line after ${boot_seconds}s"
+else
+    ci_log "qemu exited with ${qemu_rc} after ${boot_seconds}s (124 means the timeout fired)"
+fi
 
 # --------------------------------------------------------------------------- #
 # Assertion
@@ -166,6 +190,7 @@ ci_emit_output "judge_line" "${judge_line}"
 ci_emit_output "boot_seconds" "${boot_seconds}"
 ci_emit_output "qemu_mode" "${mode}"
 ci_emit_output "judge_prefix" "${judge_prefix}"
+ci_emit_output "stopped_on_judge" "${stopped_on_judge}"
 
 if [ "${count}" != "1" ]; then
     ci_warn "expected exactly one ${judge_prefix} line, found ${count}"

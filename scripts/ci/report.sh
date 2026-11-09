@@ -17,6 +17,7 @@
 #   CI_S1_UEFI_LINE, CI_S1_APK_CROSSCHECK
 #   CI_S2_RESULT, CI_S2_LINE, CI_S2_IMAGE_BYTES, CI_S2_IMAGE_GZ_BYTES,
 #   CI_S2_ROOTFS_FILES, CI_S2_HOST_CHECKS
+#   CI_S3_RESULT, CI_S3_LINE, CI_S3_LINE_BOOT2, CI_S3_SLOT, CI_S3_GENERATION
 
 set -euo pipefail
 
@@ -51,6 +52,7 @@ for result in \
     "${CI_ASSEMBLE_RESULT:-}" \
     "${CI_S1_RESULT:-}" \
     "${CI_S2_RESULT:-}" \
+    "${CI_S3_RESULT:-}" \
     "${CI_VERIFY_RESULT:-}"; do
     case "${result}" in
         failure | cancelled | timed_out) overall="failure" ;;
@@ -100,6 +102,8 @@ fi
         "$(result_cell "${CI_S2_RESULT:-}")" \
         "$(human_bytes "${CI_S2_IMAGE_BYTES:-0}")" "$(human_bytes "${CI_S2_IMAGE_GZ_BYTES:-0}")" \
         "${CI_S2_ROOTFS_FILES:-n/a}" "${CI_S2_HOST_CHECKS:-n/a}"
+    printf '| s3 | %s | slot %s, generation %s, two boots |\n' \
+        "$(result_cell "${CI_S3_RESULT:-}")" "${CI_S3_SLOT:-n/a}" "${CI_S3_GENERATION:-n/a}"
     printf '\n'
     printf 'Payload manifest sha256: `%s`\n' "${CI_PAYLOAD_MANIFEST_SHA256:-not produced}"
     if [ -n "${CI_S1_LINE:-}" ]; then
@@ -111,10 +115,16 @@ fi
     if [ -n "${CI_S2_LINE:-}" ]; then
         printf '\nS2 judge line: `%s`\n' "${CI_S2_LINE}"
     fi
+    if [ -n "${CI_S3_LINE:-}" ]; then
+        printf '\nS3 judge line (boot 1): `%s`\n' "${CI_S3_LINE}"
+    fi
+    if [ -n "${CI_S3_LINE_BOOT2:-}" ]; then
+        printf 'S3 judge line (boot 2): `%s`\n' "${CI_S3_LINE_BOOT2}"
+    fi
     printf '\n'
     printf 'Artifacts: `upstream-files` (fetch), `payload` (assemble), '
     printf '`s1-probe` (serial logs, initramfs, module inventory), '
-    printf '`disk-image` and `s2-probe` (image, serial log, sfdisk dump), '
+    printf '`disk-image`, `s2-probe` and `s3-probe` (image, serial logs, dumps), '
     printf '`diag-<stage>` (logs and inventories from every stage).\n'
 } >"${CI_TMP_ROOT}/report.md"
 
