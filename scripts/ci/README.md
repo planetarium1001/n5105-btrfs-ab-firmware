@@ -12,6 +12,7 @@ reproduced locally with the same inputs the workflow passes.
 | `.github/workflows/ci-fetch.yml` | fetch |
 | `.github/workflows/ci-assemble.yml` | assemble |
 | `.github/workflows/ci-s1.yml` | s1 (module-load probe) |
+| `.github/workflows/ci-s2.yml` | s2 (disk image assembly) |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -33,6 +34,9 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `initramfs.sh` | s1 | build the minimal probe initramfs |
 | `qemu-smoke.sh` | s1 | boot it under QEMU and assert the frozen judge line |
 | `apk-crosscheck.sh` | s1 | optional: compare the closure with what upstream `apk` installs |
+| `esp-prepare.sh` | s2 | take the ESP tree (GRUB) from the upstream combined-EFI image |
+| `disk.sh` | s2 | assemble and compress the four-partition image |
+| `image-verify.sh` | s2 | host-side geometry assertions and the guest expectation file |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
 | `diagnostics.sh` | all | environment facts, disk usage and file inventories for failure triage |
 
@@ -143,3 +147,36 @@ Four of the fourteen closure members (`kmod-crypto-crc32c`, `kmod-crypto-hash`,
 built into the kernel and the package only provides `<name>-any` plus `/etc/modules.d`
 snippets. They are recorded as `kind: virtual` in the lockfile, so the ten real
 packages and sixteen real modules are visible at a glance.
+
+## S2: the four-partition image
+
+`disk.sh` builds a 450 MiB GPT image (1 MiB alignment, 448 MiB of partitions, 1 MiB
+tail for the backup table) with the geometry frozen in `docs/partitions.md`:
+
+| Partition | PARTLABEL | Sectors | Filesystem |
+|---|---|---|---|
+| p1 | `wf-esp` | 262144 (128 MiB) | vfat |
+| p2 | `wf-slot-a` | 262144 (128 MiB) | btrfs `-m dup -d single` |
+| p3 | `wf-slot-b` | 262144 (128 MiB) | btrfs `-m dup -d single` |
+| p4 | `wf-shared` | 131072 (64 MiB) | btrfs `-m single -d single` |
+
+The image is verified twice:
+
+1. `image-verify.sh` inspects the raw image on the host (`sfdisk -J`, mounted
+   subvolume listings, a full `diff -r` of `@sys` against the upstream tree) and
+   writes `s2-expect.txt`, the expectations the guest has to reproduce.
+2. the guest assertion (`tests/modules/image/guest-assert.sh`, run as `/s2.sh` in a
+   second initramfs) reads the same image through the kernel and prints the frozen
+   judge line:
+
+```
+S2-RESULT=ok parts=4 images=<bytes>
+S2-RESULT=fail reason=<token>
+```
+
+Both slots currently carry the S1 probe initramfs as `initrd-a`/`initrd-b` so the ESP
+is complete; S3 replaces them with the real initramfs mount chain. The ESP itself
+comes from the upstream combined-EFI image, which is why the stage needs no GRUB
+build dependency: upstream types that ESP as a plain Linux filesystem, so the
+partition is found by probing for a FAT signature rather than by trusting the GUID.
+

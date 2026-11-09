@@ -79,6 +79,36 @@ on:
         required: false
         type: string
         default: ""
+      s2_result:
+        description: "Job result of the S2 image assembly"
+        required: false
+        type: string
+        default: ""
+      s2_line:
+        description: "Frozen S2 judge line from the gating guest run"
+        required: false
+        type: string
+        default: ""
+      s2_image_bytes:
+        description: "Size of the raw disk image"
+        required: false
+        type: string
+        default: ""
+      s2_image_gz_bytes:
+        description: "Size of the compressed disk image artifact"
+        required: false
+        type: string
+        default: ""
+      s2_rootfs_files:
+        description: "Files in @sys as counted by the host verifier"
+        required: false
+        type: string
+        default: ""
+      s2_host_checks:
+        description: "Number of host-side assertions that passed"
+        required: false
+        type: string
+        default: ""
       upstream_version:
         description: "Resolved upstream version"
         required: false
@@ -174,6 +204,12 @@ jobs:
       CI_S1_BOOT_SECONDS: ${{ inputs.s1_boot_seconds }}
       CI_S1_UEFI_LINE: ${{ inputs.s1_uefi_line }}
       CI_S1_APK_CROSSCHECK: ${{ inputs.s1_apk_crosscheck }}
+      CI_S2_RESULT: ${{ inputs.s2_result }}
+      CI_S2_LINE: ${{ inputs.s2_line }}
+      CI_S2_IMAGE_BYTES: ${{ inputs.s2_image_bytes }}
+      CI_S2_IMAGE_GZ_BYTES: ${{ inputs.s2_image_gz_bytes }}
+      CI_S2_ROOTFS_FILES: ${{ inputs.s2_rootfs_files }}
+      CI_S2_HOST_CHECKS: ${{ inputs.s2_host_checks }}
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_VERSION_SOURCE: ${{ inputs.version_source }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}

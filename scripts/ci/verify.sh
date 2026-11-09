@@ -2,7 +2,8 @@
 # Stage "verify": static checks that do not need any upstream artifact.
 #
 # Checks, in order:
-#   1. `bash -n` on every scripts/ci/*.sh plus `sh -n` on the initramfs scripts
+#   1. `bash -n` on every scripts/ci/*.sh, `sh -n` on the initramfs and guest
+#      assertion scripts (they run in the guest's busybox shell)
 #   2. `shellcheck` on the same files, when the runner provides it
 #   3. `python3 scripts/check_design.py all`, the executable form of the thresholds
 #      and contracts written down in docs/
@@ -37,12 +38,24 @@ if [ "${#script_files[@]}" -eq 0 ]; then
     ci_die "no shell scripts found under ${CI_REPO_ROOT}/scripts/ci"
 fi
 
-# The initramfs runs a POSIX shell, so /init is linted with sh rather than bash.
+# The initramfs and the in-guest assertions run a POSIX shell (busybox ash), so they
+# are linted with sh rather than bash.
 init_scripts=()
 if [ -d "${CI_REPO_ROOT}/initramfs" ]; then
     while IFS= read -r path; do
         init_scripts+=("${path}")
     done < <(find "${CI_REPO_ROOT}/initramfs" -maxdepth 1 -type f ! -name '*.md' | LC_ALL=C sort)
+fi
+# Test scripts under tests/modules/image run in either dialect, so the shebang
+# decides; only that module is linted here, the rest of tests/ is owned elsewhere.
+bash_test_scripts=()
+if [ -d "${CI_REPO_ROOT}/tests/modules/image" ]; then
+    while IFS= read -r path; do
+        case "$(head -n 1 "${path}")" in
+            *bash*) bash_test_scripts+=("${path}") ;;
+            *) init_scripts+=("${path}") ;;
+        esac
+    done < <(find "${CI_REPO_ROOT}/tests/modules/image" -maxdepth 1 -type f -name '*.sh' | LC_ALL=C sort)
 fi
 ci_log "checking ${#script_files[@]} stage script(s) and ${#init_scripts[@]} initramfs script(s)"
 
@@ -51,6 +64,14 @@ ci_log "checking ${#script_files[@]} stage script(s) and ${#init_scripts[@]} ini
 # --------------------------------------------------------------------------- #
 
 for path in "${script_files[@]}"; do
+    if bash -n "${path}"; then
+        ci_log "syntax ok: ${path#"${CI_REPO_ROOT}"/}"
+    else
+        ci_warn "syntax error: ${path}"
+        syntax_status="fail"
+    fi
+done
+for path in ${bash_test_scripts[@]+"${bash_test_scripts[@]}"}; do
     if bash -n "${path}"; then
         ci_log "syntax ok: ${path#"${CI_REPO_ROOT}"/}"
     else
@@ -80,6 +101,10 @@ if ci_have shellcheck; then
         shellcheck_status="fail"
     fi
     if [ "${#init_scripts[@]}" -gt 0 ] && ! shellcheck -s sh --severity=warning "${init_scripts[@]}"; then
+        shellcheck_status="fail"
+    fi
+    if [ "${#bash_test_scripts[@]}" -gt 0 ] \
+        && ! shellcheck -x --severity=warning "${bash_test_scripts[@]}"; then
         shellcheck_status="fail"
     fi
 else

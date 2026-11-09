@@ -12,7 +12,8 @@ name: CI
 # Stage graph (stage=all):
 #
 #   resolve ──┬── fetch ──┬── assemble ──┐
-#             │           └── s1 ────────┤
+#             │           ├── s1 ────────┤
+#             │           └── s2 ────────┤
 #             └── verify ────────────────┴── report
 #
 # Stage selection through workflow_dispatch lets a failed run be resumed where it
@@ -21,6 +22,7 @@ name: CI
 #   stage=fetch     resolve, fetch, report
 #   stage=assemble  resolve, fetch, assemble, report
 #   stage=s1        resolve, fetch, s1, report
+#   stage=s2        resolve, fetch, s2, report
 #   stage=verify    resolve, verify, report
 
 on:
@@ -38,6 +40,7 @@ on:
           - fetch
           - assemble
           - s1
+          - s2
           - verify
         default: all
       upstream_version:
@@ -114,7 +117,23 @@ jobs:
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
 
-  # Stage 5: static checks that need no upstream artifact.
+  # Stage 5: four-partition disk image assembly. Included in `all` so the geometry
+  # keeps being asserted; it is the heaviest stage, so it can be moved to
+  # dispatch-only by dropping the `inputs.stage == 'all'` clause below.
+  s2:
+    name: s2
+    needs: [resolve, fetch]
+    if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's2') }}
+    uses: ./.github/workflows/ci-s2.yml
+    permissions:
+      contents: read
+    with:
+      upstream_version: ${{ needs.resolve.outputs.upstream_version }}
+      upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
+      kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+
+  # Stage 6: static checks that need no upstream artifact.
   verify:
     name: verify
     needs: resolve
@@ -123,10 +142,10 @@ jobs:
     permissions:
       contents: read
 
-  # Stage 6: single verdict, rendered as the run summary.
+  # Stage 7: single verdict, rendered as the run summary.
   report:
     name: report
-    needs: [resolve, fetch, assemble, s1, verify]
+    needs: [resolve, fetch, assemble, s1, s2, verify]
     if: ${{ always() }}
     uses: ./.github/workflows/ci-report.yml
     permissions:
@@ -140,6 +159,7 @@ jobs:
       fetch_result: ${{ needs.fetch.result }}
       assemble_result: ${{ needs.assemble.result }}
       s1_result: ${{ needs.s1.result }}
+      s2_result: ${{ needs.s2.result }}
       verify_result: ${{ needs.verify.result }}
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       version_source: ${{ needs.resolve.outputs.version_source }}
@@ -156,6 +176,11 @@ jobs:
       s1_boot_seconds: ${{ needs.s1.outputs.boot_seconds }}
       s1_uefi_line: ${{ needs.s1.outputs.uefi_line }}
       s1_apk_crosscheck: ${{ needs.s1.outputs.apk_crosscheck }}
+      s2_line: ${{ needs.s2.outputs.judge_line }}
+      s2_image_bytes: ${{ needs.s2.outputs.image_bytes }}
+      s2_image_gz_bytes: ${{ needs.s2.outputs.image_gz_bytes }}
+      s2_rootfs_files: ${{ needs.s2.outputs.rootfs_files }}
+      s2_host_checks: ${{ needs.s2.outputs.host_checks }}
       design_checks_status: ${{ needs.verify.outputs.design_checks_status }}
       design_checks_problems: ${{ needs.verify.outputs.design_checks_problems }}
       shellcheck_status: ${{ needs.verify.outputs.shellcheck_status }}
