@@ -89,9 +89,14 @@ fi
 [ -n "${applets}" ] || ci_die "busybox --list produced no applets"
 applet_count=0
 for applet in ${applets}; do
+    # busybox lists itself on some builds; linking /bin/busybox to /bin/busybox turns
+    # every applet and every #!/bin/sh script into an ELOOP, so never touch it.
+    [ "${applet}" = busybox ] && continue
     ln -sf /bin/busybox "${stage}/bin/${applet}"
     applet_count=$((applet_count + 1))
 done
+[ ! -L "${stage}/bin/busybox" ] || ci_die "/bin/busybox was replaced by an applet symlink"
+"${stage}/bin/busybox" true || ci_die "staged busybox cannot execute"
 
 install -m 0755 "${CI_REPO_ROOT}/initramfs/init" "${stage}/init"
 

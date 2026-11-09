@@ -55,6 +55,12 @@ assert_contains "$verify" "shellcheck" "verify runs shellcheck"
 # ac-6 assemble never fabricates missing members
 assert_contains "$(cat "$CI_SCRIPTS/assemble.sh")" "missing_members" "assemble records missing members"
 
+# the initramfs builder must never overwrite the real busybox with an applet symlink
+assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'applet}" = busybox ] && continue' \
+  "applet loop skips the busybox entry itself"
+assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'was replaced by an applet symlink' \
+  "builder asserts busybox is still a regular file"
+
 # local static verification
 for script in "$CI_SCRIPTS"/*.sh "$root/tests/run.sh"; do
   assert_command_ok "bash -n $(basename "$script")" bash -n "$script"
