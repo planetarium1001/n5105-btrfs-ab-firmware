@@ -25,22 +25,26 @@ done
 # ac-2 reusable workflows live at the top level and all targets resolve
 subdirs=$(find "$WORKFLOWS" -mindepth 1 -type d | wc -l | tr -d ' ')
 assert_eq "$subdirs" "0" "no subdirectories under .github/workflows"
+stages=$(find "$WORKFLOWS" -maxdepth 1 -name 'ci-*.yml' | wc -l | tr -d ' ')
 targets=$(grep -h "uses: \./" "$WORKFLOWS"/*.yml | sed 's/.*uses: \.\///' | sort -u)
-assert_eq "$(printf '%s\n' "$targets" | wc -l | tr -d ' ')" "5" "five reusable workflows are referenced"
+assert_eq "$(printf '%s\n' "$targets" | wc -l | tr -d ' ')" "$stages" "every stage workflow is referenced"
 while read -r target; do
   [[ -z "$target" ]] && continue
   assert_file_exists "$root/$target" "uses target exists: $target"
 done <<<"$targets"
 calls=$(grep -l "^  workflow_call:" "$WORKFLOWS"/ci-*.yml | wc -l | tr -d ' ')
-assert_eq "$calls" "5" "every stage workflow is callable"
+assert_eq "$calls" "$stages" "every stage workflow is callable"
 
 # ac-3 cache key covers upstream version and tool/script digests
 assert_contains "$(cat "$CI_SCRIPTS/lib.sh")" "CI_TOOLS_VERSION" "tool epoch participates in the key"
 assert_contains "$(cat "$CI_SCRIPTS/resolve.sh")" "sha256" "script digests participate in the key"
 
 # ac-4 diagnostics are uploaded even when a stage fails
-always=$(grep -c "if: always()" "$WORKFLOWS"/ci-*.yml | awk -F: '{s+=$2} END {print s}')
-assert_eq "$always" "10" "each of the five stages uploads diagnostics unconditionally"
+for workflow in "$WORKFLOWS"/ci-*.yml; do
+  count=$(grep -c "if: always()" "$workflow")
+  [[ $count -ge 2 ]] && result=ok || result=thin
+  assert_eq "$result" "ok" "$(basename "$workflow") collects and uploads diagnostics unconditionally"
+done
 
 # ac-5 verify stage runs the design checks, syntax check and shellcheck
 verify=$(cat "$CI_SCRIPTS/verify.sh")

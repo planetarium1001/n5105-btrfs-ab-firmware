@@ -13,6 +13,8 @@
 #   CI_CACHE_KEY, CI_CACHE_HIT, CI_FETCH_TOTAL_BYTES
 #   CI_PAYLOAD_MEMBERS, CI_PAYLOAD_TOTAL_BYTES, CI_PAYLOAD_MANIFEST_SHA256
 #   CI_VERIFY_STATUS, CI_DESIGN_CHECKS_STATUS, CI_DESIGN_PROBLEMS, CI_SHELLCHECK_STATUS
+#   CI_S1_RESULT, CI_S1_LINE, CI_S1_MODULES, CI_S1_BOOT_SECONDS,
+#   CI_S1_UEFI_LINE, CI_S1_APK_CROSSCHECK
 
 set -euo pipefail
 
@@ -30,12 +32,12 @@ human_bytes() {
 # result_cell <result>: mark a job result so a skipped stage is visibly different
 # from a successful one.
 result_cell() {
-    local result="${1:-unknown}"
+    local result="${1-}"
     case "${result}" in
         success) printf 'pass' ;;
         skipped) printf 'skipped' ;;
         cancelled) printf 'cancelled' ;;
-        "") printf 'not scheduled' ;;
+        "") printf 'n/a' ;;
         *) printf '%s' "${result}" ;;
     esac
 }
@@ -45,6 +47,7 @@ for result in \
     "${CI_RESOLVE_RESULT:-}" \
     "${CI_FETCH_RESULT:-}" \
     "${CI_ASSEMBLE_RESULT:-}" \
+    "${CI_S1_RESULT:-}" \
     "${CI_VERIFY_RESULT:-}"; do
     case "${result}" in
         failure | cancelled | timed_out) overall="failure" ;;
@@ -87,10 +90,20 @@ fi
     printf '| verify | %s | design checks: %s (%s problem(s)), shellcheck: %s |\n' \
         "$(result_cell "${CI_VERIFY_RESULT:-}")" \
         "${CI_DESIGN_CHECKS_STATUS:-n/a}" "${CI_DESIGN_PROBLEMS:-0}" "${CI_SHELLCHECK_STATUS:-n/a}"
+    printf '| s1 | %s | %s module(s), %ss boot, apk cross-check: %s |\n' \
+        "$(result_cell "${CI_S1_RESULT:-}")" \
+        "${CI_S1_MODULES:-n/a}" "${CI_S1_BOOT_SECONDS:-n/a}" "${CI_S1_APK_CROSSCHECK:-n/a}"
     printf '\n'
     printf 'Payload manifest sha256: `%s`\n' "${CI_PAYLOAD_MANIFEST_SHA256:-not produced}"
+    if [ -n "${CI_S1_LINE:-}" ]; then
+        printf '\nS1 judge line: `%s`\n' "${CI_S1_LINE}"
+    fi
+    if [ -n "${CI_S1_UEFI_LINE:-}" ]; then
+        printf 'OVMF judge line: `%s`\n' "${CI_S1_UEFI_LINE}"
+    fi
     printf '\n'
-    printf 'Artifacts: `upstream-files` (fetch stage), `payload` (assemble stage), '
+    printf 'Artifacts: `upstream-files` (fetch), `payload` (assemble), '
+    printf '`s1-probe` (serial logs, initramfs, module inventory), '
     printf '`diag-<stage>` (logs and inventories from every stage).\n'
 } >"${CI_TMP_ROOT}/report.md"
 

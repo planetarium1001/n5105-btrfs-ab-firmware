@@ -1,0 +1,119 @@
+#!/bin/sh
+# /init for the S1 module-load probe.
+#
+# Purpose: prove that the official upstream kernel can load the official
+# kmod-fs-btrfs module set and mount a btrfs filesystem, using nothing but this
+# initramfs (busybox-static + the extracted modules).
+#
+# Frozen contract - exactly one of these lines is printed, then the machine powers off:
+#
+#     S1-RESULT=ok kernel=<vermagic> modules=<n> btrfs=mounted
+#     S1-RESULT=fail reason=<token>
+#
+# Everything else on the console is diagnostics. Downstream jobs match the
+# S1-RESULT line only; do not change its shape without versioning it.
+#
+# Kernel command line parameters:
+#     wf.dev=<block device holding the btrfs test image>   (default /dev/vda)
+#     wf.mark=<marker file expected inside the image>      (default /S1-IMAGE-MARKER)
+#     wf.case=<label echoed into the log>                  (default s1)
+
+set -u
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+DEV=/dev/vda
+MARK=/S1-IMAGE-MARKER
+CASE=s1
+for arg in $(cat /proc/cmdline); do
+    case "${arg}" in
+        wf.dev=*) DEV="${arg#wf.dev=}" ;;
+        wf.mark=*) MARK="${arg#wf.mark=}" ;;
+        wf.case=*) CASE="${arg#wf.case=}" ;;
+    esac
+done
+
+report_failure() {
+    echo "S1-RESULT=fail reason=$1"
+    sync
+    poweroff -f
+    exit 1
+}
+
+# Read the vermagic that the module itself carries, so the reported value is real
+# evidence from the payload and not a value passed in from outside.
+read_vermagic() {
+    # Surrounding whitespace is trimmed so the judge line stays space delimited.
+    tr -c '[:print:]' '\n' <"$1" | grep '^vermagic=' | head -n 1 | sed 's/^vermagic=//; s/[[:space:]]*$//'
+}
+
+echo "[init] S1 module-load probe, case=${CASE}"
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+KVER="$(uname -r)"
+echo "[init] running kernel: ${KVER}"
+echo "[init] kernel release: $(cat /proc/sys/kernel/osrelease 2>/dev/null)"
+
+MODDIR="/lib/modules/${KVER}"
+[ -d "${MODDIR}" ] || report_failure no-module-directory
+BTRFS_KO="${MODDIR}/btrfs.ko"
+[ -f "${BTRFS_KO}" ] || report_failure no-btrfs-module
+
+VERMAGIC="$(read_vermagic "${BTRFS_KO}")"
+echo "[init] btrfs.ko vermagic: '${VERMAGIC}'"
+[ -n "${VERMAGIC}" ] || report_failure no-vermagic
+case "${VERMAGIC}" in
+    "${KVER}"*) : ;;
+    *) report_failure kernel-mismatch ;;
+esac
+
+# Load every module we shipped. Dependencies are not declared in the initramfs and
+# there is no modules.dep, so the passes retry until the set stops making progress;
+# btrfs needs several of them (crc32c, zstd, lzo, xor, raid6, xxhash, blake2b).
+LOADED=0
+pass=1
+while [ "${pass}" -le 4 ]; do
+    for ko in "${MODDIR}"/*.ko; do
+        [ -f "${ko}" ] || continue
+        name="$(basename "${ko}" .ko | tr '-' '_')"
+        [ -d "/sys/module/${name}" ] && continue
+        if insmod "${ko}" 2>/dev/null; then
+            LOADED=$((LOADED + 1))
+            echo "[init] loaded ${name} (pass ${pass})"
+        fi
+    done
+    if [ -d /sys/module/btrfs ]; then
+        break
+    fi
+    pass=$((pass + 1))
+done
+
+echo "[init] modules loaded by init: ${LOADED}"
+[ -d /sys/module/btrfs ] || report_failure btrfs-not-loaded
+
+echo "[init] /proc/modules contains $(wc -l </proc/modules) entries"
+echo "[init] device ${DEV}:"
+ls -l "${DEV}" 2>&1 | sed 's/^/[init]   /'
+
+mkdir -p /mnt
+if ! mount -t btrfs "${DEV}" /mnt; then
+    echo "[init] mount failed; kernel log follows"
+    dmesg | tail -n 40 | sed 's/^/[init]   /'
+    report_failure mount-failed
+fi
+echo "[init] mounted ${DEV} on /mnt"
+
+if [ ! -f "/mnt${MARK}" ]; then
+    echo "[init] marker ${MARK} missing; image content:"
+    ls -la /mnt | sed 's/^/[init]   /'
+    report_failure marker-missing
+fi
+echo "[init] marker ${MARK} found:"
+cat "/mnt${MARK}" 2>/dev/null | sed 's/^/[init]   /'
+
+echo "S1-RESULT=ok kernel=${VERMAGIC} modules=${LOADED} btrfs=mounted"
+sync
+poweroff -f
+exit 0

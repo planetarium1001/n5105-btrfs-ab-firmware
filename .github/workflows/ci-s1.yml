@@ -1,0 +1,188 @@
+name: ci-s1
+
+# Stage S1 - upstream-consumption spike.
+#
+# Question this stage answers: can the official upstream kernel load the official
+# kmod-fs-btrfs module set inside our own initramfs and mount btrfs? If yes, the
+# upstream-consumption route (no kernel build) is viable, and every later stage can
+# build on a proven module set.
+#
+# Chain: unpack the module closure -> build a minimal initramfs -> boot it in QEMU
+# with a 64 MiB btrfs test image -> assert the frozen judge line printed by
+# initramfs/init:
+#
+#     S1-RESULT=ok kernel=<vermagic> modules=<n> btrfs=mounted
+#
+# The QEMU run uses TCG because hosted runners do not guarantee /dev/kvm. A second
+# boot through OVMF is recorded for evidence but does not gate the stage.
+
+on:
+  workflow_call:
+    inputs:
+      upstream_version:
+        description: "Resolved upstream version"
+        required: true
+        type: string
+      upstream_base_url:
+        description: "Release directory URL for the target"
+        required: true
+        type: string
+      kmods_dir:
+        description: "Kernel module directory name on the mirror"
+        required: true
+        type: string
+      kernel_package:
+        description: "Kernel package version from the upstream manifest"
+        required: true
+        type: string
+    outputs:
+      judge_line:
+        description: "Frozen S1 judge line from the gating kernel-mode boot"
+        value: ${{ jobs.s1.outputs.judge_line }}
+      module_count:
+        description: "Number of modules unpacked from the closure"
+        value: ${{ jobs.s1.outputs.module_count }}
+      boot_seconds:
+        description: "Wall-clock seconds of the gating boot"
+        value: ${{ jobs.s1.outputs.boot_seconds }}
+      uefi_line:
+        description: "Judge line from the informational OVMF boot"
+        value: ${{ jobs.s1.outputs.uefi_line }}
+      apk_crosscheck:
+        description: "Result of the apk-based cross-check: ok, differ or error"
+        value: ${{ jobs.s1.outputs.apk_crosscheck }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  s1:
+    name: module-load probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+      CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
+      CI_KMODS_DIR: ${{ inputs.kmods_dir }}
+      CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
+    outputs:
+      judge_line: ${{ steps.probe.outputs.judge_line }}
+      module_count: ${{ steps.kmods.outputs.module_count }}
+      boot_seconds: ${{ steps.probe.outputs.boot_seconds }}
+      uefi_line: ${{ steps.probe_uefi.outputs.judge_line }}
+      apk_crosscheck: ${{ steps.apk_crosscheck.outputs.verdict }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download upstream artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-files
+          path: ${{ runner.temp }}/ci/fetch
+
+      - name: Install QEMU, btrfs-progs and busybox
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 ovmf btrfs-progs cpio kmod
+          # A static busybox keeps the probe initramfs free of a libc. The dynamic
+          # variant is still acceptable: the initramfs stage copies whatever ldd
+          # reports, so either package produces a bootable image.
+          if [ ! -x /bin/busybox ]; then
+            sudo apt-get install -y --no-install-recommends busybox-static \
+              || sudo apt-get install -y --no-install-recommends busybox-initramfs
+          fi
+          qemu-system-x86_64 --version | head -n 1
+          /bin/busybox 2>&1 | head -n 1
+          mkfs.btrfs --version
+          (ldd /bin/busybox 2>&1 || true) | head -n 3
+
+      - name: Unpack and verify the btrfs module closure
+        id: kmods
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+
+      - name: Build the probe initramfs
+        id: initramfs
+        env:
+          CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+
+      - name: Boot the kernel and mount btrfs (gating)
+        id: probe
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+          CI_QEMU_MODE: kernel
+          CI_QEMU_TIMEOUT: "900"
+          CI_S1_CASE: s1-kernel
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu.log"
+
+      - name: Boot through OVMF (informational)
+        id: probe_uefi
+        if: always()
+        continue-on-error: true
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+          CI_QEMU_MODE: uefi
+          CI_QEMU_TIMEOUT: "900"
+          CI_S1_CASE: s1-uefi
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-uefi.log"
+
+      - name: Cross-check the closure with the upstream apk (informational)
+        id: apk_crosscheck
+        if: always()
+        continue-on-error: true
+        env:
+          CI_REFERENCE_ROOT: ${{ runner.temp }}/ci/rootfs
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/apk-crosscheck.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/apk-crosscheck.log"
+
+      - name: Collect diagnostics
+        if: always()
+        continue-on-error: true
+        env:
+          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}" "${CI_DIAG_DIR}"
+          bash scripts/ci/diagnostics.sh s1 "${CI_KMODS_OUT}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-probe
+          path: |
+            ${{ runner.temp }}/ci/qemu/serial-*.log
+            ${{ runner.temp }}/ci/qemu/mkfs.log
+            ${{ runner.temp }}/ci/kmods/inventory.json
+            ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload logs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-s1
+          path: ${{ runner.temp }}/ci/diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

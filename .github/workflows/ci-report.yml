@@ -49,6 +49,36 @@ on:
         required: false
         type: string
         default: ""
+      s1_result:
+        description: "Job result of the S1 module-load probe"
+        required: false
+        type: string
+        default: ""
+      s1_line:
+        description: "Frozen S1 judge line printed by the gated boot"
+        required: false
+        type: string
+        default: ""
+      s1_modules:
+        description: "Number of modules loaded by the probe"
+        required: false
+        type: string
+        default: ""
+      s1_boot_seconds:
+        description: "Wall-clock seconds of the gated boot"
+        required: false
+        type: string
+        default: ""
+      s1_uefi_line:
+        description: "Judge line from the informational OVMF boot"
+        required: false
+        type: string
+        default: ""
+      s1_apk_crosscheck:
+        description: "Result of the apk-based closure cross-check"
+        required: false
+        type: string
+        default: ""
       upstream_version:
         description: "Resolved upstream version"
         required: false
@@ -138,6 +168,12 @@ jobs:
       CI_FETCH_RESULT: ${{ inputs.fetch_result }}
       CI_ASSEMBLE_RESULT: ${{ inputs.assemble_result }}
       CI_VERIFY_RESULT: ${{ inputs.verify_result }}
+      CI_S1_RESULT: ${{ inputs.s1_result }}
+      CI_S1_LINE: ${{ inputs.s1_line }}
+      CI_S1_MODULES: ${{ inputs.s1_modules }}
+      CI_S1_BOOT_SECONDS: ${{ inputs.s1_boot_seconds }}
+      CI_S1_UEFI_LINE: ${{ inputs.s1_uefi_line }}
+      CI_S1_APK_CROSSCHECK: ${{ inputs.s1_apk_crosscheck }}
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_VERSION_SOURCE: ${{ inputs.version_source }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
