@@ -247,9 +247,13 @@ populate_slot() {
     # The platform layer is the source tree under platform/, mirrored onto the final
     # filesystem paths: /usr/sbin/ab-slot, /etc/init.d/ab-boot, /etc/init.d/ab-commit.
     sudo tar -xpf "${platform_tar}" -C "${mnt}/@platform"
-    sudo chmod 0755 "${mnt}/@platform/usr/sbin/ab-slot" \
-        "${mnt}/@platform/etc/init.d/ab-boot" \
-        "${mnt}/@platform/etc/init.d/ab-commit"
+    # Executability follows the directory convention rather than a list of names, so a
+    # new tool under usr/sbin is runnable without touching this script.
+    sudo find "${mnt}/@platform" -type f -exec chmod 0644 {} +
+    for _dir in usr/sbin etc/init.d lib/upgrade; do
+        [ -d "${mnt}/@platform/${_dir}" ] || continue
+        sudo find "${mnt}/@platform/${_dir}" -type f -exec chmod 0755 {} +
+    done
     # The init.d hooks need start links so rcS picks them up. The source tree only holds
     # the scripts, so the link directory is created here.
     sudo mkdir -p "${mnt}/@platform/etc/rc.d"
