@@ -71,10 +71,6 @@ jobs:
     permissions:
       contents: read
     env:
-      CI_TMP_ROOT: ${{ runner.temp }}/ci
-      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
-      CI_WORK_DIR: ${{ runner.temp }}/ci/resolve
-      CI_OUTPUT_ENV: ${{ runner.temp }}/ci/resolve/resolve.env
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
     outputs:
       upstream_version: ${{ steps.resolve.outputs.upstream_version }}

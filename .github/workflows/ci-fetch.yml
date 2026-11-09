@@ -88,9 +88,6 @@ jobs:
     permissions:
       contents: read
     env:
-      CI_TMP_ROOT: ${{ runner.temp }}/ci
-      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
-      CI_FETCH_DIR: ${{ runner.temp }}/ci/fetch
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
       CI_KMODS_DIR: ${{ inputs.kmods_dir }}

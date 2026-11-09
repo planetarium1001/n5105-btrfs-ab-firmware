@@ -48,10 +48,6 @@ jobs:
     permissions:
       contents: read
     env:
-      CI_TMP_ROOT: ${{ runner.temp }}/ci
-      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
-      CI_FETCH_DIR: ${{ runner.temp }}/ci/fetch
-      CI_ASSEMBLE_DIR: ${{ runner.temp }}/ci/assemble
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
     outputs:

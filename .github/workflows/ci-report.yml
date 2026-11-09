@@ -130,8 +130,6 @@ jobs:
     permissions:
       contents: read
     env:
-      CI_TMP_ROOT: ${{ runner.temp }}/ci
-      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
       CI_REQUESTED_STAGE: ${{ inputs.stage }}
       CI_TRIGGER: ${{ inputs.trigger }}
       CI_REF: ${{ inputs.ref }}

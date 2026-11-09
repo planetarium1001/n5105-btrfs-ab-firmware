@@ -37,9 +37,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-    env:
-      CI_TMP_ROOT: ${{ runner.temp }}/ci
-      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
     outputs:
       verify_status: ${{ steps.verify.outputs.verify_status }}
       design_checks_status: ${{ steps.verify.outputs.design_checks_status }}
