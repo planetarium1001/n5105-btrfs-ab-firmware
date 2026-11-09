@@ -56,6 +56,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Stages run in dependency order; every job is a reusable workflow call so the
+  # stage logic stays in scripts/ci and can be reproduced locally.
   # Stage 1: resolve the upstream release and derive the cache key.
   resolve:
     name: resolve
