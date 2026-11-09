@@ -15,6 +15,7 @@ reproduced locally with the same inputs the workflow passes.
 | `.github/workflows/ci-s2.yml` | s2 (disk image assembly) |
 | `.github/workflows/ci-s3.yml` | s3 (layered boot) |
 | `.github/workflows/ci-s4.yml` | s4 (slot state machine, three boots) |
+| `.github/workflows/ci-s5.yml` | s5 (upgrade payload, reclamation, degraded boot) |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -42,6 +43,8 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `grub-render.sh` | s2/s4 | render `boot/grub/grub.cfg` and assert the five GRUB rules |
 | `ab-fixtures.sh` | s4 | shape the test image between boots (network, broken slot, pending) |
 | `ab-phase.sh` | s4 | read the ESP back after a boot and print the frozen S4 judge line |
+| `payload-build.sh` | s5 | build the test upgrade payload (rootfs, kernel, initramfs, platform layer, manifest) |
+| `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
 | `diagnostics.sh` | all | environment facts, disk usage and file inventories for failure triage |
 
@@ -297,4 +300,68 @@ the ESP back and prints the frozen line:
 S4-RESULT=ok phase=<commit|abandon> slot=<a|b>
 S4-RESULT=fail reason=<token>
 ```
+
+## S5: the upgrade payload and reclamation
+
+`platform/lib/upgrade/platform.sh` implements the upstream upgrade convention for this
+platform, and `platform/usr/sbin/ab-upgrade` is the user facing entry point.
+
+| Step | What it does | What it refuses |
+|---|---|---|
+| `platform_upgrade_begin <payload> <slot>` | checks the target is the inactive slot, the writable layer is healthy and has 5% free | `target-is-running-slot`, `writable-layer-degraded`, `low-space-<n>pct` |
+| `platform_copy_rootfs <payload> <slot>` | snapshots the running layer to `@overlay-<new version>` (or `-r<N>`), recreates the slot's `@sys` from the payload rootfs, replaces its `@platform`, copies kernel and initramfs onto the ESP | `snapshot-failed`, `rootfs-extract-failed`, `extracted-rootfs-has-no-init` |
+| `platform_upgrade_end <slot> <version> <layer>` | records the layer and version through `ab-slot layer`, then marks the slot with `ab-slot pending` | `state-layer-write-failed` |
+
+A failed copy deletes the new `@sys` and reaps the snapshot, so the target slot is left
+exactly as it was. The state file is never written by this code: every mutation goes
+through `ab-slot`.
+
+`ab-upgrade <payload.tar>` validates in the documented order — manifest shape, member
+digests, the btrfs module's vermagic against the payload kernel, free space, then the
+conflict report — and only then touches the slot. Refusals exit **74** (the status the
+update tooling treats as "refuse to write"); execution failures exit 1.
+
+### Conflicts
+
+`/etc` files that the payload changes *and* the user changed in the writable layer are
+reported into `ab/conflicts.log` (with the documented 32 KiB truncation and
+`TRUNCATED=1` marker) and never block the update. `/etc/config` is excluded: uci has
+its own grammar, and the payload's uci changes arrive as idempotent
+`/etc/uci-defaults/` scripts, which are counted and reported instead. `ab-slot
+conflicts` reads the report back.
+
+### Reclamation and the log ring
+
+`ab-slot gc` keeps the layers referenced by both slots and by `pending`, never deletes
+a mounted layer, deletes with `btrfs subvolume delete -C` followed by a sync, and never
+balances. It runs after a successful upgrade and again early in `ab-boot` (best
+effort: a failure is logged and the boot continues). Log files keep the documented
+budget: `boot-0/1/2.log` rotate on every boot, `upgrade.log` and `conflicts.log` are
+overwritten by the next update, and every writer truncates at 32 KiB with
+`TRUNCATED=1`.
+
+### Degraded boot
+
+When the writable partition cannot be mounted the boot initramfs composes the root with
+a tmpfs upper instead of failing: the system comes up read-only in practice, the serial
+log carries `action=degraded-boot p4=degraded`, `ab-slot status` reports `p4=degraded`,
+and `ab-upgrade` refuses to run.
+
+### Four boots
+
+| Boot | Setup | Expected |
+|---|---|---|
+| 1 | fresh image | `p4=ok`, probes pass, `committed=a` |
+| 2 | payload in the writable layer, `/etc/rc.local` runs `ab-upgrade` | slot b gets the new layer and version, `pending=b`, conflicts reported |
+| 3 | `ab.slot=b` | probes pass, `committed=b`, the orphan layer is reclaimed, only referenced layers remain |
+| 4 | writable partition destroyed | degraded boot, userspace still reached |
+
+```
+S5-RESULT=ok upgrade=<slot> conflicts=<n> reclaimed=<n>
+S5-RESULT=fail reason=<token>
+```
+
+Boots 1, 2 and 4 are graded on the host as well; they print
+`S5-EVIDENCE=ok phase=<upgrade|degraded> ...` so the frozen judge line keeps its shape
+and is only emitted once, after the commit boot has actually reclaimed.
 

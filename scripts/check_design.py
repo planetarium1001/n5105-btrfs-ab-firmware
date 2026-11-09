@@ -238,7 +238,7 @@ def check_payload_contract(problems: Problems) -> None:
         "rootfs.tar.gz",
         "kernel.bin",
         "initramfs.cpio.gz",
-        "wf.tar",
+        "platform.tar",
         "manifest.json",
         "kmod-fs-btrfs",
         "20 MiB",

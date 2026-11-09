@@ -31,6 +31,8 @@
 #   rollback               commit the other slot
 #   gc [--dry-run]         reap writable layers that nothing references
 #   rootfs [slot]          print the upstream version that slot carries
+#   layer <slot> <ver> <layer>  record a new version and layer for one slot
+#   conflicts              print the conflict report of the last upgrade
 #   log [--prev|--upgrade] print the ESP ring log
 #
 # Environment:
@@ -61,7 +63,7 @@ die() {
 }
 
 usage() {
-    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|gc [--dry-run]|rootfs [slot]|log [--prev|--upgrade]"
+    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]"
     exit 2
 }
 
@@ -147,7 +149,8 @@ lock_state() {
     trap 'rmdir "${LOCKDIR}" 2>/dev/null' EXIT INT TERM
 }
 
-# write_state <generation> <committed> <pending|none>
+# write_state <generation> <committed> <pending|none> [<slot> <rootfs> <upper>]
+# The optional triple replaces one slot's recorded version and layer.
 write_state() {
     _gen="$1"
     _committed="$2"
@@ -156,6 +159,13 @@ write_state() {
     _rootfs_b="$(state_rootfs b)" || die "state has no rootfs for slot b"
     _upper_a="$(state_upper a)" || die "state has no layer for slot a"
     _upper_b="$(state_upper b)" || die "state has no layer for slot b"
+    if [ "$#" -ge 6 ]; then
+        case "$4" in
+            a) _rootfs_a="$5"; _upper_a="$6" ;;
+            b) _rootfs_b="$5"; _upper_b="$6" ;;
+            *) die "invalid slot override: $4" ;;
+        esac
+    fi
 
     _tmp="${STATE}.tmp.$$"
     {
@@ -341,6 +351,40 @@ cmd_gc() {
     done
 }
 
+# cmd_layer <slot> <rootfs> <upper>: record a new version and layer for one slot and
+# bump the generation, which only orders layers; it never names them.
+cmd_layer() {
+    require_state
+    [ "$#" -ge 3 ] || die "layer needs <slot> <rootfs> <upper>"
+    _slot="$1"
+    _rootfs="$2"
+    _upper="$3"
+    case "${_slot}" in
+        a | b) : ;;
+        *) die "invalid slot: ${_slot}" ;;
+    esac
+    case "${_upper}" in
+        @overlay-?*) : ;;
+        *) die "layer name must start with @overlay-: ${_upper}" ;;
+    esac
+    lock_state
+    _generation="$(state_generation)" || die "state has no generation"
+    _committed="$(state_committed)" || die "state has no committed slot"
+    _pending="$(state_pending)" || die "state has no pending field"
+    write_state "$((_generation + 1))" "${_committed}" "${_pending}" "${_slot}" "${_rootfs}" "${_upper}"
+    say "ab-slot: slot ${_slot} now carries ${_rootfs} on ${_upper} (generation $((_generation + 1)))"
+}
+
+# cmd_conflicts: print the conflict report of the last upgrade.
+cmd_conflicts() {
+    _report="${LOGDIR}/conflicts.log"
+    [ -f "${_report}" ] || {
+        say "ab-slot: no ${_report}"
+        exit 1
+    }
+    cat "${_report}"
+}
+
 # cmd_rootfs [slot]: the upstream version a slot carries.
 cmd_rootfs() {
     _slot="${1:-}"
@@ -383,6 +427,8 @@ main() {
         rollback) cmd_rollback "$@" ;;
         gc) cmd_gc "$@" ;;
         rootfs) require_state; cmd_rootfs "$@" ;;
+        layer) cmd_layer "$@" ;;
+        conflicts) require_state; cmd_conflicts "$@" ;;
         log) cmd_log "$@" ;;
         -h | --help | help) usage ;;
         *) say "ab-slot: unknown command ${_cmd}"; usage ;;

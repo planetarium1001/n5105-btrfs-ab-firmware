@@ -158,14 +158,24 @@ wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
 # --------------------------------------------------------------------------- #
 
 mkdir -p /mnt/p4 /mnt/@platform /mnt/@sys
-mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${shared}" /mnt/p4 \
-    || wf_fail p4-mount-failed
-p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
-case "${p4_line}" in
-    *compress=*) : ;;
-    *) wf_fail p4-compress-option-missing ;;
-esac
-wf_log "p4 mounted with compress= (${upper})"
+degraded=0
+if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${shared}" /mnt/p4; then
+    p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
+    case "${p4_line}" in
+        *compress=*) : ;;
+        *) wf_fail p4-compress-option-missing ;;
+    esac
+    wf_log "p4 mounted with compress= (${upper})"
+else
+    # A broken writable partition must not stop the boot: the system still works,
+    # it just cannot persist anything. The upper moves to tmpfs and the boot is
+    # reported as degraded.
+    degraded=1
+    wf_log "p4 unavailable, booting degraded with a tmpfs upper"
+    printf '[boot] action=degraded-boot p4=degraded\n'
+    mount -t tmpfs -o mode=0755 tmpfs /mnt/p4 || wf_fail degraded-tmpfs-failed
+fi
+mkdir -p /mnt/p4/upper /mnt/p4/work
 
 mount -o ro,noatime,"subvol=/@platform" "${slot_dev}" /mnt/@platform || wf_fail platform-mount-failed
 mount -o ro,noatime,"subvol=/@sys" "${slot_dev}" /mnt/@sys || wf_fail sys-mount-failed
@@ -226,6 +236,10 @@ printf 'boot=%s slot=%s upper=%s\n' "${BOOT}" "${slot}" "${upper}" >"/newroot${p
     || wf_fail probe-write-failed
 printf 'created on boot %s\n' "${BOOT}" >"/newroot${new_file}" \
     || wf_fail newfile-write-failed
+
+if [ "${degraded}" = "1" ]; then
+    wf_log "degraded boot: probe writes land in tmpfs and disappear on reboot"
+fi
 
 [ -f "/mnt/p4/upper${probe}" ] || wf_fail probe-not-in-upper
 [ -f "/mnt/p4/upper${new_file}" ] || wf_fail newfile-not-in-upper

@@ -130,16 +130,35 @@ start() {
 	pending="$(field pending)"
 	committed="$(field committed)"
 	generation="$(field generation)"
+	p4="$(field p4)"
 	rootfs="$(ab-slot rootfs "${slot}" 2>/dev/null)"
 
 	log_append "stage=boot slot=${slot:-?} upper=${upper:-?} rootfs=${rootfs:-?} result=ok"
+	console_say "ab-boot: running slot ${slot:-?} (${upper:-?}), generation ${generation:-?}, committed ${committed:-?}, p4=${p4:-?}"
+
+	if [ "${p4}" = "degraded" ]; then
+		log_append "stage=boot slot=${slot:-?} upper=${upper:-?} rootfs=${rootfs:-?} result=fail reason=p4-degraded action=degraded-boot"
+		console_say "ab-boot: p4=degraded, writes will not survive a reboot"
+	fi
 
 	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
 		printf '%s %s\n' "${slot}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${AB_ESP}/ab/candidate"
 		sync
 		log_append "stage=boot slot=${slot} upper=${upper} rootfs=${rootfs:-?} result=ok candidate=1"
-		echo "ab-boot: slot ${slot} is the pending slot, marking a candidate first boot"
+		console_say "ab-boot: slot ${slot} is the pending slot, marking a candidate first boot"
 	fi
 
-	echo "ab-boot: running slot ${slot:-?} (${upper:-?}), generation ${generation:-?}, committed ${committed:-?}"
+	# Reclaim unreachable layers early in the boot. It must never block the boot, so
+	# every outcome is logged and the return status is ignored.
+	if [ "${p4}" = "ok" ]; then
+		if ab-slot gc >/tmp/ab-boot-gc.log 2>&1; then
+			reclaimed="$(grep -c 'ab-slot: deleting' /tmp/ab-boot-gc.log 2>/dev/null)"
+			[ -n "${reclaimed}" ] || reclaimed=0
+			log_append "stage=gc slot=${slot:-?} result=ok reclaimed=${reclaimed}"
+			console_say "ab-boot: early reclamation removed ${reclaimed} layer(s)"
+		else
+			log_append "stage=gc slot=${slot:-?} result=fail reason=gc-failed"
+			console_say "ab-boot: early reclamation reported problems"
+		fi
+	fi
 }

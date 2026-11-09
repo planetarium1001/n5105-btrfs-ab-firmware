@@ -20,6 +20,8 @@
 #   CI_S3_RESULT, CI_S3_LINE, CI_S3_LINE_BOOT2, CI_S3_SLOT, CI_S3_UPPER
 #   CI_S4_RESULT, CI_S4_LINE_COMMIT_A, CI_S4_LINE_ABANDON_B, CI_S4_LINE_COMMIT_B,
 #   CI_S4_COMMITTED_FINAL
+#   CI_S5_RESULT, CI_S5_LINE, CI_S5_UPGRADE_LINE, CI_S5_DEGRADED_LINE,
+#   CI_S5_CONFLICTS, CI_S5_RECLAIMED
 
 set -euo pipefail
 
@@ -56,6 +58,7 @@ for result in \
     "${CI_S2_RESULT:-}" \
     "${CI_S3_RESULT:-}" \
     "${CI_S4_RESULT:-}" \
+    "${CI_S5_RESULT:-}" \
     "${CI_VERIFY_RESULT:-}"; do
     case "${result}" in
         failure | cancelled | timed_out) overall="failure" ;;
@@ -109,6 +112,8 @@ fi
         "$(result_cell "${CI_S3_RESULT:-}")" "${CI_S3_SLOT:-n/a}" "${CI_S3_UPPER:-n/a}"
     printf '| s4 | %s | three boots, committed %s at the end |\n' \
         "$(result_cell "${CI_S4_RESULT:-}")" "${CI_S4_COMMITTED_FINAL:-n/a}"
+    printf '| s5 | %s | %s conflict(s), %s layer(s) reclaimed, degraded boot checked |\n' \
+        "$(result_cell "${CI_S5_RESULT:-}")" "${CI_S5_CONFLICTS:-n/a}" "${CI_S5_RECLAIMED:-n/a}"
     printf '\n'
     printf 'Payload manifest sha256: `%s`\n' "${CI_PAYLOAD_MANIFEST_SHA256:-not produced}"
     if [ -n "${CI_S1_LINE:-}" ]; then
@@ -135,10 +140,19 @@ fi
     if [ -n "${CI_S4_LINE_COMMIT_B:-}" ]; then
         printf 'S4 judge line (boot 3): `%s`\n' "${CI_S4_LINE_COMMIT_B}"
     fi
+    if [ -n "${CI_S5_UPGRADE_LINE:-}" ]; then
+        printf '\nS5 evidence (upgrade boot): `%s`\n' "${CI_S5_UPGRADE_LINE}"
+    fi
+    if [ -n "${CI_S5_LINE:-}" ]; then
+        printf 'S5 judge line (commit boot): `%s`\n' "${CI_S5_LINE}"
+    fi
+    if [ -n "${CI_S5_DEGRADED_LINE:-}" ]; then
+        printf 'S5 evidence (degraded boot): `%s`\n' "${CI_S5_DEGRADED_LINE}"
+    fi
     printf '\n'
     printf 'Artifacts: `upstream-files` (fetch), `payload` (assemble), '
     printf '`s1-probe` (serial logs, initramfs, module inventory), '
-    printf '`disk-image`, `s2-probe`, `s3-probe` and `s4-probe` (image, serial logs, dumps), '
+    printf '`disk-image` and `s1..s5-probe` (image, serial logs, payload, dumps), '
     printf '`diag-<stage>` (logs and inventories from every stage).\n'
 } >"${CI_TMP_ROOT}/report.md"
 

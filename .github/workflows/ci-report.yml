@@ -159,6 +159,36 @@ on:
         required: false
         type: string
         default: ""
+      s5_result:
+        description: "Job result of the S5 upgrade run"
+        required: false
+        type: string
+        default: ""
+      s5_line:
+        description: "Frozen S5 judge line"
+        required: false
+        type: string
+        default: ""
+      s5_upgrade_line:
+        description: "Evidence line from the upgrade boot"
+        required: false
+        type: string
+        default: ""
+      s5_degraded_line:
+        description: "Evidence line from the degraded boot"
+        required: false
+        type: string
+        default: ""
+      s5_conflicts:
+        description: "Conflicts reported by the upgrade"
+        required: false
+        type: string
+        default: ""
+      s5_reclaimed:
+        description: "Layers reclaimed during the upgrade boot"
+        required: false
+        type: string
+        default: ""
       upstream_version:
         description: "Resolved upstream version"
         required: false
@@ -270,6 +300,12 @@ jobs:
       CI_S4_LINE_ABANDON_B: ${{ inputs.s4_line_abandon_b }}
       CI_S4_LINE_COMMIT_B: ${{ inputs.s4_line_commit_b }}
       CI_S4_COMMITTED_FINAL: ${{ inputs.s4_committed_final }}
+      CI_S5_RESULT: ${{ inputs.s5_result }}
+      CI_S5_LINE: ${{ inputs.s5_line }}
+      CI_S5_UPGRADE_LINE: ${{ inputs.s5_upgrade_line }}
+      CI_S5_DEGRADED_LINE: ${{ inputs.s5_degraded_line }}
+      CI_S5_CONFLICTS: ${{ inputs.s5_conflicts }}
+      CI_S5_RECLAIMED: ${{ inputs.s5_reclaimed }}
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_VERSION_SOURCE: ${{ inputs.version_source }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}

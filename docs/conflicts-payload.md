@@ -55,7 +55,7 @@ File-level conflict detection therefore covers non-uci user files only.
 | `rootfs.tar.gz` | official mirror | 10.1 MiB |
 | `kernel.bin` | official mirror | 7.35 MiB |
 | `initramfs.cpio.gz` | this project | about 2 MiB |
-| `wf.tar` | this project | under 1 MiB |
+| `platform.tar` | this project | under 1 MiB |
 | `manifest.json` | this project | under 4 KiB |
 
 The update payload is about 20 MiB. The full disk image is used for first installation only.

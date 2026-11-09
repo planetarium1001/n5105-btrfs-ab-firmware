@@ -10,6 +10,12 @@
 # Actions (in the order given):
 #   --network          write a minimal /etc/config/network into the writable layer so
 #                      the wan probe has a subject (S5 owns the production config)
+#   --payload <tar>    place an upgrade payload where the guest can reach it
+#   --user-banner <s>  modify /etc/banner in the writable layer, creating a conflict
+#                      against a payload that changes the same file
+#   --auto-upgrade     install /etc/rc.local that runs ab-upgrade on the payload
+#   --orphan-layer <n> create an unreferenced writable layer, so reclamation has work
+#   --break-p4         corrupt the writable partition's superblock so it cannot mount
 #   --break-slot <s>   replace the slot's nft binary with a broken stub, which leaves
 #                      the system bootable but fails the firewall probe
 #   --repair-slot <s>  restore that binary from the other slot
@@ -172,6 +178,64 @@ show_state() {
     sudo umount "${work}/esp"
 }
 
+write_payload() {
+    mount_one "${loopdev}p4" p4
+    target="${work}/p4/${overlay_name}/upper"
+    [ -d "${target}" ] || ci_die "writable layer ${overlay_name} not found on p4"
+    sudo cp "$1" "${target}/payload.tar"
+    sudo sync
+    sudo umount "${work}/p4"
+    ci_log "payload placed at /payload.tar in the writable layer"
+}
+
+write_user_banner() {
+    mount_one "${loopdev}p4" p4
+    target="${work}/p4/${overlay_name}/upper"
+    [ -d "${target}" ] || ci_die "writable layer ${overlay_name} not found on p4"
+    sudo mkdir -p "${target}/etc"
+    printf '%s\n' "$1" | sudo tee "${target}/etc/banner" >/dev/null
+    sudo sync
+    sudo umount "${work}/p4"
+    ci_log "wrote a user banner, which the payload will conflict with"
+}
+
+install_auto_upgrade() {
+    mount_one "${loopdev}p4" p4
+    target="${work}/p4/${overlay_name}/upper"
+    sudo mkdir -p "${target}/etc"
+    sudo tee "${target}/etc/rc.local" >/dev/null <<'RCLOCAL'
+#!/bin/sh
+# Test fixture: run the upgrade once the system finished booting.
+echo "ab-upgrade-test: starting" >/dev/console
+ab-upgrade /payload.tar
+echo "ab-upgrade: exit=$?" >/dev/console
+ab-slot status >/dev/console 2>&1
+echo "S5-UPGRADE-DONE" >/dev/console
+exit 0
+RCLOCAL
+    sudo chmod 0755 "${target}/etc/rc.local"
+    sudo sync
+    sudo umount "${work}/p4"
+    ci_log "installed /etc/rc.local that runs ab-upgrade"
+}
+
+orphan_layer() {
+    mount_one "${loopdev}p4" p4
+    sudo btrfs subvolume create "${work}/p4/$1" >/dev/null
+    sudo mkdir -p "${work}/p4/$1/upper"
+    printf 'orphan\n' | sudo tee "${work}/p4/$1/upper/marker" >/dev/null
+    sudo sync
+    sudo umount "${work}/p4"
+    ci_log "created unreferenced writable layer $1"
+}
+
+break_p4() {
+    sudo dd if=/dev/zero of="${loopdev}p4" bs=1M count=4 conv=notrunc status=none \
+        || ci_die "cannot corrupt the writable partition"
+    sudo sync
+    ci_log "corrupted the writable partition, its mount must fail"
+}
+
 while [ "$#" -gt 0 ]; do
     action="$1"
     shift
@@ -193,6 +257,23 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --abandon) state_ab_slot abandon ;;
+        --payload)
+            [ "$#" -ge 1 ] || ci_die "--payload needs a tar"
+            write_payload "$1"
+            shift
+            ;;
+        --user-banner)
+            [ "$#" -ge 1 ] || ci_die "--user-banner needs text"
+            write_user_banner "$1"
+            shift
+            ;;
+        --auto-upgrade) install_auto_upgrade ;;
+        --orphan-layer)
+            [ "$#" -ge 1 ] || ci_die "--orphan-layer needs a name"
+            orphan_layer "$1"
+            shift
+            ;;
+        --break-p4) break_p4 ;;
         --show)
             show_state "${1:-state}"
             [ "$#" -ge 1 ] && shift

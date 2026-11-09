@@ -1,0 +1,264 @@
+#!/bin/sh
+# ab-upgrade - install a payload into the inactive slot.
+#
+#   ab-upgrade <payload.tar>          install and mark the target slot pending
+#   ab-upgrade --check <payload.tar>  validate only, change nothing
+#
+# Payload layout (see docs/conflicts-payload.md):
+#
+#   payload.tar
+#     manifest.json        {"format": ..., "rootfs": "<version>", "members": {...}}
+#     rootfs.tar.gz        upstream root filesystem
+#     kernel.bin           kernel for the target slot
+#     initramfs.cpio.gz    boot initramfs for the target slot
+#     platform.tar         platform layer for the target slot (wf.tar is the old name)
+#
+# Validation follows the documented order and nothing is written before all of it
+# passes: manifest shape, member digests, the btrfs module vermagic against the
+# kernel, free space on the writable partition, and the conflict report.
+#
+# Exit status:
+#   0   installed (or validated, with --check)
+#   1   an execution step failed after validation
+#   74  the payload was refused before anything was written
+#
+# The state file is only mutated through ab-slot, never written here.
+
+set -u
+PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+AB_ESP="${AB_ESP:-/boot}"
+AB_P4="${AB_P4:-/mnt/p4}"
+LIB="${AB_LIB:-/lib/upgrade/platform.sh}"
+LOG_MAX=32768
+
+usage() {
+    printf 'usage: ab-upgrade <payload.tar> | ab-upgrade --check <payload.tar>\n' >&2
+    exit 2
+}
+
+say() {
+    printf '%s\n' "$*"
+}
+
+console_say() {
+    printf '%s\n' "$*" >/dev/console 2>/dev/null || :
+}
+
+# refuse <reason>: a pre-write refusal, documented as exit status 74.
+refuse() {
+    say "ab-upgrade: refused, reason=${1}"
+    console_say "ab-upgrade: refused, reason=${1}"
+    exit 74
+}
+
+fail() {
+    say "ab-upgrade: failed, reason=${1}"
+    console_say "ab-upgrade: failed, reason=${1}"
+    exit 1
+}
+
+check_mode=0
+case "${1:-}" in
+    --check)
+        check_mode=1
+        shift
+        ;;
+esac
+[ "$#" -ge 1 ] || usage
+payload_tar="$1"
+[ -f "${payload_tar}" ] || refuse "payload-not-found"
+
+work="/tmp/ab-upgrade.$$"
+mkdir -p "${work}" || fail "cannot-create-workdir"
+cleanup() {
+    rm -rf "${work}"
+}
+trap cleanup EXIT INT TERM
+
+tar -xf "${payload_tar}" -C "${work}" 2>/dev/null || refuse "payload-not-a-tar"
+
+# --------------------------------------------------------------------------- #
+# 1. Manifest shape
+# --------------------------------------------------------------------------- #
+
+manifest="${work}/manifest.json"
+[ -f "${manifest}" ] || refuse "manifest-missing"
+squeezed="$(tr -d ' \t\r\n' <"${manifest}")"
+case "${squeezed}" in
+    *'"format":"'*) : ;;
+    *) refuse "manifest-without-format" ;;
+esac
+format="$(printf '%s' "${squeezed}" | sed -n 's/.*"format":"\([^"]*\)".*/\1/p')"
+case "${format}" in
+    ab-payload/1 | wf-ab-payload/1) : ;;
+    *) refuse "manifest-format-${format}" ;;
+esac
+rootfs_version="$(printf '%s' "${squeezed}" | sed -n 's/.*"rootfs":"\([^"]*\)".*/\1/p')"
+[ -n "${rootfs_version}" ] || refuse "manifest-without-rootfs"
+
+# --------------------------------------------------------------------------- #
+# 2. Members and digests
+# --------------------------------------------------------------------------- #
+
+# member_sha <name>: the digest the manifest claims for that member.
+member_sha() {
+    _block="$(printf '%s' "${squeezed}" | sed -n 's/.*"'"$1"'":{\([^}]*\)}.*/\1/p')"
+    [ -n "${_block}" ] || return 1
+    printf '%s' "${_block}" | sed -n 's/.*"sha256":"\([0-9a-f]*\)".*/\1/p'
+}
+
+platform_member=""
+if [ -f "${work}/platform.tar" ]; then
+    platform_member="platform.tar"
+elif [ -f "${work}/wf.tar" ]; then
+    platform_member="wf.tar"
+fi
+[ -n "${platform_member}" ] || refuse "payload-without-platform-layer"
+
+for member in rootfs.tar.gz kernel.bin initramfs.cpio.gz "${platform_member}"; do
+    [ -f "${work}/${member}" ] || refuse "member-missing-${member}"
+    want="$(member_sha "${member}")" || refuse "manifest-without-${member}"
+    [ -n "${want}" ] || refuse "manifest-without-${member}"
+    have="$(sha256sum "${work}/${member}" 2>/dev/null | cut -d' ' -f1)"
+    [ "${have}" = "${want}" ] || refuse "digest-mismatch-${member}"
+done
+say "ab-upgrade: manifest ok, ${format}, rootfs ${rootfs_version}, 4 members verified"
+
+# --------------------------------------------------------------------------- #
+# 3. The initramfs must be built for the kernel in the payload
+# --------------------------------------------------------------------------- #
+
+read_vermagic() {
+    tr -c '[:print:]' '\n' <"$1" 2>/dev/null | grep '^vermagic=' | head -n 1 | sed 's/^vermagic=//'
+}
+
+kernel_version="$(read_vermagic "${work}/kernel.bin")"
+initrd_dir="${work}/initrd"
+mkdir -p "${initrd_dir}"
+if ! gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | (cd "${initrd_dir}" && cpio -id 2>/dev/null); then
+    refuse "initramfs-extract-failed"
+fi
+btrfs_ko="$(find "${initrd_dir}" -name btrfs.ko -print 2>/dev/null | head -n 1)"
+[ -n "${btrfs_ko}" ] || refuse "initramfs-without-btrfs-module"
+module_version="$(read_vermagic "${btrfs_ko}")"
+[ -n "${kernel_version}" ] || refuse "kernel-without-vermagic"
+[ -n "${module_version}" ] || refuse "module-without-vermagic"
+kernel_short="${kernel_version%% *}"
+module_short="${module_version%% *}"
+[ "${kernel_short}" = "${module_short}" ] || refuse "vermagic-mismatch-${kernel_short}-${module_short}"
+say "ab-upgrade: vermagic ok, kernel ${kernel_short}"
+
+# --------------------------------------------------------------------------- #
+# 4. Free space on the writable partition
+# --------------------------------------------------------------------------- #
+
+# upgrade_reason and the UPGRADE_* values come from the library.
+upgrade_reason=""
+UPGRADE_NEW_LAYER=""
+UPGRADE_NEW_VERSION=""
+# shellcheck source=platform/lib/upgrade/platform.sh disable=SC1090
+. "${LIB}" || fail "cannot-load-${LIB}"
+
+p4_state="$(ab-slot status 2>/dev/null | sed -n 's/^.*p4=\([a-z]*\).*/\1/p')"
+[ "${p4_state}" = "ok" ] || refuse "writable-layer-degraded"
+total="$(df -k "${AB_P4}" 2>/dev/null | awk 'NR == 2 { print $2 }')"
+avail="$(df -k "${AB_P4}" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+[ -n "${total}" ] && [ -n "${avail}" ] || refuse "free-space-unknown"
+[ "${total}" -gt 0 ] || refuse "free-space-unknown"
+pct=$((avail * 100 / total))
+[ "${pct}" -ge 5 ] || refuse "low-space-${pct}pct"
+say "ab-upgrade: ${pct}% free on ${AB_P4}"
+
+# The payload's rootfs is unpacked into tmpfs: the conflict comparison needs both
+# trees side by side, and nothing is written to the slot yet.
+mkdir -p "${work}/rootfs-tree"
+tar -xzf "${work}/rootfs.tar.gz" -C "${work}/rootfs-tree" 2>/dev/null || refuse "rootfs-extract-failed"
+
+# --------------------------------------------------------------------------- #
+# 5. Conflict report (produced before writing; never blocks the update)
+# --------------------------------------------------------------------------- #
+
+running="$(ab-slot status 2>/dev/null | sed -n 's/^slot=\([ab]\) .*/\1/p')"
+case "${running}" in
+    a) other=b ;;
+    b) other=a ;;
+    *) refuse "no-running-slot" ;;
+esac
+running_layer="$(ab-slot status 2>/dev/null | sed -n 's/^.*upper=\([^ ]*\) .*/\1/p')"
+
+slots_root="${AB_SLOTS_ROOT:-/mnt/slots}"
+mkdir -p "${slots_root}/${running}"
+running_sys="${slots_root}/${running}/@sys"
+conflicts=0
+uci_defaults=0
+report="${work}/conflicts.log"
+
+{
+    printf 'conflicts rootfs=%s generated=%s\n' "${rootfs_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} >"${report}"
+
+if [ -d "${running_sys}/etc" ]; then
+    upper="${AB_P4}/${running_layer}/upper"
+    # Non-uci configuration only; /etc/config is uci's own grammar and is delivered
+    # through idempotent uci-defaults scripts instead of being compared.
+    for path in $(cd "${running_sys}" && find etc -type f 2>/dev/null | sort); do
+        case "${path}" in
+            etc/config/*) continue ;;
+        esac
+        new="${work}/rootfs-tree/${path}"
+        [ -f "${new}" ] || continue
+        cmp -s "${running_sys}/${path}" "${new}" && continue
+        [ -f "${upper}/${path}" ] || continue
+        cmp -s "${running_sys}/${path}" "${upper}/${path}" && continue
+        printf 'conflict path=/%s result=keep-user action=report\n' "${path}" >>"${report}"
+        conflicts=$((conflicts + 1))
+    done
+fi
+if [ -d "${work}/rootfs-tree/etc/uci-defaults" ]; then
+    uci_defaults="$(find "${work}/rootfs-tree/etc/uci-defaults" -type f | wc -l | tr -d ' ')"
+fi
+printf 'conflicts=%s uci-defaults=%s\n' "${conflicts}" "${uci_defaults}" >>"${report}"
+
+# Publish the report on the ESP with the documented 32 KiB truncation.
+if [ -d "${AB_ESP}/ab" ]; then
+    tmp_report="${AB_ESP}/ab/conflicts.log.tmp.$$"
+    if [ "$(wc -c <"${report}")" -gt "${LOG_MAX}" ]; then
+        tail -c $((LOG_MAX - 512)) "${report}" >"${tmp_report}"
+        printf 'TRUNCATED=1\n' >>"${tmp_report}"
+    else
+        cat "${report}" >"${tmp_report}"
+    fi
+    sync
+    mv "${tmp_report}" "${AB_ESP}/ab/conflicts.log" || fail "cannot-publish-conflicts"
+    sync
+fi
+say "ab-upgrade: ${conflicts} conflict(s), ${uci_defaults} uci-defaults script(s)"
+
+if [ "${check_mode}" = "1" ]; then
+    say "ab-upgrade: check only, nothing written"
+    exit 0
+fi
+
+# --------------------------------------------------------------------------- #
+# 6. Copy into the inactive slot
+# --------------------------------------------------------------------------- #
+
+platform_upgrade_begin "${work}" "${other}" || refuse "${upgrade_reason}"
+platform_copy_rootfs "${work}" "${other}" || fail "${upgrade_reason}"
+platform_upgrade_end "${other}" "${UPGRADE_NEW_VERSION}" "${UPGRADE_NEW_LAYER}" ||
+    fail "${upgrade_reason}"
+
+# Reclaim layers nothing references any more; a failed gc must not undo the upgrade.
+if ab-slot gc >/tmp/ab-upgrade-gc.log 2>&1; then
+    reclaimed="$(grep -c 'ab-slot: deleting' /tmp/ab-upgrade-gc.log 2>/dev/null)"
+    [ -n "${reclaimed}" ] || reclaimed=0
+else
+    reclaimed=0
+    say "ab-upgrade: reclamation reported problems, see ab-slot gc"
+fi
+
+say "ab-upgrade: installed ${rootfs_version} into slot ${other} (${UPGRADE_NEW_LAYER}), ${conflicts} conflict(s), reclaimed ${reclaimed}"
+console_say "ab-upgrade: ok slot=${other} conflicts=${conflicts} reclaimed=${reclaimed}"
+exit 0

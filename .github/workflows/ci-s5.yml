@@ -1,0 +1,302 @@
+name: ci-s5
+
+# Stage S5 - upgrade payload, reclamation and the degraded boot.
+#
+# Four boots of one image file:
+#
+#   1  fresh install, `ab-slot status` healthy, `p4=ok`
+#   2  `ab-upgrade /payload.tar` installs a test payload into the inactive slot and
+#      marks it pending; the conflict report is written first and never blocks
+#   3  the pending slot boots, the health check passes, the slot is committed and the
+#      unreachable layer is reclaimed
+#   4  the writable partition is destroyed: the boot must degrade to a tmpfs upper and
+#      still reach userspace
+#
+# Boots 2-4 print their evidence to /dev/console (procd sends hook stdout to syslog,
+# so a hook that wants to be seen must write the console). The grading is done on the
+# host by scripts/ci/s5-phase.sh, which reads the ESP and the writable partition back.
+
+on:
+  workflow_call:
+    inputs:
+      upstream_version:
+        description: "Resolved upstream version"
+        required: true
+        type: string
+      upstream_base_url:
+        description: "Release directory URL for the target"
+        required: true
+        type: string
+      kmods_dir:
+        description: "Kernel module directory name on the mirror"
+        required: true
+        type: string
+      kernel_package:
+        description: "Kernel package version from the upstream manifest"
+        required: true
+        type: string
+      platform_version:
+        description: "Platform version recorded in the @platform layer"
+        required: false
+        type: string
+        default: "0.0.4"
+    outputs:
+      judge_line:
+        description: "Frozen S5 judge line from the commit boot"
+        value: ${{ jobs.s5.outputs.judge_line }}
+      upgrade_line:
+        description: "Evidence line from the upgrade boot"
+        value: ${{ jobs.s5.outputs.upgrade_line }}
+      degraded_line:
+        description: "Evidence line from the degraded boot"
+        value: ${{ jobs.s5.outputs.degraded_line }}
+      conflicts:
+        description: "Conflicts reported by the upgrade"
+        value: ${{ jobs.s5.outputs.conflicts }}
+      reclaimed:
+        description: "Layers reclaimed during the upgrade boot"
+        value: ${{ jobs.s5.outputs.reclaimed }}
+      payload_version:
+        description: "Rootfs version the test payload carries"
+        value: ${{ jobs.s5.outputs.payload_version }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  s5:
+    name: upgrade and reclamation
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    env:
+      CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+      CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
+      CI_KMODS_DIR: ${{ inputs.kmods_dir }}
+      CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
+      CI_PLATFORM_VERSION: ${{ inputs.platform_version }}
+    outputs:
+      judge_line: ${{ steps.phase3.outputs.judge_line }}
+      upgrade_line: ${{ steps.phase2.outputs.evidence_line }}
+      degraded_line: ${{ steps.phase4.outputs.evidence_line }}
+      conflicts: ${{ steps.phase3.outputs.conflicts }}
+      reclaimed: ${{ steps.phase3.outputs.reclaimed }}
+      payload_version: ${{ steps.payload.outputs.payload_version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download upstream artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-files
+          path: ${{ runner.temp }}/ci/fetch
+
+      - name: Install image and QEMU tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf
+          if [ ! -x /bin/busybox ]; then
+            sudo apt-get install -y --no-install-recommends busybox-static \
+              || sudo apt-get install -y --no-install-recommends busybox-initramfs
+          fi
+          mkfs.btrfs --version
+          qemu-system-x86_64 --version | head -n 1
+
+      - name: Unpack the btrfs and vfat module closure
+        id: kmods
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+
+      - name: Prepare the ESP from the upstream bootloader
+        id: esp
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/esp.log"
+
+      - name: Build the boot initramfs
+        id: initramfs
+        env:
+          CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
+          CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+          CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
+          CI_EXTRA_FILES: ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+
+      - name: Assemble the disk image
+        id: disk
+        env:
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
+
+      - name: Build the test payload
+        id: payload
+        env:
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/payload-build.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/payload.log"
+
+      - name: "Fixture: network, user banner, orphan layer and the payload"
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+          CI_PAYLOAD: ${{ steps.payload.outputs.payload_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/ab-fixtures.sh \
+            --network \
+            --user-banner "user banner, edited before the upgrade" \
+            --orphan-layer @overlay-25.12.1 \
+            --payload "${CI_PAYLOAD}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-1.log"
+
+      - name: "Boot 1: fresh install is healthy (gating)"
+        id: boot1
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_JUDGE_PREFIX: ""
+          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_CASE: s5-boot1
+          CI_QEMU_APPEND_EXTRA: ab.slot=a
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot1.log"
+
+      - name: "Fixture: run ab-upgrade automatically on the next boot"
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/ab-fixtures.sh --auto-upgrade 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-2.log"
+
+      - name: "Boot 2: install the payload into the inactive slot (gating)"
+        id: boot2
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_JUDGE_PREFIX: ""
+          CI_QEMU_STOP_PATTERN: "^S5-UPGRADE-DONE"
+          CI_QEMU_CASE: s5-boot2
+          CI_QEMU_APPEND_EXTRA: ab.slot=a
+          CI_QEMU_TIMEOUT: "1200"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot2.log"
+
+      - name: "Phase 2: verify the upgrade recorded the new layer"
+        id: phase2
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/s5-phase.sh --phase upgrade --slot b \
+            --version "${{ steps.payload.outputs.payload_version }}" \
+            --layer "${{ steps.payload.outputs.payload_layer }}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase2.log"
+
+      - name: "Boot 3: commit the upgraded slot and reclaim (gating)"
+        id: boot3
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_JUDGE_PREFIX: ""
+          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_CASE: s5-boot3
+          CI_QEMU_APPEND_EXTRA: ab.slot=b
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot3.log"
+
+      - name: "Phase 3: verify the commit, the conflicts and the reclamation"
+        id: phase3
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/s5-phase.sh --phase commit --slot b 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase3.log"
+
+      - name: "Fixture: destroy the writable partition"
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/ab-fixtures.sh --break-p4 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-3.log"
+
+      - name: "Boot 4: a broken writable partition degrades, it does not fail (gating)"
+        id: boot4
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_JUDGE_PREFIX: ""
+          CI_QEMU_STOP_PATTERN: "^ab-boot: running slot"
+          CI_QEMU_CASE: s5-boot4
+          CI_QEMU_APPEND_EXTRA: ab.slot=b
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot4.log"
+
+      - name: "Phase 4: verify the degraded boot reached userspace"
+        id: phase4
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/s5-phase.sh --phase degraded \
+            --serial "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu/serial-s5-boot4.log" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase4.log"
+
+      - name: Collect diagnostics
+        if: always()
+        continue-on-error: true
+        env:
+          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}" "${CI_DIAG_DIR}"
+          bash scripts/ci/diagnostics.sh s5 "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s5-probe
+          path: |
+            ${{ runner.temp }}/ci/qemu/serial-*.log
+            ${{ runner.temp }}/ci/payload/payload.tar
+            ${{ runner.temp }}/ci/s5-phase/esp
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload logs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-s5
+          path: ${{ runner.temp }}/ci/diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

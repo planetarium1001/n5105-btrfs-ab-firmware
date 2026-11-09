@@ -15,7 +15,8 @@ name: CI
 #             │           ├── s1 ────────┤
 #             │           ├── s2 ────────┤
 #             │           ├── s3 ────────┤
-#             │           └── s4 ────────┤
+#             │           ├── s4 ────────┤
+#             │           └── s5 ────────┤
 #             └── verify ────────────────┴── report
 #
 # Stage selection through workflow_dispatch lets a failed run be resumed where it
@@ -27,6 +28,7 @@ name: CI
 #   stage=s2        resolve, fetch, s2, report
 #   stage=s3        resolve, fetch, s3, report
 #   stage=s4        resolve, fetch, s4, report
+#   stage=s5        resolve, fetch, s5, report
 #   stage=verify    resolve, verify, report
 
 on:
@@ -47,6 +49,7 @@ on:
           - s2
           - s3
           - s4
+          - s5
           - verify
         default: all
       upstream_version:
@@ -171,7 +174,21 @@ jobs:
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
 
-  # Stage 8: static checks that need no upstream artifact.
+  # Stage 8: upgrade payload, reclamation and the degraded boot. Four boots.
+  s5:
+    name: s5
+    needs: [resolve, fetch]
+    if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's5') }}
+    uses: ./.github/workflows/ci-s5.yml
+    permissions:
+      contents: read
+    with:
+      upstream_version: ${{ needs.resolve.outputs.upstream_version }}
+      upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
+      kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+
+  # Stage 9: static checks that need no upstream artifact.
   verify:
     name: verify
     needs: resolve
@@ -180,10 +197,10 @@ jobs:
     permissions:
       contents: read
 
-  # Stage 9: single verdict, rendered as the run summary.
+  # Stage 10: single verdict, rendered as the run summary.
   report:
     name: report
-    needs: [resolve, fetch, assemble, s1, s2, s3, s4, verify]
+    needs: [resolve, fetch, assemble, s1, s2, s3, s4, s5, verify]
     if: ${{ always() }}
     uses: ./.github/workflows/ci-report.yml
     permissions:
@@ -200,6 +217,7 @@ jobs:
       s2_result: ${{ needs.s2.result }}
       s3_result: ${{ needs.s3.result }}
       s4_result: ${{ needs.s4.result }}
+      s5_result: ${{ needs.s5.result }}
       verify_result: ${{ needs.verify.result }}
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       version_source: ${{ needs.resolve.outputs.version_source }}
@@ -229,6 +247,11 @@ jobs:
       s4_line_abandon_b: ${{ needs.s4.outputs.line_abandon_b }}
       s4_line_commit_b: ${{ needs.s4.outputs.line_commit_b }}
       s4_committed_final: ${{ needs.s4.outputs.committed_final }}
+      s5_line: ${{ needs.s5.outputs.judge_line }}
+      s5_upgrade_line: ${{ needs.s5.outputs.upgrade_line }}
+      s5_degraded_line: ${{ needs.s5.outputs.degraded_line }}
+      s5_conflicts: ${{ needs.s5.outputs.conflicts }}
+      s5_reclaimed: ${{ needs.s5.outputs.reclaimed }}
       design_checks_status: ${{ needs.verify.outputs.design_checks_status }}
       design_checks_problems: ${{ needs.verify.outputs.design_checks_problems }}
       shellcheck_status: ${{ needs.verify.outputs.shellcheck_status }}
