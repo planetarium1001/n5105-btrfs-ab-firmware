@@ -56,7 +56,7 @@ class Problems(list):
                 self.add(where, f"missing required content {needle!r}")
 
     def need_prefix(self, where: str, text: str, *needles: str) -> None:
-        """Prefix match for values with a variable tail, such as @overlay.gen0002."""
+        """Prefix match for values with a variable tail, such as @overlay-25.12.2."""
         for needle in needles:
             if needle not in text:
                 self.add(where, f"missing required content prefix {needle!r}")
@@ -75,22 +75,36 @@ def read_doc(name: str, problems: Problems) -> str:
     return path.read_text(encoding="utf-8")
 
 
+RETIRED_TOKENS = ("@wf", "genNNNN", "upper_gen", "wf-esp", "wf-slot", "wf-shared",
+                  "@overlay.<version>", "@overlay.")
+
+
+def check_retired_tokens(problems: Problems) -> None:
+    """Names retired in favour of @platform and version-named layers."""
+    for name in ("README.md", "README.zh-CN.md", "partitions.md", "boot-overlay.md",
+                 "lifecycle.md", "conflicts-payload.md"):
+        path = DOCS / name if (DOCS / name).is_file() else ROOT / name
+        if not path.is_file():
+            continue
+        problems.forbid(name, path.read_text(encoding="utf-8"), *RETIRED_TOKENS)
+
+
 def check_partitions(problems: Problems) -> None:
     doc = read_doc("partitions.md", problems)
     problems.need(
         "partitions.md",
         doc,
-        "| p1 | `wf-esp` | 128 MiB | vfat |",
-        "| p2 | `wf-slot-a` | 128 MiB | btrfs |",
-        "| p3 | `wf-slot-b` | 128 MiB | btrfs |",
-        "| p4 | `wf-shared` | rest of disk | btrfs |",
+        "| p1 | `ab-esp` | 128 MiB | vfat |",
+        "| p2 | `ab-slot-a` | 128 MiB | btrfs |",
+        "| p3 | `ab-slot-b` | 128 MiB | btrfs |",
+        "| p4 | `ab-shared` | rest of disk | btrfs |",
         "26.9 MiB",
         "zstd:6",
         "mkfs.btrfs -m dup -d single",
         "mkfs.btrfs -m single -d single",
         "@sys",
-        "@wf",
-        "@overlay.genNNNN",
+        "@platform",
+        "@overlay-<version>",
         "@docker",
         "@swap",
         "@data",
@@ -119,7 +133,7 @@ def check_esp_data_only(problems: Problems) -> None:
         problems.need("partitions.md", p1_row, "ab/")
 
     boot = read_doc("boot-overlay.md", problems)
-    problems.need("boot-overlay.md", boot, "@wf", "degraded", "tmpfs")
+    problems.need("boot-overlay.md", boot, "@platform", "degraded", "tmpfs")
 
 
 def check_overlay_layers(problems: Problems) -> None:
@@ -127,7 +141,7 @@ def check_overlay_layers(problems: Problems) -> None:
     problems.need(
         "boot-overlay.md",
         doc,
-        "lowerdir=/mnt/wf:/mnt/sys",
+        "lowerdir=/mnt/@platform:/mnt/@sys",
         "index=off",
         "the platform layer takes precedence",
         "p4 is mounted first",
@@ -139,8 +153,8 @@ def check_overlay_layers(problems: Problems) -> None:
     problems.need_prefix(
         "boot-overlay.md",
         doc,
-        "upperdir=/mnt/p4/@overlay.gen",
-        "workdir=/mnt/p4/@overlay.gen",
+        "upperdir=/mnt/p4/@overlay-",
+        "workdir=/mnt/p4/@overlay-",
     )
 
 
@@ -149,13 +163,13 @@ def check_generation_model(problems: Problems) -> None:
     problems.need(
         "lifecycle.md",
         doc,
-        "@overlay.genNNNN",
+        "@overlay-<version>",
         "no subvolume is ever renamed",
         '"generation"',
         '"committed"',
         '"pending"',
-        '"upper_gen"',
-        "snapshot gen2 -> gen3",
+        '"upper"',
+        "snapshot @overlay-25.12.2 -> @overlay-25.12.3",
         "has never rebooted",
     )
 
@@ -166,8 +180,8 @@ def check_gc_policy(problems: Problems) -> None:
         "lifecycle.md",
         doc,
         "The reference set",
-        "never delete a generation that is currently mounted",
-        "never delete the generation referenced by `pending`",
+        "never delete a layer that is currently mounted",
+        "never delete the layer referenced by the pending slot",
         "btrfs subvolume delete -C",
         "btrfs subvolume sync",
         "balance",
@@ -315,6 +329,7 @@ CHECKS = {
     "payload-contract": check_payload_contract,
     "links": check_links,
     "text": check_text,
+    "retired-names": check_retired_tokens,
 }
 
 

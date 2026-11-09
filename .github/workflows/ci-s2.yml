@@ -5,10 +5,10 @@ name: ci-s2
 # Builds the installable image from the verified upstream payload and asserts the
 # geometry that docs/partitions.md freezes:
 #
-#   p1 wf-esp     128 MiB vfat   GRUB, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
-#   p2 wf-slot-a  128 MiB btrfs  @sys, @wf
-#   p3 wf-slot-b  128 MiB btrfs  @sys, @wf
-#   p4 wf-shared   64 MiB btrfs  @overlay.gen0001 (upper/, work/), @docker, @swap, @data
+#   p1 ab-esp     128 MiB vfat   GRUB, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
+#   p2 ab-slot-a  128 MiB btrfs  @sys, @platform
+#   p3 ab-slot-b  128 MiB btrfs  @sys, @platform
+#   p4 ab-shared   64 MiB btrfs  @overlay-<version> (upper/, work/), @docker, @swap, @data
 #
 # The ESP reuses the upstream bootloader (EFI/BOOT/BOOTX64.EFI and boot/grub taken
 # from the upstream combined-EFI image), so this stage adds no build dependency.
@@ -44,7 +44,7 @@ on:
         required: true
         type: string
       platform_version:
-        description: "Platform version recorded in the @wf skeleton"
+        description: "Platform version recorded in the @platform skeleton"
         required: false
         type: string
         default: "0.0.1"

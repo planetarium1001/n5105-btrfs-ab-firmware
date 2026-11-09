@@ -129,8 +129,8 @@ on:
         required: false
         type: string
         default: ""
-      s3_generation:
-        description: "Writable generation the boot chain mounted"
+      s3_upper:
+        description: "Writable layer the boot chain mounted"
         required: false
         type: string
         default: ""
@@ -239,7 +239,7 @@ jobs:
       CI_S3_LINE: ${{ inputs.s3_line }}
       CI_S3_LINE_BOOT2: ${{ inputs.s3_line_boot2 }}
       CI_S3_SLOT: ${{ inputs.s3_slot }}
-      CI_S3_GENERATION: ${{ inputs.s3_generation }}
+      CI_S3_UPPER: ${{ inputs.s3_upper }}
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_VERSION_SOURCE: ${{ inputs.version_source }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}

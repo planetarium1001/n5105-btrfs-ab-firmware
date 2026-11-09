@@ -3,15 +3,19 @@
 #
 # Order matters and is asserted, not assumed:
 #
-#   1. p4  @overlay.genNNNN   rw,compress=zstd:6,discard=async  -> /mnt/p4
-#   2. p2  @wf              ro,noatime                          -> /mnt/@wf
-#   3. p2  @sys             ro,noatime                          -> /mnt/@sys
-#   4. overlay lowerdir=/mnt/@wf:/mnt/@sys upperdir=/mnt/p4/upper workdir=/mnt/p4/work
+#   1. p4  @overlay-<version>  rw,compress=zstd:6,discard=async
+#                              subvol=@overlay-<version>         -> /mnt/p4
+#   2. p2  @platform           ro,noatime                      -> /mnt/@platform
+#   3. p2  @sys               ro,noatime                       -> /mnt/@sys
+#   4. overlay lowerdir=/mnt/@platform:/mnt/@sys
+#              upperdir=/mnt/p4/upper workdir=/mnt/p4/work   -> /newroot
 #
 # The writable layer is mounted first because `compress=` is only applied by the
 # first mount of a filesystem; mounting a read-only layer first would leave the
 # parameter out of the kernel. The read-only layers are mounted under @-names so the
-# overlay command line literally carries both layer names.
+# overlay command line literally carries both layer names. The writable layer name
+# comes from the state file (@overlay-<upstream version>), never from the generation
+# counter: the counter orders generations, the name identifies them.
 #
 # Everything asserted here is re-checked from inside the composed root by
 # /s3-post.sh, which switch_root hands control to as the new /init.
@@ -21,7 +25,7 @@
 #   wf.boot=<n>       test label only, recorded in the probe file (default 1)
 #
 # Judge line, frozen:
-#   S3-RESULT=ok slot=<a|b> gen=<N> lower=<wf:sys> upper=<gen> root=<overlay>
+#   S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=overlay
 #   S3-RESULT=fail reason=<token>
 
 set -u
@@ -94,10 +98,10 @@ for event in /sys/class/block/"$(basename "${DEV}")"*/uevent; do
     part_number="$(sed -n 's/^PARTN=//p' "${event}")"
     [ -n "${part_number}" ] || continue
     case "${part_name}" in
-        wf-esp) esp="${DEV}${part_number}" ;;
-        wf-slot-a) slot_a="${DEV}${part_number}" ;;
-        wf-slot-b) slot_b="${DEV}${part_number}" ;;
-        wf-shared) shared="${DEV}${part_number}" ;;
+        ab-esp) esp="${DEV}${part_number}" ;;
+        ab-slot-a) slot_a="${DEV}${part_number}" ;;
+        ab-slot-b) slot_b="${DEV}${part_number}" ;;
+        ab-shared) shared="${DEV}${part_number}" ;;
         *) continue ;;
     esac
     discovered="${discovered} ${part_name}=${DEV}${part_number}"
@@ -123,45 +127,43 @@ case "${slot}" in
     b) slot_dev="${slot_b}" ;;
     *) wf_fail "state-committed-invalid-${slot:-empty}" ;;
 esac
-gen="$(wf_upper_gen "${STATE}" "${slot}")"
-case "${gen}" in
-    "" | *[!0-9]*) wf_fail "state-upper-gen-invalid-${gen:-empty}" ;;
-esac
-gen_name="$(wf_gen_name "${gen}")"
-wf_log "state: committed=${slot} upper_gen=${gen} (${gen_name})"
+upper="$(wf_upper "${STATE}" "${slot}")"
+[ -n "${upper}" ] || wf_fail state-upper-invalid
+generation="$(wf_generation "${STATE}")" || generation=unknown
+wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
 
 # --------------------------------------------------------------------------- #
 # 2. Mount order: writable layer first, then the read-only layers
 # --------------------------------------------------------------------------- #
 
-mkdir -p /mnt/p4 /mnt/@wf /mnt/@sys
-mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${gen_name}" "${shared}" /mnt/p4 \
+mkdir -p /mnt/p4 /mnt/@platform /mnt/@sys
+mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${shared}" /mnt/p4 \
     || wf_fail p4-mount-failed
 p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
 case "${p4_line}" in
     *compress=*) : ;;
     *) wf_fail p4-compress-option-missing ;;
 esac
-wf_log "p4 mounted with compress= (${gen_name})"
+wf_log "p4 mounted with compress= (${upper})"
 
-mount -o ro,noatime,"subvol=/@wf" "${slot_dev}" /mnt/@wf || wf_fail wf-mount-failed
+mount -o ro,noatime,"subvol=/@platform" "${slot_dev}" /mnt/@platform || wf_fail platform-mount-failed
 mount -o ro,noatime,"subvol=/@sys" "${slot_dev}" /mnt/@sys || wf_fail sys-mount-failed
 
-[ -f /mnt/@wf/etc/wf-release ] || wf_fail wf-layer-empty
+[ -f /mnt/@platform/etc/platform-release ] || wf_fail platform-layer-empty
 [ -x /mnt/@sys/sbin/init ] || wf_fail sys-layer-empty
-wf_log "read-only layers mounted: @wf, @sys from ${slot_dev}"
+wf_log "read-only layers mounted: @platform, @sys from ${slot_dev}"
 
 # --------------------------------------------------------------------------- #
 # 3. Compose the root
 # --------------------------------------------------------------------------- #
 
 mount -t overlay overlay \
-    -o "lowerdir=/mnt/@wf:/mnt/@sys,upperdir=/mnt/p4/upper,workdir=/mnt/p4/work,index=off" \
+    -o "lowerdir=/mnt/@platform:/mnt/@sys,upperdir=/mnt/p4/upper,workdir=/mnt/p4/work,index=off" \
     /newroot || wf_fail overlay-mount-failed
 
 overlay_line="$(awk '$2 == "/newroot" { print }' /proc/mounts)"
 case "${overlay_line}" in
-    *lowerdir=/mnt/@wf:/mnt/@sys*) : ;;
+    *lowerdir=/mnt/@platform:/mnt/@sys*) : ;;
     *) wf_fail overlay-lowerdir-wrong ;;
 esac
 case "${overlay_line}" in
@@ -179,7 +181,7 @@ esac
 wf_log "overlay composed at /newroot"
 
 # The platform layer must be visible through the merged view.
-[ -f /newroot/etc/wf-release ] || wf_fail wf-release-not-in-root
+[ -f /newroot/etc/platform-release ] || wf_fail platform-release-not-in-root
 
 # --------------------------------------------------------------------------- #
 # 4. Probe writes: they must land in the generation's upper directory
@@ -196,14 +198,14 @@ if [ "${BOOT}" = "2" ]; then
     esac
 fi
 
-printf 'boot=%s slot=%s gen=%s\n' "${BOOT}" "${slot}" "${gen}" >"/newroot${probe}" \
+printf 'boot=%s slot=%s upper=%s\n' "${BOOT}" "${slot}" "${upper}" >"/newroot${probe}" \
     || wf_fail probe-write-failed
 printf 'created on boot %s\n' "${BOOT}" >"/newroot${new_file}" \
     || wf_fail newfile-write-failed
 
 [ -f "/mnt/p4/upper${probe}" ] || wf_fail probe-not-in-upper
 [ -f "/mnt/p4/upper${new_file}" ] || wf_fail newfile-not-in-upper
-[ ! -e "/mnt/@wf${probe}" ] || wf_fail probe-leaked-to-wf
+[ ! -e "/mnt/@platform${probe}" ] || wf_fail probe-leaked-to-platform
 [ ! -e "/mnt/@sys${probe}" ] || wf_fail probe-leaked-to-sys
 wf_log "probe writes landed in upper, not in the read-only layers"
 
@@ -221,7 +223,8 @@ for fs in proc sys dev; do
 done
 
 wf_log "switching root to the overlay"
-switch_root /newroot /bin/sh /.s3-post "${slot}" "${gen}" "${gen_name}" "${BOOT}"
+switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}" \
+    "${shared}" "${slot_dev}"
 
 # switch_root replaces this process on success and only returns on failure.
 wf_fail switch-root-failed

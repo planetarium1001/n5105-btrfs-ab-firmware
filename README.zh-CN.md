@@ -13,7 +13,7 @@
 |---|---|
 | 目标硬件 | N5105 v5，x86-64，UEFI，4× Intel i226-V |
 | 基础系统 | ImmortalWrt，rootfs 与上游逐字节一致 |
-| 项目自有内容 | 仅构建层、引导层与 `@wf` 平台层 |
+| 项目自有内容 | 仅构建层、引导层与 `@platform` 平台层 |
 | 引导 | 仅 UEFI；不支持 legacy/BIOS 与多主板 |
 
 ## 磁盘布局
@@ -21,19 +21,19 @@
 | 分区 | 大小 | 文件系统 | 内容 |
 |---|---|---|---|
 | p1 | 128 MiB | vfat | GRUB、槽状态、启动日志 |
-| p2 | 128 MiB | btrfs | 槽 A：`@sys` + `@wf` |
-| p3 | 128 MiB | btrfs | 槽 B：`@sys` + `@wf` |
-| p4 | 至盘尾 | btrfs | `@overlay.genNNNN`、`@docker`、`@swap`、`@data` |
+| p2 | 128 MiB | btrfs | 槽 A：`@sys` + `@platform` |
+| p3 | 128 MiB | btrfs | 槽 B：`@sys` + `@platform` |
+| p4 | 至盘尾 | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
 
 - `@sys` —— 上游 rootfs，只读
-- `@wf` —— 平台工具，随槽版本绑定，只读
-- `@overlay.genNNNN` —— 全部可写状态，两槽共享
+- `@platform` —— 平台工具，随槽版本绑定，只读
+- `@overlay-<版本>` —— 全部可写状态，两槽共享
 
 ## 启动链
 
 1. GRUB 从 p1 读取槽状态，选择内核与 initrd。
 2. initramfs 先挂载 p4 可写层，再挂载槽内只读层。
-3. overlayfs 合成根：`lowerdir=@wf:@sys`，`upperdir=@overlay.genN/upper`。
+3. overlayfs 合成根：`lowerdir=@platform:@sys`，`upperdir=@overlay-<version>/upper`。
 4. `switch_root` 进入系统。
 
 ## 更新与回退

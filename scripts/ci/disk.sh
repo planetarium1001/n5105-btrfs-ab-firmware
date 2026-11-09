@@ -3,10 +3,10 @@
 #
 # Geometry, frozen by docs/partitions.md:
 #
-#   p1  wf-esp     128 MiB  vfat   GRUB, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
-#   p2  wf-slot-a  128 MiB  btrfs  @sys, @wf
-#   p3  wf-slot-b  128 MiB  btrfs  @sys, @wf
-#   p4  wf-shared   64 MiB  btrfs  @overlay.gen0001 (upper/, work/), @docker, @swap, @data
+#   p1  ab-esp     128 MiB  vfat   GRUB, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
+#   p2  ab-slot-a  128 MiB  btrfs  @sys, @platform
+#   p3  ab-slot-b  128 MiB  btrfs  @sys, @platform
+#   p4  ab-shared   64 MiB  btrfs  @overlay-<version> (upper/, work/), @docker, @swap, @data
 #
 # The image is 450 MiB: 1 MiB of alignment before p1, 448 MiB of partitions and 1 MiB
 # of tail so the backup GPT has room. p4 only ships 64 MiB by design; first boot grows
@@ -22,8 +22,8 @@
 #   CI_INITRAMFS      initramfs image to install as initrd-a/b for now
 #   CI_DISK_DIR       scratch directory (default: $CI_TMP_ROOT/disk)
 #   CI_DISK_OUT       output image path (default: $CI_DISK_DIR/<name>.img)
-#   CI_PLATFORM_VERSION  version recorded in the @wf skeleton
-#   CI_UPSTREAM_VERSION  upstream release label recorded in @wf
+#   CI_PLATFORM_VERSION  version recorded in the @platform skeleton
+#   CI_UPSTREAM_VERSION  upstream release label recorded in @platform
 #
 # Outputs: image_path, image_gz_path, image_bytes, image_gz_bytes, rootfs_files,
 #          rootfs_bytes, esp_bytes, part_layout
@@ -51,9 +51,12 @@ initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required}"
 rootfs_tar="${fetch_dir}/upstream/rootfs.tar.gz"
 kernel="${fetch_dir}/upstream/kernel.bin"
 disk_dir="${CI_DISK_DIR:-${CI_TMP_ROOT}/disk}"
-image="${CI_DISK_OUT:-${disk_dir}/wf-ab-image.img}"
+image="${CI_DISK_OUT:-${disk_dir}/n5105-ab-image.img}"
 platform_version="${CI_PLATFORM_VERSION:-0.0.1}"
-upstream_version="${CI_UPSTREAM_VERSION:-unknown}"
+upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required, the writable layer is named after it}"
+# The writable layer is named after the upstream release: @overlay-<version>, with a
+# -r<N> suffix when the same release is shipped again with a different platform layer.
+overlay_name="${CI_OVERLAY_NAME:-@overlay-${upstream_version}}"
 
 [ -f "${rootfs_tar}" ] || ci_die "upstream rootfs not found: ${rootfs_tar}"
 [ -f "${kernel}" ] || ci_die "upstream kernel not found: ${kernel}"
@@ -95,10 +98,10 @@ label: gpt
 label-id: 6E353130-352D-4142-4653-000000000001
 unit: sectors
 
-start=   2048, size=262144, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="wf-esp"
-start= 264192, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="wf-slot-a"
-start= 526336, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="wf-slot-b"
-start= 788480, size=131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="wf-shared"
+start=   2048, size=262144, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="ab-esp"
+start= 264192, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-slot-a"
+start= 526336, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-slot-b"
+start= 788480, size=131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-shared"
 SFDISK
 # Re-attach so the kernel scans the table it has just been given; this is more
 # reliable than poking the in-kernel table with partx.
@@ -163,8 +166,8 @@ sudo tee "${p1}/ab/state.json" >/dev/null <<STATE
   "committed": "a",
   "pending": null,
   "slots": {
-    "a": { "rootfs": "${upstream_version}", "upper_gen": 1 },
-    "b": { "rootfs": "${upstream_version}", "upper_gen": 1 }
+    "a": { "rootfs": "${upstream_version}", "upper": "${overlay_name}" },
+    "b": { "rootfs": "${upstream_version}", "upper": "${overlay_name}" }
   }
 }
 STATE
@@ -199,41 +202,41 @@ populate_slot() {
     sudo mkfs.btrfs -f -m dup -d single -L "${label}" "${device}" >"${disk_dir}/mkfs-${tag}.log" 2>&1
     mount_part "${device}" "${tag}"
     local mnt="${mount_target}"
-    sudo btrfs subvolume create "${mnt}/@sys" "${mnt}/@wf" >/dev/null
+    sudo btrfs subvolume create "${mnt}/@sys" "${mnt}/@platform" >/dev/null
     sudo cp -a "${rootfs_tree}/." "${mnt}/@sys/"
 
-    # @wf is only a skeleton until S5 fills the platform layer; the paths it will
+    # @platform is only a skeleton until S5 fills the platform layer; the paths it will
     # mirror (/usr/sbin, /etc) are already there so the overlay lowerdir is valid.
-    sudo mkdir -p "${mnt}/@wf/usr/sbin" "${mnt}/@wf/etc"
-    sudo touch "${mnt}/@wf/usr/sbin/.keep"
+    sudo mkdir -p "${mnt}/@platform/usr/sbin" "${mnt}/@platform/etc"
+    sudo touch "${mnt}/@platform/usr/sbin/.keep"
     {
-        printf 'WF_PLATFORM=%s\n' "${platform_version}"
-        printf 'WF_UPSTREAM=%s\n' "${upstream_version}"
-        printf 'WF_STAGE=s2-skeleton\n'
-    } | sudo tee "${mnt}/@wf/etc/wf-release" >/dev/null
-    sudo chmod 0644 "${mnt}/@wf/etc/wf-release"
+        printf 'PLATFORM_VERSION=%s\n' "${platform_version}"
+        printf 'UPSTREAM_VERSION=%s\n' "${upstream_version}"
+        printf 'PLATFORM_STAGE=s2-skeleton\n'
+    } | sudo tee "${mnt}/@platform/etc/platform-release" >/dev/null
+    sudo chmod 0644 "${mnt}/@platform/etc/platform-release"
 
     unmount_part "${mnt}"
-    ci_log "p${tag#p} populated: @sys (${rootfs_files} file(s)) + @wf skeleton"
+    ci_log "p${tag#p} populated: @sys (${rootfs_files} file(s)) + @platform skeleton"
 }
 
-populate_slot "${dev_p2}" "wf-slot-a" p2
-populate_slot "${dev_p3}" "wf-slot-b" p3
+populate_slot "${dev_p2}" "ab-slot-a" p2
+populate_slot "${dev_p3}" "ab-slot-b" p3
 
 # --------------------------------------------------------------------------- #
 # 4. p4: the shared writable partition
 # --------------------------------------------------------------------------- #
 
 # shellcheck disable=SC2024  # the log path is owned by the runner user
-sudo mkfs.btrfs -f -m single -d single -L "wf-shared" "${dev_p4}" >"${disk_dir}/mkfs-p4.log" 2>&1
+sudo mkfs.btrfs -f -m single -d single -L "ab-shared" "${dev_p4}" >"${disk_dir}/mkfs-p4.log" 2>&1
 mount_part "${dev_p4}" p4
 p4="${mount_target}"
-sudo btrfs subvolume create "${p4}/@overlay.gen0001" "${p4}/@docker" "${p4}/@swap" "${p4}/@data" >/dev/null
-sudo mkdir -p "${p4}/@overlay.gen0001/upper" "${p4}/@overlay.gen0001/work"
+sudo btrfs subvolume create "${p4}/${overlay_name}" "${p4}/@docker" "${p4}/@swap" "${p4}/@data" >/dev/null
+sudo mkdir -p "${p4}/${overlay_name}/upper" "${p4}/${overlay_name}/work"
 # Writable-container and swap subvolumes are allocated without COW or checksums.
 sudo chattr +C "${p4}/@docker" "${p4}/@swap"
 unmount_part "${p4}"
-ci_log "p4 populated: @overlay.gen0001, @docker, @swap, @data"
+ci_log "p4 populated: ${overlay_name}, @docker, @swap, @data"
 
 # --------------------------------------------------------------------------- #
 # 5. Close the image
@@ -251,13 +254,14 @@ gzip -9 -c "${image}" >"${gz_path}"
 gz_bytes="$(ci_file_size "${gz_path}")"
 ci_log "compressed in $(( $(date +%s) - now_start ))s: ${gz_bytes} bytes"
 
+ci_emit_output "overlay_name" "${overlay_name}"
 ci_emit_output "image_path" "${image}"
 ci_emit_output "image_gz_path" "${gz_path}"
 ci_emit_output "image_bytes" "${image_bytes}"
 ci_emit_output "image_gz_bytes" "${gz_bytes}"
 ci_emit_output "rootfs_files" "${rootfs_files}"
 ci_emit_output "rootfs_bytes" "${rootfs_bytes}"
-ci_emit_output "part_layout" "wf-esp:2048+262144,wf-slot-a:264192+262144,wf-slot-b:526336+262144,wf-shared:788480+131072"
+ci_emit_output "part_layout" "ab-esp:2048+262144,ab-slot-a:264192+262144,ab-slot-b:526336+262144,ab-shared:788480+131072"
 
 ci_log "image bytes: ${image_bytes}, gz bytes: ${gz_bytes}"
 ci_log "stage disk finished"

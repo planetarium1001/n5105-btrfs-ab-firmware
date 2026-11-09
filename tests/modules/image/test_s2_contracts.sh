@@ -28,10 +28,10 @@ geometry=$(sed -n '/^label: gpt$/,/^SFDISK$/p' "$disk_script" \
   | sed -E 's/.*start=[[:space:]]*([0-9]+), size=[[:space:]]*([0-9]+).*name="([^"]+)".*/\3 \1 \2/' \
   | paste -sd';' -)
 assert_eq "$geometry" \
-  "wf-esp 2048 262144;wf-slot-a 264192 262144;wf-slot-b 526336 262144;wf-shared 788480 131072" \
+  "ab-esp 2048 262144;ab-slot-a 264192 262144;ab-slot-b 526336 262144;ab-shared 788480 131072" \
   "ac-1 partition geometry matches the documented layout"
 
-esp_type=$(sed -n '/^label: gpt$/,/^SFDISK$/p' "$disk_script" | grep 'name="wf-esp"' || true)
+esp_type=$(sed -n '/^label: gpt$/,/^SFDISK$/p' "$disk_script" | grep 'name="ab-esp"' || true)
 assert_contains "$esp_type" "C12A7328-F81F-11D2-BA4B-00A0C93EC93B" \
   "ac-1 p1 is typed as an EFI system partition"
 
@@ -40,8 +40,10 @@ assert_contains "$(cat "$disk_script")" "mkfs.btrfs -f -m dup -d single" \
   "ac-2 p2/p3 use metadata duplication"
 assert_contains "$(cat "$disk_script")" "mkfs.btrfs -f -m single -d single" \
   "ac-2 p4 uses single metadata"
-assert_contains "$(cat "$disk_script")" "@overlay.gen0001" \
-  "ac-2 the first writable generation is created"
+assert_contains "$(cat "$disk_script")" '@overlay-${upstream_version}' \
+  "ac-2 the writable layer is named after the upstream version"
+assert_contains "$(cat "$disk_script")" '"upper": "${overlay_name}"' \
+  "ac-2 the state file records the layer name, not a number"
 assert_contains "$(cat "$disk_script")" 'chattr +C' \
   "ac-2 @docker and @swap are allocated without COW"
 

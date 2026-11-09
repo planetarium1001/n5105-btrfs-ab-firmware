@@ -4,9 +4,9 @@
 # Runs as the initramfs init (`init=/s2.sh`) with the assembled image attached as
 # /dev/vda, and checks the geometry that docs/partitions.md freezes:
 #
-#   1. four partitions with PARTLABELs wf-esp / wf-slot-a / wf-slot-b / wf-shared
+#   1. four partitions with PARTLABELs ab-esp / ab-slot-a / ab-slot-b / ab-shared
 #   2. sizes 128 / 128 / 128 / 64 MiB
-#   3. p2 and p3 hold @sys and @wf, p4 holds @overlay.gen0001, @docker, @swap and
+#   3. p2 and p3 hold @sys and @platform, p4 holds @overlay-<version>, @docker, @swap and
 #      @data, all top level with nothing nested
 #   4. @sys file count matches the upstream tree, sampled digests match
 #   5. p1 content stays under 64 MiB
@@ -84,6 +84,7 @@ expect_files=""
 expect_images=""
 expect_parts=""
 expect_p1max=""
+expect_overlay=""
 SAMPLES=""
 # The file mixes "key=value" lines and "sample <path> <sha256>" lines, so the field
 # separator covers both space and '='.
@@ -93,11 +94,18 @@ while IFS=' =' read -r key value extra; do
         images) expect_images="${value}" ;;
         parts) expect_parts="${value}" ;;
         p1max_kib) expect_p1max="${value}" ;;
+        overlay) expect_overlay="${value}" ;;
         sample) SAMPLES="${SAMPLES}${value}=${extra} " ;;
         *) : ;;
     esac
 done <"${EXPECT_FILE}"
 [ -n "${expect_images}" ] || report_failure bad-expect-file
+[ -n "${expect_overlay}" ] || report_failure bad-expect-file
+case "${expect_overlay}" in
+    @overlay-*) : ;;
+    *) report_failure "overlay-name-${expect_overlay}" ;;
+esac
+echo "[s2] writable layer: ${expect_overlay}"
 echo "[s2] expected ${expect_parts} partition(s), ${expect_files} file(s) in @sys, image ${expect_images} bytes"
 
 # --------------------------------------------------------------------------- #
@@ -159,7 +167,7 @@ if [ -z "$(printf '%s' "${labels}" | tr -d ',')" ]; then
     report_failure label-unreadable
 fi
 echo "[s2] labels (${label_source}): ${labels}"
-[ "${labels}" = "wf-esp,wf-slot-a,wf-slot-b,wf-shared" ] || report_failure "labels-${labels}"
+[ "${labels}" = "ab-esp,ab-slot-a,ab-slot-b,ab-shared" ] || report_failure "labels-${labels}"
 
 # Sizes come from sysfs, which is the kernel's own view of the GPT.
 want_sizes="262144 262144 262144 131072"
@@ -196,16 +204,16 @@ expect_subvolumes() {
     echo "[s2] p${_part}: ${_want}"
 }
 
-expect_subvolumes 2 "@sys,@wf"
-expect_subvolumes 3 "@sys,@wf"
-expect_subvolumes 4 "@data,@docker,@overlay.gen0001,@swap"
+expect_subvolumes 2 "@sys,@platform"
+expect_subvolumes 3 "@sys,@platform"
+expect_subvolumes 4 "@data,@docker,${expect_overlay},@swap"
 
 mount -t btrfs -o ro "${DEV}4" /mnt || report_failure p4-mount-failed
 for entry in upper work; do
-    [ -d "/mnt/@overlay.gen0001/${entry}" ] || report_failure "overlay-${entry}-missing"
+    [ -d "/mnt/${expect_overlay}/${entry}" ] || report_failure "overlay-${entry}-missing"
 done
 umount /mnt
-echo "[s2] @overlay.gen0001 contains plain upper/ and work/"
+echo "[s2] ${expect_overlay} contains plain upper/ and work/"
 
 # --------------------------------------------------------------------------- #
 # 4. @sys content
@@ -213,7 +221,7 @@ echo "[s2] @overlay.gen0001 contains plain upper/ and work/"
 
 mount -t btrfs -o ro "${DEV}2" /mnt || report_failure p2-mount-failed
 [ -d /mnt/@sys ] || report_failure no-at-sys
-[ -d /mnt/@wf ] || report_failure no-at-wf
+[ -d /mnt/@platform ] || report_failure no-at-platform
 sys_files="$(find /mnt/@sys -type f | wc -l | tr -d ' ')"
 echo "[s2] @sys has ${sys_files} file(s), expected ${expect_files}"
 [ "${sys_files}" = "${expect_files}" ] || report_failure "at-sys-files-${sys_files}"

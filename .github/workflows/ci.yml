@@ -205,7 +205,7 @@ jobs:
       s3_line: ${{ needs.s3.outputs.judge_line }}
       s3_line_boot2: ${{ needs.s3.outputs.judge_line_boot2 }}
       s3_slot: ${{ needs.s3.outputs.slot }}
-      s3_generation: ${{ needs.s3.outputs.generation }}
+      s3_upper: ${{ needs.s3.outputs.upper }}
       design_checks_status: ${{ needs.verify.outputs.design_checks_status }}
       design_checks_problems: ${{ needs.verify.outputs.design_checks_problems }}
       shellcheck_status: ${{ needs.verify.outputs.shellcheck_status }}

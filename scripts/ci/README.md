@@ -156,10 +156,10 @@ tail for the backup table) with the geometry frozen in `docs/partitions.md`:
 
 | Partition | PARTLABEL | Sectors | Filesystem |
 |---|---|---|---|
-| p1 | `wf-esp` | 262144 (128 MiB) | vfat |
-| p2 | `wf-slot-a` | 262144 (128 MiB) | btrfs `-m dup -d single` |
-| p3 | `wf-slot-b` | 262144 (128 MiB) | btrfs `-m dup -d single` |
-| p4 | `wf-shared` | 131072 (64 MiB) | btrfs `-m single -d single` |
+| p1 | `ab-esp` | 262144 (128 MiB) | vfat |
+| p2 | `ab-slot-a` | 262144 (128 MiB) | btrfs `-m dup -d single` |
+| p3 | `ab-slot-b` | 262144 (128 MiB) | btrfs `-m dup -d single` |
+| p4 | `ab-shared` | 131072 (64 MiB) | btrfs `-m single -d single` |
 
 The image is verified twice:
 
@@ -189,23 +189,23 @@ reads `ab/state.json` from the ESP, then composes the running root in the order
 
 | Step | Command (abridged) | Why this order |
 |---|---|---|
-| 1 | `mount -o rw,noatime,compress=zstd:6,discard=async,subvol=/@overlay.genNNNN p4 /mnt/p4` | `compress=` is fixed by the first mount of a filesystem |
-| 2 | `mount -o ro,noatime,subvol=/@wf p2 /mnt/@wf` | platform layer, mounted read-only |
+| 1 | `mount -o rw,noatime,compress=zstd:6,discard=async,subvol=/@overlay-<version> p4 /mnt/p4` | `compress=` is fixed by the first mount of a filesystem |
+| 2 | `mount -o ro,noatime,subvol=/@platform p2 /mnt/@platform` | platform layer, mounted read-only |
 | 3 | `mount -o ro,noatime,subvol=/@sys p2 /mnt/@sys` | upstream layer, mounted read-only |
-| 4 | `mount -t overlay -o lowerdir=/mnt/@wf:/mnt/@sys,upperdir=/mnt/p4/upper,workdir=/mnt/p4/work,index=off overlay /newroot` | platform layer wins the lower merge |
+| 4 | `mount -t overlay -o lowerdir=/mnt/@platform:/mnt/@sys,upperdir=/mnt/p4/upper,workdir=/mnt/p4/work,index=off overlay /newroot` | platform layer wins the lower merge |
 
 The read-only layers are mounted under `@`-names so the overlay command line carries
-both layer names verbatim, which is what the judge line reports as `lower=wf:sys`.
+both layer names verbatim, which is what the judge line reports as `lower=platform:sys`.
 
 `switch_root` then hands control to `/s3-post.sh`, which re-checks everything from
-inside the composed root: `/` is the overlay, `@wf` and `@sys` both contribute files,
+inside the composed root: `/` is the overlay, `@platform` and `@sys` both contribute files,
 probe writes appear in `<generation>/upper` and in neither read-only layer, and the
 probe written by the previous boot is still there. It ends by executing `/sbin/init`,
 so the boot proves the root is a working system; the harness stops the machine as soon
 as the judge line appears.
 
 ```
-S3-RESULT=ok slot=<a|b> gen=<N> lower=<wf:sys> upper=<gen> root=<overlay>
+S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=<overlay>
 S3-RESULT=fail reason=<token>
 ```
 
@@ -220,7 +220,9 @@ Two consequences worth knowing:
   `kmod-nls-iso8859-1`; `kmod-nls-base` is virtual. `scripts/ci/kmod-closure.json`
   therefore pins 18 packages / 20 modules.
 - `ab/state.json` ships in the image with the installation state (both slots on
-  generation 1, slot `a` committed). S4 starts updating it; the parser in
-  `initramfs/lib/wf.sh` fails on an unreadable state rather than falling back to a
-  default slot.
+  `@overlay-<version>`, generation 1, slot `a` committed). S4 starts updating it; the
+  parser in `initramfs/lib/wf.sh` fails on an unreadable state rather than falling back
+  to a default slot. The writable layer is named after the upstream release
+  (`@overlay-25.12.2`, or `@overlay-25.12.2-r2` for a re-release); `generation` stays
+  an integer because version strings do not sort correctly.
 

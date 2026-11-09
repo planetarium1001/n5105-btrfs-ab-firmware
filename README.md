@@ -13,7 +13,7 @@ Application-level packaging and configuration are out of scope.
 |---|---|
 | Target hardware | N5105 v5, x86-64, UEFI, 4× Intel i226-V |
 | Base system | ImmortalWrt, rootfs kept byte-identical to upstream |
-| Project-owned content | Build layer, boot layer, and the `@wf` platform layer only |
+| Project-owned content | Build layer, boot layer, and the `@platform` platform layer only |
 | Boot | UEFI only; no legacy/BIOS support, no multi-board support |
 
 ## Disk layout
@@ -21,19 +21,19 @@ Application-level packaging and configuration are out of scope.
 | Partition | Size | Filesystem | Contents |
 |---|---|---|---|
 | p1 | 128 MiB | vfat | GRUB, slot state, boot logs |
-| p2 | 128 MiB | btrfs | Slot A: `@sys` + `@wf` |
-| p3 | 128 MiB | btrfs | Slot B: `@sys` + `@wf` |
-| p4 | rest of disk | btrfs | `@overlay.genNNNN`, `@docker`, `@swap`, `@data` |
+| p2 | 128 MiB | btrfs | Slot A: `@sys` + `@platform` |
+| p3 | 128 MiB | btrfs | Slot B: `@sys` + `@platform` |
+| p4 | rest of disk | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
 
 - `@sys` — upstream rootfs, read-only
-- `@wf` — platform tooling, versioned with the slot, read-only
-- `@overlay.genNNNN` — all writable state, shared by both slots
+- `@platform` — platform tooling, versioned with the slot, read-only
+- `@overlay-<version>` — all writable state, shared by both slots
 
 ## Boot chain
 
 1. GRUB reads slot state from p1 and selects kernel and initrd.
 2. The initramfs mounts the p4 writable layer, then the read-only slot layers.
-3. overlayfs composes the root: `lowerdir=@wf:@sys`, `upperdir=@overlay.genN/upper`.
+3. overlayfs composes the root: `lowerdir=@platform:@sys`, `upperdir=@overlay-<version>/upper`.
 4. `switch_root` enters the system.
 
 ## Update and rollback

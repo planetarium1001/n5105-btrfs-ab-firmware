@@ -20,29 +20,29 @@ and one writable layer on the shared partition.
 | Layer | Subvolume | Mode | Contents | Written by |
 |---|---|---|---|---|
 | Upstream system | `@sys` | ro | Upstream rootfs, byte-identical | updates only |
-| Platform | `@wf` | ro | `ab-slot`, init.d hooks, recovery tooling | updates only |
-| User state | `@overlay.genN` | rw | Configuration, installed packages, user files | runtime |
+| Platform | `@platform` | ro | `ab-slot`, init.d hooks, recovery tooling | updates only |
+| User state | `@overlay-<version>` | rw | Configuration, installed packages, user files | runtime |
 
-`@wf` is versioned with the slot: it is written during an update and rolls back with the slot.
+`@platform` is versioned with the slot: it is written during an update and rolls back with the slot.
 
 ## Mount composition
 
 ```
 / = overlay(
-      lowerdir=/mnt/wf:/mnt/sys,
-      upperdir=/mnt/p4/@overlay.gen0002/upper,
-      workdir=/mnt/p4/@overlay.gen0002/work,
+      lowerdir=/mnt/@platform:/mnt/@sys,
+      upperdir=/mnt/p4/@overlay-25.12.2/upper,
+      workdir=/mnt/p4/@overlay-25.12.2/work,
       index=off,metacopy=off,redirect_dir=off )
 ```
 
-- `lowerdir` order is fixed as `@wf:@sys`; the platform layer takes precedence
+- `lowerdir` order is fixed as `@platform:@sys`; the platform layer takes precedence
 - `index=off` avoids the in-use exclusion lock and stale index entries after rollback
 - the `volatile` option is never used
 
 ## Mount order
 
-1. Mount `@overlay.genN` from p4 with `rw,compress=zstd:6,discard=async`
-2. Mount `@wf` with `ro`
+1. Mount `@overlay-<version>` from p4 with `rw,compress=zstd:6,discard=async`
+2. Mount `@platform` with `ro`
 3. Mount `@sys` with `ro`
 4. Assert that the `/proc/mounts` entry contains `compress=`
 
@@ -51,7 +51,7 @@ mounting a read-only layer first leaves the parameter out of the kernel.
 
 ## How the platform layer takes effect
 
-`@wf` mirrors final filesystem paths:
+`@platform` mirrors final filesystem paths:
 
 - `/usr/sbin/ab-slot`
 - `/etc/init.d/ab-boot`
@@ -81,4 +81,4 @@ The rendered configuration must satisfy all of the following, otherwise the buil
 | p4 fails to mount | Retry, then try `recovery` read-only, then boot degraded with a tmpfs upper |
 
 A degraded boot keeps `upperdir` in tmpfs: the system runs but does not persist writes.
-`ab-slot status` remains available because `@wf` lives on p2/p3, not on p4.
+`ab-slot status` remains available because `@platform` lives on p2/p3, not on p4.

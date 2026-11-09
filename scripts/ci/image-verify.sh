@@ -6,9 +6,9 @@
 # structural part from inside the guest, which is the independent view.
 #
 # Checks:
-#   1. four partitions, PARTLABELs exactly wf-esp / wf-slot-a / wf-slot-b / wf-shared
+#   1. four partitions, PARTLABELs exactly ab-esp / ab-slot-a / ab-slot-b / ab-shared
 #   2. sizes exactly 128/128/128/64 MiB, p1 typed as EFI system partition
-#   3. p2/p3 hold exactly @sys and @wf; p4 holds @overlay.gen0001, @docker, @swap,
+#   3. p2/p3 hold exactly @sys and @platform; p4 holds @overlay-<version>, @docker, @swap,
 #      @data; every subvolume is top level and nothing is nested
 #   4. @sys matches the upstream rootfs tree file for file (content compare)
 #   5. p1 content stays under 64 MiB
@@ -19,6 +19,7 @@
 #   CI_DISK_DIR       scratch directory used by the disk stage (holds rootfs tree)
 #   CI_EXPECT_OUT     where to write the guest expectation file
 #   CI_SAMPLES        how many @sys files to sample for the guest (default: 12)
+#   CI_OVERLAY_NAME   writable layer name (default: @overlay-${CI_UPSTREAM_VERSION})
 #
 # Outputs: image_bytes, rootfs_files, esp_bytes, expect_file, verified_checks
 
@@ -44,6 +45,8 @@ disk_dir="${CI_DISK_DIR:-${CI_TMP_ROOT}/disk}"
 expect_out="${CI_EXPECT_OUT:-${disk_dir}/s2-expect.txt}"
 sample_count="${CI_SAMPLES:-12}"
 rootfs_tree="${disk_dir}/rootfs"
+upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
+overlay_name="${CI_OVERLAY_NAME:-@overlay-${upstream_version}}"
 
 [ -f "${image}" ] || ci_die "image not found: ${image}"
 [ -d "${rootfs_tree}" ] || ci_die "rootfs tree not found: ${rootfs_tree}"
@@ -86,10 +89,10 @@ import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))["partitiontable"]
 parts = doc["partitions"]
 want = [
-    ("wf-esp", 262144, "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"),
-    ("wf-slot-a", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
-    ("wf-slot-b", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
-    ("wf-shared", 131072, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
+    ("ab-esp", 262144, "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"),
+    ("ab-slot-a", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
+    ("ab-slot-b", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
+    ("ab-shared", 131072, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
 ]
 problems = []
 if len(parts) != len(want):
@@ -151,11 +154,11 @@ assert_subvolumes() {
     done
 }
 
-assert_subvolumes 2 "@sys,@wf"
-note "p2 holds @sys and @wf at the top level, no nesting"
+assert_subvolumes 2 "@sys,@platform"
+note "p2 holds @sys and @platform at the top level, no nesting"
 
-assert_subvolumes 3 "@sys,@wf"
-note "p3 holds @sys and @wf at the top level, no nesting"
+assert_subvolumes 3 "@sys,@platform"
+note "p3 holds @sys and @platform at the top level, no nesting"
 
 # If btrfs refuses `subvolume list -o` a nested subvolume can still be caught through
 # the sorted path list: a nested entry would be listed as e.g. "@sys/child".
@@ -165,19 +168,19 @@ for part in 2 3; do
     fi
 done
 
-assert_subvolumes 4 "@data,@docker,@overlay.gen0001,@swap"
-note "p4 holds @overlay.gen0001, @docker, @swap and @data at the top level"
+assert_subvolumes 4 "@data,@docker,${overlay_name},@swap"
+note "p4 holds ${overlay_name}, @docker, @swap and @data at the top level"
 
 p4="${mntroot}/p4"
 mkdir -p "${p4}"
 sudo mount -o ro "${loopdev}p4" "${p4}"
 for entry in upper work; do
-    [ -d "${p4}/@overlay.gen0001/${entry}" ] || ci_die "@overlay.gen0001/${entry} is missing"
-    if sudo btrfs subvolume list "${p4}" | grep -q "@overlay.gen0001/${entry}"; then
-        ci_die "@overlay.gen0001/${entry} must be a plain directory, not a subvolume"
+    [ -d "${p4}/${overlay_name}/${entry}" ] || ci_die "${overlay_name}/${entry} is missing"
+    if sudo btrfs subvolume list "${p4}" | grep -q "${overlay_name}/${entry}"; then
+        ci_die "${overlay_name}/${entry} must be a plain directory, not a subvolume"
     fi
 done
-note "@overlay.gen0001 contains plain upper/ and work/ directories"
+note "${overlay_name} contains plain upper/ and work/ directories"
 
 for swap_like in "@docker" "@swap"; do
     attrs="$(sudo lsattr -d "${p4}/${swap_like}" | awk '{print $1}')"
@@ -213,6 +216,7 @@ note "@sys matches the upstream rootfs tree (${sys_files} files, content compare
 printf 'files=%s\n' "${sys_files}" >"${expect_out}"
 printf 'images=%s\n' "$(ci_file_size "${image}")" >>"${expect_out}"
 printf 'parts=4\n' >>"${expect_out}"
+printf 'overlay=%s\n' "${overlay_name}" >>"${expect_out}"
 printf 'p1max_kib=65536\n' >>"${expect_out}"
 # awk bounds the list without closing the pipe early: head would make sort die on
 # SIGPIPE, and pipefail turns that into a stage failure.
@@ -225,13 +229,20 @@ sudo find "${rootfs_tree}" -type f -size +0 -size -256k | LC_ALL=C sort \
 sudo umount "${p2}"
 note "wrote ${expect_out} with ${sample_count} sample digest(s)"
 
+p1="${mntroot}/p1"
+mkdir -p "${p1}"
+sudo mount -o ro "${loopdev}p1" "${p1}"
+
+# The state file the boot initramfs reads has to name the layer that exists.
+state_uppers="$(sudo sed -n 's/.*"upper": *"\([^"]*\)".*/\1/p' "${p1}/ab/state.json" 2>/dev/null | sort -u | paste -sd, -)"
+[ "${state_uppers}" = "${overlay_name}" ] \
+    || ci_die "ab/state.json names '${state_uppers}', the image carries '${overlay_name}'"
+note "ab/state.json names the ${overlay_name} layer"
+
 # --------------------------------------------------------------------------- #
 # 5. p1 budget and structure
 # --------------------------------------------------------------------------- #
 
-p1="${mntroot}/p1"
-mkdir -p "${p1}"
-sudo mount -o ro "${loopdev}p1" "${p1}"
 esp_bytes="$(sudo du -sb "${p1}" | cut -f1)"
 esp_kib="$(sudo du -sk "${p1}" | cut -f1)"
 if [ "${esp_bytes}" -ge $((64 * 1024 * 1024)) ]; then

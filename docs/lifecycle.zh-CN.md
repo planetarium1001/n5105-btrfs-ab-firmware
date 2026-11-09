@@ -2,16 +2,23 @@
 
 [English](lifecycle.md) | **简体中文**
 
-## 代号模型
+## 可写层命名
 
-可写层不是固定名称，而是代号：`@overlay.genNNNN`。
-每次更新创建新代号，任何子卷都不重命名。
+可写层按它所属的上游版本命名，形如 `@overlay-<版本>`，例如 `@overlay-25.12.2`。
+每次更新创建新层，任何子卷都不重命名。
+
+复用版本号让名字自解释：可写层、槽内 rootfs 与上游发行版读作同一件事。
+由于同一个上游版本可能配不同的平台层重出一次，重复的版本号追加序号，
+形如 `@overlay-25.12.2-r2`。
+
+名字给人看，顺序不从名字推导。`ab/state.json` 仍带一个只增不减的整数 `generation`，
+回收按它排序。
 
 由此得到：
 
-- 不存在被占用的临时名，即使系统从未重启也能创建下一个代号
+- 不存在被占用的临时名，即使系统从未重启也能创建下一层
 - 回退只移动指针，不复制数据
-- 稳态恰好两个代号，每槽一个
+- 稳态恰好两层，每槽一个
 
 ## 状态文件
 
@@ -23,8 +30,8 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
   "committed": "b",
   "pending": null,
   "slots": {
-    "a": { "rootfs": "25.12.3", "upper_gen": 3 },
-    "b": { "rootfs": "25.12.2", "upper_gen": 2 }
+    "a": { "rootfs": "25.12.3", "upper": "@overlay-25.12.3" },
+    "b": { "rootfs": "25.12.2", "upper": "@overlay-25.12.2" }
   }
 }
 ```
@@ -33,14 +40,14 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 
 | 事件 | p4 | p1 状态 |
 |---|---|---|
-| 安装 | 创建 `gen0001`、`@docker`、`@swap`、`@data` | `a`、`b` 指向 gen1，`committed=a` |
-| 更新槽 B | `snapshot gen1 -> gen2`，写 p3 | `pending=b`，`b` 指向 gen2 |
+| 安装 | 创建 `@overlay-25.12.2`、`@docker`、`@swap`、`@data` | `a`、`b` 同指该层，`committed=a` |
+| 更新槽 B 到 25.12.3 | `snapshot @overlay-25.12.2 -> @overlay-25.12.3`，写 p3 | `pending=b`，更新 `b.upper` |
 | B 健康启动 | — | `committed=b`，清除 pending，回收 |
-| 更新槽 A | `snapshot gen2 -> gen3`，写 p2 | `pending=a`，`a` 指向 gen3 |
-| A 健康启动 | 删除 gen1 | `committed=a`，清除 pending |
+| 更新槽 A 到 25.12.4 | `snapshot @overlay-25.12.3 -> @overlay-25.12.4`，写 p2 | `pending=a`，更新 `a.upper` |
+| A 健康启动 | 删除 `@overlay-25.12.2` | `committed=a`，清除 pending |
 | 回退 | — | 把 `committed` 切到另一槽 |
 
-快照目标永远是当前活动代号。快照前先 `sync` 并停止写入方；
+快照源永远是当前活动层。快照前先 `sync` 并停止写入方；
 一致性口径为崩溃一致，而非应用一致。
 
 ## 健康检查
@@ -57,13 +64,13 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 
 ## 回收
 
-引用集合为 `slots.a.upper_gen` ∪ `slots.b.upper_gen` ∪ `pending.upper_gen`。
-集合之外的 `@overlay.gen*` 全部删除。
+引用集合为 `slots.a.upper` ∪ `slots.b.upper` 加上待提交槽的层。
+集合之外的 `@overlay-*` 全部删除，按 `generation` 从小到大。
 
 四条安全规则：
 
-1. 不删除当前挂载中的代号（检查 `/proc/mounts`）
-2. 不删除 `pending` 引用的代号
+1. 不删除当前挂载中的层（检查 `/proc/mounts`）
+2. 不删除待提交槽引用的层
 3. 执行 `btrfs subvolume delete -C` 后再执行 `btrfs subvolume sync`，仅删除不会立即释放空间
 4. 盘空间紧张时不执行全量 balance，balance 自身需要空闲空间
 
@@ -99,7 +106,7 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 记录字段冻结为 `key=value`：
 
 ```
-stage=<阶段> slot=<a|b> upper_gen=<N> rootfs=<版本> result=<ok|fail>
+stage=<阶段> slot=<a|b> upper=<层名> rootfs=<版本> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
 reason=<lower-mount-failed|overlay-failed|healthcheck-failed>
 action=<commit|reboot-to-committed|degraded-boot>
@@ -117,4 +124,4 @@ action=<commit|reboot-to-committed|degraded-boot>
 
 ## 边界
 
-回退深度为一代。更新会覆盖目标槽的 rootfs，更早的 rootfs 已不在磁盘上。
+回退深度为一层。更新会覆盖目标槽的 rootfs，更早的 rootfs 已不在磁盘上。

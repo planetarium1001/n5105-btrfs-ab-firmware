@@ -10,10 +10,10 @@
 
 | 分区 | PARTLABEL | 大小 | 文件系统 | 内容 |
 |---|---|---|---|---|
-| p1 | `wf-esp` | 128 MiB | vfat | GRUB、`grubenv`、`vmlinuz-a/b`、`initrd-a/b`、`ab/` 状态、`ab/log/` |
-| p2 | `wf-slot-a` | 128 MiB | btrfs | `@sys`、`@wf` |
-| p3 | `wf-slot-b` | 128 MiB | btrfs | `@sys`、`@wf` |
-| p4 | `wf-shared` | 至盘尾 | btrfs | `@overlay.genNNNN`、`@docker`、`@swap`、`@data` |
+| p1 | `ab-esp` | 128 MiB | vfat | GRUB、`grubenv`、`vmlinuz-a/b`、`initrd-a/b`、`ab/` 状态、`ab/log/` |
+| p2 | `ab-slot-a` | 128 MiB | btrfs | `@sys`、`@platform` |
+| p3 | `ab-slot-b` | 128 MiB | btrfs | `@sys`、`@platform` |
+| p4 | `ab-shared` | 至盘尾 | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
 
 不使用 p128（EF02），不保留 legacy 引导路径。
 
@@ -65,8 +65,8 @@ p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接�
 | 挂载点 | 参数 |
 |---|---|
 | `@sys` | `ro,noatime,compress=zstd:6` |
-| `@wf` | `ro,noatime` |
-| `@overlay.genN` | `rw,noatime,compress=zstd:6,discard=async` |
+| `@platform` | `ro,noatime` |
+| `@overlay-<version>` | `rw,noatime,compress=zstd:6,discard=async` |
 | `@docker` | `rw,noatime,nodatacow,nodatasum` |
 | `@swap` | `rw,noatime,nodatacow,nodatasum` |
 | `@data` | `rw,noatime,compress=zstd:3` |
@@ -75,8 +75,8 @@ p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接�
 
 ## 子卷
 
-- p2 / p3：`@sys`、`@wf`
-- p4：`@overlay.genNNNN`（内含普通目录 `upper/` 与 `work/`）、`@docker`、`@swap`、`@data`
+- p2 / p3：`@sys`、`@platform`
+- p4：`@overlay-<版本>`（内含普通目录 `upper/` 与 `work/`）、`@docker`、`@swap`、`@data`
 
 全部为顶级子卷，不存在二级或嵌套子卷。
 `@docker` 与 `@swap` 必须独立：快照不递归进入嵌套子卷，且活动 swapfile 会阻止快照。

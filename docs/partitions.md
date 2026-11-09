@@ -11,10 +11,10 @@ shared partition for all writable state.
 
 | Partition | PARTLABEL | Size | Filesystem | Contents |
 |---|---|---|---|---|
-| p1 | `wf-esp` | 128 MiB | vfat | GRUB, `grubenv`, `vmlinuz-a/b`, `initrd-a/b`, `ab/` state, `ab/log/` |
-| p2 | `wf-slot-a` | 128 MiB | btrfs | `@sys`, `@wf` |
-| p3 | `wf-slot-b` | 128 MiB | btrfs | `@sys`, `@wf` |
-| p4 | `wf-shared` | rest of disk | btrfs | `@overlay.genNNNN`, `@docker`, `@swap`, `@data` |
+| p1 | `ab-esp` | 128 MiB | vfat | GRUB, `grubenv`, `vmlinuz-a/b`, `initrd-a/b`, `ab/` state, `ab/log/` |
+| p2 | `ab-slot-a` | 128 MiB | btrfs | `@sys`, `@platform` |
+| p3 | `ab-slot-b` | 128 MiB | btrfs | `@sys`, `@platform` |
+| p4 | `ab-shared` | rest of disk | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
 
 There is no p128 (EF02) and no legacy boot path.
 
@@ -68,8 +68,8 @@ The image ships 64 MiB. First boot grows it to the end of the disk and runs
 | Mount point | Options |
 |---|---|
 | `@sys` | `ro,noatime,compress=zstd:6` |
-| `@wf` | `ro,noatime` |
-| `@overlay.genN` | `rw,noatime,compress=zstd:6,discard=async` |
+| `@platform` | `ro,noatime` |
+| `@overlay-<version>` | `rw,noatime,compress=zstd:6,discard=async` |
 | `@docker` | `rw,noatime,nodatacow,nodatasum` |
 | `@swap` | `rw,noatime,nodatacow,nodatasum` |
 | `@data` | `rw,noatime,compress=zstd:3` |
@@ -79,8 +79,8 @@ read-only slot layers.
 
 ## Subvolumes
 
-- p2 / p3: `@sys`, `@wf`
-- p4: `@overlay.genNNNN` (containing plain directories `upper/` and `work/`), `@docker`, `@swap`, `@data`
+- p2 / p3: `@sys`, `@platform`
+- p4: `@overlay-<version>` (containing plain directories `upper/` and `work/`), `@docker`, `@swap`, `@data`
 
 All subvolumes are top-level. No second-level or nested subvolumes exist.
 `@docker` and `@swap` must stay independent: snapshots do not recurse into nested

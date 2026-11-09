@@ -18,29 +18,29 @@
 | 层 | 子卷 | 模式 | 内容 | 写入方 |
 |---|---|---|---|---|
 | 上游系统 | `@sys` | ro | 上游 rootfs，逐字节一致 | 仅升级 |
-| 平台 | `@wf` | ro | `ab-slot`、init.d 钩子、修复工具 | 仅升级 |
-| 用户状态 | `@overlay.genN` | rw | 配置、已安装软件、用户文件 | 运行期 |
+| 平台 | `@platform` | ro | `ab-slot`、init.d 钩子、修复工具 | 仅升级 |
+| 用户状态 | `@overlay-<version>` | rw | 配置、已安装软件、用户文件 | 运行期 |
 
-`@wf` 与槽版本绑定：升级时写入，回退时随槽退回。
+`@platform` 与槽版本绑定：升级时写入，回退时随槽退回。
 
 ## 挂载合成
 
 ```
 / = overlay(
-      lowerdir=/mnt/wf:/mnt/sys,
-      upperdir=/mnt/p4/@overlay.gen0002/upper,
-      workdir=/mnt/p4/@overlay.gen0002/work,
+      lowerdir=/mnt/@platform:/mnt/@sys,
+      upperdir=/mnt/p4/@overlay-25.12.2/upper,
+      workdir=/mnt/p4/@overlay-25.12.2/work,
       index=off,metacopy=off,redirect_dir=off )
 ```
 
-- `lowerdir` 顺序固定为 `@wf:@sys`，平台层优先
+- `lowerdir` 顺序固定为 `@platform:@sys`，平台层优先
 - `index=off` 避免 in-use 排他锁，以及回退后残留的 index 项
 - 不使用 `volatile` 选项
 
 ## 挂载顺序
 
-1. 以 `rw,compress=zstd:6,discard=async` 挂载 p4 的 `@overlay.genN`
-2. 以 `ro` 挂载 `@wf`
+1. 以 `rw,compress=zstd:6,discard=async` 挂载 p4 的 `@overlay-<version>`
+2. 以 `ro` 挂载 `@platform`
 3. 以 `ro` 挂载 `@sys`
 4. 断言 `/proc/mounts` 中该挂载行包含 `compress=`
 
@@ -48,7 +48,7 @@
 
 ## 平台层如何生效
 
-`@wf` 按最终路径组织：
+`@platform` 按最终路径组织：
 
 - `/usr/sbin/ab-slot`
 - `/etc/init.d/ab-boot`
@@ -77,4 +77,4 @@ overlayfs 会合并目录，procd 从合并视图读取 `/etc/init.d/*`，钩子
 | p4 挂载失败 | 重试，再以 `recovery` 只读挂载，最后用 tmpfs 上层降级启动 |
 
 降级启动时 `upperdir` 位于 tmpfs：系统可用但不持久。
-`ab-slot status` 仍可使用，因为 `@wf` 在 p2/p3 上，不在 p4。
+`ab-slot status` 仍可使用，因为 `@platform` 在 p2/p3 上，不在 p4。

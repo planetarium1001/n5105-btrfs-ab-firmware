@@ -17,7 +17,7 @@
 #   CI_S1_UEFI_LINE, CI_S1_APK_CROSSCHECK
 #   CI_S2_RESULT, CI_S2_LINE, CI_S2_IMAGE_BYTES, CI_S2_IMAGE_GZ_BYTES,
 #   CI_S2_ROOTFS_FILES, CI_S2_HOST_CHECKS
-#   CI_S3_RESULT, CI_S3_LINE, CI_S3_LINE_BOOT2, CI_S3_SLOT, CI_S3_GENERATION
+#   CI_S3_RESULT, CI_S3_LINE, CI_S3_LINE_BOOT2, CI_S3_SLOT, CI_S3_UPPER
 
 set -euo pipefail
 
@@ -102,8 +102,8 @@ fi
         "$(result_cell "${CI_S2_RESULT:-}")" \
         "$(human_bytes "${CI_S2_IMAGE_BYTES:-0}")" "$(human_bytes "${CI_S2_IMAGE_GZ_BYTES:-0}")" \
         "${CI_S2_ROOTFS_FILES:-n/a}" "${CI_S2_HOST_CHECKS:-n/a}"
-    printf '| s3 | %s | slot %s, generation %s, two boots |\n' \
-        "$(result_cell "${CI_S3_RESULT:-}")" "${CI_S3_SLOT:-n/a}" "${CI_S3_GENERATION:-n/a}"
+    printf '| s3 | %s | slot %s, layer %s, two boots |\n' \
+        "$(result_cell "${CI_S3_RESULT:-}")" "${CI_S3_SLOT:-n/a}" "${CI_S3_UPPER:-n/a}"
     printf '\n'
     printf 'Payload manifest sha256: `%s`\n' "${CI_PAYLOAD_MANIFEST_SHA256:-not produced}"
     if [ -n "${CI_S1_LINE:-}" ]; then
