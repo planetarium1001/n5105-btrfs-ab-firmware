@@ -130,34 +130,17 @@ say "ab-upgrade: manifest ok, ${format}, rootfs ${rootfs_version}, 4 members ver
 # 3. The initramfs must be built for the kernel in the payload
 # --------------------------------------------------------------------------- #
 
-# busybox tr is unreliable with '[:print:]', so the binary is scanned with grep -a -o
-# instead; that combination is what the boot probe already proved works.
-read_vermagic() {
-    grep -a -o 'vermagic=[[:print:]]*' "$1" 2>/dev/null | head -n 1 | sed 's/^vermagic=//'
-}
-
-kernel_version="$(read_vermagic "${work}/kernel.bin")"
-initrd_dir="${work}/initrd"
-mkdir -p "${initrd_dir}"
-module_version=""
-# Extracting needs cpio, which is not in every busybox build. A kernel module is stored
-# verbatim inside the cpio stream, so the vermagic can also be read straight from the
-# decompressed archive; that path needs nothing but gzip.
-if gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | (cd "${initrd_dir}" && cpio -id 2>/dev/null); then
-    btrfs_ko="$(find "${initrd_dir}" -name btrfs.ko -print 2>/dev/null | head -n 1)"
-    [ -n "${btrfs_ko}" ] && module_version="$(read_vermagic "${btrfs_ko}")"
-fi
-if [ -z "${module_version}" ]; then
-    module_version="$(gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null \
-        | grep -a -o 'vermagic=[[:print:]]*' | head -n 1 | sed 's/^vermagic=//')"
-fi
-[ -n "${module_version}" ] || refuse "initramfs-without-btrfs-module"
-[ -n "${kernel_version}" ] || refuse "kernel-without-vermagic"
-[ -n "${module_version}" ] || refuse "module-without-vermagic"
-kernel_short="${kernel_version%% *}"
+# The upstream kernel is an EFI stub, so its vermagic sits inside the compressed image
+# and cannot be read here. What can be checked is that the payload is internally
+# consistent: every module in its initramfs must come from one kernel build.
+module_vermagi="$(gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null \
+    | grep -a -o 'vermagic=[[:print:]]*' | sed 's/^vermagic=//' | sort -u)"
+module_count="$(printf '%s\n' "${module_vermagi}" | grep -c . || true)"
+[ "${module_count}" -ge 1 ] || refuse "initramfs-without-module-vermagic"
+[ "${module_count}" -eq 1 ] || refuse "initramfs-mixed-module-vermagic-${module_count}"
+module_version="$(printf '%s\n' "${module_vermagi}" | head -n 1)"
 module_short="${module_version%% *}"
-[ "${kernel_short}" = "${module_short}" ] || refuse "vermagic-mismatch-${kernel_short}-${module_short}"
-say "ab-upgrade: vermagic ok, kernel ${kernel_short}"
+say "ab-upgrade: modules agree on ${module_short}"
 
 # --------------------------------------------------------------------------- #
 # 4. Free space on the writable partition

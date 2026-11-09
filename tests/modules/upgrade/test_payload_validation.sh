@@ -55,13 +55,14 @@ mkdir -p "$esp/ab/log" "$p4"
 build_payload() {
   local dir="$1" version="$2"
   shift 2
-  local bad_format=0 missing="" bad_digest=0 module_ver="6.12.103" kernel_ver="6.12.103"
+  local bad_format=0 missing="" bad_digest=0 module_ver="6.12.103" kernel_ver="6.12.103" mixed_ver=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bad-format) bad_format=1; shift ;;
       --missing) missing="$2"; shift 2 ;;
       --bad-digest) bad_digest=1; shift ;;
       --vermagic) module_ver="$2"; kernel_ver="$3"; shift 3 ;;
+      --mixed-vermagic) mixed_ver="$2"; shift 2 ;;
       *) echo "bad arg $1" >&2; return 1 ;;
     esac
   done
@@ -72,6 +73,10 @@ build_payload() {
   tar -czf "$dir/rootfs.tar.gz" -C "$dir/rootfs" .
   printf 'vermagic=%s SMP mod_unload \n' "$kernel_ver" >"$dir/kernel.bin"
   printf 'vermagic=%s SMP mod_unload \n' "$module_ver" >"$dir/cpio/lib/modules/$module_ver/btrfs.ko"
+  if [ -n "$mixed_ver" ]; then
+    mkdir -p "$dir/cpio/lib/modules/$mixed_ver"
+    printf 'vermagic=%s SMP mod_unload \n' "$mixed_ver" >"$dir/cpio/lib/modules/$mixed_ver/other.ko"
+  fi
   ( cd "$dir/cpio" && find . -print | cpio -o -H newc 2>/dev/null ) | gzip -9 >"$dir/initramfs.cpio.gz"
   printf 'platform\n' >"$dir/platform-member.txt"
   tar -cf "$dir/platform.tar" -C "$dir" platform-member.txt
@@ -115,7 +120,7 @@ out="$(run_upgrade "$good")"
 assert_eq "$?" "0" "ac-1 a well formed payload passes the check"
 assert_contains "$out" "ab-upgrade: check only, nothing written" "ac-1 the check mode says so"
 assert_contains "$out" "manifest ok" "ac-1 the manifest is reported"
-assert_contains "$out" "vermagic ok" "ac-1 the vermagic is reported"
+assert_contains "$out" "modules agree on ${module_ver:-}" "ac-1 the module vermagic is reported"
 assert_file_exists "$esp/ab/conflicts.log" "ac-1 the conflict report is published on the ESP"
 assert_eq "$(tail -n 1 "$esp/ab/conflicts.log")" "conflicts=0 uci-defaults=0" \
   "ac-1 a payload without user edits reports no conflict"
@@ -137,11 +142,14 @@ out="$(run_upgrade "$bad_digest")"
 assert_eq "$?" "74" "ac-3 a digest mismatch is refused with 74"
 assert_contains "$out" "reason=digest-mismatch-rootfs.tar.gz" "ac-3 the refusal names the member"
 
-# --- ac-4 vermagic ----------------------------------------------------------
-mismatch="$(build_payload "$tmp/mismatch" 25.12.3 --vermagic 6.12.103 6.11.0)"
-out="$(run_upgrade "$mismatch")"
-assert_eq "$?" "74" "ac-4 an initramfs built for another kernel is refused with 74"
-assert_contains "$out" "reason=vermagic-mismatch" "ac-4 the refusal names the vermagic check"
+# --- ac-4 module consistency ------------------------------------------------
+# The upstream kernel is an EFI stub, so its vermagic cannot be read; what the check
+# enforces is that every module in the payload comes from one kernel build.
+mixed="$(build_payload "$tmp/mixed" 25.12.3 --vermagic 6.12.103 6.12.103 --mixed-vermagic 6.11.0)"
+out="$(run_upgrade "$mixed")"
+assert_eq "$?" "74" "ac-4 modules from two kernel builds are refused with 74"
+assert_contains "$out" "reason=initramfs-mixed-module-vermagic-2" \
+  "ac-4 the refusal names the inconsistency"
 
 # --- ac-5 space and degraded writable layer --------------------------------
 out="$(run_upgrade "$good" STUB_DF_TOTAL=1000000 STUB_DF_AVAIL=10000)"
