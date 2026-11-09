@@ -196,7 +196,7 @@ note "@docker and @swap are marked nodatacow"
 p2="${mntroot}/p2"
 mkdir -p "${p2}"
 sudo mount -o ro "${loopdev}p2" "${p2}"
-tree_files="$(find "${rootfs_tree}" -type f | wc -l | tr -d ' ')"
+tree_files="$(sudo find "${rootfs_tree}" -type f | wc -l | tr -d ' ')"
 sys_files="$(sudo find "${p2}/@sys" -type f | wc -l | tr -d ' ')"
 if [ "${tree_files}" != "${sys_files}" ]; then
     ci_die "@sys has ${sys_files} file(s), the upstream rootfs tree has ${tree_files}"
@@ -214,7 +214,7 @@ printf 'files=%s\n' "${sys_files}" >"${expect_out}"
 printf 'images=%s\n' "$(ci_file_size "${image}")" >>"${expect_out}"
 printf 'parts=4\n' >>"${expect_out}"
 printf 'p1max_kib=65536\n' >>"${expect_out}"
-find "${rootfs_tree}" -type f -size +0 -size -256k | LC_ALL=C sort | head -n "${sample_count}" \
+sudo find "${rootfs_tree}" -type f -size +0 -size -256k | LC_ALL=C sort | head -n "${sample_count}" \
     | while IFS= read -r path; do
         rel="${path#"${rootfs_tree}"}"
         printf 'sample %s %s\n' "${rel}" "$(sha256sum "${path}" | cut -d' ' -f1)"
