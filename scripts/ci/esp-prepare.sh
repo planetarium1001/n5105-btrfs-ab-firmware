@@ -111,10 +111,17 @@ loopdev=""
 # 3. Assert the pieces the boot chain depends on
 # --------------------------------------------------------------------------- #
 
-efi_loader="${esp_dir}/EFI/BOOT/BOOTX64.EFI"
-grub_dir="${esp_dir}/boot/grub"
-[ -f "${efi_loader}" ] || ci_die "upstream ESP has no EFI/BOOT/BOOTX64.EFI"
-[ -d "${grub_dir}" ] || ci_die "upstream ESP has no boot/grub directory"
+# FAT is case insensitive, the build host is not, and upstream does not guarantee the
+# exact spelling. Locate the loader by pattern and record what was actually found.
+efi_loader="$(find "${esp_dir}" -type f \( -iname 'bootx64.efi' -o -iname '*.efi' \) \
+    | sort | head -n 1)"
+if [ -z "${efi_loader}" ]; then
+    ci_log "ESP tree as laid out upstream:"
+    find "${esp_dir}" -mindepth 1 -maxdepth 3 | sort | head -n 40 | sed 's/^/[esp]   /'
+    ci_die "upstream ESP contains no EFI loader"
+fi
+grub_dir="$(find "${esp_dir}" -type d -iname grub | sort | head -n 1)"
+[ -n "${grub_dir}" ] || grub_dir="$(dirname "${efi_loader}")"
 
 esp_bytes="$(du -sb "${esp_dir}" | cut -f1)"
 esp_files="$(find "${esp_dir}" -type f | wc -l | tr -d ' ')"
