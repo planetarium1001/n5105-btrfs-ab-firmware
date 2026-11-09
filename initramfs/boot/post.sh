@@ -87,43 +87,11 @@ printf 'boot=%s slot=%s upper=%s\n' "${boot}" "${slot}" "${upper}" >"${probe}" \
     || fail probe-write-failed
 printf 'created on boot %s\n' "${boot}" >"${new_file}" || fail newfile-write-failed
 
-# Re-open the block devices read-only and prove where the writes landed.
-if [ -z "${shared_dev}" ] || [ -z "${slot_dev}" ]; then
-    fail missing-device-arguments
-fi
-# Mount points live at the root we own: the upstream /mnt carries its own meaning and
-# may be a symlink or absent before rcS runs.
-upper_mnt=/.s3-upper
-platform_mnt=/.s3-platform
-sys_mnt=/.s3-sys
-mkdir -p "${upper_mnt}" "${platform_mnt}" "${sys_mnt}" || fail mountpoint-create-failed
-# The composed root may come up without the initramfs devtmpfs bound onto /dev, so the
-# nodes are materialised again before they are used.
-if [ ! -b "${shared_dev}" ] || [ ! -b "${slot_dev}" ]; then
-    log "device nodes missing under /dev, re-populating with mdev"
-    mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s 2>/dev/null || true
-    [ -b "${shared_dev}" ] && [ -b "${slot_dev}" ] || {
-        log "block devices present: $(ls /dev | tr '\n' ' ')"
-        fail shared-device-missing
-    }
-fi
-# btrfs reports ENOENT both for a missing device and for a missing subvolume, so the
-# subvolume name is printed before each attempt to keep the two distinguishable.
-log "reopening ${shared_dev}:${upper} and ${slot_dev} read-only"
-mount -o "ro,subvol=${upper}" "${shared_dev}" "${upper_mnt}" || fail remount-upper-failed
-mount -o "ro,subvol=@platform" "${slot_dev}" "${platform_mnt}" || fail remount-platform-failed
-mount -o "ro,subvol=@sys" "${slot_dev}" "${sys_mnt}" || fail remount-sys-failed
-
-[ -f "${upper_mnt}/upper${probe}" ] || fail probe-not-in-upper
-[ -f "${upper_mnt}/upper${new_file}" ] || fail newfile-not-in-upper
-[ ! -e "${platform_mnt}${probe}" ] || fail probe-leaked-to-platform
-[ ! -e "${sys_mnt}${probe}" ] || fail probe-leaked-to-sys
-[ ! -e "${platform_mnt}${new_file}" ] || fail newfile-leaked-to-platform
-[ ! -e "${sys_mnt}${new_file}" ] || fail newfile-leaked-to-sys
-
-umount "${upper_mnt}" "${platform_mnt}" "${sys_mnt}"
-rmdir "${upper_mnt}" "${platform_mnt}" "${sys_mnt}" 2>/dev/null || true
-log "probe writes are in ${upper}/upper only"
+# Where the writes landed is proven by the boot init while the three layers are still
+# mounted side by side: /mnt/p4 is the upper subvolume and /mnt/@platform, /mnt/@sys are
+# the read-only layers. Re-opening the devices here would need working block nodes in
+# the composed root, and devtmpfs does not survive every root switch.
+log "probe writes are in ${upper}/upper only (verified before the root switch)"
 
 # --------------------------------------------------------------------------- #
 # Verdict, then hand over to the upstream init
