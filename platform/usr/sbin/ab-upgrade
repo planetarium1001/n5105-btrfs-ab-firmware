@@ -137,12 +137,19 @@ read_vermagic() {
 kernel_version="$(read_vermagic "${work}/kernel.bin")"
 initrd_dir="${work}/initrd"
 mkdir -p "${initrd_dir}"
-if ! gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | (cd "${initrd_dir}" && cpio -id 2>/dev/null); then
-    refuse "initramfs-extract-failed"
+module_version=""
+# Extracting needs cpio, which is not in every busybox build. A kernel module is stored
+# verbatim inside the cpio stream, so the vermagic can also be read straight from the
+# decompressed archive; that path needs nothing but gzip.
+if gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | (cd "${initrd_dir}" && cpio -id 2>/dev/null); then
+    btrfs_ko="$(find "${initrd_dir}" -name btrfs.ko -print 2>/dev/null | head -n 1)"
+    [ -n "${btrfs_ko}" ] && module_version="$(read_vermagic "${btrfs_ko}")"
 fi
-btrfs_ko="$(find "${initrd_dir}" -name btrfs.ko -print 2>/dev/null | head -n 1)"
-[ -n "${btrfs_ko}" ] || refuse "initramfs-without-btrfs-module"
-module_version="$(read_vermagic "${btrfs_ko}")"
+if [ -z "${module_version}" ]; then
+    module_version="$(gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | tr -c '[:print:]' '\n' \
+        | grep '^vermagic=' | head -n 1 | sed 's/^vermagic=//')"
+fi
+[ -n "${module_version}" ] || refuse "initramfs-without-btrfs-module"
 [ -n "${kernel_version}" ] || refuse "kernel-without-vermagic"
 [ -n "${module_version}" ] || refuse "module-without-vermagic"
 kernel_short="${kernel_version%% *}"
