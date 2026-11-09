@@ -221,8 +221,15 @@ chmod 0755 /newroot/.s3-post
 umount /esp || wf_log "warning: could not unmount the ESP"
 
 for fs in proc sys dev; do
-    # `-o move` is understood by both busybox and util-linux.
-    mount -o move "/${fs}" "/newroot/${fs}" || wf_fail "move-${fs}-failed"
+    mkdir -p "/newroot/${fs}"
+    # `-o move` is understood by both busybox and util-linux, but devtmpfs refuses to
+    # move on some kernels, so a bind mount is used as the fallback: the old root is
+    # discarded by switch_root anyway, and the nodes are the same either way.
+    if ! move_err="$(mount -o move "/${fs}" "/newroot/${fs}" 2>&1)"; then
+        wf_log "move of /${fs} failed (${move_err}); falling back to bind"
+        mount --bind "/${fs}" "/newroot/${fs}" \
+            || wf_fail "move-${fs}-failed"
+    fi
 done
 
 wf_log "switching root to the overlay"
