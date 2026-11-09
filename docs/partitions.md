@@ -31,17 +31,17 @@ Measured baseline, ImmortalWrt 25.12.2 on x86-64:
 | Extracted rootfs | 26.9 MiB, 1078 files |
 | 4K block usage | 31 MiB |
 | After `zstd:6` | 10.3 MiB |
-| `generic-kernel.bin` | 7.5 MiB |
+| `generic-kernel.bin` | 7.35 MiB |
 
 **p1 = 128 MiB**
 
 | Item | Estimate |
 |---|---|
 | `BOOTX64.EFI` and GRUB modules | 3–6 MiB |
-| `vmlinuz-a/b` (9–11 MiB each) | 18–22 MiB |
+| `vmlinuz-a/b` (about 7.4 MiB each) | 15 MiB |
 | `initrd-a/b` (2–3 MiB each) | 4–6 MiB |
 | `grubenv`, slot state, logs | under 1 MiB |
-| Peak total | about 31 MiB |
+| Peak total | about 27 MiB |
 
 Headroom is about 4×. The build asserts that p1 content stays under 64 MiB and fails otherwise.
 

@@ -29,17 +29,17 @@ p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接�
 | 解压后 rootfs | 26.9 MiB，1078 个文件 |
 | 4K 块占用 | 31 MiB |
 | `zstd:6` 压缩后 | 10.3 MiB |
-| `generic-kernel.bin` | 7.5 MiB |
+| `generic-kernel.bin` | 7.35 MiB |
 
 **p1 = 128 MiB**
 
 | 项目 | 估算 |
 |---|---|
 | `BOOTX64.EFI` 与 GRUB 模块 | 3–6 MiB |
-| `vmlinuz-a/b`（各 9–11 MiB） | 18–22 MiB |
+| `vmlinuz-a/b`（各约 7.4 MiB） | 15 MiB |
 | `initrd-a/b`（各 2–3 MiB） | 4–6 MiB |
 | `grubenv`、槽状态、日志 | 小于 1 MiB |
-| 峰值合计 | 约 31 MiB |
+| 峰值合计 | 约 27 MiB |
 
 余量约 4×。构建期断言 p1 内容不超过 64 MiB，超出即失败。
 

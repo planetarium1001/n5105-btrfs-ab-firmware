@@ -53,7 +53,7 @@ File-level conflict detection therefore covers non-uci user files only.
 | Member | Source | Size |
 |---|---|---|
 | `rootfs.tar.gz` | official mirror | 10.1 MiB |
-| `kernel.bin` | official mirror | 7.5 MiB |
+| `kernel.bin` | official mirror | 7.35 MiB |
 | `initramfs.cpio.gz` | this project | about 2 MiB |
 | `wf.tar` | this project | under 1 MiB |
 | `manifest.json` | this project | under 4 KiB |

@@ -50,7 +50,7 @@ Conflicts       = UpstreamChanged ∩ UserChanged
 | 成员 | 来源 | 体积 |
 |---|---|---|
 | `rootfs.tar.gz` | 官方镜像站 | 10.1 MiB |
-| `kernel.bin` | 官方镜像站 | 7.5 MiB |
+| `kernel.bin` | 官方镜像站 | 7.35 MiB |
 | `initramfs.cpio.gz` | 本项目构建 | 约 2 MiB |
 | `wf.tar` | 本项目构建 | 小于 1 MiB |
 | `manifest.json` | 本项目生成 | 小于 4 KiB |
