@@ -233,8 +233,10 @@ for fs in proc sys dev; do
 done
 
 wf_log "switching root to the overlay"
-switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}" \
+# switch_root must be PID 1, and this script is a child of the shell that the kernel
+# started as init, so exec replaces the shell instead of forking a helper.
+exec switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}" \
     "${shared}" "${slot_dev}"
 
-# switch_root replaces this process on success and only returns on failure.
+# exec only returns when it fails.
 wf_fail switch-root-failed
