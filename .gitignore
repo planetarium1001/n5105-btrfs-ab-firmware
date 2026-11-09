@@ -1,0 +1,14 @@
+# === WORKFLOW: ignore start ===
+.DS_Store
+Thumbs.db
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.log
+.workflow-backup-*/
+/AGENTS.md
+/.dsh/*
+# === WORKFLOW: ignore end ===
