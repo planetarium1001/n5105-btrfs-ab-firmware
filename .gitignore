@@ -12,3 +12,5 @@ __pycache__/
 /AGENTS.md
 /.dsh/*
 # === WORKFLOW: ignore end ===
+
+tests/.out/

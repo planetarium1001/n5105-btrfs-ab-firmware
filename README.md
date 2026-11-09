@@ -56,6 +56,19 @@ Application-level packaging and configuration are out of scope.
 - Only source code and documentation are published.
 - Workflow configuration, agent instructions, knowledge base, and task records stay local.
 
+## Testing
+
+```
+./tests/run.sh                  # every module, parallel by default
+./tests/run.sh --module design  # one module
+./tests/run.sh --jobs 8         # bound parallelism
+./tests/run.sh --list           # list discovered tests
+```
+
+Tests live under `tests/modules/<module>/test_*.sh`, one module per concern.
+Each test is an independent process, so modules run concurrently and a failure in one
+never hides another.
+
 ## Documentation
 
 - [docs/](docs/README.md) — design documents
@@ -64,6 +77,16 @@ Application-level packaging and configuration are out of scope.
 
 Design stage. Partition geometry, boot chain, and update transaction are finalized.
 Implementation proceeds through stages S0–S6.
+
+## Versioning
+
+Format: `MAJOR.MINOR.PATCH`.
+
+- `MAJOR` stays `0`: the project is experimental and breaking changes remain possible.
+- `MINOR` increases for feature sets or breaking changes.
+- `PATCH` increases for incremental updates and fixes.
+
+Current version: `0.0.0`. It becomes `0.1.0` once the build and update pipeline is verified end to end.
 
 ## License
 
