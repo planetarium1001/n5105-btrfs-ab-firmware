@@ -46,13 +46,36 @@ is_mounted() {
 mount_esp() {
 	is_mounted "${AB_ESP}" && return 0
 	mkdir -p "${AB_ESP}"
-	mount -t vfat -o rw,noatime "$(find_partition ab-esp /dev/vda1)" "${AB_ESP}" 2>/dev/null
+	_dev="$(find_partition ab-esp /dev/vda1)"
+	ensure_dev "${_dev}"
+	mount -t vfat -o rw,noatime "${_dev}" "${AB_ESP}" 2>/dev/null || {
+		console_say "ab-boot: could not mount ${_dev} on ${AB_ESP}"
+		return 1
+	}
+}
+
+# console_say <line...>: procd sends hook stdout to syslog, so milestones are also
+# written to the console where the test harness can see them.
+console_say() {
+	printf '%s\n' "$*" >/dev/console 2>/dev/null || :
+}
+
+# ensure_dev <path>: procd may start these hooks before devtmpfs carries every node.
+ensure_dev() {
+	[ -b "$1" ] && return 0
+	mdev -s 2>/dev/null || :
+	[ -b "$1" ]
 }
 
 mount_p4() {
 	is_mounted "${AB_P4}" && return 0
 	mkdir -p "${AB_P4}"
-	mount -o rw,noatime "$(find_partition ab-shared /dev/vda4)" "${AB_P4}" 2>/dev/null
+	_dev="$(find_partition ab-shared /dev/vda4)"
+	ensure_dev "${_dev}"
+	mount -o rw,noatime "${_dev}" "${AB_P4}" 2>/dev/null || {
+		console_say "ab-boot: could not mount ${_dev} on ${AB_P4}"
+		return 1
+	}
 }
 
 # log_append <line...>: one full-file write with the documented truncation rule.

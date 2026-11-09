@@ -1,4 +1,10 @@
 #!/bin/sh /etc/rc.common
+
+# console_say <line...>: procd sends hook stdout to syslog, so milestones are also
+# written to the console where the test harness can see them.
+console_say() {
+	printf '%s\n' "$*" >/dev/console 2>/dev/null || :
+}
 # ab-commit - health check and slot commit, after the system finished booting.
 #
 # Runs after `done`, which is where the boot reaches its last stage. It runs the three
@@ -157,7 +163,12 @@ start() {
 			fw4-present) probe_fn=fw4 ;;
 			wan-present) probe_fn=wan ;;
 		esac
-		run_probe "${probe}" "${probe_fn}" || failed="healthcheck-failed"
+		if run_probe "${probe}" "${probe_fn}"; then
+			console_say "probe=${probe} result=pass"
+		else
+			console_say "probe=${probe} result=fail"
+			failed="healthcheck-failed"
+		fi
 	done
 
 	if [ -z "${failed}" ]; then
@@ -169,13 +180,13 @@ start() {
 		rm -f "${AB_ESP}/ab/candidate"
 		sync
 		log_append "stage=commit slot=${slot} upper=${upper} rootfs=${rootfs} result=ok action=commit"
-		echo "ab-commit: committed slot=${slot} upper=${upper}"
+		console_say "ab-commit: committed slot=${slot} upper=${upper}"
 		exit 0
 	fi
 
 	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
 		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed} action=reboot-to-committed"
-		echo "ab-commit: health check failed on the pending slot ${slot} (${failed}), abandoning it"
+		console_say "ab-commit: abandoned slot=${slot} reason=${failed}"
 		rm -f "${AB_ESP}/ab/candidate"
 		ab-slot abandon
 		sync
