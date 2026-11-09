@@ -86,9 +86,9 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.2` — the four-partition image boots through a layered overlay root
-with a versioned writable layer, and two consecutive boots prove persistence. The goal
-itself is not yet reached.
+Current version: `0.0.3` — the image boots through a layered overlay root, commits a slot
+after health checks pass, abandons a failing candidate and rolls back to the committed
+slot. The goal itself is not yet reached.
 
 ## License
 
