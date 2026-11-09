@@ -83,10 +83,11 @@ Implementation proceeds through stages S0–S6.
 Format: `MAJOR.MINOR.PATCH`.
 
 - `MAJOR` stays `0`: the project is experimental and breaking changes remain possible.
-- `MINOR` increases for feature sets or breaking changes.
-- `PATCH` increases for incremental updates and fixes.
+- `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
+- `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.0`. It becomes `0.1.0` once the build and update pipeline is verified end to end.
+Current version: `0.0.1` — design finalized, CI pipeline green, and the upstream
+consumption route proven in QEMU. The goal itself is not yet reached.
 
 ## License
 

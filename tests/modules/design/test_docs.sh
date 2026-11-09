@@ -23,6 +23,7 @@ done
 assert_file_exists "$root/VERSION" "VERSION file exists"
 version=$(tr -d '[:space:]' <"$root/VERSION")
 assert_matches "$version" '^0\.[0-9]+\.[0-9]+$' "VERSION stays on major zero"
-assert_contains "$(cat "$root/README.md")" "0.0.0" "README states the current version"
+assert_contains "$(cat "$root/README.md")" "\`$version\`" "README states the current version"
+assert_contains "$(cat "$root/README.zh-CN.md")" "\`$version\`" "Chinese README states the current version"
 
 finish
