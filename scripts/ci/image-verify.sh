@@ -214,10 +214,13 @@ printf 'files=%s\n' "${sys_files}" >"${expect_out}"
 printf 'images=%s\n' "$(ci_file_size "${image}")" >>"${expect_out}"
 printf 'parts=4\n' >>"${expect_out}"
 printf 'p1max_kib=65536\n' >>"${expect_out}"
-sudo find "${rootfs_tree}" -type f -size +0 -size -256k | LC_ALL=C sort | head -n "${sample_count}" \
+# awk bounds the list without closing the pipe early: head would make sort die on
+# SIGPIPE, and pipefail turns that into a stage failure.
+sudo find "${rootfs_tree}" -type f -size +0 -size -256k | LC_ALL=C sort \
+    | awk -v n="${sample_count}" 'NR<=n' \
     | while IFS= read -r path; do
         rel="${path#"${rootfs_tree}"}"
-        printf 'sample %s %s\n' "${rel}" "$(sha256sum "${path}" | cut -d' ' -f1)"
+        printf 'sample %s %s\n' "${rel}" "$(sudo sha256sum "${path}" | cut -d' ' -f1)"
     done >>"${expect_out}"
 sudo umount "${p2}"
 note "wrote ${expect_out} with ${sample_count} sample digest(s)"
