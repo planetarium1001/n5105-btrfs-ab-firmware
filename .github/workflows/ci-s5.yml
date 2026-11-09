@@ -204,7 +204,7 @@ jobs:
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/s5-phase.sh --phase toolchain \
-            --serial "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu/serial-s5-boot1.log" 2>&1 \
+            --serial "${{ steps.boot1.outputs.serial_log }}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1b.log"
 
       - name: "Fixture: run ab-upgrade automatically on the next boot"
@@ -295,7 +295,7 @@ jobs:
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/s5-phase.sh --phase degraded \
-            --serial "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu/serial-s5-boot4.log" 2>&1 \
+            --serial "${{ steps.boot4.outputs.serial_log }}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase4.log"
 
       - name: Collect diagnostics
