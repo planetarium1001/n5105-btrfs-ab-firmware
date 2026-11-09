@@ -1,21 +1,33 @@
-# 文档索引
+# Documentation
 
-本目录保存设计文档。每篇只讲一件事，数字均有实测或明确依据。
+**English** | [简体中文](README.zh-CN.md)
 
-| 文档 | 内容 |
+Each document covers one topic. Every number is either measured or has an explicit rationale.
+
+| Document | Contents |
 |---|---|
-| [partitions.md](partitions.md) | 四分区几何、尺寸依据、`mkfs` 与挂载参数、子卷清单、首启扩容 |
-| [boot-overlay.md](boot-overlay.md) | 引导流程、三层职责、挂载参数与顺序、平台层注入、GRUB 渲染断言、降级 |
-| [lifecycle.md](lifecycle.md) | 代号模型、状态文件、升级时序、健康检查、回收、日志、命令 |
-| [conflicts-payload.md](conflicts-payload.md) | 三方比对、处置、uci 边界、载荷契约、校验、构建输入与 adapter |
+| [partitions.md](partitions.md) | Partition geometry, sizing rationale, `mkfs` and mount options, subvolumes, first-boot growth |
+| [boot-overlay.md](boot-overlay.md) | Boot sequence, layer responsibilities, mount composition and order, platform-layer injection, GRUB assertions, degraded boot |
+| [lifecycle.md](lifecycle.md) | Generation model, state file, update transaction, health checks, reclamation, logging, commands |
+| [conflicts-payload.md](conflicts-payload.md) | Three-way comparison, disposition, uci boundary, payload contract, validation, build inputs |
 
-## 约定
+## Conventions
 
-- 阈值与判读串一经写入即为契约，改动需要同步更新检查脚本
-- 文档不与代码重复描述实现细节，只描述约束与判据
-- 链接一律使用相对路径，且必须可解析
+- Thresholds and log fields are contracts. Changing one requires updating `scripts/check_design.py`.
+- Documents describe constraints and criteria, not implementation details.
+- Links are relative and must resolve. `python3 scripts/check_design.py links` verifies this.
+- English is the primary language; a `*.zh-CN.md` translation sits next to every document.
 
-## 相关
+## Checks
 
-- 项目概览：[../README.md](../README.md)
-- 许可证：[../LICENSES/](../LICENSES/)
+```
+python3 scripts/check_design.py all
+```
+
+Individual checks: `partitions`, `esp-data-only`, `overlay-layers`, `generation-model`,
+`gc-policy`, `log-ring`, `conflict-model`, `payload-contract`, `links`, `text`.
+
+## See also
+
+- Project overview: [../README.md](../README.md)
+- Licenses: [../LICENSES/](../LICENSES/)

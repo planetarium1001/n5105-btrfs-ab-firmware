@@ -1,92 +1,103 @@
-# 冲突检测与载荷契约
+# Conflict Detection and Payload Contract
 
-## 三方比对
+**English** | [简体中文](conflicts-payload.zh-CN.md)
 
-升级会替换整棵 `@sys`，而 `@overlay` 的 upper 里可能有用户改过的同名文件。
+## Overview
 
-定义：
+An update replaces the whole `@sys` tree, while the writable layer may contain files the
+user modified. This document defines how those overlaps are detected and how the update
+payload is validated.
 
-- `A` = 旧槽 `@sys` 中的文件（基线）
-- `B` = 新槽 `@sys` 中的文件（新默认）
-- `U` = upper 中的同名文件（用户版本）
+## Three-way comparison
 
-判定：
+| Symbol | Meaning |
+|---|---|
+| `A` | file in the old slot's `@sys` (baseline) |
+| `B` | file in the new slot's `@sys` (new default) |
+| `U` | same path in the writable layer (user version) |
 
 ```
 UpstreamChanged = { f : A[f] != B[f] }
-UserChanged     = { f : U 存在 且 U[f] != A[f] }
+UserChanged     = { f : U exists and U[f] != A[f] }
 Conflicts       = UpstreamChanged ∩ UserChanged
 ```
 
-- 以**内容哈希**判定，不使用 mtime 或 size
-- 基线必须来自旧槽 `@sys` 的真实内容，不来自版本号
-- 需同时识别 whiteout（`0:0` 字符设备）与目录级 `opaque` 标记，否则"用户删除了某文件"会从报告中消失
+- comparison uses content hashes, never mtime or size
+- the baseline comes from the real old `@sys` content, not from a version number
+- whiteout entries (`0:0` character devices) and directory `opaque` markers must be recognised,
+  otherwise "the user deleted this file" disappears from the report
 
-## 处置
+## Disposition
 
-| 情形 | 处置 |
+| Case | Action |
 |---|---|
-| `U` 不存在，`B` 改了 | 采用 `B` |
-| `U` 存在，`B` 未改 | 保留 `U` |
-| `U` 存在，`B` 也改 | 保留 `U`，写入冲突报告 |
-| `U` 存在，`B` 已删除 | 高危，单列并要求人工确认 |
+| `U` absent, `B` changed | take `B` |
+| `U` present, `B` unchanged | keep `U` |
+| `U` present, `B` also changed | keep `U` and record a conflict |
+| `U` present, `B` deleted | flag as high risk and require manual review |
 
-冲突**不阻断**升级，也不阻塞启动。
+Conflicts never block the update and never block boot.
 
-## uci 的边界
+## Scope for uci
 
-`/etc/config/*` 不做文件级合并。uci 是自定义语法，行级合并会产出无法加载的配置。
+Files under `/etc/config/*` are never merged line by line: uci has its own grammar and a
+textual merge produces configurations that cannot be loaded.
 
-上游新增默认项通过 `/etc/uci-defaults/` 幂等脚本补齐：缺项才写、执行后自删、重复执行无副作用。
+New upstream defaults are introduced through idempotent `/etc/uci-defaults/` scripts that
+only fill missing options and delete themselves after running.
 
-文件级冲突检测只覆盖非 uci 的用户文件。
+File-level conflict detection therefore covers non-uci user files only.
 
-## 载荷契约
+## Payload contract
 
-| 成员 | 来源 | 体积 |
+| Member | Source | Size |
 |---|---|---|
-| `rootfs.tar.gz` | 官方镜像站 | 10.1 MiB |
-| `kernel.bin` | 官方镜像站 | 7.5 MiB |
-| `initramfs.cpio.gz` | 本项目构建 | 约 2 MiB |
-| `wf.tar` | 本项目构建 | < 1 MiB |
-| `manifest.json` | 本项目生成 | < 4 KiB |
+| `rootfs.tar.gz` | official mirror | 10.1 MiB |
+| `kernel.bin` | official mirror | 7.5 MiB |
+| `initramfs.cpio.gz` | this project | about 2 MiB |
+| `wf.tar` | this project | under 1 MiB |
+| `manifest.json` | this project | under 4 KiB |
 
-升级载荷约 20 MiB。整盘镜像只在首次刷机时使用。
+The update payload is about 20 MiB. The full disk image is used for first installation only.
 
-`manifest.json` 记录每个成员的大小与 sha256，以及 `format` 与 `rootfs` 版本。
+`manifest.json` records size and sha256 for every member, together with `format` and the
+`rootfs` version.
 
-## 校验
+## Validation order
 
-顺序如下，任一失败即中止：
+Any failure aborts the update:
 
-1. `manifest.json` 可解析，`format` 匹配
-2. 每个成员存在且 sha256 与 manifest 一致
-3. `initramfs.cpio.gz` 内 `btrfs.ko` 的 vermagic 与 `kernel.bin` 版本一致
-4. p4 剩余空间 ≥ 5%
-5. 冲突报告生成完毕
+1. `manifest.json` parses and `format` matches
+2. every member exists and its sha256 matches the manifest
+3. the vermagic of `btrfs.ko` inside `initramfs.cpio.gz` matches `kernel.bin`
+4. p4 has at least 5% free space
+5. the conflict report has been produced
 
-失败时 `platform_check_image` 返回 74，使 `sysupgrade -F` 也无法写入。
+On failure `platform_check_image` returns 74, so even `sysupgrade -F` refuses to write.
 
-## 构建输入与 adapter
+## Build inputs and adapter
 
-CI 不编译内核，直接消费官方产物：
+CI does not compile a kernel. It consumes official artifacts:
 
 - `immortalwrt-<ver>-x86-64-rootfs.tar.gz`
 - `immortalwrt-<ver>-x86-64-generic-kernel.bin`
-- `kmods/<kernel-ver>-<hash>/kmod-fs-btrfs.apk` 及其依赖
+- `kmods/<kernel-ver>-<hash>/kmod-fs-btrfs.apk` and its dependencies
 
-预检：kmod 目录的 hash 必须与 `kernel` 包版本中的 hash 相同，否则构建失败。
+Preflight: the hash in the kmods directory name must equal the hash embedded in the
+`kernel` package version, otherwise the build fails.
 
-载荷来源做成 adapter：
+The payload source is an adapter:
 
-| adapter | 行为 |
+| Adapter | Behaviour |
 |---|---|
-| `upstream` | 下载官方 rootfs 与 kernel（默认） |
-| `selfbuild` | 使用自建 rootfs 与 kernel（保留接缝，暂不实现） |
+| `upstream` | download official rootfs and kernel (default) |
+| `selfbuild` | use locally built rootfs and kernel (seam kept, not implemented) |
 
-切换 adapter 不改变装配层与 initramfs。
+Switching adapters does not change the assembly layer or the initramfs.
 
-## 官方内核对 btrfs 的态度
+## Why btrfs arrives as a module
 
-`config.buildinfo` 中无 `CONFIG_KERNEL_BTRFS_FS`，默认镜像 227 个包里也没有 btrfs。
-因此 btrfs 只能以 `kmod-fs-btrfs` 形式由 initramfs 加载，这是路线 A 的前提。
+`config.buildinfo` for 25.12.2 contains no `CONFIG_KERNEL_BTRFS_FS`, and the default image
+manifest lists 227 packages with no btrfs. btrfs can therefore only be provided by
+`kmod-fs-btrfs` loaded from the initramfs. This is the premise of the upstream-consumption
+route.

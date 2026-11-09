@@ -1,18 +1,22 @@
-# 升级事务、回收与可观测性
+# Update Transaction, Reclamation and Observability
 
-## 代号模型
+**English** | [简体中文](lifecycle.zh-CN.md)
 
-写层不叫 `@overlay`，叫 `@overlay.genNNNN`。每次升级创建新代号，**全程不做重命名**。
+## Generation model
 
-由此：
+The writable layer is not a single fixed name but a generation: `@overlay.genNNNN`.
+Every update creates a new generation, and no subvolume is ever renamed.
 
-- 不存在"临时名被占用"，一直不重启也能直接快照当前状态成下一个代号
-- 回滚只改指针，不搬运数据
-- 稳态只需 2 个代号，一个槽一个
+Consequences:
 
-## 状态文件
+- there is no temporary name to be occupied, so a new generation can be created even if the
+  system has never rebooted
+- rollback only moves a pointer; no data is copied
+- steady state needs exactly two generations, one per slot
 
-ESP `ab/state.json`，原子写（temp → `sync` → rename）：
+## State file
+
+`ab/state.json` on p1, written atomically (temp file, `sync`, rename):
 
 ```json
 {
@@ -26,91 +30,96 @@ ESP `ab/state.json`，原子写（temp → `sync` → rename）：
 }
 ```
 
-## 时序
+## Transaction sequence
 
-| 事件 | p4 | ESP |
+| Event | p4 | p1 state |
 |---|---|---|
-| 装机 | 建 `gen0001`、`@docker`、`@swap`、`@data` | `a`/`b` → gen1，`committed=a` |
-| 升级槽 B | `snapshot gen1 → gen2`，写 p3 | `pending=b`，`b` → gen2 |
-| B 首启成功 | — | `committed=b`，清 pending，GC |
-| 升级槽 A | `snapshot gen2 → gen3`，写 p2 | `pending=a`，`a` → gen3 |
-| A 首启成功 | 删 gen1 | `committed=a`，清 pending |
-| 回滚 | — | `committed` 切回另一槽 |
+| Installation | create `gen0001`, `@docker`, `@swap`, `@data` | `a` and `b` to gen1, `committed=a` |
+| Update slot B | `snapshot gen1 -> gen2`, write p3 | `pending=b`, `b` to gen2 |
+| B boots healthy | — | `committed=b`, clear pending, reclaim |
+| Update slot A | `snapshot gen2 -> gen3`, write p2 | `pending=a`, `a` to gen3 |
+| A boots healthy | delete gen1 | `committed=a`, clear pending |
+| Rollback | — | switch `committed` to the other slot |
 
-快照对象永远是当前 live 的代号。快照前 `sync` 并停止写服务；一致性口径是崩溃一致。
+The snapshot target is always the live generation. Run `sync` and stop writers first;
+consistency is crash-consistent, not application-consistent.
 
-## 健康检查
+## Health check
 
-在 `done` 之后执行，超时 150 s：
+Runs after `done` completes, with a 150 second timeout:
 
-| 探针 | 通过条件 |
+| Probe | Passes when |
 |---|---|
-| `overlay-writable` | `/overlay` 可写且余量 > 5% |
-| `fw4-present` | `fw4` 进程存在且 nft ruleset 非空 |
-| `wan-present` | WAN 设备存在 |
+| `overlay-writable` | `/overlay` is writable with more than 5% free |
+| `fw4-present` | the firewall process exists and the nft ruleset is non-empty |
+| `wan-present` | the WAN device exists |
 
-全绿才 commit；任一失败即 abandon 并重启回已提交槽。
+All probes must pass before commit. Any failure abandons the pending slot and reboots into
+the committed slot.
 
-## 回收
+## Reclamation
 
-引用集合 = `slots.a.upper_gen` ∪ `slots.b.upper_gen` ∪ `pending.upper_gen`。
-不在集合内的 `@overlay.gen*` 全部删除。
+The reference set is `slots.a.upper_gen` ∪ `slots.b.upper_gen` ∪ `pending.upper_gen`.
+Any `@overlay.gen*` outside that set is deleted.
 
-四条安全约束：
+Four safety rules:
 
-1. 挂载中的代号不删（查 `/proc/mounts`）
-2. `pending` 引用的代号不删
-3. `btrfs subvolume delete -C` 后必须 `btrfs subvolume sync`，否则空间未真正释放
-4. 盘满时不跑全量 balance（它自身需要 workspace）
+1. never delete a generation that is currently mounted (check `/proc/mounts`)
+2. never delete the generation referenced by `pending`
+3. run `btrfs subvolume delete -C` followed by `btrfs subvolume sync`; deletion alone
+   does not free space immediately
+4. never run a full balance under disk pressure; balance itself needs free space
 
-触发点：commit 成功后、每次启动早期、升级失败后、手动 `ab-slot gc`。
+Triggers: after a successful commit, early in each boot, after a failed update, and on
+demand through `ab-slot gc`.
 
-空间阈值：
+Space thresholds:
 
-| 剩余 | 动作 |
+| Free space | Action |
 |---|---|
-| > 15% | 正常 |
-| < 15% | 告警并自动 GC |
-| < 5% | `platform_check_image` 返回 74，拒绝升级 |
+| above 15% | normal |
+| below 15% | warn and reclaim automatically |
+| below 5% | `platform_check_image` returns 74 and the update is refused |
 
-不使用 qgroup 配额；按需 `btrfs filesystem du -s` 计算独占空间。
+No qgroup quota is used; exclusive space is measured on demand with `btrfs filesystem du -s`.
 
-## 日志
+## Logging
 
-目录 `/boot/ab/log/`，总预算约 350 KiB。
+Directory `/boot/ab/log/`, total budget about 350 KiB.
 
-| 文件 | 内容 | 轮转 |
+| File | Contents | Rotation |
 |---|---|---|
-| `boot-0.log` | 本次启动 | 每次启动轮转 |
-| `boot-1.log` | 上次启动 | — |
-| `boot-2.log` | 上上次 | 超出即删 |
-| `upgrade.log` | 最近一次升级 | 下次升级覆盖 |
-| `conflicts.log` | 最近一次冲突报告 | 下次升级覆盖 |
+| `boot-0.log` | current boot | rotated on each boot |
+| `boot-1.log` | previous boot | — |
+| `boot-2.log` | boot before that | removed when exceeded |
+| `upgrade.log` | most recent update | overwritten by the next update |
+| `conflicts.log` | most recent conflict report | overwritten by the next update |
 
-- 单文件上限 32 KiB，超出截断并写 `TRUNCATED=1`
-- 每次启动写盘不超过 8 次，整文件写出：temp → `sync` → rename
-- 写入时机：`initramfs-enter`、`lower-mounted`、`overlay-mounted`、`switch-root`、
-  `healthcheck-done`、`commit`/`abandon`、`done`
+- 32 KiB per file; overflow is truncated with a `TRUNCATED=1` marker
+- at most 8 writes per boot, each a full-file write: temp, `sync`, rename
+- write points: `initramfs-enter`, `lower-mounted`, `overlay-mounted`, `switch-root`,
+  `healthcheck-done`, `commit` or `abandon`, `done`
 
-判读串冻结为 `key=value`：
+Record fields are frozen as `key=value`:
 
 ```
-stage=<阶段> slot=<a|b> upper_gen=<N> rootfs=<版本> result=<ok|fail>
+stage=<stage> slot=<a|b> upper_gen=<N> rootfs=<version> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
 reason=<lower-mount-failed|overlay-failed|healthcheck-failed>
 action=<commit|reboot-to-committed|degraded-boot>
 ```
 
-## 命令
+## Commands
 
-| 命令 | 用途 |
+| Command | Purpose |
 |---|---|
-| `ab-slot status` | 槽、代号、空间、最近结果 |
-| `ab-slot log [--prev\|--upgrade]` | 日志 |
-| `ab-slot conflicts` | 冲突清单 |
-| `ab-slot gc [--dry-run]` | 回收 |
-| `ab-slot rollback` | 切回另一槽 |
+| `ab-slot status` | slot, generation, free space, last result |
+| `ab-slot log [--prev\|--upgrade]` | logs |
+| `ab-slot conflicts` | conflict report |
+| `ab-slot gc [--dry-run]` | reclamation |
+| `ab-slot rollback` | switch back to the other slot |
 
-## 边界
+## Boundary
 
-只能回滚**一代**。升级会覆盖目标槽的 rootfs，更早的 rootfs 已不存在。
+Rollback depth is one generation. An update overwrites the target slot's rootfs, so older
+rootfs images no longer exist on disk.

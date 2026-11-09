@@ -1,65 +1,71 @@
-# 分区与文件系统
+# Partitions and Filesystems
 
-## 布局
+**English** | [简体中文](partitions.zh-CN.md)
 
-EFI-only，GPT，单盘。
+## Overview
 
-| 分区 | PARTLABEL | 大小 | 文件系统 | 内容 |
+Single disk, GPT, UEFI only. The layout provides two independent system slots and one
+shared partition for all writable state.
+
+## Layout
+
+| Partition | PARTLABEL | Size | Filesystem | Contents |
 |---|---|---|---|---|
-| p1 | `wf-esp` | 128 MiB | vfat | GRUB、`grubenv`、`vmlinuz-a/b`、`initrd-a/b`、`ab/` 状态、`ab/log/` |
-| p2 | `wf-slot-a` | 128 MiB | btrfs | `@sys`、`@wf` |
-| p3 | `wf-slot-b` | 128 MiB | btrfs | `@sys`、`@wf` |
-| p4 | `wf-shared` | 至盘尾 | btrfs | `@overlay.genNNNN`、`@docker`、`@swap`、`@data` |
+| p1 | `wf-esp` | 128 MiB | vfat | GRUB, `grubenv`, `vmlinuz-a/b`, `initrd-a/b`, `ab/` state, `ab/log/` |
+| p2 | `wf-slot-a` | 128 MiB | btrfs | `@sys`, `@wf` |
+| p3 | `wf-slot-b` | 128 MiB | btrfs | `@sys`, `@wf` |
+| p4 | `wf-shared` | rest of disk | btrfs | `@overlay.genNNNN`, `@docker`, `@swap`, `@data` |
 
-不使用 p128（EF02）与 legacy 引导，也不做多主板兼容。
+There is no p128 (EF02) and no legacy boot path.
 
-p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接、没有日志，且 ESP 上的脚本不随槽回滚。
+p1 holds data only, never executable scripts: FAT32 has no permission bits or symlinks,
+no journal, and scripts stored on the ESP do not roll back together with a slot.
 
+## Sizing
 
-## 尺寸依据
+Measured baseline, ImmortalWrt 25.12.2 on x86-64:
 
-实测基线取自 ImmortalWrt 25.12.2 x86-64：
-
-| 项 | 实测值 |
+| Item | Value |
 |---|---|
 | `rootfs.tar.gz` | 10.1 MiB |
-| 解压后 rootfs | 26.9 MiB / 1078 文件 |
-| 4K 块占用 | 31 MiB |
-| `zstd:6` 压缩后 | 10.3 MiB |
+| Extracted rootfs | 26.9 MiB, 1078 files |
+| 4K block usage | 31 MiB |
+| After `zstd:6` | 10.3 MiB |
 | `generic-kernel.bin` | 7.5 MiB |
 
 **p1 = 128 MiB**
 
-| 项 | 估算 |
+| Item | Estimate |
 |---|---|
-| `BOOTX64.EFI` + GRUB 模块 | 3–6 MiB |
-| `vmlinuz-a/b`（各 9–11 MiB） | 18–22 MiB |
-| `initrd-a/b`（各 2–3 MiB） | 4–6 MiB |
-| `grubenv`、槽状态、日志 | < 1 MiB |
-| 合计峰值 | 约 31 MiB |
+| `BOOTX64.EFI` and GRUB modules | 3–6 MiB |
+| `vmlinuz-a/b` (9–11 MiB each) | 18–22 MiB |
+| `initrd-a/b` (2–3 MiB each) | 4–6 MiB |
+| `grubenv`, slot state, logs | under 1 MiB |
+| Peak total | about 31 MiB |
 
-余量约 4×。构建期断言：p1 内容 ≤ 64 MiB，否则提升到 256 MiB。
+Headroom is about 4×. The build asserts that p1 content stays under 64 MiB and fails otherwise.
 
 **p2 = p3 = 128 MiB**
 
-- 相对 26.9 MiB 为 4.7×（未压缩），相对 10.3 MiB 为 12×（`zstd:6` 后）
-- 2 的幂对齐，便于断言与人工核算
-- 运行期只读，写入仅发生在升级时
+- 4.7× the extracted rootfs, 12× the `zstd:6` size
+- Power-of-two aligned, so ratios are easy to audit
+- Read-only at runtime; written only during updates
 
-**p4 = 至盘尾**
+**p4 = rest of disk**
 
-镜像内预建 64 MiB，首次启动 grow 到盘尾后 `btrfs filesystem resize max`。
+The image ships 64 MiB. First boot grows it to the end of the disk and runs
+`btrfs filesystem resize max`.
 
-## 文件系统参数
+## Filesystem parameters
 
-| 分区 | `mkfs` 参数 | 理由 |
+| Partition | `mkfs` arguments | Rationale |
 |---|---|---|
-| p2 / p3 | `mkfs.btrfs -m dup -d single` | 元数据约 4–8 MiB，换槽内静默损坏可恢复 |
-| p4 | `mkfs.btrfs -m single -d single` | docker 层会撑大元数据，不复制 |
+| p2 / p3 | `mkfs.btrfs -m dup -d single` | Metadata is 4–8 MiB; duplication recovers silent corruption inside a slot |
+| p4 | `mkfs.btrfs -m single -d single` | Container layers inflate metadata; duplication is not worth the cost |
 
-挂载参数：
+## Mount options
 
-| 挂载点 | 参数 |
+| Mount point | Options |
 |---|---|
 | `@sys` | `ro,noatime,compress=zstd:6` |
 | `@wf` | `ro,noatime` |
@@ -68,28 +74,30 @@ p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接�
 | `@swap` | `rw,noatime,nodatacow,nodatasum` |
 | `@data` | `rw,noatime,compress=zstd:3` |
 
-`compress=` 由文件系统**首次挂载**决定，因此先挂 p4 写层再挂只读基座。
+`compress=` is fixed by the first mount of the filesystem, so p4 is mounted before the
+read-only slot layers.
 
-## 子卷清单
+## Subvolumes
 
-- p2 / p3：`@sys`、`@wf`
-- p4：`@overlay.genNNNN`（含 `upper/`、`work/` 两个普通目录）、`@docker`、`@swap`、`@data`
+- p2 / p3: `@sys`, `@wf`
+- p4: `@overlay.genNNNN` (containing plain directories `upper/` and `work/`), `@docker`, `@swap`, `@data`
 
-约束：**全部为顶级子卷**，不存在二级或嵌套子卷。
-`@docker`、`@swap` 必须独立，否则快照会丢失其内容且活动 swapfile 会让快照失败。
+All subvolumes are top-level. No second-level or nested subvolumes exist.
+`@docker` and `@swap` must stay independent: snapshots do not recurse into nested
+subvolumes, and an active swapfile prevents snapshotting.
 
-## 首启扩容
+## First-boot growth
 
-1. `sfdisk` 读取分区表
-2. 整表写回，把 p4 末端推到盘尾
-3. `partx -u` 重新读取
-4. `btrfs filesystem resize max` 扩展 p4
+1. `sfdisk` reads the partition table.
+2. The whole table is written back with the p4 end moved to the end of the disk.
+3. `partx -u` re-reads it.
+4. `btrfs filesystem resize max` grows p4.
 
-结论写入 p1 日志：`done` / `already-full` / `missing-sfdisk` / `fail`。
+The outcome is recorded in the p1 log as `done`, `already-full`, `missing-sfdisk`, or `fail`.
 
-## 断言
+## Assertions
 
-- p1 内容峰值 ≤ 64 MiB
-- p2 / p3 使用率 ≤ 50%
-- `btrfs subvolume list` 中所有条目 top level 一致（无嵌套）
-- `mkfs` 参数与上表逐字一致
+- p1 content peak under 64 MiB
+- p2 / p3 usage under 50%
+- every entry in `btrfs subvolume list` shares the same top level
+- `mkfs` arguments match the table above exactly

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""设计一致性检查。
+"""Design consistency checks.
 
-把 docs/ 里写下的阈值、几何与契约变成可执行断言，避免"文档说一套、实现另一套"。
-每个子命令对应 PRD 的一条验收；不带参数时全部运行。
+Turns the thresholds, geometry and contracts written in docs/ into executable
+assertions, so documentation and intent cannot drift apart.
 
-用法：
+Each subcommand maps to one acceptance criterion in the PRD. Running without an
+argument executes every check.
+
+Usage:
     python3 scripts/check_design.py partitions
     python3 scripts/check_design.py all
 """
@@ -22,6 +25,25 @@ P1_MIB = 128
 SLOT_MIB = 128
 MEASURED_ROOTFS_MIB = 26.9
 MIN_SLOT_RATIO = 4.0
+ZH_SUFFIX = ".zh-CN.md"
+
+SELF = Path(__file__).resolve()
+
+
+TOKEN_CHARS = r"\w\-"
+
+
+def token_pattern(needle: str) -> re.Pattern:
+    """Match a needle at token boundaries.
+
+    Plain substring matching is too weak: "20 MiB" would match inside "120 MiB"
+    and "btrfs subvolume sync" would match inside "btrfs subvolume syncx".
+    Boundaries are only applied where the needle starts or ends with a token
+    character, so literals such as markdown table rows keep working.
+    """
+    left = f"(?<![{TOKEN_CHARS}])" if re.match(r"[\w\-]", needle[0]) else ""
+    right = f"(?![{TOKEN_CHARS}])" if re.match(r"[\w\-]", needle[-1]) else ""
+    return re.compile(left + re.escape(needle) + right)
 
 
 class Problems(list):
@@ -30,19 +52,25 @@ class Problems(list):
 
     def need(self, where: str, text: str, *needles: str) -> None:
         for needle in needles:
+            if not token_pattern(needle).search(text):
+                self.add(where, f"missing required content {needle!r}")
+
+    def need_prefix(self, where: str, text: str, *needles: str) -> None:
+        """Prefix match for values with a variable tail, such as @overlay.gen0002."""
+        for needle in needles:
             if needle not in text:
-                self.add(where, f"缺少必需内容 {needle!r}")
+                self.add(where, f"missing required content prefix {needle!r}")
 
     def forbid(self, where: str, text: str, *needles: str) -> None:
         for needle in needles:
-            if needle in text:
-                self.add(where, f"出现禁止内容 {needle!r}")
+            if token_pattern(needle).search(text):
+                self.add(where, f"contains forbidden content {needle!r}")
 
 
 def read_doc(name: str, problems: Problems) -> str:
     path = DOCS / name
     if not path.is_file():
-        problems.add(name, "文档不存在")
+        problems.add(name, "document does not exist")
         return ""
     return path.read_text(encoding="utf-8")
 
@@ -55,8 +83,8 @@ def check_partitions(problems: Problems) -> None:
         "| p1 | `wf-esp` | 128 MiB | vfat |",
         "| p2 | `wf-slot-a` | 128 MiB | btrfs |",
         "| p3 | `wf-slot-b` | 128 MiB | btrfs |",
-        "| p4 | `wf-shared` | 至盘尾 | btrfs |",
-        str(MEASURED_ROOTFS_MIB),
+        "| p4 | `wf-shared` | rest of disk | btrfs |",
+        "26.9 MiB",
         "zstd:6",
         "mkfs.btrfs -m dup -d single",
         "mkfs.btrfs -m single -d single",
@@ -66,7 +94,7 @@ def check_partitions(problems: Problems) -> None:
         "@docker",
         "@swap",
         "@data",
-        "全部为顶级子卷",
+        "All subvolumes are top-level",
         "sfdisk",
         "btrfs filesystem resize max",
     )
@@ -75,26 +103,23 @@ def check_partitions(problems: Problems) -> None:
     if ratio < MIN_SLOT_RATIO:
         problems.add(
             "partitions.md",
-            f"槽容量余量 {ratio:.1f}x 低于下限 {MIN_SLOT_RATIO}x",
+            f"slot headroom {ratio:.1f}x is below the {MIN_SLOT_RATIO}x floor",
         )
 
 
 def check_esp_data_only(problems: Problems) -> None:
     doc = read_doc("partitions.md", problems)
-    problems.need("partitions.md", doc, "p1 只放数据，不放可执行脚本")
+    problems.need("partitions.md", doc, "p1 holds data only, never executable scripts")
 
-    p1_row = next(
-        (line for line in doc.splitlines() if line.startswith("| p1 ")),
-        "",
-    )
+    p1_row = next((line for line in doc.splitlines() if line.startswith("| p1 ")), "")
     if not p1_row:
-        problems.add("partitions.md", "找不到 p1 表格行")
-        return
-    problems.forbid("partitions.md", p1_row, ".sh", "ab-slot", "busybox", "/usr/")
-    problems.need("partitions.md", p1_row, "ab/")
+        problems.add("partitions.md", "p1 table row not found")
+    else:
+        problems.forbid("partitions.md", p1_row, ".sh", "ab-slot", "busybox", "/usr/")
+        problems.need("partitions.md", p1_row, "ab/")
 
     boot = read_doc("boot-overlay.md", problems)
-    problems.need("boot-overlay.md", boot, "@wf", "降级", "tmpfs")
+    problems.need("boot-overlay.md", boot, "@wf", "degraded", "tmpfs")
 
 
 def check_overlay_layers(problems: Problems) -> None:
@@ -103,16 +128,20 @@ def check_overlay_layers(problems: Problems) -> None:
         "boot-overlay.md",
         doc,
         "lowerdir=/mnt/wf:/mnt/sys",
+        "index=off",
+        "the platform layer takes precedence",
+        "p4 is mounted first",
+        "compress=",
+        "/usr/sbin/ab-slot",
+        "/etc/init.d/ab-commit",
+        "the `volatile` option is never used",
+    )
+    problems.need_prefix(
+        "boot-overlay.md",
+        doc,
         "upperdir=/mnt/p4/@overlay.gen",
         "workdir=/mnt/p4/@overlay.gen",
-        "index=off",
-        "先挂 p4",
-        "平台层优先",
-        "/etc/init.d/ab-commit",
-        "/usr/sbin/ab-slot",
-        "compress=",
     )
-    problems.need("boot-overlay.md", doc, "不使用 `volatile`")
 
 
 def check_generation_model(problems: Problems) -> None:
@@ -121,13 +150,13 @@ def check_generation_model(problems: Problems) -> None:
         "lifecycle.md",
         doc,
         "@overlay.genNNNN",
-        "全程不做重命名",
+        "no subvolume is ever renamed",
         '"generation"',
         '"committed"',
         '"pending"',
         '"upper_gen"',
-        "snapshot gen2 → gen3",
-        "一直不重启",
+        "snapshot gen2 -> gen3",
+        "has never rebooted",
     )
 
 
@@ -136,9 +165,9 @@ def check_gc_policy(problems: Problems) -> None:
     problems.need(
         "lifecycle.md",
         doc,
-        "引用集合",
-        "挂载中的代号不删",
-        "`pending` 引用的代号不删",
+        "The reference set",
+        "never delete a generation that is currently mounted",
+        "never delete the generation referenced by `pending`",
         "btrfs subvolume delete -C",
         "btrfs subvolume sync",
         "balance",
@@ -162,11 +191,11 @@ def check_log_ring(problems: Problems) -> None:
         "32 KiB",
         "350 KiB",
         "rename",
+        "at most 8 writes per boot",
         "stage=",
         "probe=",
         "reason=",
         "action=",
-        "超过 8 次",
     )
 
 
@@ -178,12 +207,12 @@ def check_conflict_model(problems: Problems) -> None:
         "UpstreamChanged",
         "UserChanged",
         "Conflicts",
-        "内容哈希",
+        "content hashes",
         "whiteout",
-        "不阻断",
+        "never block",
         "uci-defaults",
-        "保留 `U`",
-        "采用 `B`",
+        "keep `U`",
+        "take `B`",
     )
 
 
@@ -208,12 +237,21 @@ def check_payload_contract(problems: Problems) -> None:
 
 
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+HEADING_RE = re.compile(r"^## ", re.MULTILINE)
 
 
 def _md_files() -> list[Path]:
-    files = [ROOT / "README.md"]
+    files = [ROOT / "README.md", ROOT / "README.zh-CN.md"]
     files.extend(sorted(DOCS.glob("*.md")))
     return [path for path in files if path.is_file()]
+
+
+def _primary_docs() -> list[Path]:
+    return [
+        path
+        for path in sorted(DOCS.glob("*.md"))
+        if not path.name.endswith(ZH_SUFFIX)
+    ]
 
 
 def check_links(problems: Problems) -> None:
@@ -227,13 +265,24 @@ def check_links(problems: Problems) -> None:
             clean = target.split("#", 1)[0]
             if not clean:
                 continue
-            resolved = (path.parent / clean).resolve()
-            if not resolved.exists():
-                problems.add(rel, f"链接无法解析 {target!r}")
+            if not (path.parent / clean).resolve().exists():
+                problems.add(rel, f"unresolved link {target!r}")
+
+    for primary in _primary_docs():
+        translation = primary.with_name(primary.name[: -len(".md")] + ZH_SUFFIX)
+        if not translation.is_file():
+            problems.add(primary.name, "missing Chinese translation")
+            continue
+        left = len(HEADING_RE.findall(primary.read_text(encoding="utf-8")))
+        right = len(HEADING_RE.findall(translation.read_text(encoding="utf-8")))
+        if left != right:
+            problems.add(
+                translation.name,
+                f"section count differs from {primary.name}: {right} vs {left}",
+            )
 
 
 PLACEHOLDERS = ("TODO", "TBD", "FIXME", "XXX", "待填")
-SELF = Path(__file__).resolve()
 
 
 def check_text(problems: Problems) -> None:
@@ -246,13 +295,13 @@ def check_text(problems: Problems) -> None:
         rel = path.relative_to(ROOT).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
         if not text.strip():
-            problems.add(rel, "文件为空")
+            problems.add(rel, "file is empty")
             continue
         for marker in PLACEHOLDERS:
             if marker in text:
-                problems.add(rel, f"残留占位标记 {marker!r}")
+                problems.add(rel, f"placeholder marker {marker!r} left behind")
         if path.suffix == ".md" and "\t" in text:
-            problems.add(rel, "含制表符")
+            problems.add(rel, "contains tab characters")
 
 
 CHECKS = {
@@ -285,16 +334,15 @@ def main(argv: list[str]) -> int:
         before = len(problems)
         try:
             func(problems)
-        except Exception as exc:  # noqa: BLE001 - 报告而非崩溃
-            problems.add(key, f"检查抛出异常 {exc!r}")
-        status = "ok" if len(problems) == before else "fail"
-        print(f"[{status}] {key}")
+        except Exception as exc:  # noqa: BLE001 - report instead of crashing
+            problems.add(key, f"check raised {exc!r}")
+        print(f"[{'ok' if len(problems) == before else 'fail'}] {key}")
 
     if problems:
         print()
         for item in problems:
             print(f"  - {item}")
-        print(f"\n{len(problems)} 个问题")
+        print(f"\n{len(problems)} problem(s)")
         return 1
     print("\nall checks passed")
     return 0

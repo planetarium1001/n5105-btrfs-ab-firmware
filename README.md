@@ -1,55 +1,71 @@
 # N5105 Btrfs A/B Firmware
 
-N5105 v5 单板的 ImmortalWrt 定制固件：A/B 双根 + btrfs 文件系统。
+ImmortalWrt-based firmware image for the N5105 v5 board, with A/B dual-root updates on btrfs.
 
-本项目只做系统层——AB 根与 btrfs。
+**English** | [简体中文](README.zh-CN.md)
 
-## 定位
+This project covers the system layer only: the A/B boot slots and the btrfs layout.
+Application-level packaging and configuration are out of scope.
 
-- 目标硬件：N5105 v5，x86-64，UEFI，4× Intel i226-V
-- 系统内容：与上游 ImmortalWrt 逐字节一致，不预装任何额外软件
-- 自有内容：只存在于构建层、引导层与 `@wf` 平台层
-- 引导：EFI-only，不含 legacy/BIOS 与多主板兼容
+## Scope
 
-## 磁盘布局
+| Item | Value |
+|---|---|
+| Target hardware | N5105 v5, x86-64, UEFI, 4× Intel i226-V |
+| Base system | ImmortalWrt, rootfs kept byte-identical to upstream |
+| Project-owned content | Build layer, boot layer, and the `@wf` platform layer only |
+| Boot | UEFI only; no legacy/BIOS support, no multi-board support |
 
-| 分区 | 大小 | 文件系统 | 内容 |
+## Disk layout
+
+| Partition | Size | Filesystem | Contents |
 |---|---|---|---|
-| p1 | 128 MiB | vfat | GRUB、槽状态、启动日志 |
-| p2 | 128 MiB | btrfs | 槽 A：`@sys` + `@wf` |
-| p3 | 128 MiB | btrfs | 槽 B：`@sys` + `@wf` |
-| p4 | 至盘尾 | btrfs | `@overlay.genNNNN`、`@docker`、`@swap`、`@data` |
+| p1 | 128 MiB | vfat | GRUB, slot state, boot logs |
+| p2 | 128 MiB | btrfs | Slot A: `@sys` + `@wf` |
+| p3 | 128 MiB | btrfs | Slot B: `@sys` + `@wf` |
+| p4 | rest of disk | btrfs | `@overlay.genNNNN`, `@docker`, `@swap`, `@data` |
 
-- `@sys`：上游 rootfs，只读
-- `@wf`：平台工具，随槽版本绑定，只读
-- `@overlay.genNNNN`：全部可写状态，两槽共享
+- `@sys` — upstream rootfs, read-only
+- `@wf` — platform tooling, versioned with the slot, read-only
+- `@overlay.genNNNN` — all writable state, shared by both slots
 
-## 启动链
+## Boot chain
 
-1. GRUB 从 p1 读槽状态，选择内核与 initrd
-2. initramfs 挂载 p4 写层与槽内只读层
-3. 合成 overlayfs 根：`lowerdir=@wf:@sys`、`upperdir=@overlay.genN/upper`
-4. `switch_root` 进入系统
+1. GRUB reads slot state from p1 and selects kernel and initrd.
+2. The initramfs mounts the p4 writable layer, then the read-only slot layers.
+3. overlayfs composes the root: `lowerdir=@wf:@sys`, `upperdir=@overlay.genN/upper`.
+4. `switch_root` enters the system.
 
-## 升级与回退
+## Update and rollback
 
-- 升级写入非活动槽，不触碰运行中的系统
-- 写层按代号推进：快照当前代号生成新代号，全程不重命名
-- 首次启动失败一次即回退到已提交槽
-- 健康检查通过才提交，否则放弃并回到旧槽
-- 只能回滚一代
+- Updates write to the inactive slot; the running system is never modified.
+- The writable layer advances by generation: snapshot the live generation, never rename.
+- A single failed boot attempt rolls back to the committed slot.
+- A new slot is committed only after health checks pass.
+- Rollback depth is one generation.
 
-## 构建
+## Build
 
-- CI 从官方镜像站消费 `rootfs.tar.gz`、`kernel.bin` 与 kmod，组装自有 initramfs 与整盘镜像
-- 不编译内核；升级载荷约 20 MiB
-- 产物：整盘镜像（首次刷机）、升级载荷（日常更新）
+- CI consumes `rootfs.tar.gz`, `kernel.bin`, and kernel modules from the official mirror,
+  then assembles the initramfs and the disk image.
+- No kernel compilation; the update payload is about 20 MiB.
+- Artifacts: a disk image for first installation and a payload for routine updates.
 
-## 仓库边界
+## Repository policy
 
-- 只发布代码与文档
-- 工作流、技能、AGENTS.md、知识库、任务记录均不入库
+- Only source code and documentation are published.
+- Workflow configuration, agent instructions, knowledge base, and task records stay local.
 
-## 状态
+## Documentation
 
-设计阶段。分区几何、启动链、升级事务已定稿，实施按 S0–S6 推进。
+- [docs/](docs/README.md) — design documents
+
+## Status
+
+Design stage. Partition geometry, boot chain, and update transaction are finalized.
+Implementation proceeds through stages S0–S6.
+
+## License
+
+- Build tooling and project-owned code: [MIT](LICENSES/MIT.txt)
+- Files derived from upstream OpenWrt: [GPL-2.0-only](LICENSES/GPL-2.0-only.txt)
