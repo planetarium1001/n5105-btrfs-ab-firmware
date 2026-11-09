@@ -146,13 +146,13 @@ probe_labels() {
 }
 labels="$(probe_labels)"
 label_source=blkid-p
-if [ -z "${labels//,/}" ]; then
+if [ -z "$(printf '%s' "${labels}" | tr -d ',')" ]; then
     if sfdisk -d "${DEV}" >/tmp/sfdisk.txt 2>/dev/null && grep -q 'name="' /tmp/sfdisk.txt; then
         labels="$(sed -n 's/.*name="\([^"]*\)".*/\1/p' /tmp/sfdisk.txt | paste -sd, -)"
         label_source=sfdisk
     fi
 fi
-if [ -z "${labels//,/}" ]; then
+if [ -z "$(printf '%s' "${labels}" | tr -d ',')" ]; then
     echo "[s2] label probe failed; blkid -p says:"
     blkid -p "${DEV}1" 2>&1 | sed 's/^/[s2]   /'
     sfdisk -d "${DEV}" 2>&1 | head -n 6 | sed 's/^/[s2]   /'
