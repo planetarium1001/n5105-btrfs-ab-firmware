@@ -132,18 +132,30 @@ echo "[s2] found ${found} partitions"
 # Labels: sfdisk prints name="..." for GPT entries, blkid exposes PART_ENTRY_NAME.
 labels=""
 label_source=""
-if sfdisk -d "${DEV}" >/tmp/sfdisk.txt 2>/dev/null && grep -q 'name="' /tmp/sfdisk.txt; then
-    labels="$(sed -n 's/.*name="\([^"]*\)".*/\1/p' /tmp/sfdisk.txt | paste -sd, -)"
-    label_source=sfdisk
-elif blkid -o value -s PART_ENTRY_NAME "${DEV}1" >/dev/null 2>&1; then
-    part=1
-    while [ "${part}" -le "${found}" ]; do
-        one="$(blkid -o value -s PART_ENTRY_NAME "${DEV}${part}" 2>/dev/null)"
-        labels="${labels}${labels:+,}${one}"
-        part=$((part + 1))
+# -p forces a direct probe of the disk instead of asking the block device cache,
+# which carries no GPT names when the guest has no udev.
+probe_labels() {
+    _out=""
+    _part=1
+    while [ "${_part}" -le "${found}" ]; do
+        _one="$(blkid -p -o value -s PART_ENTRY_NAME "${DEV}${_part}" 2>/dev/null)"
+        _out="${_out}${_out:+,}${_one}"
+        _part=$((_part + 1))
     done
-    label_source=blkid
-else
+    printf '%s' "${_out}"
+}
+labels="$(probe_labels)"
+label_source=blkid-p
+if [ -z "${labels//,/}" ]; then
+    if sfdisk -d "${DEV}" >/tmp/sfdisk.txt 2>/dev/null && grep -q 'name="' /tmp/sfdisk.txt; then
+        labels="$(sed -n 's/.*name="\([^"]*\)".*/\1/p' /tmp/sfdisk.txt | paste -sd, -)"
+        label_source=sfdisk
+    fi
+fi
+if [ -z "${labels//,/}" ]; then
+    echo "[s2] label probe failed; blkid -p says:"
+    blkid -p "${DEV}1" 2>&1 | sed 's/^/[s2]   /'
+    sfdisk -d "${DEV}" 2>&1 | head -n 6 | sed 's/^/[s2]   /'
     report_failure label-unreadable
 fi
 echo "[s2] labels (${label_source}): ${labels}"
