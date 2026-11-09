@@ -1,4 +1,4 @@
-name: t3
+name: t4
 on:
   workflow_call:
     inputs:
@@ -10,4 +10,5 @@ on:
 jobs:
   a:
     runs-on: ubuntu-latest
-    uses: ./.github/workflows/t1.yml
+    steps:
+      - run: echo ok
