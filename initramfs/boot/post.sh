@@ -97,8 +97,16 @@ upper_mnt=/.s3-upper
 platform_mnt=/.s3-platform
 sys_mnt=/.s3-sys
 mkdir -p "${upper_mnt}" "${platform_mnt}" "${sys_mnt}" || fail mountpoint-create-failed
-[ -b "${shared_dev}" ] || fail shared-device-missing
-[ -b "${slot_dev}" ] || fail slot-device-missing
+# The composed root may come up without the initramfs devtmpfs bound onto /dev, so the
+# nodes are materialised again before they are used.
+if [ ! -b "${shared_dev}" ] || [ ! -b "${slot_dev}" ]; then
+    log "device nodes missing under /dev, re-populating with mdev"
+    mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s 2>/dev/null || true
+    [ -b "${shared_dev}" ] && [ -b "${slot_dev}" ] || {
+        log "block devices present: $(ls /dev | tr '\n' ' ')"
+        fail shared-device-missing
+    }
+fi
 # btrfs reports ENOENT both for a missing device and for a missing subvolume, so the
 # subvolume name is printed before each attempt to keep the two distinguishable.
 log "reopening ${shared_dev}:${upper} and ${slot_dev} read-only"
