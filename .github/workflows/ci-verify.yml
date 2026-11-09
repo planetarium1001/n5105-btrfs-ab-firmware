@@ -1,0 +1,76 @@
+name: ci-verify
+
+# Stage 4 - verify.
+#
+# Synchronous, artifact-free checks: shell syntax, ShellCheck (when the runner ships
+# it) and `python3 scripts/check_design.py all`, which turns the thresholds and
+# contracts written in docs/ into executable assertions. The stage runs every check
+# before failing so one run reports all findings.
+
+on:
+  workflow_call:
+    outputs:
+      verify_status:
+        description: "Aggregate result of the verify stage"
+        value: ${{ jobs.verify.outputs.verify_status }}
+      design_checks_status:
+        description: "Result of scripts/check_design.py all"
+        value: ${{ jobs.verify.outputs.design_checks_status }}
+      design_checks_problems:
+        description: "Number of reported design problems"
+        value: ${{ jobs.verify.outputs.design_checks_problems }}
+      shellcheck_status:
+        description: "Result of ShellCheck: ok, fail or skipped"
+        value: ${{ jobs.verify.outputs.shellcheck_status }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    name: static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      CI_TMP_ROOT: ${{ runner.temp }}/ci
+      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
+    outputs:
+      verify_status: ${{ steps.verify.outputs.verify_status }}
+      design_checks_status: ${{ steps.verify.outputs.design_checks_status }}
+      design_checks_problems: ${{ steps.verify.outputs.design_checks_problems }}
+      shellcheck_status: ${{ steps.verify.outputs.shellcheck_status }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run static checks
+        id: verify
+        run: |
+          mkdir -p "${CI_LOG_DIR}"
+          bash scripts/ci/verify.sh 2>&1 | tee -a "${CI_LOG_DIR}/verify.log"
+
+      - name: Collect diagnostics
+        if: always()
+        continue-on-error: true
+        env:
+          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
+        run: |
+          mkdir -p "${CI_LOG_DIR}" "${CI_DIAG_DIR}"
+          bash scripts/ci/diagnostics.sh verify 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
+
+      - name: Upload logs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-verify
+          path: ${{ runner.temp }}/ci
+          if-no-files-found: ignore
+          retention-days: 7

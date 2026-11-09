@@ -1,0 +1,104 @@
+name: ci-assemble
+
+# Stage 3 - assemble (S0 skeleton).
+#
+# Publishes a payload directory that already follows the contract in
+# docs/conflicts-payload.md: member names, per-member size and sha256, format tag and
+# rootfs version. Only the upstream members exist today; `initramfs.cpio.gz` and
+# `wf.tar` are listed as missing members rather than shipped as empty placeholders, so
+# nothing downstream can mistake the skeleton for a complete payload.
+
+on:
+  workflow_call:
+    inputs:
+      upstream_version:
+        description: "Resolved upstream version, recorded in the payload manifest"
+        required: true
+        type: string
+      kernel_package:
+        description: "Kernel package version, recorded in the payload manifest"
+        required: true
+        type: string
+    outputs:
+      payload_manifest_sha256:
+        description: "sha256 of the produced payload manifest"
+        value: ${{ jobs.assemble.outputs.payload_manifest_sha256 }}
+      payload_total_bytes:
+        description: "Total size of the payload members"
+        value: ${{ jobs.assemble.outputs.payload_total_bytes }}
+      payload_members:
+        description: "Comma separated list of payload members"
+        value: ${{ jobs.assemble.outputs.payload_members }}
+      artifact_name:
+        description: "Name of the artifact that carries the payload"
+        value: ${{ jobs.assemble.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  assemble:
+    name: assemble payload
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      CI_TMP_ROOT: ${{ runner.temp }}/ci
+      CI_LOG_DIR: ${{ runner.temp }}/ci/logs
+      CI_FETCH_DIR: ${{ runner.temp }}/ci/fetch
+      CI_ASSEMBLE_DIR: ${{ runner.temp }}/ci/assemble
+      CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+      CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
+    outputs:
+      payload_manifest_sha256: ${{ steps.assemble.outputs.payload_manifest_sha256 }}
+      payload_total_bytes: ${{ steps.assemble.outputs.payload_total_bytes }}
+      payload_members: ${{ steps.assemble.outputs.payload_members }}
+      artifact_name: payload
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download upstream artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-files
+          path: ${{ runner.temp }}/ci/fetch
+
+      - name: Assemble payload
+        id: assemble
+        run: |
+          mkdir -p "${CI_LOG_DIR}" "${CI_ASSEMBLE_DIR}"
+          bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR}/assemble.log"
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: payload
+          path: ${{ runner.temp }}/ci/assemble/payload
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Collect diagnostics
+        if: always()
+        continue-on-error: true
+        env:
+          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
+        run: |
+          mkdir -p "${CI_LOG_DIR}" "${CI_DIAG_DIR}"
+          bash scripts/ci/diagnostics.sh assemble "${CI_ASSEMBLE_DIR}" 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
+
+      - name: Upload logs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-assemble
+          path: ${{ runner.temp }}/ci/diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

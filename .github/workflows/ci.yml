@@ -1,0 +1,135 @@
+name: CI
+
+# Single entry point for the whole pipeline.
+#
+# This file only orchestrates: every stage is a reusable workflow named
+# ci-<stage>.yml next to this file, and all real logic lives in scripts/ci/. There is
+# no workflow_run chaining, so a run has exactly one graph and one verdict.
+#
+# The stage workflows live at the root of .github/workflows because GitHub does not
+# support reusable workflows in subdirectories of that directory.
+#
+# Stage graph (stage=all):
+#
+#   resolve ──┬── fetch ── assemble ──┐
+#             └── verify ─────────────┴── report
+#
+# Stage selection through workflow_dispatch lets a failed run be resumed where it
+# stopped:
+#
+#   stage=fetch     resolve, fetch, report
+#   stage=assemble  resolve, fetch, assemble, report
+#   stage=verify    resolve, verify, report
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Pipeline stage to run"
+        type: choice
+        options:
+          - all
+          - fetch
+          - assemble
+          - verify
+        default: all
+      upstream_version:
+        description: "Upstream ImmortalWrt version, 'latest', or empty for the pinned default"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Stage 1: resolve the upstream release and derive the cache key.
+  resolve:
+    name: resolve
+    uses: ./.github/workflows/ci-resolve.yml
+    permissions:
+      contents: read
+    with:
+      upstream_version: ${{ inputs.upstream_version || '' }}
+
+  # Stage 2: download and verify the upstream artifacts.
+  fetch:
+    name: fetch
+    needs: resolve
+    if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'fetch' || inputs.stage == 'assemble') }}
+    uses: ./.github/workflows/ci-fetch.yml
+    permissions:
+      contents: read
+    with:
+      upstream_version: ${{ needs.resolve.outputs.upstream_version }}
+      upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
+      kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      rootfs_name: ${{ needs.resolve.outputs.rootfs_name }}
+      kernel_name: ${{ needs.resolve.outputs.kernel_name }}
+      btrfs_kmod_name: ${{ needs.resolve.outputs.btrfs_kmod_name }}
+      rootfs_sha256: ${{ needs.resolve.outputs.rootfs_sha256 }}
+      kernel_sha256: ${{ needs.resolve.outputs.kernel_sha256 }}
+      btrfs_kmod_sha256: ${{ needs.resolve.outputs.btrfs_kmod_sha256 }}
+      cache_key: ${{ needs.resolve.outputs.cache_key }}
+      cache_restore_prefix: ${{ needs.resolve.outputs.cache_restore_prefix }}
+
+  # Stage 3: assemble the update payload (S0 skeleton).
+  # `resolve` is listed explicitly because this job also reads its outputs.
+  assemble:
+    name: assemble
+    needs: [resolve, fetch]
+    if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'assemble') }}
+    uses: ./.github/workflows/ci-assemble.yml
+    permissions:
+      contents: read
+    with:
+      upstream_version: ${{ needs.resolve.outputs.upstream_version }}
+      kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+
+  # Stage 4: static checks that need no upstream artifact.
+  verify:
+    name: verify
+    needs: resolve
+    if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'verify') }}
+    uses: ./.github/workflows/ci-verify.yml
+    permissions:
+      contents: read
+
+  # Stage 5: single verdict, rendered as the run summary.
+  report:
+    name: report
+    needs: [resolve, fetch, assemble, verify]
+    if: ${{ always() }}
+    uses: ./.github/workflows/ci-report.yml
+    permissions:
+      contents: read
+    with:
+      stage: ${{ inputs.stage || 'all' }}
+      trigger: ${{ github.event_name }}
+      ref: ${{ github.ref }}
+      sha: ${{ github.sha }}
+      resolve_result: ${{ needs.resolve.result }}
+      fetch_result: ${{ needs.fetch.result }}
+      assemble_result: ${{ needs.assemble.result }}
+      verify_result: ${{ needs.verify.result }}
+      upstream_version: ${{ needs.resolve.outputs.upstream_version }}
+      version_source: ${{ needs.resolve.outputs.version_source }}
+      kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
+      cache_key: ${{ needs.resolve.outputs.cache_key }}
+      cache_hit: ${{ needs.fetch.outputs.cache_hit }}
+      fetch_total_bytes: ${{ needs.fetch.outputs.fetch_total_bytes }}
+      payload_members: ${{ needs.assemble.outputs.payload_members }}
+      payload_total_bytes: ${{ needs.assemble.outputs.payload_total_bytes }}
+      payload_manifest_sha256: ${{ needs.assemble.outputs.payload_manifest_sha256 }}
+      design_checks_status: ${{ needs.verify.outputs.design_checks_status }}
+      design_checks_problems: ${{ needs.verify.outputs.design_checks_problems }}
+      shellcheck_status: ${{ needs.verify.outputs.shellcheck_status }}
