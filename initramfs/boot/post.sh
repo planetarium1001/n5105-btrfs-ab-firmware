@@ -91,19 +91,25 @@ printf 'created on boot %s\n' "${boot}" >"${new_file}" || fail newfile-write-fai
 if [ -z "${shared_dev}" ] || [ -z "${slot_dev}" ]; then
     fail missing-device-arguments
 fi
-mkdir -p /mnt/s3-upper /mnt/s3-platform /mnt/s3-sys
-mount -o ro,"subvol=/${upper}" "${shared_dev}" /mnt/s3-upper || fail remount-upper-failed
-mount -o ro,"subvol=/@platform" "${slot_dev}" /mnt/s3-platform || fail remount-platform-failed
-mount -o ro,"subvol=/@sys" "${slot_dev}" /mnt/s3-sys || fail remount-sys-failed
+# Mount points live at the root we own: the upstream /mnt carries its own meaning and
+# may be a symlink or absent before rcS runs.
+upper_mnt=/.s3-upper
+platform_mnt=/.s3-platform
+sys_mnt=/.s3-sys
+mkdir -p "${upper_mnt}" "${platform_mnt}" "${sys_mnt}" || fail mountpoint-create-failed
+mount -o ro,"subvol=/${upper}" "${shared_dev}" "${upper_mnt}" || fail remount-upper-failed
+mount -o ro,"subvol=/@platform" "${slot_dev}" "${platform_mnt}" || fail remount-platform-failed
+mount -o ro,"subvol=/@sys" "${slot_dev}" "${sys_mnt}" || fail remount-sys-failed
 
-[ -f "/mnt/s3-upper/upper${probe}" ] || fail probe-not-in-upper
-[ -f "/mnt/s3-upper/upper${new_file}" ] || fail newfile-not-in-upper
-[ ! -e "/mnt/s3-platform${probe}" ] || fail probe-leaked-to-platform
-[ ! -e "/mnt/s3-sys${probe}" ] || fail probe-leaked-to-sys
-[ ! -e "/mnt/s3-platform${new_file}" ] || fail newfile-leaked-to-platform
-[ ! -e "/mnt/s3-sys${new_file}" ] || fail newfile-leaked-to-sys
+[ -f "${upper_mnt}/upper${probe}" ] || fail probe-not-in-upper
+[ -f "${upper_mnt}/upper${new_file}" ] || fail newfile-not-in-upper
+[ ! -e "${platform_mnt}${probe}" ] || fail probe-leaked-to-platform
+[ ! -e "${sys_mnt}${probe}" ] || fail probe-leaked-to-sys
+[ ! -e "${platform_mnt}${new_file}" ] || fail newfile-leaked-to-platform
+[ ! -e "${sys_mnt}${new_file}" ] || fail newfile-leaked-to-sys
 
-umount /mnt/s3-upper /mnt/s3-platform /mnt/s3-sys
+umount "${upper_mnt}" "${platform_mnt}" "${sys_mnt}"
+rmdir "${upper_mnt}" "${platform_mnt}" "${sys_mnt}" 2>/dev/null || true
 log "probe writes are in ${upper}/upper only"
 
 # --------------------------------------------------------------------------- #
