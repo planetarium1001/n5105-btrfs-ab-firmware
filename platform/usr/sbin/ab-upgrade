@@ -130,8 +130,10 @@ say "ab-upgrade: manifest ok, ${format}, rootfs ${rootfs_version}, 4 members ver
 # 3. The initramfs must be built for the kernel in the payload
 # --------------------------------------------------------------------------- #
 
+# busybox tr is unreliable with '[:print:]', so the binary is scanned with grep -a -o
+# instead; that combination is what the boot probe already proved works.
 read_vermagic() {
-    tr -c '[:print:]' '\n' <"$1" 2>/dev/null | grep '^vermagic=' | head -n 1 | sed 's/^vermagic=//'
+    grep -a -o 'vermagic=[[:print:]]*' "$1" 2>/dev/null | head -n 1 | sed 's/^vermagic=//'
 }
 
 kernel_version="$(read_vermagic "${work}/kernel.bin")"
@@ -146,8 +148,8 @@ if gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | (cd "${initrd_dir}" && cpi
     [ -n "${btrfs_ko}" ] && module_version="$(read_vermagic "${btrfs_ko}")"
 fi
 if [ -z "${module_version}" ]; then
-    module_version="$(gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null | tr -c '[:print:]' '\n' \
-        | grep '^vermagic=' | head -n 1 | sed 's/^vermagic=//')"
+    module_version="$(gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null \
+        | grep -a -o 'vermagic=[[:print:]]*' | head -n 1 | sed 's/^vermagic=//')"
 fi
 [ -n "${module_version}" ] || refuse "initramfs-without-btrfs-module"
 [ -n "${kernel_version}" ] || refuse "kernel-without-vermagic"
