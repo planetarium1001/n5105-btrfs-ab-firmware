@@ -22,7 +22,12 @@ CI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/lib.sh
 . "${CI_SCRIPT_DIR}/lib.sh"
 
-trap 'rc=$?; ci_log "ERROR line ${LINENO}: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
+on_error() {
+    local status=$?
+    ci_log "ERROR line ${LINENO}: ${BASH_COMMAND} (exit ${status})"
+    exit "${status}"
+}
+trap on_error ERR
 
 ci_stage_init initramfs
 
