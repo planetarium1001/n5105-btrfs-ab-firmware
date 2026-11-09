@@ -1,0 +1,25 @@
+name: t2
+on:
+  workflow_call:
+    outputs:
+      s:
+        description: "status"
+        value: ${{ jobs.a.outputs.s }}
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      X: ${{ runner.temp }}/x
+    outputs:
+      s: ${{ steps.a.outputs.s }}
+    steps:
+      - id: a
+        run: echo "s=ok" >> "$GITHUB_OUTPUT"

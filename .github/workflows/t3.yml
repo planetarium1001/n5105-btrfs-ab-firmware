@@ -1,0 +1,13 @@
+name: t3
+on:
+  workflow_call:
+    inputs:
+      v:
+        description: "v"
+        required: false
+        type: string
+        default: ""
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    uses: ./.github/workflows/t1.yml
