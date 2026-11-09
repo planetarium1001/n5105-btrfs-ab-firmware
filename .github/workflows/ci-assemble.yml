@@ -70,8 +70,8 @@ jobs:
       - name: Assemble payload
         id: assemble
         run: |
-          mkdir -p "${CI_LOG_DIR}" "${CI_ASSEMBLE_DIR}"
-          bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR}/assemble.log"
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/assemble.log"
 
       - name: Upload payload
         uses: actions/upload-artifact@v4
@@ -87,8 +87,8 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR}" "${CI_DIAG_DIR}"
-          bash scripts/ci/diagnostics.sh assemble "${CI_ASSEMBLE_DIR}" 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/diagnostics.sh assemble "${CI_ASSEMBLE_DIR}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()

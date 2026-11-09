@@ -51,8 +51,8 @@ jobs:
       - name: Run static checks
         id: verify
         run: |
-          mkdir -p "${CI_LOG_DIR}"
-          bash scripts/ci/verify.sh 2>&1 | tee -a "${CI_LOG_DIR}/verify.log"
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/verify.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/verify.log"
 
       - name: Collect diagnostics
         if: always()
@@ -60,8 +60,8 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR}" "${CI_DIAG_DIR}"
-          bash scripts/ci/diagnostics.sh verify 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/diagnostics.sh verify 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()

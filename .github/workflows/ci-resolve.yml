@@ -95,8 +95,8 @@ jobs:
       - name: Resolve upstream release and cache key
         id: resolve
         run: |
-          mkdir -p "${CI_LOG_DIR}" "${CI_WORK_DIR}" "${CI_DIAG_DIR}"
-          bash scripts/ci/resolve.sh 2>&1 | tee -a "${CI_LOG_DIR}/resolve.log"
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/resolve.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/resolve.log"
 
       - name: Collect diagnostics
         if: always()
@@ -104,8 +104,8 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR}" "${CI_DIAG_DIR}"
-          bash scripts/ci/diagnostics.sh resolve "${CI_WORK_DIR}" 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/diagnostics.sh resolve "${CI_WORK_DIR}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()
