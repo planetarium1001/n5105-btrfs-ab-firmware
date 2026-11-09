@@ -148,17 +148,36 @@ start() {
 		console_say "ab-boot: slot ${slot} is the pending slot, marking a candidate first boot"
 	fi
 
+	# The btrfs tool ships in the platform layer; prove it runs before relying on it,
+	# because every reclaim, snapshot and rollback path needs it.
+	btrfs_ok=0
+	if command -v btrfs >/dev/null 2>&1; then
+		console_say "ab-boot: btrfs-tool $(btrfs --version 2>&1 | head -n 1)"
+		if btrfs subvolume list / >/dev/null 2>&1; then
+			btrfs_ok=1
+			log_append "stage=btrfs-check slot=${slot:-?} result=ok"
+			console_say "ab-boot: btrfs=ok subvolume-list=ok"
+		else
+			log_append "stage=btrfs-check slot=${slot:-?} result=fail reason=subvolume-list-failed"
+			console_say "ab-boot: btrfs=fail reason=subvolume-list-failed"
+		fi
+	else
+		log_append "stage=btrfs-check slot=${slot:-?} result=fail reason=btrfs-tool-missing"
+		console_say "ab-boot: btrfs=fail reason=btrfs-tool-missing"
+	fi
+
 	# Reclaim unreachable layers early in the boot. It must never block the boot, so
 	# every outcome is logged and the return status is ignored.
-	if [ "${p4}" = "ok" ]; then
+	if [ "${p4}" = "ok" ] && [ "${btrfs_ok}" = "1" ]; then
 		if ab-slot gc >/tmp/ab-boot-gc.log 2>&1; then
 			reclaimed="$(grep -c 'ab-slot: deleting' /tmp/ab-boot-gc.log 2>/dev/null)"
 			[ -n "${reclaimed}" ] || reclaimed=0
 			log_append "stage=gc slot=${slot:-?} result=ok reclaimed=${reclaimed}"
 			console_say "ab-boot: early reclamation removed ${reclaimed} layer(s)"
 		else
-			log_append "stage=gc slot=${slot:-?} result=fail reason=gc-failed"
-			console_say "ab-boot: early reclamation reported problems"
+			gc_reason="$(grep -o 'reason=[a-z-]*' /tmp/ab-boot-gc.log 2>/dev/null | tail -n 1)"
+			log_append "stage=gc slot=${slot:-?} result=fail ${gc_reason:-reason=gc-failed}"
+			console_say "ab-boot: early reclamation reported problems ${gc_reason:-}"
 		fi
 	fi
 }

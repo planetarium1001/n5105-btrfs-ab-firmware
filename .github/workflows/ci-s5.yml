@@ -50,6 +50,12 @@ on:
       degraded_line:
         description: "Evidence line from the degraded boot"
         value: ${{ jobs.s5.outputs.degraded_line }}
+      toolchain_line:
+        description: "Evidence line: btrfs tool works inside the guest"
+        value: ${{ jobs.s5.outputs.toolchain_line }}
+      runtime_packages:
+        description: "Runtime packages merged into the platform layer"
+        value: ${{ jobs.s5.outputs.runtime_packages }}
       conflicts:
         description: "Conflicts reported by the upgrade"
         value: ${{ jobs.s5.outputs.conflicts }}
@@ -83,10 +89,12 @@ jobs:
     outputs:
       judge_line: ${{ steps.phase3.outputs.judge_line }}
       upgrade_line: ${{ steps.phase2.outputs.evidence_line }}
+      toolchain_line: ${{ steps.phase1b.outputs.evidence_line }}
       degraded_line: ${{ steps.phase4.outputs.evidence_line }}
       conflicts: ${{ steps.phase3.outputs.conflicts }}
       reclaimed: ${{ steps.phase3.outputs.reclaimed }}
       payload_version: ${{ steps.payload.outputs.payload_version }}
+      runtime_packages: ${{ steps.runtime.outputs.runtime_packages }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -123,6 +131,15 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/esp.log"
 
+      # btrfs-progs is not in the upstream root filesystem; the platform layer carries
+      # it (and only the libraries the root filesystem does not provide).
+      - name: Resolve the btrfs runtime closure
+        id: runtime
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/platform-runtime.sh 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/runtime.log"
+
       - name: Build the boot initramfs
         id: initramfs
         env:
@@ -139,6 +156,7 @@ jobs:
         env:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
+          CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
@@ -178,6 +196,16 @@ jobs:
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot1.log"
+
+      - name: "Phase 1b: verify the btrfs tool inside the guest"
+        id: phase1b
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/s5-phase.sh --phase toolchain \
+            --serial "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu/serial-s5-boot1.log" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1b.log"
 
       - name: "Fixture: run ab-upgrade automatically on the next boot"
         env:
@@ -288,6 +316,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ci/qemu/serial-*.log
             ${{ runner.temp }}/ci/payload/payload.tar
+            ${{ runner.temp }}/ci/runtime
             ${{ runner.temp }}/ci/s5-phase/esp
           if-no-files-found: ignore
           retention-days: 7

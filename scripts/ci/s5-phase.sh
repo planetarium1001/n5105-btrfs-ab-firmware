@@ -13,6 +13,10 @@
 #       conflict report is on the ESP
 #       -> S5-RESULT=ok upgrade=<slot> conflicts=<n> reclaimed=<n>
 #
+#   --phase toolchain --serial <file>
+#       the guest proved the btrfs tool runs and can list subvolumes
+#       -> S5-EVIDENCE=ok phase=toolchain
+#
 #   --phase degraded --serial <file>
 #       the boot survived a broken writable partition
 #       -> S5-EVIDENCE=ok phase=degraded target=p4
@@ -86,6 +90,21 @@ mount_esp() {
 # --------------------------------------------------------------------------- #
 # Degraded phase: no image state to read, only the serial log
 # --------------------------------------------------------------------------- #
+
+if [ "${phase}" = "toolchain" ]; then
+    [ -n "${serial}" ] && [ -f "${serial}" ] || ci_die "toolchain phase needs --serial"
+    if ! grep -q 'btrfs=ok subvolume-list=ok' "${serial}"; then
+        ci_warn "the guest did not report a working btrfs tool"
+        grep -E 'ab-boot: btrfs|stage=btrfs-check' "${serial}" | sed 's/^/[s5-phase]   /' || true
+        fail_phase "btrfs-toolchain-not-ok"
+    fi
+    usage_line="$(grep -m 1 'ab-boot: btrfs-tool' "${serial}" | sed 's/.*btrfs-tool //')"
+    ci_log "guest btrfs: ${usage_line}"
+    line="S5-EVIDENCE=ok phase=toolchain tool=${usage_line:-unknown}"
+    printf '%s\n' "${line}"
+    ci_emit_output "evidence_line" "${line}"
+    exit 0
+fi
 
 if [ "${phase}" = "degraded" ]; then
     [ -n "${serial}" ] && [ -f "${serial}" ] || ci_die "degraded phase needs --serial"

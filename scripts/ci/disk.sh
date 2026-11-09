@@ -25,6 +25,8 @@
 #   CI_PLATFORM_VERSION  version recorded in the platform release file
 #   CI_UPSTREAM_VERSION  upstream release label recorded in the platform release file
 #   CI_PLATFORM_SRC      platform layer source tree (default: platform/)
+#   CI_PLATFORM_RUNTIME_DIR  btrfs tooling staged by the runtime stage (default: $CI_TMP_ROOT/runtime)
+#   CI_PLATFORM_LIMIT_BYTES  budget for the unpacked @platform layer (default: 8 MiB)
 #   CI_GRUB_TEMPLATE     GRUB template (default: scripts/ci/grub.cfg.in)
 #
 # Outputs: image_path, image_gz_path, image_bytes, image_gz_bytes, rootfs_files,
@@ -166,6 +168,21 @@ if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${platform_stage}/etc/platform-release"; then
     ci_die "platform-release still carries unreplaced placeholders"
 fi
 
+# The btrfs user space tooling has no place in @sys (that tree must stay byte
+# identical to upstream), so stage "runtime" hands over a ready tree that is merged
+# into the platform layer here: usr/sbin/btrfs plus the libraries the root
+# filesystem does not provide.
+runtime_tree="${CI_PLATFORM_RUNTIME_DIR:-${CI_TMP_ROOT}/runtime}"
+if [ -d "${runtime_tree}" ]; then
+    mkdir -p "${platform_stage}/usr/sbin" "${platform_stage}/usr/lib"
+    cp -a "${runtime_tree}/." "${platform_stage}/"
+    ci_log "platform layer carries the runtime tooling from ${runtime_tree}"
+else
+    ci_warn "no runtime tree at ${runtime_tree}: the platform layer will have no btrfs tool"
+fi
+[ -x "${platform_stage}/usr/sbin/btrfs" ] ||
+    ci_die "the platform layer has no runnable usr/sbin/btrfs, reclamation would be blind"
+
 platform_tar="${disk_dir}/platform.tar"
 ( cd "${platform_stage}" && tar --numeric-owner --owner=0 --group=0 -cf "${platform_tar}" . )
 ci_log "platform layer: $(tar -tf "${platform_tar}" | wc -l | tr -d ' ') entries, $(ci_file_size "${platform_tar}") bytes"
@@ -260,8 +277,17 @@ populate_slot() {
     sudo ln -sf ../init.d/ab-boot "${mnt}/@platform/etc/rc.d/S15ab-boot"
     sudo ln -sf ../init.d/ab-commit "${mnt}/@platform/etc/rc.d/S99ab-commit"
 
+    # Platform layer budget: the layer lives inside a slot filesystem, so an
+    # oversized layer eats the space the slot needs for its own writes.
+    platform_bytes="$(sudo du -sk "${mnt}/@platform" | awk '{ print $1 * 1024 }')"
+    ci_log "p${tag#p} @platform unpacked: ${platform_bytes} bytes"
+    if [ "${platform_bytes}" -gt "${CI_PLATFORM_LIMIT_BYTES:-8388608}" ]; then
+        sudo umount "${mnt}" 2>/dev/null || true
+        ci_die "the platform layer is ${platform_bytes} bytes, over the budget of ${CI_PLATFORM_LIMIT_BYTES:-8388608}"
+    fi
+
     unmount_part "${mnt}"
-    ci_log "p${tag#p} populated: @sys (${rootfs_files} file(s)) + @platform skeleton"
+    ci_log "p${tag#p} populated: @sys (${rootfs_files} file(s)) + @platform (${platform_bytes} bytes)"
 }
 
 populate_slot "${dev_p2}" "ab-slot-a" p2
@@ -300,6 +326,7 @@ ci_log "compressed in $(( $(date +%s) - now_start ))s: ${gz_bytes} bytes"
 
 ci_emit_output "overlay_name" "${overlay_name}"
 ci_emit_output "platform_tar" "${platform_tar}"
+ci_emit_output "platform_bytes" "${platform_bytes:-0}"
 ci_emit_output "grub_cfg" "${grub_output}"
 ci_emit_output "grub_cfg_sha256" "${grub_sha}"
 ci_emit_output "image_path" "${image}"

@@ -43,6 +43,8 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `grub-render.sh` | s2/s4 | render `boot/grub/grub.cfg` and assert the five GRUB rules |
 | `ab-fixtures.sh` | s4 | shape the test image between boots (network, broken slot, pending) |
 | `ab-phase.sh` | s4 | read the ESP back after a boot and print the frozen S4 judge line |
+| `platform-runtime.sh` | s5 | resolve and stage the btrfs tooling for the platform layer |
+| `elf_extract.py` | s5 (via platform-runtime.sh) | pull executables and shared objects out of apk v3 packages |
 | `payload-build.sh` | s5 | build the test upgrade payload (rootfs, kernel, initramfs, platform layer, manifest) |
 | `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
@@ -364,4 +366,56 @@ S5-RESULT=fail reason=<token>
 Boots 1, 2 and 4 are graded on the host as well; they print
 `S5-EVIDENCE=ok phase=<upgrade|degraded> ...` so the frozen judge line keeps its shape
 and is only emitted once, after the commit boot has actually reclaimed.
+
+## The btrfs tooling in the platform layer
+
+The upstream root filesystem ships no btrfs user space tooling, yet snapshot, delete,
+create and list are what the slot state machine, reclamation and the degraded boot all
+depend on. The tool therefore travels in the platform layer:
+
+```
+@platform/usr/sbin/btrfs            (plus a btrfsck symlink, which the multicall binary handles)
+@platform/usr/lib/liblzo2.so.2
+```
+
+Putting it in `@sys` is not an option: that tree has to stay byte identical to
+upstream.
+
+`platform-runtime.sh` resolves the closure *from the binary outwards*, not from package
+metadata:
+
+1. take the newest `btrfs-progs` in `packages/x86_64/packages` of the same release,
+2. unpack its ELF images (`elf_extract.py`) and pick the multicall binary — the one
+   carrying the dispatcher usage string — as `usr/sbin/btrfs`,
+3. read its `DT_NEEDED` and drop every soname the root filesystem already provides
+   (`libblkid.so.1`, `libuuid.so.1`, `libz.so.1`, `libc.so`, `libgcc_s.so.1` are all
+   there already),
+4. fetch the package that supplies each remaining soname (`liblzo2.so.2` today) and
+   follow its own dependencies too,
+5. fail with the soname in the message when nothing in the feed provides it.
+
+On Linux the stage then runs the result: the musl loader from the rootfs starts the
+extracted `btrfs --version` against the staged libraries. A binary that cannot start
+never reaches an image.
+
+`scripts/ci/runtime-closure.json` is the contract, like the module lockfile: it pins
+the package files, their digests and the exact files installed. The feed publishes no
+`sha256sums` for the package repository, so the digests are recorded on first download
+— that is the one place where the project trusts the mirror once and then holds it to
+that. Refresh deliberately with `platform-runtime.sh --write-lock`.
+
+Two budget assertions protect the slot space: the runtime tree must stay under
+`CI_RUNTIME_LIMIT_MIB` (8 MiB) in the runtime stage, and `disk.sh` re-measures the
+*unpacked* `@platform` layer and refuses the build above `CI_PLATFORM_LIMIT_BYTES`
+(8 MiB). Both print the measured value.
+
+### When the tool is missing
+
+`ab-slot gc` prints `reason=btrfs-tool-missing` and exits non-zero instead of reporting
+an empty, successful pass. `ab-boot` runs `btrfs --version` and `btrfs subvolume list /`
+first, prints `ab-boot: btrfs=ok subvolume-list=ok` to `/dev/console`, and only then
+starts the early reclamation; if the tool is broken the log records
+`stage=btrfs-check result=fail reason=...` and reclamation is skipped with the same
+reason. The S5 run gates on that console line (`s5-phase.sh --phase toolchain`), so a
+platform layer without a working tool cannot pass.
 

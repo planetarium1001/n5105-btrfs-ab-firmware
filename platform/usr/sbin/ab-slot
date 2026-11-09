@@ -318,6 +318,13 @@ cmd_gc() {
         esac
     done
     [ -d "${AB_P4}" ] || die "writable partition is not mounted at ${AB_P4}"
+    # Without the tool there is nothing to reclaim *with*: say so instead of
+    # reporting an empty, successful pass.
+    command -v btrfs >/dev/null 2>&1 || {
+        say "ab-slot: btrfs tool not found, reclamation skipped"
+        say "reason=btrfs-tool-missing"
+        exit 1
+    }
 
     _keep_a="$(state_upper a)" || die "state has no layer for slot a"
     _keep_b="$(state_upper b)" || die "state has no layer for slot b"

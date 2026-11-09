@@ -134,9 +134,19 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
 
+      # The platform layer carries btrfs-progs: the upstream rootfs has no btrfs tool,
+      # and reclamation, snapshots and the degraded boot need one inside the guest.
+      - name: Resolve the btrfs runtime closure
+        id: runtime
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/platform-runtime.sh 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/runtime.log"
+
       - name: Assemble the disk image
         id: disk
         env:
+          CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
         run: |

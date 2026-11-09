@@ -56,7 +56,7 @@ if [ -d "${CI_REPO_ROOT}/platform" ]; then
         init_scripts+=("${path}")
     done < <(find "${CI_REPO_ROOT}/platform" -type f ! -name '*.md' ! -name 'platform-release' | LC_ALL=C sort)
 fi
-for module in image ab upgrade; do
+for module in image ab upgrade runtime; do
     [ -d "${CI_REPO_ROOT}/tests/modules/${module}" ] || continue
     while IFS= read -r path; do
         case "$(head -n 1 "${path}")" in
@@ -120,6 +120,26 @@ else
 fi
 
 # --------------------------------------------------------------------------- #
+# 2b. Python syntax: the extractors run inside the pipeline, so a typo must not
+#     wait for the stage that needs them.
+# --------------------------------------------------------------------------- #
+
+python_status="ok"
+python_files=()
+while IFS= read -r path; do
+    python_files+=("${path}")
+done < <(find "${CI_REPO_ROOT}/scripts/ci" -maxdepth 1 -name '*.py' | LC_ALL=C sort)
+if [ "${#python_files[@]}" -gt 0 ]; then
+    if "${python_bin}" -m py_compile "${python_files[@]}" 2>"${CI_TMP_ROOT}/py_compile.log"; then
+        ci_log "python syntax: ok (${#python_files[@]} file(s))"
+    else
+        ci_warn "python syntax check failed:"
+        sed 's/^/  /' "${CI_TMP_ROOT}/py_compile.log" >&2
+        python_status="fail"
+    fi
+fi
+
+# --------------------------------------------------------------------------- #
 # 3. Design checks
 # --------------------------------------------------------------------------- #
 
@@ -141,7 +161,8 @@ fi
 # --------------------------------------------------------------------------- #
 
 verify_status="ok"
-if [ "${syntax_status}" = "fail" ] || [ "${shellcheck_status}" = "fail" ] || [ "${design_status}" = "fail" ]; then
+if [ "${syntax_status}" = "fail" ] || [ "${shellcheck_status}" = "fail" ] \
+    || [ "${python_status}" = "fail" ] || [ "${design_status}" = "fail" ]; then
     verify_status="fail"
 fi
 
@@ -150,6 +171,7 @@ summary="${CI_LOG_DIR}/verify-summary.txt"
     printf 'verify: %s\n' "${verify_status}"
     printf '  bash -n:    %s\n' "${syntax_status}"
     printf '  shellcheck: %s\n' "${shellcheck_status}"
+    printf '  python:     %s\n' "${python_status}"
     printf '  design:     %s (%s problem(s))\n' "${design_status}" "${design_problem_count}"
     if [ -n "${design_failed_checks}" ]; then
         printf '  failing design checks: %s\n' "${design_failed_checks}"
@@ -159,6 +181,7 @@ summary="${CI_LOG_DIR}/verify-summary.txt"
 ci_emit_output "verify_status" "${verify_status}"
 ci_emit_output "syntax_status" "${syntax_status}"
 ci_emit_output "shellcheck_status" "${shellcheck_status}"
+ci_emit_output "python_status" "${python_status}"
 ci_emit_output "design_checks_status" "${design_status}"
 ci_emit_output "design_checks_problems" "${design_problem_count}"
 ci_emit_output "design_checks_failed" "${design_failed_checks}"

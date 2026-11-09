@@ -1,0 +1,25 @@
+{
+  "btrfs_image": "usr/lib/btrfs-progs-6.11-r3.exec0",
+  "feed": "packages/x86_64/packages",
+  "generated_by": "scripts/ci/platform-runtime.sh --write-lock",
+  "notes": [
+    "btrfs-progs is needed because the upstream rootfs ships no btrfs tooling",
+    "only libraries the rootfs does not already provide are shipped",
+    "digests are recorded on first download; the feed publishes no sha256sums"
+  ],
+  "packages": {
+    "btrfs-progs-6.11-r3.apk": {
+      "files": {
+        "usr/sbin/btrfs": "65d60fe2bebf1402435539c4344de9bdd2d368a49bdae701f2b7abb94938396c"
+      },
+      "sha256": "2989191d0895b24662f504dd0587dbe196355611e5085360b0453974e2133a88"
+    },
+    "liblzo2-2.10-r5.apk": {
+      "files": {
+        "usr/lib/liblzo2.so.2": "c0aac4e5d3215e86e2bb0770d56df075b92e65af3d88530a45272ba9d020a655"
+      },
+      "sha256": "b32711dcd72af71e401b4e5c90b74804510b852dbbde8bd7b5d81e1ee59ef750"
+    }
+  },
+  "upstream_version": "25.12.2"
+}
