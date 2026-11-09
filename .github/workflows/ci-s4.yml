@@ -194,7 +194,7 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "ab-commit: health check failed on the pending slot"
+          CI_QEMU_STOP_PATTERN: "^ab-commit: abandoned slot="
           CI_QEMU_CASE: s4-boot2
           CI_QEMU_APPEND_EXTRA: ab.slot=b
           CI_QEMU_TIMEOUT: "900"
