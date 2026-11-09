@@ -18,7 +18,7 @@
 #   CI_QEMU_CASE      preferred label, falls back to CI_S1_CASE
 #   CI_QEMU_DISK      use this prepared raw image as the virtio disk instead of
 #                     building a throwaway test filesystem (S2 and later)
-#   CI_QEMU_INIT      init= path inside the initramfs (default: /init)
+#   CI_QEMU_INIT      rdinit= path inside the initramfs (default: /init)
 #   CI_JUDGE_PREFIX   judge line prefix to assert (default: S1-RESULT)
 #   CI_QEMU_APPEND_EXTRA extra kernel parameters, appended verbatim
 #
@@ -104,7 +104,9 @@ fi
 
 append="console=ttyS0 panic=1 loglevel=7 wf.dev=/dev/vda wf.mark=/S1-IMAGE-MARKER wf.case=${case_label}"
 if [ -n "${init_path}" ]; then
-    append="${append} init=${init_path}"
+    # The kernel honours rdinit= for an initramfs; init= only applies to a real root,
+    # so the probe would silently fall back to /init and run the wrong stage.
+    append="${append} rdinit=${init_path}"
 fi
 if [ -n "${append_extra}" ]; then
     append="${append} ${append_extra}"
