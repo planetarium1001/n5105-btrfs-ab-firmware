@@ -144,6 +144,7 @@ jobs:
         id: disk
         env:
           CI_INITRAMFS: ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+          CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
