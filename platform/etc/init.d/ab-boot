@@ -153,7 +153,11 @@ start() {
 	btrfs_ok=0
 	if command -v btrfs >/dev/null 2>&1; then
 		console_say "ab-boot: btrfs-tool $(btrfs --version 2>&1 | head -n 1)"
-		if btrfs subvolume list / >/dev/null 2>&1; then
+		# The merged root is an overlayfs, so the subvolume listing has to be asked of
+		# the writable btrfs mount instead.
+		_probe_mount="${AB_P4}"
+		is_mounted "${_probe_mount}" || _probe_mount="/"
+		if btrfs subvolume list "${_probe_mount}" >/dev/null 2>&1; then
 			btrfs_ok=1
 			log_append "stage=btrfs-check slot=${slot:-?} result=ok"
 			console_say "ab-boot: btrfs=ok subvolume-list=ok"
