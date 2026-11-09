@@ -135,16 +135,20 @@ assert_subvolumes() {
     if subvolumes "${part}" | grep -qv '|5$'; then
         ci_die "p${part} has a subvolume outside the top level: $(subvolumes "${part}" | grep -v '|5$')"
     fi
-    # btrfs subvolume list -o prints nested subvolumes only; it must be empty.
-    local mnt="${mntroot}/p${part}"
-    mkdir -p "${mnt}"
-    sudo mount -o ro "${loopdev}p${part}" "${mnt}"
-    local nested
-    nested="$(sudo btrfs subvolume list -o "${mnt}")"
-    sudo umount "${mnt}"
-    if [ -n "${nested}" ]; then
-        ci_die "p${part} has nested subvolumes: ${nested}"
-    fi
+    # btrfs subvolume list -o lists subvolumes below a path, and every subvolume is
+    # below the filesystem root, so asking at the root proves nothing. Mount each
+    # subvolume by name and assert that nothing lives underneath it.
+    local name mnt nested
+    for name in ${expected//,/ }; do
+        mnt="${mntroot}/p${part}-${name#@}"
+        mkdir -p "${mnt}"
+        sudo mount -o "ro,subvol=/${name}" "${loopdev}p${part}" "${mnt}"
+        nested="$(sudo btrfs subvolume list -o "${mnt}")"
+        sudo umount "${mnt}"
+        if [ -n "${nested}" ]; then
+            ci_die "p${part}/${name} has nested subvolumes: ${nested}"
+        fi
+    done
 }
 
 assert_subvolumes 2 "@sys,@wf"

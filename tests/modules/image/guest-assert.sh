@@ -172,7 +172,9 @@ expect_subvolumes() {
         | sed -n 's/.*top level \([0-9]*\) path \(.*\)$/\2|\1/p' \
         | sort)"
     _paths="$(printf '%s\n' "${_have}" | cut -d'|' -f1 | paste -sd, -)"
-    _nested="$(btrfs subvolume list -o /mnt 2>/dev/null)"
+    # -o lists subvolumes below a path, and all of them sit below the filesystem
+    # root; the per-entry top-level check below is what actually proves flatness.
+    _nested=""
     umount /mnt
     [ "${_paths}" = "${_want}" ] || report_failure "p${_part}-subvolumes-${_paths}"
     if printf '%s\n' "${_have}" | grep -qv '|5$'; then
