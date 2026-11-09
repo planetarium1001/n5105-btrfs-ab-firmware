@@ -250,7 +250,9 @@ populate_slot() {
     sudo chmod 0755 "${mnt}/@platform/usr/sbin/ab-slot" \
         "${mnt}/@platform/etc/init.d/ab-boot" \
         "${mnt}/@platform/etc/init.d/ab-commit"
-    # The init.d hooks need start links so rcS picks them up.
+    # The init.d hooks need start links so rcS picks them up. The source tree only holds
+    # the scripts, so the link directory is created here.
+    sudo mkdir -p "${mnt}/@platform/etc/rc.d"
     sudo ln -sf ../init.d/ab-boot "${mnt}/@platform/etc/rc.d/S15ab-boot"
     sudo ln -sf ../init.d/ab-commit "${mnt}/@platform/etc/rc.d/S99ab-commit"
 
