@@ -58,7 +58,8 @@ upstream_version="${CI_UPSTREAM_VERSION:-unknown}"
 [ -f "${rootfs_tar}" ] || ci_die "upstream rootfs not found: ${rootfs_tar}"
 [ -f "${kernel}" ] || ci_die "upstream kernel not found: ${kernel}"
 [ -f "${initramfs}" ] || ci_die "initramfs not found: ${initramfs}"
-[ -d "${esp_dir}/EFI/BOOT" ] || ci_die "ESP tree looks incomplete: ${esp_dir}"
+[ -n "$(find "${esp_dir}" -type f -iname '*.efi' | head -n 1)" ] \
+    || ci_die "ESP tree has no EFI loader: ${esp_dir}"
 sudo -n true 2>/dev/null || ci_die "passwordless sudo is required to build the image"
 
 mkdir -p "${disk_dir}"

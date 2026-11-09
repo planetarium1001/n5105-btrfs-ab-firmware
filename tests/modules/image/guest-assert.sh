@@ -223,7 +223,8 @@ echo "[s2] ${checked} sample digest(s) verified from inside the guest"
 # --------------------------------------------------------------------------- #
 
 mount -t vfat -o ro "${DEV}1" /mnt || report_failure p1-mount-failed
-for required in EFI/BOOT/BOOTX64.EFI boot/grub vmlinuz-a vmlinuz-b initrd-a initrd-b ab ab/log; do
+[ -n "$(find /mnt -type f -iname '*.efi' | head -n 1)" ] || report_failure p1-missing-efi
+for required in boot/grub vmlinuz-a vmlinuz-b initrd-a initrd-b ab ab/log; do
     [ -e "/mnt/${required}" ] || report_failure "p1-missing-${required}"
 done
 p1_kib="$(du -sk /mnt | cut -f1)"

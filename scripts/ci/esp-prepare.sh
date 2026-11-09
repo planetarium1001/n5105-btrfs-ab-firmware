@@ -135,7 +135,7 @@ ci_log "  grub:   ${grub_dir#"${esp_dir}"/} ($(find "${grub_dir}" -type f | wc -
 ci_emit_output "esp_dir" "${esp_dir}"
 ci_emit_output "esp_bytes" "${esp_bytes}"
 ci_emit_output "esp_files" "${esp_files}"
-ci_emit_output "efi_loader" "EFI/BOOT/BOOTX64.EFI"
+ci_emit_output "efi_loader" "${efi_loader#"${esp_dir}"/}"
 ci_emit_output "grub_dir" "boot/grub"
 ci_emit_output "source_image" "${image_name}"
 ci_emit_output "source_sha256" "${expected}"

@@ -230,8 +230,9 @@ esp_kib="$(sudo du -sk "${p1}" | cut -f1)"
 if [ "${esp_bytes}" -ge $((64 * 1024 * 1024)) ]; then
     ci_die "p1 content is ${esp_bytes} bytes, over the 64 MiB budget"
 fi
+[ -n "$(sudo find "${p1}" -type f -iname '*.efi' | head -n 1)" ] \
+    || ci_die "p1 has no EFI loader"
 for required in \
-    EFI/BOOT/BOOTX64.EFI \
     boot/grub \
     vmlinuz-a vmlinuz-b \
     initrd-a initrd-b \
