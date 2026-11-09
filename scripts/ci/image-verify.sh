@@ -132,7 +132,11 @@ subvolumes() {
 assert_subvolumes() {
     local part="$1" expected="$2" actual
     actual="$(subvolumes "${part}" | cut -d'|' -f1 | paste -sd, -)"
-    if [ "${actual}" != "${expected}" ]; then
+    # Compare as sets: the listing is sorted, so naming changes reorder a valid result.
+    local sorted_actual sorted_expected
+    sorted_actual="$(printf '%s\n' ${actual//,/ } | LC_ALL=C sort | paste -sd, -)"
+    sorted_expected="$(printf '%s\n' ${expected//,/ } | LC_ALL=C sort | paste -sd, -)"
+    if [ "${sorted_actual}" != "${sorted_expected}" ]; then
         ci_die "p${part} subvolumes are '${actual}', expected '${expected}'"
     fi
     if subvolumes "${part}" | grep -qv '|5$'; then

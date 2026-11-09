@@ -196,7 +196,9 @@ expect_subvolumes() {
     # root; the per-entry top-level check below is what actually proves flatness.
     _nested=""
     umount /mnt
-    [ "${_paths}" = "${_want}" ] || report_failure "p${_part}-subvolumes-${_paths}"
+    _sorted_paths="$(printf '%s\n' "${_paths}" | tr ',' '\n' | sort | paste -sd, -)"
+    _sorted_want="$(printf '%s\n' "${_want}" | tr ',' '\n' | sort | paste -sd, -)"
+    [ "${_sorted_paths}" = "${_sorted_want}" ] || report_failure "p${_part}-subvolumes-${_paths}"
     if printf '%s\n' "${_have}" | grep -qv '|5$'; then
         report_failure "p${_part}-not-top-level"
     fi

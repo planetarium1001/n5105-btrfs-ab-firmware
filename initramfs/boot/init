@@ -174,9 +174,12 @@ case "${overlay_line}" in
     *workdir=/mnt/p4/work*) : ;;
     *) wf_fail overlay-workdir-wrong ;;
 esac
+# index=off is the kernel default, so it is not echoed back in /proc/mounts. The
+# assertion therefore rejects the harmful state (index=on) instead of requiring the
+# literal default to appear.
 case "${overlay_line}" in
-    *index=off*) : ;;
-    *) wf_fail overlay-index-wrong ;;
+    *index=on*) wf_fail overlay-index-wrong ;;
+    *) : ;;
 esac
 wf_log "overlay composed at /newroot"
 
