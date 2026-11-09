@@ -22,6 +22,8 @@ CI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/lib.sh
 . "${CI_SCRIPT_DIR}/lib.sh"
 
+trap 'rc=$?; ci_log "ERROR line ${LINENO}: ${BASH_COMMAND} (exit ${rc})"; exit ${rc}' ERR
+
 ci_stage_init initramfs
 
 ci_require_cmd cpio gzip find sort
@@ -61,13 +63,17 @@ copy_runtime_libs() {
             lib="${first:-}"
         fi
         [ -n "${lib}" ] && [ -f "${lib}" ] || continue
-        mkdir -p "${target}$(dirname "${lib}")"
-        cp -L "${lib}" "${target}${lib}"
+        mkdir -p "${target}$(dirname "${lib}")" || continue
+        cp -L "${lib}" "${target}${lib}" || continue
         printf '%s ' "${lib}"
     done
 }
 
-if ci_have ldd && ! ldd "${busybox}" 2>&1 | grep -q "not a dynamic executable"; then
+ldd_out=""
+if ci_have ldd; then
+    ldd_out="$(ldd "${busybox}" 2>&1 || true)"
+fi
+if printf '%s\n' "${ldd_out}" | grep -q "=>"; then
     copied="$(copy_runtime_libs "${busybox}" "${stage}")"
     [ -n "${copied}" ] || ci_die "busybox is dynamically linked but ldd reported no libraries"
     ci_log "copied runtime libraries for busybox: ${copied}"
@@ -76,7 +82,10 @@ else
 fi
 
 # One symlink per applet keeps /init free of "busybox <applet>" plumbing.
-applets="$("${stage}/bin/busybox" --list)"
+applets=""
+if ! applets="$("${stage}/bin/busybox" --list 2>&1)"; then
+    ci_die "busybox --list failed: ${applets}"
+fi
 [ -n "${applets}" ] || ci_die "busybox --list produced no applets"
 applet_count=0
 for applet in ${applets}; do
