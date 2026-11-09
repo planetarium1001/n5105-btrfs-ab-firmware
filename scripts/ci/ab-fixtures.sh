@@ -77,8 +77,9 @@ mount_one() { # <device> <name>
     sudo mount "$1" "${work}/$2"
 }
 
-# The platform layer lives on p2/p3, not on the ESP: use the copy from slot a.
-platform_slot_bin="${work}/slot-a/usr/sbin/ab-slot"
+# The platform layer lives on p2/p3, not on the ESP: use the copy from slot a. The
+# partition is mounted at its top level, so the layer is reached through @platform.
+platform_slot_bin="${work}/slot-a/@platform/usr/sbin/ab-slot"
 ensure_platform_bin() {
     if [ ! -f "${platform_slot_bin}" ]; then
         mount_one "${loopdev}p2" slot-a
