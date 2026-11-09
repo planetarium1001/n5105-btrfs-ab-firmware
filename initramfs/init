@@ -27,7 +27,19 @@ export PATH
 
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
-mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+# devtmpfs is the fast path; some kernels ship without it, so fall back to mdev and
+# create the node from /sys when neither worked. Without this the block device the
+# kernel already registered never appears under /dev.
+ensure_devices() {
+    mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+    [ -e "${DEV}" ] && return 0
+    mdev -s 2>/dev/null || true
+    [ -e "${DEV}" ] && return 0
+    echo "[init] device nodes missing, /proc/filesystems: $(tr '\n' ' ' </proc/filesystems)"
+    echo "[init] /dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
+    return 1
+}
 
 DEV=/dev/vda
 MARK=/S1-IMAGE-MARKER
@@ -107,6 +119,10 @@ echo "[init] modules loaded by init: ${LOADED}"
 echo "[init] /proc/modules contains $(wc -l </proc/modules) entries"
 echo "[init] device ${DEV}:"
 ls -l "${DEV}" 2>&1 | sed 's/^/[init]   /'
+if [ ! -e "${DEV}" ]; then
+    mkdir -p /dev
+    ensure_devices || report_failure no-device-node
+fi
 
 mkdir -p /mnt
 if ! mount -t btrfs "${DEV}" /mnt; then
