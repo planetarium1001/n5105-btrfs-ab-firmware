@@ -53,6 +53,7 @@ out="${CI_PLATFORM_RUNTIME_OUT:-${CI_TMP_ROOT}/runtime}"
 lockfile="${CI_RUNTIME_LOCKFILE:-${CI_REPO_ROOT}/scripts/ci/runtime-closure.json}"
 limit_mib="${CI_RUNTIME_LIMIT_MIB:-8}"
 rootfs_tar="${CI_ROOTFS_TAR:-${CI_TMP_ROOT}/fetch/upstream/rootfs.tar.gz}"
+[ -f "${rootfs_tar}" ] || ci_die "rootfs tarball not found: ${rootfs_tar}"
 
 # The package feed lives next to the target release: packages/<arch>/packages/.
 feed="${base_url%/targets/*}/packages/x86_64/packages"
@@ -97,7 +98,9 @@ resolve_package() {
 # provided_by_rootfs <soname>: the root filesystem already carries this library.
 provided_by_rootfs() {
     [ -f "${rootfs_tar}" ] || return 1
-    tar -tzf "${rootfs_tar}" 2>/dev/null | grep -qE "(^|/)${1}\$"
+    # grep -q closes the pipe on the first match, and pipefail then reports the whole
+    # pipeline as failed; grepping without -q reads the listing to the end.
+    tar -tzf "${rootfs_tar}" 2>/dev/null | grep -E "(^|/)${1}\$" >/dev/null 2>&1
 }
 
 # extract_package <apk-name>: download, unpack every ELF image, print the manifest path.
