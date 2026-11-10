@@ -156,7 +156,13 @@ UPGRADE_NEW_VERSION=""
 # shellcheck source=platform/lib/upgrade/platform.sh disable=SC1090
 . "${LIB}" || fail "cannot-load-${LIB}"
 
-p4_state="$(ab-slot status 2>/dev/null | sed -n 's/^.*p4=\([a-z]*\).*/\1/p')"
+# ab-slot status is the single source for both the layer name and the writable partition
+# state; a failure here used to be indistinguishable from a degraded partition.
+if ! status_out="$(ab-slot status 2>&1)"; then
+    say "ab-upgrade: ab-slot status failed: ${status_out}"
+    refuse "slot-status-failed"
+fi
+p4_state="$(printf '%s' "${status_out}" | sed -n 's/^.*p4=\([a-z]*\).*/\1/p')"
 [ "${p4_state}" = "ok" ] || refuse "writable-layer-degraded"
 total="$(df -k "${AB_P4}" 2>/dev/null | awk 'NR == 2 { print $2 }')"
 avail="$(df -k "${AB_P4}" 2>/dev/null | awk 'NR == 2 { print $4 }')"
@@ -181,7 +187,7 @@ case "${running}" in
     b) other=a ;;
     *) refuse "no-running-slot" ;;
 esac
-running_layer="$(ab-slot status 2>/dev/null | sed -n 's/^.*upper=\([^ ]*\) .*/\1/p')"
+running_layer="$(printf '%s' "${status_out}" | sed -n 's/^.*upper=\([^ ]*\) .*/\1/p')"
 
 slots_root="${AB_SLOTS_ROOT:-/mnt/slots}"
 running_sys="${slots_root}/${running}/@sys"
