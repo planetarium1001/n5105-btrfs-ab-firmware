@@ -29,7 +29,9 @@ proc_dir="$tmp/proc"
 sysfs="$tmp/sys"
 mkdir -p "$overlay" "$proc_dir" "$sysfs/class/net"
 
-# run_probe_fn <function>: the function's exit status, with PROBE_REASON printed.
+# THE REASON IS checked below whenever a probe is expected to fail, so the variable is
+# written by the implementation and read by the assertions further down.
+# shellcheck disable=SC2034  # written by platform/etc/init.d/ab-commit, read by the asserts
 probe_reason=""
 
 # --------------------------------------------------------------------------- #
