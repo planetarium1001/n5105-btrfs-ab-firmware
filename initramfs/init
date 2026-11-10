@@ -28,14 +28,21 @@ export PATH
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 
-# devtmpfs is the only device source: the upstream busybox in this initramfs has no
-# mdev applet, and every kernel this image boots carries devtmpfs. The diagnostics stay
-# because a missing block device node is the failure that costs the most time on
-# hardware, and they say which of the two things went wrong.
+# Device nodes come from devtmpfs when the kernel has it, and from sysfs otherwise: the
+# upstream busybox in this initramfs has no mdev applet, and the kernel this repository
+# boots does not mount devtmpfs at all. wf_coldplug_dev (staged /lib/wf.sh) is the same
+# implementation the production init uses, so the two cannot drift.
+if [ -r /lib/wf.sh ]; then
+    . /lib/wf.sh
+fi
 ensure_devices() {
     mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
     [ -e "${DEV}" ] && return 0
-    echo "[init] devtmpfs did not provide ${DEV}, /proc/filesystems: $(tr '\n' ' ' </proc/filesystems)"
+    if command -v wf_coldplug_dev >/dev/null 2>&1; then
+        wf_coldplug_dev /dev
+    fi
+    [ -e "${DEV}" ] && return 0
+    echo "[init] ${DEV} missing, /proc/filesystems: $(tr '\n' ' ' </proc/filesystems)"
     echo "[init] /dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
     return 1
 }

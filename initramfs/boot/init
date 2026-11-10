@@ -84,15 +84,14 @@ wf_log "S3 layered boot, boot ${BOOT}"
 
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
-# devtmpfs is the only device source: the upstream busybox has no mdev applet, and the
-# kernel this image ships with always carries devtmpfs. Partitions the grow step adds
-# later appear here too, because devtmpfs is the kernel's own directory.
+# Device nodes: devtmpfs when the kernel has it, otherwise built from sysfs. This kernel
+# does not mount devtmpfs and the upstream busybox has no mdev applet, so the sysfs walk
+# is the path that actually runs. wf_coldplug_dev is called again after the partition
+# table is rewritten, because the grow step needs the new partition node.
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
-# /dev/null proves the mount worked: the directory itself is created at build time, so
-# testing for it would always pass. When devtmpfs did not populate /dev, say what the
-# kernel reported before giving up on the device scan below.
+wf_coldplug_dev /dev
 if [ ! -e /dev/null ]; then
-    wf_log "devtmpfs did not populate /dev; /proc/filesystems: $(tr '\n' ' ' </proc/filesystems 2>/dev/null)"
+    wf_log "no /dev/null after the sysfs coldplug; /proc/filesystems: $(tr '\n' ' ' </proc/filesystems 2>/dev/null)"
     wf_log "/dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
     wf_fail no-dev-directory
 fi

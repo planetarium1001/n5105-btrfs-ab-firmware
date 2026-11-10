@@ -60,17 +60,24 @@ join_comma() {
     awk 'NR > 1 { printf "," } { printf "%s", $0 }'
 }
 
+# wf.sh carries wf_coldplug_dev, which builds /dev nodes from sysfs: this kernel has no
+# devtmpfs and the upstream busybox has no mdev applet, so nothing else would create the
+# block nodes. scripts/ci/initramfs.sh stages it next to grow.sh; the guards keep the
+# assertion running (and reporting) when it is missing.
+[ -r /lib/wf.sh ] && . /lib/wf.sh
+
 echo "[s2] disk image assertion starting"
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
-# The upstream busybox has no mdev applet, so /dev comes from devtmpfs alone: the kernel
-# publishes each node as its driver registers, and virtio_blk only arrives with the
-# modules loaded below. A missing node here is therefore not fatal yet, but it is the
-# state that ends in no-block-device, so report the evidence instead of failing silently.
+# This kernel does not mount devtmpfs (it is absent from /proc/filesystems) and the
+# upstream busybox has no mdev applet, so /dev holds only what the kernel unpacked out of
+# the initramfs archive, and the block nodes have to be built from sysfs by hand. The two
+# echo lines are kept because they are the evidence when even that walk finds nothing.
 if [ ! -b "${DEV}" ]; then
     echo "[s2] no ${DEV} under /dev yet; /proc/filesystems: $(tr '\n' ' ' </proc/filesystems 2>/dev/null)"
     echo "[s2] /dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
+    command -v wf_coldplug_dev >/dev/null 2>&1 && wf_coldplug_dev /dev
 fi
 mkdir -p /mnt
 
@@ -124,6 +131,12 @@ done
 [ -d /sys/module/btrfs ] || report_failure btrfs-not-loaded
 echo "[s2] loaded ${loaded} module(s)"
 
+# virtio_blk arrives with the modules loaded above, and this kernel has no devtmpfs, so
+# the block node exists only once it is built from sysfs. The coldplug at the top of this
+# script ran before any module was loaded and therefore could not have made ${DEV} real.
+if [ ! -b "${DEV}" ]; then
+    command -v wf_coldplug_dev >/dev/null 2>&1 && wf_coldplug_dev /dev
+fi
 [ -b "${DEV}" ] || report_failure no-block-device
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +196,10 @@ tries=0
 while [ "${found}" != "${expect_parts}" ] && [ "${tries}" -lt 5 ]; do
     sleep 1
     tries=$((tries + 1))
+    # Nothing creates the partition nodes on this kernel, so every round builds whatever
+    # the kernel has published by now and recounts: without this the loop only ever waits
+    # for a node that can never appear on its own.
+    command -v wf_coldplug_dev >/dev/null 2>&1 && wf_coldplug_dev /dev
     found=0
     part=1
     while [ -b "${DEV}${part}" ]; do

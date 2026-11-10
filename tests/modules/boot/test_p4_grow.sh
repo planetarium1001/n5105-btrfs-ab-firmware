@@ -651,6 +651,17 @@ assert_eq "$(printf '%s' "${growth_block}" | grep -c 'wf_fail')" "0" \
 assert_contains "${grow_lib}" '"${wf_grecord_dir}/.ab/grow"' \
   "ac-4 the helper owns the .ab/grow path"
 
+# The kernel ships without devtmpfs and the upstream busybox has no mdev applet, so the
+# device nodes are built from sysfs and the new partition node has to be created after
+# the table rewrite - otherwise the grow step reads a p4 node that does not exist.
+wf_lib="$(cat "$root/initramfs/lib/wf.sh")"
+assert_contains "${wf_lib}" 'wf_coldplug_dev()' \
+  "ac-5 the device nodes come from the sysfs coldplug helper"
+assert_contains "${wf_lib}" 'mknod "${wf_cd_dir}/${wf_cd_name}" b' \
+  "ac-5 the coldplug creates block nodes with the major:minor sysfs reports"
+assert_contains "${grow_lib}" 'wf_coldplug_dev /dev' \
+  "ac-5 the grow step recreates the partition nodes after the reread"
+
 # The builder has to carry the helper and the tools into the boot initramfs; without it
 # the growth step would report missing-sfdisk on every real disk.
 builder="$(cat "$root/scripts/ci/initramfs.sh")"

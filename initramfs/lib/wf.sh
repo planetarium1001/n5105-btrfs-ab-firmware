@@ -48,7 +48,37 @@ WF_TMP="${WF_TMP:-/run}"
 # Overridable for tests: WF_SERIAL (the device node), WF_CONSOLES (the kernel's console
 # table, which marks the write console with a W flag).
 WF_SERIAL="${WF_SERIAL:-/dev/ttyS0}"
+# Where the coldplug reads major:minor from; overridable so a test can drive it without /sys.
+WF_SYS_BLOCK="${WF_SYS_BLOCK:-/sys/class/block}"
 WF_CONSOLES="${WF_CONSOLES:-/proc/consoles}"
+
+# wf_coldplug_dev [dir]: create the block device nodes the kernel already knows about.
+#
+# This kernel ships without devtmpfs (it is not in /proc/filesystems) and the upstream
+# busybox has no mdev applet, so /dev holds only the two nodes the kernel unpacks out of
+# the initramfs archive (`console`, `null`). The nodes are therefore built from sysfs by
+# hand: every /sys/class/block/<name>/dev holds "<major>:<minor>", which is exactly the
+# walk `mdev -s` used to do. Call it again after a partition table rewrite, because the
+# kernel publishes the new partition kobjects at that point and nothing creates their
+# nodes for us.
+wf_coldplug_dev() {
+    wf_cd_dir="${1:-/dev}"
+    [ -d "${wf_cd_dir}" ] || mkdir -p "${wf_cd_dir}"
+    for wf_cd_entry in "${WF_SYS_BLOCK}"/*; do
+        [ -e "${wf_cd_entry}/dev" ] || continue
+        wf_cd_name="$(basename "${wf_cd_entry}")"
+        if [ -e "${wf_cd_dir}/${wf_cd_name}" ]; then
+            continue
+        fi
+        read -r wf_cd_numbers <"${wf_cd_entry}/dev" || continue
+        wf_cd_major="${wf_cd_numbers%%:*}"
+        wf_cd_minor="${wf_cd_numbers##*:}"
+        case "${wf_cd_major}" in ""|*[!0-9]*) continue ;; esac
+        case "${wf_cd_minor}" in ""|*[!0-9]*) continue ;; esac
+        mknod "${wf_cd_dir}/${wf_cd_name}" b "${wf_cd_major}" "${wf_cd_minor}" 2>/dev/null || true
+    done
+    return 0
+}
 
 # wf_console_is_serial: is /dev/console already bound to the serial device.
 #

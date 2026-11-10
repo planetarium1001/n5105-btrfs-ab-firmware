@@ -356,13 +356,23 @@ wf_grow_table() {
 # wf_grow_reread <disk>: make the kernel re-read the table. blockdev is the direct
 # interface; partx drives the same ioctl and is used when blockdev is not shipped.
 wf_grow_reread() {
+    # The nodes are created from sysfs (this kernel has no devtmpfs, the upstream busybox
+    # has no mdev), so after the kernel re-reads the table the new partition node has to
+    # be created before anything can look at it. wf_coldplug_dev lives in wf.sh and is
+    # optional here so the helper stays usable on its own.
     if "${WF_BLOCKDEV}" --rereadpt "$1" >/dev/null 2>&1; then
         wf_grow_log "kernel table re-read via ${WF_BLOCKDEV} --rereadpt"
+        if command -v wf_coldplug_dev >/dev/null 2>&1; then
+            wf_coldplug_dev /dev
+        fi
         return 0
     fi
     if command -v "${WF_PARTX}" >/dev/null 2>&1; then
         if "${WF_PARTX}" -u "$1" >/dev/null 2>&1; then
             wf_grow_log "kernel table re-read via ${WF_PARTX} -u"
+            if command -v wf_coldplug_dev >/dev/null 2>&1; then
+                wf_coldplug_dev /dev
+            fi
             return 0
         fi
     fi
