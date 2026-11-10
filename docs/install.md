@@ -184,6 +184,7 @@ ab-slot log --prev
 | `next=` is not the slot you expect | the boot hint was not written, or was written by an older boot | `ab-slot next --write` rewrites it from `ab/state.json`; the log shows `stage=slot-cfg` with the value it wrote |
 | the machine keeps coming back to the committed slot after an update | the candidate failed before userspace | the log holds `action=fail-safe-abandon` and `reason=`; nothing is pending any more, so install the payload again once the cause is fixed |
 | `disk=unknown` in `ab-slot status` | the boot disk could not be identified | the log names it in `stage=device`; check the GPT names and `ab/device.json` against the disk you actually wrote |
+| `state is locked by another process` | a writer died while holding the state lock | it is taken over by itself once the boot that wrote it (or its pid) is gone; the ring log then shows `stage=lock action=stale-lock-taken`. A live writer in this boot is real contention and still refuses |
 | `stage=resize result=fail:btrfs-resize` | the filesystem could not be extended, in the initramfs or again at runtime | `ab/log/resize.log` holds btrfs' own message; the partition keeps its size and the next boot retries |
 | `btrfs=ok` missing from the log | the platform layer lost its tooling | reinstall from the image; the tool ships in the platform layer |
 

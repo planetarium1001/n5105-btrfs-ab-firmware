@@ -184,6 +184,27 @@ heal_slot_cfg() {
 #
 # Never blocks a boot: btrfs' own output goes to ab/log/resize.log (the device can be
 # asked what happened), the ring log gets one line, and every failure only logs.
+# clear_stale_lock: a lock directory that no live writer can own any more, left behind by
+# a power cut, a watchdog reset or a hard kill. ab-slot takes such a lock over on demand;
+# clearing it here puts the fact in the ring log and keeps the first state write of this
+# boot cheap. A lock of *this* boot is not touched here: it belongs to something that may
+# well be running right now, and ab-slot decides that case with the owner's pid.
+clear_stale_lock() {
+	_lock="${AB_ESP}/ab/.lock"
+	[ -d "${_lock}" ] || return 0
+	if [ -f "${_lock}/owner" ]; then
+		_lock_boot="$(head -n 1 "${_lock}/owner" 2>/dev/null | sed 's/ .*//')"
+		_lock_now="$(cat "${AB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}" 2>/dev/null)"
+		[ -n "${_lock_now}" ] || _lock_now="unknown"
+		if [ -n "${_lock_boot}" ] && [ "${_lock_boot}" = "${_lock_now}" ]; then
+			return 0
+		fi
+	fi
+	rm -rf "${_lock}" 2>/dev/null || return 0
+	log_append "stage=lock action=stale-lock-taken source=ab-boot"
+	console_say "ab-boot: removed a state lock left behind by an earlier boot"
+}
+
 resize_from_record() {
 	is_mounted "${AB_P4}" || return 0
 	_resize_grow="${AB_P4}/.ab/grow"
@@ -246,6 +267,7 @@ start() {
 	# A growth the initramfs could not finish is finished here, where the filesystem is
 	# mounted once. Runs before anything reads the record, so the grow line below reports
 	# what is actually true.
+	clear_stale_lock
 	resize_from_record
 
 	status_line="$(ab-slot status 2>/dev/null)"

@@ -23,6 +23,21 @@
 # rename over the state file. Concurrent invocations are excluded by an ESP directory
 # lock (mkdir is atomic on vfat).
 #
+# The lock cannot be a bare directory: a power cut, a watchdog reset or a hard kill
+# leaves it behind, and every later write would refuse with "state is locked" - an
+# upgrade that can never commit. So the directory carries an owner line
+# `<boot_id> <pid> <started_at>`, and a lock is taken over when no live process can be
+# holding it:
+#
+#   * no owner file (an older layout, or a write cut short)         -> stale
+#   * an owner from another boot_id (the writer died with that boot) -> stale
+#   * an owner from this boot whose pid is gone (killed while writing) -> stale
+#   * an owner from this boot whose pid is alive                      -> a real writer,
+#                                                                       refused as before
+#
+# Taking over is logged, and releasing is idempotent, so the state is never left locked
+# by a machine that is not running.
+#
 # GRUB does not read this file. It reads /boot/grub/ab-slot.cfg, a two-line GRUB
 # script (`set default=<n>`, `set fallback=<m>`) that grub.cfg sources after its menu
 # entries. Its value is the slot to try on the next boot: the pending slot when there
@@ -77,6 +92,10 @@ AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
 STATE="${AB_ESP}/ab/state.json"
 LOGDIR="${AB_ESP}/ab/log"
 LOCKDIR="${AB_ESP}/ab/.lock"
+LOCK_OWNER="${LOCKDIR}/owner"
+# Where the kernel publishes the id of this boot. Overridable so tests can describe a
+# machine that has restarted.
+AB_BOOT_ID_FILE="${AB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 # Mount points the running system provides next to the overlay root.
 DATA_MOUNT=/data
 DOCKER_MOUNT=/opt/docker
@@ -203,17 +222,61 @@ require_state() {
 # State writing
 # --------------------------------------------------------------------------- #
 
+# boot_id: the kernel's name for this boot, or "unknown" where there is none.
+boot_id() {
+    _bid="$(cat "${AB_BOOT_ID_FILE}" 2>/dev/null)"
+    [ -n "${_bid}" ] || _bid="unknown"
+    printf '%s' "${_bid}"
+}
+
+# lock_is_stale: no live process can be holding this lock any more.
+lock_is_stale() {
+    [ -d "${LOCKDIR}" ] || return 1
+    [ -f "${LOCK_OWNER}" ] || return 0
+    _owner_line="$(head -n 1 "${LOCK_OWNER}" 2>/dev/null)"
+    [ -n "${_owner_line}" ] || return 0
+    _owner_boot="${_owner_line%% *}"
+    _owner_rest="${_owner_line#* }"
+    _owner_pid="${_owner_rest%% *}"
+    if [ "${_owner_boot}" != "$(boot_id)" ]; then
+        return 0
+    fi
+    case "${_owner_pid}" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+    # Same boot: the writer is still there, or it was killed mid-write.
+    kill -0 "${_owner_pid}" 2>/dev/null || return 0
+    return 1
+}
+
+# release_lock: idempotent, safe to call twice or from a trap.
+release_lock() {
+    rm -rf "${LOCKDIR}" 2>/dev/null || :
+    return 0
+}
+
 lock_state() {
     mkdir -p "${AB_ESP}/ab" || die "cannot create ${AB_ESP}/ab"
-    if ! mkdir "${LOCKDIR}" 2>/dev/null; then
-        # A lock older than a minute is stale: the writer either died or finished.
-        if [ -d "${LOCKDIR}" ] && [ -n "$(find "${LOCKDIR}" -mmin +1 2>/dev/null)" ]; then
-            say "ab-slot: removing a stale lock"
-            rmdir "${LOCKDIR}" 2>/dev/null
+    _lock_try=0
+    while :; do
+        if mkdir "${LOCKDIR}" 2>/dev/null; then
+            printf '%s %s %s\n' "$(boot_id)" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                >"${LOCK_OWNER}" 2>/dev/null || :
+            sync 2>/dev/null || :
+            # Whatever happens next - a normal exit, an error, a signal - the lock goes
+            # with this process. A killed writer is still covered by lock_is_stale.
+            trap 'release_lock' EXIT INT TERM
+            return 0
         fi
-        mkdir "${LOCKDIR}" 2>/dev/null || die "state is locked by another process"
-    fi
-    trap 'rmdir "${LOCKDIR}" 2>/dev/null' EXIT INT TERM
+        _lock_try=$((_lock_try + 1))
+        if lock_is_stale; then
+            say "ab-slot: taking over a stale lock (action=stale-lock-taken)"
+            release_lock
+            [ "${_lock_try}" -lt 5 ] || die "cannot take over the stale lock at ${LOCKDIR}"
+            continue
+        fi
+        die "state is locked by another process"
+    done
 }
 
 # write_state <generation> <committed> <pending|none> [<slot> <rootfs> <upper>]

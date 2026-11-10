@@ -200,6 +200,9 @@ Directory `/boot/ab/log/`, total budget about 350 KiB.
 - 32 KiB per file; overflow is truncated with a `TRUNCATED=1` marker
 - the boot hook makes at most 8 writes per boot, each a full-file write: temp, `sync`,
   rename; the health check appends its own probe lines afterwards
+- the state lock is a directory on the ESP carrying `<boot_id> <pid> <started_at>`; a lock
+  whose boot or process is gone is taken over (logged as `stage=lock action=stale-lock-taken`),
+  so a power cut or a hard kill cannot leave the machine unable to commit
 - write points: `initramfs-enter`, `lower-mounted`, `overlay-mounted`, `switch-root`,
   `slot-cfg` (the hint GRUB will read), `grow` (the first-boot growth result),
   `resize` (a growth finished at runtime, see below), `healthcheck-done`, `commit` or

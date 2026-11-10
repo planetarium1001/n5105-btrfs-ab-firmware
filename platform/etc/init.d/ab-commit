@@ -129,7 +129,28 @@ probe_wan() {
 	[ -e "/sys/class/net/${_dev}" ]
 }
 
-run_probe() {
+# clear_stale_lock: a lock directory that no live writer can own any more, left behind by
+# a power cut, a watchdog reset or a hard kill. ab-slot takes such a lock over on demand;
+# clearing it here puts the fact in the ring log and keeps the first state write of this
+# boot cheap. A lock of *this* boot is not touched: it may belong to something running
+# right now, and ab-slot decides that case with the owner's pid.
+clear_stale_lock() {
+	_lock="${AB_ESP}/ab/.lock"
+	[ -d "${_lock}" ] || return 0
+	if [ -f "${_lock}/owner" ]; then
+		_lock_boot="$(head -n 1 "${_lock}/owner" 2>/dev/null | sed 's/ .*//')"
+		_lock_now="$(cat "${AB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}" 2>/dev/null)"
+		[ -n "${_lock_now}" ] || _lock_now="unknown"
+		if [ -n "${_lock_boot}" ] && [ "${_lock_boot}" = "${_lock_now}" ]; then
+			return 0
+		fi
+	fi
+	rm -rf "${_lock}" 2>/dev/null || return 0
+	log_append "stage=lock action=stale-lock-taken source=ab-commit"
+	console_say "ab-commit: removed a state lock left behind by an earlier boot"
+}
+
+probe() {
 	_name="$1"
 	_started="$(date +%s)"
 	if "probe_$2"; then
@@ -152,6 +173,10 @@ start() {
 		echo "ab-commit: cannot mount the ESP, skipping the health check"
 		exit 0
 	}
+
+	# A lock left by an earlier boot must not outlive it: this hook writes state too.
+	clear_stale_lock
+	trap 'clear_stale_lock' EXIT INT TERM
 
 	status_line="$(ab-slot status 2>/dev/null)"
 	slot="$(field slot)"

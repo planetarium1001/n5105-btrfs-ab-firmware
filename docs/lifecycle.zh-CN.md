@@ -171,6 +171,8 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 
 - 单文件 32 KiB，超出截断并写入 `TRUNCATED=1` 标记
 - 启动钩子每次启动最多 8 次写入，均为整文件写入：临时文件、`sync`、rename；健康检查随后追加自己的探针行
+- 状态锁是 ESP 上的目录，里面写着 `<boot_id> <pid> <started_at>`；写下它的那次启动或进程若已不存在，
+  锁会被自动接管（记 `stage=lock action=stale-lock-taken`），所以掉电或硬杀不会让机器再也提交不了
 - 写入点：`initramfs-enter`、`lower-mounted`、`overlay-mounted`、`switch-root`、
   `slot-cfg`（GRUB 下次要读的提示）、`grow`（首启扩容结果）、`resize`（运行期补做的扩容，见下）、
   `healthcheck-done`、`commit` 或 `abandon`、`done`

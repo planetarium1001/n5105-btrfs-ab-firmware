@@ -46,6 +46,10 @@ write_state() { # <committed> <pending|none> <gen>
 JSON
 }
 cmdline="$tmp/cmdline"
+# The boot id decides whether a lock left on the ESP can still have a live owner. Fixed
+# here so the lock tests describe a machine rather than depend on the test host.
+boot_id_file="$tmp/boot_id"
+printf 'boot-1111-2222-3333\n' >"$boot_id_file"
 printf 'console=ttyS0 ab.slot=a\n' >"$cmdline"
 
 # The disk identity the production library would resolve. The stub answers with the
@@ -90,6 +94,7 @@ slot_cmd() {
     AB_SLOT_CFG_LIB="$slot_cfg_lib" \
     AB_PARTITIONS_LIB="$partitions_lib" \
     AB_DISK_IDENTITY_LIB="$stub_di" \
+    AB_BOOT_ID_FILE="$boot_id_file" \
     sh "$ab_slot" "$@"
 }
 
@@ -100,6 +105,7 @@ slot_cmd_full() {
     AB_SLOT_CFG_LIB="$slot_cfg_lib" \
     AB_PARTITIONS_LIB="$partitions_lib" \
     AB_DISK_IDENTITY_LIB="$stub_di" \
+    AB_BOOT_ID_FILE="$boot_id_file" \
     sh "$ab_slot" "$@"
 }
 
@@ -317,5 +323,86 @@ slot_cmd commit >/dev/null 2>&1
 assert_eq "$?" "1" "ac-6 commit refuses to rewrite a state it cannot read"
 
 assert_eq "$(grep -c 'upper_gen' "$ab_slot")" "0" "ac-6 the tool never mentions the retired field"
+
+# --------------------------------------------------------------------------- #
+# ac-9 the state lock survives a power cut, a hard kill and a watchdog reset
+# --------------------------------------------------------------------------- #
+#
+# The lock is a directory on the ESP, so it outlives the process that made it. Before the
+# owner line it was a dead end: one interrupted write and every later commit refused with
+# "state is locked by another process" - an upgrade that can never finish, on a real
+# machine just as in CI.
+
+pending_of_state() {
+  _pending_now="$(sed -n 's/.*"pending": *"\([ab]\)".*/\1/p' "$esp/ab/state.json" | head -n 1)"
+  printf '%s' "${_pending_now:-none}"
+}
+
+lock_owner() { # <boot_id> <pid>
+  mkdir -p "$esp/ab/.lock"
+  printf '%s %s %s\n' "$1" "$2" "2026-01-01T00:00:00Z" >"$esp/ab/.lock/owner"
+}
+
+: >"$esp/vmlinuz-b"; : >"$esp/initrd-b"
+
+# 1. a lock from a previous boot: the writer died with that boot, so it is taken over.
+write_state a none 9
+lock_owner "boot-0000-dead-0000" "999999"
+out="$(slot_cmd pending b 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-9 a lock from an earlier boot does not block the write"
+assert_contains "$out" "action=stale-lock-taken" "ac-9 taking the lock over is reported"
+assert_eq "$(pending_of_state)" "b" "ac-9 the command that was blocked now runs"
+assert_eq "$([ -d "$esp/ab/.lock" ] && echo left || echo gone)" "gone" \
+  "ac-9 the lock is released when the writer exits"
+
+# 2. a lock of this boot whose writer is still alive: a real concurrent writer, refused.
+write_state a none 10
+lock_owner "$(cat "$boot_id_file")" "$$"
+out="$(slot_cmd pending b 2>&1)"
+rc=$?
+assert_eq "$rc" "1" "ac-9 a live writer of this boot still excludes another one"
+assert_contains "$out" "state is locked by another process" "ac-9 the refusal names the lock"
+assert_eq "$(pending_of_state)" "none" "ac-9 nothing was written while the lock was held"
+assert_eq "$([ -d "$esp/ab/.lock" ] && echo kept || echo gone)" "kept" \
+  "ac-9 the other writer's lock is left alone"
+
+# 3. a writer killed mid-write: same boot, but its pid is gone.
+write_state a none 11
+lock_owner "$(cat "$boot_id_file")" "4000000"
+out="$(slot_cmd pending b 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-9 a writer killed mid-write does not block the next one"
+assert_contains "$out" "action=stale-lock-taken" "ac-9 the takeover is reported here too"
+assert_eq "$(pending_of_state)" "b" "ac-9 the next write goes through"
+
+# 4. a lock directory with no owner line at all: an older layout, or the write was cut
+#    short before the owner was written.
+write_state a none 12
+mkdir -p "$esp/ab/.lock"
+out="$(slot_cmd pending b 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-9 a lock without an owner is taken over"
+assert_contains "$out" "action=stale-lock-taken" "ac-9 and reported"
+assert_eq "$(pending_of_state)" "b" "ac-9 the state is written"
+assert_eq "$([ -d "$esp/ab/.lock" ] && echo left || echo gone)" "gone" \
+  "ac-9 no lock directory is left behind"
+
+# 5. the lock carries who holds it, so the rules above can be decided at all.
+assert_contains "$(cat "$ab_slot")" 'printf '"'"'%s %s %s\n'"'"' "$(boot_id)" "$$"' \
+  "ac-9 the owner line is <boot_id> <pid> <started_at>"
+assert_contains "$(cat "$ab_slot")" 'kill -0 "${_owner_pid}"' \
+  "ac-9 a lock of this boot is judged by the liveness of its pid"
+assert_contains "$(cat "$ab_slot")" "AB_BOOT_ID_FILE" \
+  "ac-9 the boot id comes from the kernel, not from the ESP"
+
+# 6. the hooks clear a lock that an earlier boot left behind, so the first write of a
+#    boot does not have to be the one that discovers it.
+for hook in platform/etc/init.d/ab-boot platform/etc/init.d/ab-commit; do
+  assert_contains "$(cat "$root/$hook")" "clear_stale_lock" \
+    "ac-9 ${hook} clears a lock left by an earlier boot"
+done
+assert_contains "$(cat "$root/platform/etc/init.d/ab-commit")" "stage=lock action=stale-lock-taken" \
+  "ac-9 the sweep is recorded"
 
 finish
