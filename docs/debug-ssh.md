@@ -12,7 +12,8 @@ hands the runner to a session you can log into over SSH.
 - Gate: none. It grades nothing, renders no verdict, and no other workflow calls it.
   The one thing it publishes is a diagnostics artifact, `debug-<stage>-logs`, kept for
   seven days: the build logs and the guest console of the session's first boot.
-- Lifetime: bounded by `timeout-minutes` (200 on the session step, 240 on the job).
+- Lifetime: bounded twice -- `timeout-minutes` on the keep-alive step (150) and on the job
+  (240) -- and the keep-alive stops itself after 140 minutes even if nobody disconnects.
 - Access: `limit-access-to-actor: true`, so only the dispatcher's own SSH keys open the
   shell.
 
@@ -64,10 +65,14 @@ runner.
 
 ## Connecting
 
-The step prints the connection string every five seconds:
+The tmate step runs detached and the step after it publishes the connection string into
+the run's **summary page** (and the SSH command alone, never the web shell link, because
+the run log of a public repository is world readable):
 
 ```
-SSH: ssh <token>@<region>.tmate.io
+## Interactive session
+Connect with your own key (limit-access-to-actor):
+ssh <token>@<region>.tmate.io
 ```
 
 ```sh
@@ -147,28 +152,31 @@ needed.
 ## Session lifetime, cost and cleanup
 
 - **6 hours is the hard cap** on any GitHub-hosted job. This workflow stops well before
-  it: 200 minutes for the session step, 240 for the job.
+  it: the keep-alive step is bounded to 150 minutes and stops itself at 140, the job to 240.
 - `action-tmate` v3.24 has **no `max-duration` input** -- its `action.yml` declares only
   `sudo`, `install-dependencies`, `limit-access-to-actor`, `detached`,
   `connect-timeout-seconds`, `tmate-server-*`, `msys2-location` and `github-token`. The
   bound is `timeout-minutes`, which is what the check enforces and what the comments in
-  the workflow say.
-- **Reconnecting works while the job is alive**: the tmate session outlives an SSH
-  disconnect, and the same string works again. It stops working when the shell session
-  ends, the step hits its timeout, or the run is cancelled.
-- **Ending early, on purpose**: `touch "${GITHUB_WORKSPACE}/continue"` from inside the
-  session makes the action stop waiting and let the job finish. There is nothing after
-  the session step, so this is the clean way to close it. Cancelling the run from the UI
-  also works and is the right move if you simply walk away.
+  the workflow say. `scripts/check_design.py debug-ssh` checks the keep-alive step too:
+  a bound that moved into a shell literal nobody inspects is the same as no bound.
+- **Reconnecting works while the runner is alive**: the tmate session outlives an SSH
+  disconnect, and the same string works again. It stops working when the session ends,
+  the 140-minute bound is reached, or the run is cancelled.
+- **Ending early, on purpose**: leave the session (`exit` or `tmate kill-server`). The
+  detached session ending is what makes the keep-alive step return and the job finish; the
+  `continue` file the action documents does *not* work in detached mode. Cancelling the
+  run from the UI also works -- the keep-alive is gated on `!cancelled()` on purpose, so a
+  cancel frees the runner instead of leaving a fresh sleep behind.
 - **Closing the laptop is not closing the session**: tmate is tmux underneath, so a
   dropped connection leaves the session alive and billing. The bound above, and
   cancelling the run, are what actually stop it.
 - **Cost**: a session occupies one of the plan's concurrent jobs (20 for Free, 40 Pro,
   60 Team, 500 Enterprise) for as long as it is open. A forgotten session costs runner
   minutes and, on a busy day, blocks a real run.
-- **Residue**: the runner is a disposable VM, so nothing survives the job. What does
-  survive is the run log, which keeps the connection string forever. After a session
-  that mattered, delete it: `gh run delete <run-id>` (or delete the run from the UI).
+- **Residue**: the runner is a disposable VM, so nothing survives the job. The run's
+  summary keeps the connection string, and the `debug-<stage>-logs` artifact (seven days)
+  keeps the boot evidence. After a session that mattered, delete the run:
+  `gh run delete <run-id>` (or delete the run from the UI).
 - One session per branch: the `concurrency` group is `ci-debug-<ref>` with
   `cancel-in-progress: true`, so a second dispatch replaces the first instead of
   queueing two interactive runners.

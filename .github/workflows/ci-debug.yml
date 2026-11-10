@@ -308,15 +308,98 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # Advisory, never gating: the action picks a server region itself, so an unreachable
+      # nyc1 says "the relay is slow from this network", not "the session will fail". It is
+      # here because the failure this entry point had (eleven silent minutes) is
+      # indistinguishable from an unreachable relay, and one line of evidence settles it.
+      - name: Report whether the relay answers
+        if: ${{ always() }}
+        run: |
+          reachable=""
+          for host in nyc1.tmate.io sfo2.tmate.io; do
+            if timeout 5 bash -c "exec 3<>/dev/tcp/${host}/22" 2>/dev/null; then
+              echo "relay reachable: ${host}:22"
+              reachable="${reachable} ${host}"
+            else
+              echo "relay NOT reachable: ${host}:22"
+            fi
+          done
+          {
+            printf 'relay: %s\n' "${reachable:-none of nyc1/sfo2 answered on port 22 (advisory)}"
+          } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+
       # The session itself. `limit-access-to-actor: true` is not optional here: this
       # repository is public, so the run log -- including these connection details -- is
-      # world readable. `true` makes tmate authorise only the public SSH keys registered
-      # on the GitHub profile of the user who dispatched the run, and fails the step
-      # outright if that profile has none. It never widens access, and the job still
-      # holds nothing but a read-only GITHUB_TOKEN.
+      # world readable. `true` makes tmate authorise only the public SSH keys registered on
+      # the GitHub profile of the user who dispatched the run, and fails the step outright
+      # if that profile has none. It never widens access, and the job holds nothing but a
+      # read-only GITHUB_TOKEN.
+      #
+      # `detached: true` is what makes the details readable: the action waits for the relay
+      # to assign a name, publishes `ssh-command` / `ssh-address` / `web-url` as step
+      # outputs and returns, instead of holding the step open and printing the string into
+      # a live log nobody can read after the fact. Ten minutes of silence is the measured
+      # failure this replaces; the step bound keeps a dead relay cheap.
       - name: Open the interactive SSH session
+        id: session
         if: ${{ !cancelled() }}
-        timeout-minutes: 200
+        timeout-minutes: 10
         uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
         with:
           limit-access-to-actor: true
+          detached: true
+          # How long the post step waits for a client after the job ends. Bounded on
+          # purpose: an unattended session must not sit on the 240-minute job cap.
+          connect-timeout-seconds: 300
+
+      - name: Publish the connection details
+        if: ${{ always() }}
+        run: |
+          ssh_cmd='${{ steps.session.outputs.ssh-command }}'
+          {
+            echo "## Interactive session"
+            echo
+            if [ -n "${ssh_cmd}" ]; then
+              echo 'Connect with your own key (limit-access-to-actor):'
+              echo '```'
+              echo "${ssh_cmd}"
+              echo '```'
+              echo
+              echo 'Web shell also printed in the session step log; it is a bearer link, so it'
+              echo 'is deliberately not repeated here.'
+            else
+              echo "No session: the tmate step did not publish a connection string."
+              echo "Session step outcome: ${{ steps.session.outcome }}"
+            fi
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          if [ -n "${ssh_cmd}" ]; then
+            printf 'CI_DEBUG_SSH_READY=1\n' >>"${GITHUB_ENV}"
+          else
+            printf 'CI_DEBUG_SSH_READY=0\n' >>"${GITHUB_ENV}"
+            # A tmate that came up but never got a name daemonises and survives the step.
+            # Without this the keep-alive below would hold the runner for the session that
+            # is not there.
+            if pgrep -x tmate >/dev/null 2>&1; then
+              echo "killing the tmate process left behind by a session that never came up"
+              pkill -x tmate || true
+            fi
+          fi
+
+      # The runner is held open for the human. Two conditions, both required: a published
+      # session and a live tmate process. The bound is inside the job's own timeout, so the
+      # job cap is never what ends a session, and cancelling the run still frees the runner
+      # (`!cancelled()`), which is what the concurrency group promises.
+      - name: Keep the runner alive
+        if: ${{ !cancelled() && env.CI_DEBUG_SSH_READY == '1' }}
+        timeout-minutes: 150
+        run: |
+          echo "session open; the runner is held until the session ends or 140 minutes pass"
+          started=$(date +%s)
+          while pgrep -x tmate >/dev/null 2>&1; do
+            sleep 30
+            if [ $(( $(date +%s) - started )) -ge 8400 ]; then
+              echo "stopped: the 140-minute bound was reached with tmate still running"
+              exit 0
+            fi
+          done
+          echo "stopped: tmate exited, which is what closing the session does"

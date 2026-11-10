@@ -9,7 +9,7 @@
 - 触发：只有 `workflow_dispatch`。没有 `push`、没有 `pull_request`、没有 `workflow_call`。
 - 门禁：没有。它不判定任何东西、不出结论，也没有别的 workflow 调用它。它只产出一份
   诊断产物 `debug-<stage>-logs`，保留 7 天：会话首次启动的构建日志与 guest 控制台。
-- 时长：由 `timeout-minutes` 限定（会话步骤 200 分钟，job 240 分钟）。
+- 时长：两道上限——keep-alive 步骤 150 分钟、job 240 分钟；即使没人断开，keep-alive 也会在 140 分钟时自己收手。
 - 访问：`limit-access-to-actor: true`，只有派发者自己的 SSH 密钥能进入 shell。
 
 上面任何一条不再成立时 `scripts/check_design.py debug-ssh` 会失败，因此"有人把它接到了 `push` 上"是一次红色的设计校验，而不是一条评审意见。
@@ -49,10 +49,13 @@ gh run list --workflow ci-debug.yml --limit 1
 
 ## 怎么连上
 
-会话步骤每五秒打印一次连接串：
+tmate 步骤以 detached 方式运行，紧随其后的步骤把连接串写进这次运行的**摘要页**（只写 SSH
+指令，不写 web shell 链接——公开仓库的运行日志是任何人可读的）：
 
 ```
-SSH: ssh <token>@<region>.tmate.io
+## Interactive session
+Connect with your own key (limit-access-to-actor):
+ssh <token>@<region>.tmate.io
 ```
 
 ```sh
@@ -114,13 +117,13 @@ sudo losetup --find --show --partscan "${CI_IMAGE}"          # 手工挂 ESP
 
 ## 会话时长、成本与收尾
 
-- GitHub 托管 job 的**硬上限是 6 小时**。这个 workflow 远早于此收手：会话步骤 200 分钟，job 240 分钟。
-- `action-tmate` v3.24 **没有 `max-duration` 这个输入**——它的 `action.yml` 只声明 `sudo`、`install-dependencies`、`limit-access-to-actor`、`detached`、`connect-timeout-seconds`、`tmate-server-*`、`msys2-location` 和 `github-token`。限定时长的是 `timeout-minutes`，这也是设计校验要求存在、workflow 注释里写明的那一项。
-- **job 还活着时断线可以重连**：tmate 会话比一次 SSH 断开活得久，同一个连接串还能再用。会话结束、步骤超时或运行被取消之后它才失效。
-- **主动结束**：在会话里 `touch "${GITHUB_WORKSPACE}/continue"`，action 就会停止等待并让 job 收尾。会话步骤后面没有任何步骤，所以这就是干净的关闭方式；在界面里 Cancel 同样有效，也正是干脆走开时该点的按钮。
+- GitHub 托管 job 的**硬上限是 6 小时**。这个 workflow 远早于此收手：keep-alive 步骤 150 分钟、140 分钟时自停，job 240 分钟。
+- `action-tmate` v3.24 **没有 `max-duration` 这个输入**——它的 `action.yml` 只声明 `sudo`、`install-dependencies`、`limit-access-to-actor`、`detached`、`connect-timeout-seconds`、`tmate-server-*`、`msys2-location` 和 `github-token`。限定时长的是 `timeout-minutes`，这也是设计校验要求存在、workflow 注释里写明的那一项。`scripts/check_design.py debug-ssh` 现在连 keep-alive 步骤一起查：把上限挪进一个没人检查的 shell 字面量，等于没有上限。
+- **runner 还活着时断线可以重连**：tmate 会话比一次 SSH 断开活得久，同一个连接串还能再用。会话结束、到达 140 分钟上限或运行被取消之后它才失效。
+- **主动结束**：在会话里退出（`exit` 或 `tmate kill-server`）。detached 模式下是"会话结束"让 keep-alive 返回、job 收尾；action 文档里的 `continue` 文件在 detached 模式下**不起作用**。在界面里 Cancel 同样有效——keep-alive 特意用 `!cancelled()` 门控，所以取消会真的放掉 runner，而不是又睡一轮。
 - **合上笔记本不等于关掉会话**：tmate 底层是 tmux，连接掉线后会话仍然活着并且照常计费。真正停掉它的是上面的时长上限，或者 Cancel。
 - **成本**：会话打开期间占用计划内的一个并发 job（Free 20、Pro 40、Team 60、Enterprise 500）。忘了关的会话既烧 runner 分钟，也可能在忙时把真正的运行挤掉。
-- **残留**：runner 是一次性 VM，job 结束后什么都不留。留下来的是运行日志，连接串会永久保存在里面。一次重要的会话之后把它删掉：`gh run delete <run-id>`（或在界面删除该运行）。
+- **残留**：runner 是一次性 VM，job 结束后什么都不留。留下来的是运行摘要里的连接串，以及保留 7 天的 `debug-<stage>-logs` 产物（启动证据）。一次重要的会话之后把运行删掉：`gh run delete <run-id>`（或在界面删除该运行）。
 - 每个分支只允许一个会话：`concurrency` 组是 `ci-debug-<ref>` 且 `cancel-in-progress: true`，因此第二次派发会顶掉第一次，而不是排队两个交互式 runner。
 
 ## 安全

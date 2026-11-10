@@ -484,6 +484,36 @@ def check_debug_ssh(problems: Problems) -> None:
                 f"found {value!r}",
             )
 
+    # The bound moved: the tmate step is detached and short, and the time the runner is
+    # actually held is the keep-alive step. Checking only the tmate block would read
+    # "timeout-minutes: 10" and call the file bounded while the real ceiling sat in a shell
+    # literal nothing inspected.
+    keep = next((i for i, line in enumerate(lines) if "Keep the runner alive" in line), None)
+    if keep is None:
+        problems.add(where, "no keep-alive step: nothing holds the runner open for the session")
+        return
+    keep_block = "\n".join(_step_lines(lines, keep))
+    bound = re.search(
+        rf"^\s*{re.escape('timeout-minutes')}:\s*(\S+)\s*(?:#.*)?$", keep_block, re.MULTILINE
+    )
+    if bound is None:
+        problems.add(where, "the keep-alive step has no timeout-minutes")
+    elif not bound.group(1).isdigit() or not 0 < int(bound.group(1)) <= MAX_SESSION_MINUTES:
+        problems.add(
+            where,
+            f"the keep-alive timeout-minutes must be whole minutes within "
+            f"1..{MAX_SESSION_MINUTES}, found {bound.group(1)!r}",
+        )
+    else:
+        ceiling = int(bound.group(1)) * 60
+        for literal in re.findall(r"-ge\s+(\d+)", keep_block):
+            if int(literal) >= ceiling:
+                problems.add(
+                    where,
+                    f"the keep-alive stop condition ({literal}s) is not inside its own "
+                    f"timeout-minutes ({ceiling}s)",
+                )
+
     for number, message in _runner_context_problems(text):
         problems.add(where, f"line {number}: {message}")
 
