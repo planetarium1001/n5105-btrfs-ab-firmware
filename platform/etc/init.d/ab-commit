@@ -108,9 +108,8 @@ AB_OVERLAY="${AB_OVERLAY:-/}"
 AB_PROC="${AB_PROC:-/proc}"
 AB_SYSFS="${AB_SYSFS:-/sys}"
 
-# probe_overlay_writable: /overlay is writable and has room left.
+# probe_overlay_writable: the composed root is writable and has room left.
 probe_overlay_writable() {
-	PROBE_REASON=""
 	[ -d "${AB_OVERLAY}" ] || {
 		PROBE_REASON=no-overlay
 		return 1
@@ -139,7 +138,6 @@ probe_overlay_writable() {
 # it to nft and exits, so an idle system has no fw4 process to look for. Both shapes
 # pass: a resident firewall process, or the loaded ruleset in the inet fw4 table.
 probe_fw4() {
-	PROBE_REASON=""
 	command -v nft >/dev/null 2>&1 || {
 		PROBE_REASON=no-nft
 		return 1
@@ -161,7 +159,6 @@ probe_fw4() {
 
 # probe_wan: the device behind network.wan exists.
 probe_wan() {
-	PROBE_REASON=""
 	command -v uci >/dev/null 2>&1 || {
 		PROBE_REASON=no-uci
 		return 1
@@ -266,32 +263,64 @@ start() {
 
 	deadline=$(( $(date +%s) + BUDGET ))
 	failed=""
+	failed_detail=""
 	# The tree has to be a tree before the probes are asked anything: a slot that boots
 	# without /proc fails every probe for the same reason, and that reason is the report.
+	# A failed preflight skips the probes entirely - asking a tree without /sys whether
+	# its network interface exists answers "pass" and puts two cheerful lines next to the
+	# line that says the slot did not boot properly.
 	if ! preflight; then
 		failed="preflight-${PREFLIGHT_REASON}"
 		log_append "stage=preflight slot=${slot} result=fail reason=${PREFLIGHT_REASON}"
 		console_say "ab-commit: stage=preflight slot=${slot} result=fail reason=${PREFLIGHT_REASON}"
 	fi
-	for probe in overlay-writable fw4-present wan-present; do
-		[ -z "${failed}" ] || break
-		if [ "$(date +%s)" -ge "${deadline}" ]; then
-			failed="healthcheck-timeout"
-			log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=healthcheck-timeout"
-			break
-		fi
-		case "${probe}" in
-			overlay-writable) probe_fn=overlay_writable ;;
-			fw4-present) probe_fn=fw4 ;;
-			wan-present) probe_fn=wan ;;
-		esac
-		if run_probe "${probe}" "${probe_fn}"; then
-			console_say "probe=${probe} result=pass"
-		else
-			console_say "probe=${probe} result=fail reason=${PROBE_REASON:-unknown}"
-			failed="healthcheck-failed"
-		fi
-	done
+
+	# Every probe runs, even after one of them has failed. The decision only needs the
+	# first failure ("something is wrong, do not commit"), but the report needs all
+	# three: a short-circuit names one probe per boot, so a slot that fails two of them
+	# costs two boots to understand. The names are the ones from docs/lifecycle.md and
+	# the function names below are the ones probe() dispatches to - `probe`, not a
+	# wrapper of another name, which is how this loop once failed every probe with
+	# reason=unknown without ever calling one.
+	if [ -z "${failed}" ]; then
+		for _probe_name in overlay-writable fw4-present wan-present; do
+			if [ "$(date +%s)" -ge "${deadline}" ]; then
+				# The summary line below reports the timeout: one decision line per boot,
+				# not two.
+				[ -n "${failed}" ] || failed="healthcheck-timeout"
+				break
+			fi
+			_probe_fn=""
+			case "${_probe_name}" in
+				overlay-writable) _probe_fn=overlay_writable ;;
+				fw4-present) _probe_fn=fw4 ;;
+				wan-present) _probe_fn=wan ;;
+			esac
+			# A name in the list that the case does not map must not silently re-use the
+			# previous iteration's function: that is the same silent mismatch that made
+			# every probe fail without being called.
+			if [ -z "${_probe_fn}" ]; then
+				log_append "probe=${_probe_name} result=fail reason=unknown-probe-name"
+				console_say "probe=${_probe_name} result=fail reason=unknown-probe-name"
+				[ -n "${failed}" ] || {
+					failed="healthcheck-failed"
+					failed_detail=unknown-probe-name
+				}
+				continue
+			fi
+			if probe "${_probe_name}" "${_probe_fn}"; then
+				console_say "probe=${_probe_name} result=pass"
+			else
+				console_say "probe=${_probe_name} result=fail reason=${PROBE_REASON:-unknown}"
+				if [ -z "${failed}" ]; then
+					failed="healthcheck-failed"
+					# The first failure is the one the summary line quotes: with every
+					# probe running, PROBE_REASON ends up holding the last one.
+					failed_detail="${PROBE_REASON}"
+				fi
+			fi
+		done
+	fi
 
 	if [ -z "${failed}" ]; then
 		log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=ok"
@@ -313,7 +342,7 @@ start() {
 	fi
 
 	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
-		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed} action=reboot-to-committed"
+		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${failed_detail:+ detail=${failed_detail}} action=reboot-to-committed"
 		console_say "ab-commit: abandoned slot=${slot} reason=${failed}"
 		rm -f "${AB_ESP}/ab/candidate"
 		ab-slot abandon
@@ -322,7 +351,7 @@ start() {
 		exit 0
 	fi
 
-	log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${PROBE_REASON:+ detail=${PROBE_REASON}}"
+	log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${failed_detail:+ detail=${failed_detail}}"
 	console_say "ab-commit: stage=healthcheck-done slot=${slot} result=fail reason=${failed} action=stay"
 	echo "ab-commit: health check failed on the committed slot ${slot} (${failed}), staying up"
 }

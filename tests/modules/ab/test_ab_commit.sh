@@ -2,8 +2,8 @@
 # Module: ab
 # Verifies the health check in platform/etc/init.d/ab-commit: what each probe requires,
 # and that a failure says *why* it failed.
-#   ac-1 the writable-layer probe needs a writable /overlay with an absolute free-space
-#        floor, not a percentage of whatever the partition happens to be
+#   ac-1 the writable-layer probe needs a writable composed root with an absolute
+#        free-space floor, not a percentage of whatever the partition happens to be
 #   ac-2 the firewall and wan probes name the thing they could not find
 #   ac-3 preflight: a slot that came up without /proc is reported as that, not as three
 #        anonymous probe failures
@@ -29,10 +29,10 @@ proc_dir="$tmp/proc"
 sysfs="$tmp/sys"
 mkdir -p "$overlay" "$proc_dir" "$sysfs/class/net"
 
-# THE REASON IS checked below whenever a probe is expected to fail, so the variable is
-# written by the implementation and read by the assertions further down.
-# shellcheck disable=SC2034  # written by platform/etc/init.d/ab-commit, read by the asserts
-probe_reason=""
+# PROBE_REASON is the probe's own variable: probe() sets it to a sentinel before the call
+# and each probe overwrites it on the way out. Driving a probe directly from here means
+# doing the same first, so the variable the assertions read always exists (`set -u`).
+PROBE_REASON=""
 
 # --------------------------------------------------------------------------- #
 # ac-1: writable layer, absolute floor
@@ -62,6 +62,26 @@ assert_contains "$(cat "$hook")" 'AB_FREE_FLOOR_KB="${AB_FREE_FLOOR_KB:-16384}"'
   "ac-1 the floor is 16 MiB by default"
 assert_eq "$(grep -c 'avail \* 100 / ' "$hook")" "0" \
   "ac-1 no percentage of the partition size is used any more"
+
+# The default has to be the composed root, not the /overlay mount point that never
+# existed: the image that shipped measured a path nobody created and called every slot
+# unhealthy. Two assertions, because either one alone is weak: the default is pinned in
+# the source, and the tree it names is exercised (a test host's root may not be writable
+# to an ordinary user, but it must never be reported as a missing mount point).
+assert_contains "$(cat "$hook")" 'AB_OVERLAY="${AB_OVERLAY:-/}"' \
+  "ac-1 the writable layer defaults to the composed root"
+AB_FREE_FLOOR_KB=0
+AB_OVERLAY="/"
+export AB_FREE_FLOOR_KB AB_OVERLAY
+if probe_overlay_writable; then
+  assert_eq "0" "0" "ac-1 the composed root is a usable writable layer on this host"
+else
+  assert_contains "$PROBE_REASON" "not-writable:/" \
+    "ac-1 and otherwise it says the probe file could not be created at the root"
+fi
+AB_FREE_FLOOR_KB=16384
+AB_OVERLAY="$overlay"
+export AB_FREE_FLOOR_KB AB_OVERLAY
 
 AB_OVERLAY="$tmp/nothing-here"
 export AB_OVERLAY
@@ -102,6 +122,9 @@ cat >"$stub_bin/nft" <<'STUB'
 #!/bin/sh
 case "$*" in
   "list ruleset") printf '%s\n' "${STUB_RULESET:-}" ;;
+  # The loaded fw4 table is the second shape the firewall probe accepts; unset means
+  # "fw4 was never loaded", which is what the failing cases describe.
+  "list table inet fw4") [ -n "${STUB_FW4_TABLE:-}" ] || exit 1 ;;
   *) exit 1 ;;
 esac
 STUB
@@ -183,7 +206,157 @@ assert_contains "$(cat "$hook")" 'failed="preflight-${PREFLIGHT_REASON}"' \
   "ac-3 a preflight failure is carried as the health check reason"
 assert_contains "$(cat "$hook")" 'console_say "ab-commit: stage=preflight slot=${slot} result=fail reason=${PREFLIGHT_REASON}"' \
   "ac-3 and printed on the console"
-assert_contains "$(cat "$hook")" 'console_say "probe=${probe} result=fail reason=${PROBE_REASON:-unknown}"' \
+assert_contains "$(cat "$hook")" 'result=fail reason=${PROBE_REASON:-unknown}' \
   "ac-3 every failed probe prints its reason"
+
+# --------------------------------------------------------------------------- #
+# ac-4: start() reaches the probes through a function that exists
+#
+# The regression this covers: the loop called `run_probe`, which no file defines, so
+# every probe exited 127. A healthy machine reported
+# `probe=overlay-writable result=fail reason=unknown` and the running slot was never
+# committed - the failure looked like a broken probe instead of a broken call site.
+# Nothing above calls start(), so nothing above could see it. This drives a fake
+# machine through start() instead of asserting on strings in the source.
+# --------------------------------------------------------------------------- #
+
+machine="$tmp/machine"
+esp="$machine/esp"
+mkdir -p "$esp/ab/log" "$esp/ab"
+mounts_file="$machine/mounts"
+printf '/dev/fake %s vfat rw,noatime 0 0\n' "$esp" >"$mounts_file"
+
+calls="$machine/ab-slot.calls"
+reboot_calls="$machine/reboot.calls"
+console_log="$machine/console.log"
+: >"$calls"
+: >"$reboot_calls"
+: >"$console_log"
+
+# start() mounts the ESP, writes the ring log and reads the slot through ab-slot: all
+# three are pointed at the fake machine so nothing here touches the host.
+AB_ESP="$esp"
+AB_MOUNTS="$mounts_file"
+AB_OVERLAY="$overlay"
+AB_PROC="$proc_dir"
+AB_SYSFS="$sysfs"
+AB_FREE_FLOOR_KB=0
+export AB_ESP AB_MOUNTS AB_OVERLAY AB_PROC AB_SYSFS AB_FREE_FLOOR_KB
+
+STUB_AB_SLOT_CALLS="$calls"
+STUB_SLOT=a
+STUB_PENDING=none
+export STUB_AB_SLOT_CALLS STUB_SLOT STUB_PENDING
+
+cat >"$stub_bin/ab-slot" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"${STUB_AB_SLOT_CALLS}"
+case "$1" in
+  status) printf 'slot=%s pending=%s upper=@overlay-25.12.2\n' "${STUB_SLOT}" "${STUB_PENDING}" ;;
+  rootfs) printf '25.12.2\n' ;;
+  *) : ;;
+esac
+STUB
+chmod +x "$stub_bin/ab-slot"
+
+# pidof/pgrep must not find a firewall on the host: the probe is being asked about the
+# fake ruleset, not about whatever is running this test.
+printf '#!/bin/sh\nexit 1\n' >"$stub_bin/pidof"
+printf '#!/bin/sh\nexit 1\n' >"$stub_bin/pgrep"
+chmod +x "$stub_bin/pidof" "$stub_bin/pgrep"
+
+# console_say and reboot have to stop at the test: one would write to the real console,
+# the other would restart the machine under the runner.
+# shellcheck disable=SC2317  # called by start() in the subshells below
+console_say() { printf '%s\n' "$*" >>"$console_log"; }
+# shellcheck disable=SC2317  # called by start() in the subshells below
+reboot() { printf 'reboot\n' >>"$reboot_calls"; }
+
+# A healthy machine: three probes pass, the running slot is committed.
+STUB_RULESET="table inet fw4 {}"
+STUB_FW4_TABLE=1
+AB_FREE_FLOOR_KB=0
+export AB_FREE_FLOOR_KB
+STUB_WAN_DEVICE=eth1
+export STUB_RULESET STUB_FW4_TABLE STUB_WAN_DEVICE
+( start ) >/dev/null 2>&1
+assert_eq "$?" "0" "ac-4 a healthy machine finishes the health check"
+assert_contains "$(cat "$console_log")" "probe=overlay-writable result=pass" \
+  "ac-4 the writable layer probe is called and passes"
+assert_contains "$(cat "$console_log")" "probe=fw4-present result=pass" \
+  "ac-4 the firewall probe is called and passes"
+assert_contains "$(cat "$console_log")" "probe=wan-present result=pass" \
+  "ac-4 the wan probe is called and passes"
+assert_contains "$(cat "$console_log")" "ab-commit: committed slot=a" \
+  "ac-4 and the running slot is committed"
+assert_contains "$(cat "$calls")" "commit a" "ac-4 through ab-slot commit"
+assert_eq "$(grep -c '^abandon' "$calls")" "0" "ac-4 nothing is abandoned"
+
+# One probe fails: the decision stays, and the two other probes still report. A
+# short-circuit would name one probe per boot, so a slot with two faults would need two
+# boots to explain itself.
+: >"$console_log"
+: >"$calls"
+: >"$esp/ab/log/boot-0.log"
+STUB_FW4_TABLE=""
+AB_FREE_FLOOR_KB=0
+export STUB_FW4_TABLE AB_FREE_FLOOR_KB
+( start ) >/dev/null 2>&1
+assert_eq "$?" "0" "ac-4 a failing probe still ends the health check cleanly"
+assert_contains "$(cat "$console_log")" "probe=overlay-writable result=pass" \
+  "ac-4 the probe before the failure runs"
+assert_contains "$(cat "$console_log")" "probe=fw4-present result=fail reason=no-fw4-table-or-process" \
+  "ac-4 the failure names the probe and the reason"
+assert_contains "$(cat "$console_log")" "probe=wan-present result=pass" \
+  "ac-4 the probe after the failure runs too"
+assert_contains "$(cat "$console_log")" \
+  "ab-commit: stage=healthcheck-done slot=a result=fail reason=healthcheck-failed action=stay" \
+  "ac-4 and a committed slot with failing probes stays up"
+assert_eq "$(grep -c '^commit' "$calls")" "0" "ac-4 nothing is committed"
+assert_contains "$(cat "$esp/ab/log/boot-0.log")" "probe=fw4-present result=fail reason=no-fw4-table-or-process" \
+  "ac-4 the ring log names the probe that failed"
+assert_contains "$(cat "$esp/ab/log/boot-0.log")" "result=fail reason=healthcheck-failed detail=no-fw4-table-or-process" \
+  "ac-4 and the summary line carries the first failure"
+
+# A pending slot that fails its probes: abandoned, never committed, and the machine goes
+# back to the committed slot.
+: >"$console_log"
+: >"$calls"
+: >"$reboot_calls"
+: >"$esp/ab/log/boot-0.log"
+STUB_SLOT=b
+STUB_PENDING=b
+STUB_FW4_TABLE=""
+AB_FREE_FLOOR_KB=0
+export STUB_SLOT STUB_PENDING STUB_FW4_TABLE AB_FREE_FLOOR_KB
+( start ) >/dev/null 2>&1
+assert_eq "$?" "0" "ac-4 a failing pending slot ends the health check cleanly"
+assert_contains "$(cat "$calls")" "abandon" "ac-4 the pending slot is abandoned"
+assert_eq "$(grep -c '^commit' "$calls")" "0" "ac-4 and never committed"
+assert_contains "$(cat "$reboot_calls")" "reboot" "ac-4 the machine reboots into the committed slot"
+assert_contains "$(cat "$console_log")" "ab-commit: abandoned slot=b reason=healthcheck-failed" \
+  "ac-4 and says so on the console"
+
+# Two probes fail: the summary line quotes the FIRST one. With every probe running to the
+# end, the live PROBE_REASON holds the last failure, so a slot with two faults is exactly
+# the case where "report the first" and "report the last" disagree.
+: >"$console_log"
+: >"$calls"
+: >"$esp/ab/log/boot-0.log"
+STUB_SLOT=a
+STUB_PENDING=none
+STUB_FW4_TABLE=""
+AB_FREE_FLOOR_KB=999999999
+export STUB_SLOT STUB_PENDING STUB_FW4_TABLE AB_FREE_FLOOR_KB
+( start ) >/dev/null 2>&1
+assert_eq "$?" "0" "ac-4 two failing probes still end the health check cleanly"
+assert_contains "$(cat "$console_log")" "probe=overlay-writable result=fail reason=free-" \
+  "ac-4 the writable layer probe fails first"
+assert_contains "$(cat "$console_log")" "probe=fw4-present result=fail reason=no-fw4-table-or-process" \
+  "ac-4 the firewall probe fails second"
+assert_contains "$(cat "$esp/ab/log/boot-0.log")" "detail=free-" \
+  "ac-4 the summary quotes the first failure"
+assert_eq "$(grep -c 'detail=no-fw4' "$esp/ab/log/boot-0.log")" "0" \
+  "ac-4 and not the last one"
 
 finish

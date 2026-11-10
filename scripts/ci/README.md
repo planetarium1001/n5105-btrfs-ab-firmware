@@ -259,11 +259,14 @@ assumed.
 ### Health check
 
 `ab-commit` runs after `done` with a 150 second budget and logs every probe in the
-frozen format (`probe=<name> result=<pass|fail>`):
+frozen format (`probe=<name> result=<pass|fail> [reason=<token>]`). Every probe runs even
+after one has failed, so a single boot names every fault; the writable layer is the root
+itself, because the initramfs mounts `@overlay-<version>` as the upper and `switch_root`s
+into it, and there is no separate `/overlay` mount:
 
 | Probe | Passes when |
 |---|---|
-| `overlay-writable` | `/overlay` is writable and more than 5% of it is free |
+| `overlay-writable` | the composed root `/` is writable with at least 16 MiB free (an absolute floor, not a percentage) |
 | `fw4-present` | `nft list ruleset` is non-empty and the firewall is loaded |
 | `wan-present` | the device named by `network.wan` exists in `/sys/class/net` |
 

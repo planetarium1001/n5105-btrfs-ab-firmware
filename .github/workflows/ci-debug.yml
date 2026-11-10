@@ -70,17 +70,14 @@ defaults:
     shell: bash
 
 env:
-  # Same scratch layout the stage workflows use: everything lands under
-  # $RUNNER_TEMP/ci and nothing is written into the checkout.
-  CI_TMP_ROOT: ${{ runner.temp }}/ci
-  CI_LOG_DIR: ${{ runner.temp }}/ci/logs
   # The stage workflows default this to 0.0.2 for s4/s5; match them.
+  #
+  # Nothing else belongs at this level: the scratch layout below is built from
+  # `runner.temp`, and GitHub only exposes the `runner` context inside a step. A
+  # workflow-level `${{ runner.temp }}` is not a warning, it is a parse error -- the
+  # whole file stops being dispatchable ("Unrecognized named-value: 'runner'"), which
+  # is how this entry point spent its first life looking usable and never running.
   CI_PLATFORM_VERSION: "0.0.2"
-  # These three paths are the defaults of fetch.sh, initramfs.sh and disk.sh, named
-  # once here so the fixture and boot steps use the same files the prepare produced.
-  CI_DEBUG_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-  CI_DEBUG_INITRAMFS: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
-  CI_DEBUG_IMAGE: ${{ runner.temp }}/ci/disk/n5105-ab-image.img
 
 jobs:
   debug:
@@ -120,6 +117,24 @@ jobs:
           fi
           df -h "${RUNNER_TEMP}" | tail -n 1
           sudo -n true && echo "passwordless sudo: yes" || echo "passwordless sudo: NO"
+
+      # The scratch layout is built from `runner.temp`, and the `runner` context is only
+      # available inside a step: writing it here, through $GITHUB_ENV, is what makes it
+      # visible to every step below AND to the interactive shell. A workflow-level
+      # expression is not a warning but a parse error -- GitHub answers "Unrecognized
+      # named-value: 'runner'" and refuses to dispatch the whole file, which is how an
+      # earlier version of this workflow went dead while still looking present.
+      - name: Export the scratch layout
+        run: |
+          {
+            printf 'CI_TMP_ROOT=%s\n' "${RUNNER_TEMP}/ci"
+            printf 'CI_LOG_DIR=%s\n' "${RUNNER_TEMP}/ci/logs"
+            # The defaults of fetch.sh, initramfs.sh and disk.sh, so the first boot below
+            # and the human in the session use the files the prepare produced.
+            printf 'CI_DEBUG_KERNEL=%s\n' "${RUNNER_TEMP}/ci/fetch/upstream/kernel.bin"
+            printf 'CI_DEBUG_INITRAMFS=%s\n' "${RUNNER_TEMP}/ci/initramfs/boot.cpio.gz"
+            printf 'CI_DEBUG_IMAGE=%s\n' "${RUNNER_TEMP}/ci/disk/n5105-ab-image.img"
+          } >>"${GITHUB_ENV}"
 
       # The chain ci-s4/ci-s5 run, stopped at the disk image: everything after that is
       # what the session is for. A failure here is not fatal -- the human gets the shell

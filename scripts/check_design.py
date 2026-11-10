@@ -197,6 +197,9 @@ def check_log_ring(problems: Problems) -> None:
     problems.need(
         "lifecycle.md",
         doc,
+        "the composed root `/` is writable with at least 16 MiB free",
+        "probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail> [reason=<token>]",
+        "Every probe runs, even after one has failed",
         "boot-0.log",
         "boot-1.log",
         "boot-2.log",
@@ -370,6 +373,53 @@ def _step_lines(lines: list[str], index: int) -> list[str]:
         end += 1
     return lines[start:end]
 
+RUNNER_CONTEXT_MESSAGE = (
+    "the runner context is only available inside a step, so this expression makes the "
+    "whole workflow undispatchable"
+)
+
+
+def _runner_context_problems(text: str) -> list[tuple[int, str]]:
+    """(line number, message) for every runner-context expression outside a step.
+
+    GitHub rejects the entire file when the `runner` context appears in a workflow-level
+    or job-level key -- dispatch answers "Unrecognized named-value: 'runner'" and the
+    workflow is dead while still looking present. That happened to ci-debug.yml: the file
+    passed every other check here and nobody could run it.
+
+    Step membership is decided by the item itself, not by a column: a step starts at a
+    `- ` list item directly under `steps:` and ends at the next item or at a key that
+    belongs to the job again. Anything indented shallower than an item is a job-level or
+    workflow-level key.
+    """
+    found: list[tuple[int, str]] = []
+    in_step = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            indent = len(line) - len(line.lstrip())
+            if indent < 6:
+                in_step = False
+            elif indent == 6:
+                in_step = stripped.startswith("- ")
+        if stripped.startswith("#") or "{{" not in line:
+            continue
+        if re.search(r"\{\{\s*runner[.\[]", line) and not in_step:
+            found.append((number, RUNNER_CONTEXT_MESSAGE))
+    return found
+
+
+def check_workflow_expressions(problems: Problems) -> None:
+    """No workflow uses a context GitHub does not allow where it is written."""
+    workflows = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    if not workflows:
+        problems.add(".github/workflows", "no workflows found")
+        return
+    for path in workflows:
+        rel = str(path.relative_to(ROOT))
+        for number, message in _runner_context_problems(path.read_text(encoding="utf-8")):
+            problems.add(rel, f"line {number}: {message}")
+
 
 def check_debug_ssh(problems: Problems) -> None:
     """ci-debug.yml stays a manual, bounded, key-gated debugging entry point.
@@ -434,6 +484,9 @@ def check_debug_ssh(problems: Problems) -> None:
                 f"found {value!r}",
             )
 
+    for number, message in _runner_context_problems(text):
+        problems.add(where, f"line {number}: {message}")
+
 
 CHECKS = {
     "partitions": check_partitions,
@@ -448,6 +501,7 @@ CHECKS = {
     "text": check_text,
     "retired-names": check_retired_tokens,
     "debug-ssh": check_debug_ssh,
+    "workflow-expressions": check_workflow_expressions,
 }
 
 

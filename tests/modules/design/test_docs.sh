@@ -11,7 +11,8 @@ source "$root/tests/lib/assert.sh"
 cd "$root"
 
 for check in partitions esp-data-only overlay-layers generation-model gc-policy \
-             log-ring conflict-model payload-contract links text debug-ssh; do
+             log-ring conflict-model payload-contract links text debug-ssh \
+             workflow-expressions; do
   out=$(python3 scripts/check_design.py "$check" 2>&1)
   code=$?
   assert_eq "$code" "0" "design check: $check"

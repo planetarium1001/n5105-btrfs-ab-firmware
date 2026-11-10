@@ -111,11 +111,17 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 
 | 探针 | 通过条件 |
 |---|---|
-| `overlay-writable` | `/overlay` 可写且剩余空间至少 16 MiB（绝对下限而非百分比：同一条规则在 128 MiB 的测试镜像和几百 GiB 的真机盘上必须表示同一件事） |
+| `overlay-writable` | 合成根 `/` 可写且剩余空间至少 16 MiB（绝对下限而非百分比：同一条规则在 128 MiB 的测试镜像和几百 GiB 的真机盘上必须表示同一件事） |
 | `fw4-present` | nft ruleset 非空且存在 `inet fw4` 表 |
 | `wan-present` | `network.wan` 引用的设备存在 |
 
 全部通过才提交。任一失败则放弃待提交槽，重启回到已提交槽。
+
+可写层就是根本身：引导 initramfs 把 `@overlay-<version>` 挂成 upper 并 `switch_root` 进合成树，
+所以镜像里并没有单独的 `/overlay` 挂载点。
+
+即使某个探针已经失败，三个探针仍会全部跑完：决定只需要第一个失败，但日志要在一次启动里
+把三个都说清楚，否则一个有两处故障的槽需要两次启动才能解释完。
 
 `fw4-present` 不找常驻进程：ImmortalWrt 25.12 的 `fw4` 是一次性渲染器，加载 ruleset 后就退出，
 可观测的状态就是 ruleset 本身。空 ruleset 正是这个探针要抓的故障。

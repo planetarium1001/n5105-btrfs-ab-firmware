@@ -130,12 +130,20 @@ Runs after `done` completes, with a 150 second timeout:
 
 | Probe | Passes when |
 |---|---|
-| `overlay-writable` | `/overlay` is writable with at least 16 MiB free (an absolute floor, not a percentage: the same rule has to mean the same thing on a 128 MiB test image and on a disk measured in hundreds of GiB) |
+| `overlay-writable` | the composed root `/` is writable with at least 16 MiB free (an absolute floor, not a percentage: the same rule has to mean the same thing on a 128 MiB test image and on a disk measured in hundreds of GiB) |
 | `fw4-present` | the nft ruleset is non-empty and the `inet fw4` table is present |
 | `wan-present` | a device referenced by `network.wan` exists |
 
 All probes must pass before commit. Any failure abandons the pending slot and reboots into
 the committed slot.
+
+The writable layer is the root itself: the boot initramfs mounts `@overlay-<version>` as the
+upper directory and `switch_root`s into the composed tree, so there is no separate `/overlay`
+mount to measure.
+
+Every probe runs, even after one has failed: the decision only needs the first failure, but
+the log has to name all three in one boot, otherwise a slot with two faults costs two boots
+to explain itself.
 
 `fw4-present` does not look for a daemon: in ImmortalWrt 25.12 `fw4` is a one-shot renderer
 that loads the ruleset and exits, so the observable state is the ruleset itself. A slot with
