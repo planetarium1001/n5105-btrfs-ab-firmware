@@ -37,6 +37,8 @@ WF_BLOCKDEV="${WF_BLOCKDEV:-blockdev}"
 WF_PARTX="${WF_PARTX:-partx}"
 WF_BTRFS="${WF_BTRFS:-btrfs}"
 WF_SLEEP="${WF_SLEEP:-sleep}"
+WF_MOUNT="${WF_MOUNT:-mount}"
+WF_UMOUNT="${WF_UMOUNT:-umount}"
 WF_SYS_BLOCK="${WF_SYS_BLOCK:-/sys/class/block}"
 WF_GROW_TMP="${WF_GROW_TMP:-/run}"
 # sysfs `size` is always in 512-byte units, while sfdisk reports partition sizes in
@@ -416,7 +418,57 @@ wf_grow_fs() {
     fi
     wf_grow_log "btrfs filesystem resize max ${wf_gf_target} failed: ${wf_gf_output:-no output}"
     wf_grow_diag "${wf_gf_target}" "${wf_gf_disk}"
+    # Two fallbacks, both logged: the btrfs-progs in the image is old enough that some
+    # forms behave differently, so the version, the explicit `1:max` form and the usage
+    # table all go into the same log line set before giving up.
+    wf_gf_version="$("${WF_BTRFS}" --version 2>&1 | head -n 1)" || wf_gf_version=""
+    wf_grow_log "diag btrfs --version: ${wf_gf_version:-unknown}"
+    if wf_gf_retry="$("${WF_BTRFS}" filesystem resize 1:max "${wf_gf_target}" 2>&1)"; then
+        wf_grow_log "btrfs filesystem resize 1:max ${wf_gf_target} succeeded: ${wf_gf_retry:-ok}"
+        printf 'done'
+        return 0
+    fi
+    wf_grow_log "btrfs filesystem resize 1:max ${wf_gf_target} failed: ${wf_gf_retry:-no output}"
+    "${WF_BTRFS}" filesystem usage "${wf_gf_target}" 2>&1 | while IFS= read -r wf_gf_line; do
+        wf_grow_log "diag usage: ${wf_gf_line}"
+    done
     printf 'fail:btrfs-resize'
+}
+
+# wf_grow_resize_mounted <device> <mount point> [<disk>]: the boot path's resize.
+#
+# The btrfs-progs in the image refuses an unmounted device ("not a directory: /dev/vda4"),
+# so the filesystem is mounted for the resize — with the plainest possible options: no
+# compress=, no discard=, no subvol=. A resize must not depend on the options a later
+# mount happens to carry, and those are exactly what a failing resize has to be
+# distinguished from. The mount is given back immediately; the caller then does the real
+# option-carrying mount for the growth record.
+#
+# Prints `done`, `fail:resize-target`, `fail:resize-mount` or a token from wf_grow_fs.
+wf_grow_resize_mounted() {
+    wf_grm_dev="${1:-}"
+    wf_grm_mp="${2:-}"
+    wf_grm_disk="${3:-}"
+    if [ -z "${wf_grm_dev}" ] || [ -z "${wf_grm_mp}" ]; then
+        printf 'fail:resize-target'
+        return 0
+    fi
+    mkdir -p "${wf_grm_mp}" 2>/dev/null || {
+        printf 'fail:resize-mount'
+        return 0
+    }
+    if ! wf_grm_err="$("${WF_MOUNT}" -t btrfs -o rw,noatime "${wf_grm_dev}" "${wf_grm_mp}" 2>&1)"; then
+        wf_grow_log "clean mount of ${wf_grm_dev} on ${wf_grm_mp} failed: ${wf_grm_err:-no output}"
+        printf 'fail:resize-mount'
+        return 0
+    fi
+    wf_grow_log "resize pass: ${wf_grm_dev} on ${wf_grm_mp} without compress/discard/subvol"
+    wf_grm_result="$(wf_grow_fs "${wf_grm_mp}" "${wf_grm_disk}")"
+    if ! wf_grm_umount_err="$("${WF_UMOUNT}" "${wf_grm_mp}" 2>&1)"; then
+        wf_grow_log "umount ${wf_grm_mp} after the resize failed: ${wf_grm_umount_err:-no output}"
+        "${WF_UMOUNT}" "${wf_grm_mp}" >/dev/null 2>&1 || :
+    fi
+    printf '%s' "${wf_grm_result}"
 }
 
 # wf_grow_diag <target> [<disk>]: the three numbers that explain a failed resize — what

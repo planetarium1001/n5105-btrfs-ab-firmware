@@ -67,6 +67,9 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
 BOOT=1
+# Two distinct mount points for the two p4 passes, so a leftover mount is easy to spot in
+# the log: the resize pass uses P4_RESIZE_MOUNT and is unmounted before the record pass.
+P4_RESIZE_MOUNT=/mnt/p4resize
 for arg in $(cat /proc/cmdline); do
     case "${arg}" in
         wf.boot=*) BOOT="${arg#wf.boot=}" ;;
@@ -205,21 +208,23 @@ esac
 wf_log "p4 growth: ${grow_state} (last usable LBA ${grow_last_lba})"
 
 # --------------------------------------------------------------------------- #
-# 3b. Filesystem resize, still before ANY mount
+# 3b. Filesystem resize: a clean mount, the resize, and the mount given back
 # --------------------------------------------------------------------------- #
-# btrfs-progs resizes the partition's filesystem, and it must do that while nothing of
-# that filesystem is mounted: on the real machine, resizing through a mount point right
-# after the partition grew failed with EINVAL, and resizing with two mounts present
-# failed with EBUSY (`/dev/vda4: Can't open blockdev`). With the device unmounted,
-# btrfs-progs opens the device directly — partition table first, filesystem second,
-# mounts last, which is the order growpart-style tools use.
+# The btrfs-progs shipped in the image does not resize an unmounted device — it answers
+# `ERROR: not a directory: /dev/vda4` — so the filesystem is mounted for the resize. That
+# mount carries NO options of its own: no compress=, no discard=, no subvol=. A resize on
+# a freshly grown partition must not depend on the options of a later mount, and keeping
+# them apart is what makes a failure diagnosable (`unable to resize ...: Invalid
+# argument` is an option/mount interaction, `not a directory` is a device target).
 #
-# A resize failure is recorded, never fatal: the partition keeps its size and the
-# runtime retry in ab-boot gets another chance with p4 mounted.
+# The mount is unmounted inside wf_grow_resize_mounted, before the option-carrying mount
+# that writes the growth record, so the filesystem is never mounted twice at once.
+# A resize failure is recorded, never fatal: ab-boot retries it at runtime with p4
+# mounted, and even without that a 64 MiB p4 still boots.
 case "${grow_state}" in
     done | already-full)
-        wf_log "p4 step=resize target=${p4} state=${grow_state} (unmounted)"
-        grow_fs="$(wf_grow_fs "${p4}" "${dev}")"
+        wf_log "p4 step=resize target=${p4} state=${grow_state} clean-mount=${P4_RESIZE_MOUNT}"
+        grow_fs="$(wf_grow_resize_mounted "${p4}" "${P4_RESIZE_MOUNT}" "${dev}")"
         case "${grow_fs}" in
             done) wf_log "btrfs filesystem at max size" ;;
             *)
@@ -275,7 +280,7 @@ wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
 #    then the read-only layers
 # --------------------------------------------------------------------------- #
 
-mkdir -p /mnt/p4 /mnt/p4root /mnt/@platform /mnt/@sys
+mkdir -p /mnt/p4 /mnt/p4root "${P4_RESIZE_MOUNT}" /mnt/@platform /mnt/@sys
 degraded=0
 
 # --------------------------------------------------------------------------- #

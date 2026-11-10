@@ -69,7 +69,8 @@ TABLE
 
 reset_fixture() {
   table_for "${p4_shipped_size}" >"$tmp/table/current"
-  rm -f "$tmp/table/written" "$tmp/sfdisk.calls" "$tmp/blockdev.calls" "$tmp/btrfs.calls"
+  rm -f "$tmp/table/written" "$tmp/sfdisk.calls" "$tmp/blockdev.calls" "$tmp/btrfs.calls" \
+    "$tmp/mount.calls" "$tmp/umount.calls"
   printf '%s\n' "${p4_shipped_size}" >"$sys/vda4/size"
 }
 
@@ -135,6 +136,23 @@ printf '%s\n' "$*" >>"${GROW_FIXTURE}/btrfs.calls"
 exit 0
 STUB
 
+cat >"$tmp/bin/mount" <<'STUB'
+#!/bin/sh
+printf '%s
+' "$*" >>"${GROW_FIXTURE}/mount.calls"
+[ "${STUB_MOUNT_FAIL:-0}" = "1" ] && exit 1
+# The only form the boot path uses: -t btrfs -o <opts> <device> <mount point>
+printf '%s %s btrfs rw,noatime 0 0\n' "$5" "$6" >>"${WF_MOUNTS}"
+STUB
+cat >"$tmp/bin/umount" <<'STUB'
+#!/bin/sh
+printf '%s
+' "$*" >>"${GROW_FIXTURE}/umount.calls"
+mp="$1"
+{ grep -v " ${mp} " "${WF_MOUNTS}" 2>/dev/null || :; } >"${WF_MOUNTS}.new"
+mv "${WF_MOUNTS}.new" "${WF_MOUNTS}"
+exit 0
+STUB
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/sleep"
 chmod +x "$tmp/bin"/*
 
@@ -150,12 +168,14 @@ WF_BLOCKDEV="$tmp/bin/blockdev"
 WF_PARTX="$tmp/bin/partx"
 WF_BTRFS="$tmp/bin/btrfs"
 WF_SLEEP="$tmp/bin/sleep"
+WF_MOUNT="$tmp/bin/mount"
+WF_UMOUNT="$tmp/bin/umount"
 WF_SYS_BLOCK="$sys"
 WF_GROW_TMP="$tmp/work"
 WF_GROW_VERIFY_TRIES=2
 WF_MOUNTS="$tmp/mounts"
 export WF_SFDISK WF_BLOCKDEV WF_PARTX WF_BTRFS WF_SLEEP WF_SYS_BLOCK WF_GROW_TMP \
-  WF_GROW_VERIFY_TRIES WF_MOUNTS
+  WF_GROW_VERIFY_TRIES WF_MOUNTS WF_MOUNT WF_UMOUNT
 mkdir -p "$tmp/mnt/p4"
 printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "$tmp/mnt/p4" >"$WF_MOUNTS"
 
@@ -327,6 +347,56 @@ assert_contains "${noisy_out}" "[grow] diag device /dev/vda4:" \
   "ac-3 the failure dumps the kernel's device size"
 assert_contains "${noisy_out}" "[grow] diag table: /dev/vda4 : start=" \
   "ac-3 the failure dumps the partition table line"
+
+# --------------------------------------------------------------------------- #
+# The boot path's resize: a clean mount, the resize, the mount given back
+# --------------------------------------------------------------------------- #
+# The btrfs-progs in the image answers `ERROR: not a directory: /dev/vda4` for an
+# unmounted device, so the resize needs a mount — one without compress=, discard= or
+# subvol=, so a failing resize cannot be confused with an option interaction.
+
+reset_fixture
+: >"$WF_MOUNTS"
+resize_mp="$tmp/mnt/p4resize"
+resize_out="$(wf_grow_resize_mounted /dev/vda4 "${resize_mp}" /dev/vda 2>"$tmp/stderr.txt")"
+assert_eq "${resize_out}" "done" "ac-3 the clean-mount resize reports done"
+assert_contains "$(cat "$tmp/mount.calls")" "-t btrfs -o rw,noatime /dev/vda4 ${resize_mp}" \
+  "ac-3 the resize pass mounts with no compress/discard/subvol options"
+assert_eq "$(printf '%s' "$(cat "$tmp/mount.calls")" | grep -c 'compress=\|discard=\|subvol=')" "0" \
+  "ac-3 the clean mount carries none of the option-carrying mount's flags"
+assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max ${resize_mp}" \
+  "ac-3 the resize runs against the clean mount point"
+assert_contains "$(cat "$tmp/umount.calls")" "${resize_mp}" \
+  "ac-3 the clean mount is given back"
+assert_eq "$(awk -v mp="${resize_mp}" '$2 == mp { found = 1 } END { exit !found }' "$WF_MOUNTS"; echo $?)" \
+  "1" "ac-3 nothing is left mounted after the resize pass"
+
+# A clean mount that fails is a token, not a crash.
+reset_fixture
+: >"$WF_MOUNTS"
+mount_fail="$(STUB_MOUNT_FAIL=1 wf_grow_resize_mounted /dev/vda4 "${resize_mp}" /dev/vda 2>&1)"
+assert_contains "${mount_fail}" "fail:resize-mount" \
+  "ac-3 a failed clean mount is recorded as fail:resize-mount"
+assert_eq "$(printf '%s' "${mount_fail}" | grep -c 'filesystem resize')" "0" \
+  "ac-3 no resize is attempted when the clean mount failed"
+
+# A failing resize still gives the mount back and leaves the diagnostics behind.
+reset_fixture
+: >"$WF_MOUNTS"
+resize_fail="$(WF_BTRFS="$tmp/bin/btrfs-noisy" wf_grow_resize_mounted \
+  /dev/vda4 "${resize_mp}" /dev/vda 2>&1)"
+assert_contains "${resize_fail}" "fail:btrfs-resize" "ac-3 a failed resize is recorded"
+assert_contains "${resize_fail}" "[grow] diag btrfs --version:" \
+  "ac-3 the btrfs version is logged with the failure"
+assert_contains "${resize_fail}" "filesystem resize 1:max ${resize_mp}" \
+  "ac-3 the explicit-devid retry is attempted"
+assert_contains "${resize_fail}" "[grow] diag usage:" \
+  "ac-3 the usage table is logged with the failure"
+assert_contains "$(cat "$tmp/umount.calls")" "${resize_mp}" \
+  "ac-3 the mount is given back even when the resize failed"
+
+assert_eq "$(wf_grow_resize_mounted "" "${resize_mp}")" "fail:resize-target" \
+  "ac-3 a resize pass without a device is refused"
 
 # --------------------------------------------------------------------------- #
 # 4Kn disks: sysfs counts 512-byte units, sfdisk counts logical sectors
@@ -533,17 +603,20 @@ assert_contains "$boot_init" 'wf_grow_backup /mnt/p4root' \
 
 # The p4 mount sequence: one mount for the resize and the upper, one short-lived mount
 # for the growth record, and no leftover mount when the root is composed.
-assert_contains "$boot_init" 'grow_fs="$(wf_grow_fs "${p4}" "${dev}")"' \
-  "ac-3 the resize takes the unmounted device"
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs /mnt/')" "0" \
-  "ac-3 no resize runs through a mount point in the boot path"
+assert_contains "$boot_init" \
+  'grow_fs="$(wf_grow_resize_mounted "${p4}" "${P4_RESIZE_MOUNT}" "${dev}")"' \
+  "ac-3 the resize runs on a clean mount of p4"
+assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs "${p4}"')" "0" \
+  "ac-3 the device is never handed to btrfs-progs as a resize target"
+assert_contains "$boot_init" 'P4_RESIZE_MOUNT=/mnt/p4resize' \
+  "ac-3 the resize pass has its own mount point"
 assert_contains "$boot_init" \
   'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root' \
   "ac-3 the record mount is the p4 root subvolume"
 
 # The order is the fix for the EBUSY: exactly one mount while btrfs-progs resizes.
 root_mount_line=$(code_line_of 'subvol=/" "${p4}" /mnt/p4root')
-resize_line=$(code_line_of 'wf_grow_fs "${p4}" "${dev}"')
+resize_line=$(code_line_of 'wf_grow_resize_mounted "${p4}"')
 record_line=$(code_line_of 'wf_grow_record /mnt/p4root')
 record_umount_line=$(code_line_of 'umount /mnt/p4root')
 generation_mount_line=$(code_line_of 'subvol=/${upper}" "${p4}" /mnt/p4')
