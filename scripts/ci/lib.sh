@@ -253,12 +253,15 @@ ci_lookup_sha256() {
 # convention rather than from how the files happen to be stored in git or in a tarball,
 # so both the image build and the payload build produce a runnable layer.
 ci_platform_modes() {
-    local dir="$1"
+    local dir="$1" argv="chmod"
+    if [ "${2:-}" = "sudo" ]; then
+        argv="sudo chmod"
+    fi
     [ -d "${dir}" ] || return 0
-    find "${dir}" -type f -exec chmod 0644 {} +
+    find "${dir}" -type f -exec ${argv} 0644 {} +
     local sub
     for sub in usr/sbin etc/init.d lib/upgrade; do
         [ -d "${dir}/${sub}" ] || continue
-        find "${dir}/${sub}" -type f -exec chmod 0755 {} +
+        find "${dir}/${sub}" -type f -exec ${argv} 0755 {} +
     done
 }

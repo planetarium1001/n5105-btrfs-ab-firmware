@@ -266,7 +266,7 @@ populate_slot() {
     sudo tar -xpf "${platform_tar}" -C "${mnt}/@platform"
     # Executability follows the directory convention, so a new tool under usr/sbin is
     # runnable without touching this script.
-    ( ci_platform_modes "${mnt}/@platform" )
+    ci_platform_modes "${mnt}/@platform" sudo
     # The init.d hooks need start links so rcS picks them up. The source tree only holds
     # the scripts, so the link directory is created here.
     sudo mkdir -p "${mnt}/@platform/etc/rc.d"
