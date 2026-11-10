@@ -86,9 +86,10 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.4` — a payload can be written into the inactive slot, committed on
-the next healthy boot, and its replaced layer is reclaimed; a broken writable partition
-degrades instead of blocking the boot. The goal itself is not yet reached.
+Current version: `0.0.5` — the pipeline builds a real payload, validates it with the same
+checker the device uses, and a tag publishes the image together with that payload. Every
+stage is exercised in QEMU: install, commit, injected failure with rollback, upgrade,
+reclamation and a degraded writable partition.
 
 ## License
 
