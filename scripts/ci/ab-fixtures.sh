@@ -27,6 +27,8 @@
 #   --pending <slot>   mark a slot pending through ab-slot itself
 #   --abandon          clear pending through ab-slot
 #   --show STATE       print the state file, the boot log and the candidate marker
+#   --cat <path> <out> copy one file from the ESP (read-only) to <out>, for gating on evidence the
+#                      initramfs wrote there; exits non-zero when it is missing or empty
 #
 # Inputs (environment):
 #   CI_IMAGE          raw image to modify
@@ -65,7 +67,7 @@ mkdir -p "${work}"
 loopdev=""
 cleanup() {
     if [ -n "${loopdev}" ]; then
-        for dir in "${work}/esp" "${work}/p4" "${work}/slot-a" "${work}/slot-b"; do
+        for dir in "${work}/esp" "${work}/p4" "${work}/slot-a" "${work}/slot-b" "${work}/p1-ro"; do
             sudo umount "${dir}" 2>/dev/null || true
         done
         sudo losetup -d "${loopdev}" 2>/dev/null || true
@@ -86,6 +88,18 @@ done
 mount_one() { # <device> <name>
     mkdir -p "${work}/$2"
     sudo mount "$1" "${work}/$2"
+}
+
+# Read-only variant, and the matching unmount: --cat must not be able to write to the ESP,
+# and this script does not source disk.sh (whose unmount_part is not in lib.sh).
+mount_one_ro() { # <device> <name>
+    mkdir -p "${work}/$2"
+    sudo mount -o ro "$1" "${work}/$2"
+}
+
+unmount_part() { # <mountpoint>
+    sudo sync 2>/dev/null || :
+    sudo umount "$1" 2>/dev/null || :
 }
 
 # The platform layer lives on p2/p3, not on the ESP: use the copy from slot a. The
@@ -291,11 +305,34 @@ grow_tail() {
     ci_log "grew ${CI_IMAGE} from ${before} to ${after} bytes (+${want} MiB of unpartitioned tail)"
 }
 
+# cat_esp_file <path> <out>: copy one file off the ESP, read-only. The content goes to
+# <out> rather than stdout because this stage logs its progress to stdout, and a caller
+# that captures stdout (`$(...)`) would otherwise get "stage=..." lines mixed into the
+# file it is about to grep.
+cat_esp_file() {
+    want="${1:?--cat needs a path inside the ESP}"
+    out="${2:?--cat needs an output file}"
+    mount_one_ro "${loopdev}p1" p1-ro
+    target="${work}/p1-ro/${want}"
+    if [ ! -s "${target}" ]; then
+        unmount_part "${work}/p1-ro"
+        ci_die "no non-empty ${want} on the ESP"
+    fi
+    cp "${target}" "${out}" || ci_die "cannot copy ${want} off the ESP"
+    unmount_part "${work}/p1-ro"
+    ci_log "read ${want} from the ESP into ${out} ($(ci_file_size "${out}") bytes)"
+}
+
 while [ "$#" -gt 0 ]; do
     action="$1"
     shift
     case "${action}" in
         --network) write_network_config ;;
+        --cat)
+            [ "$#" -ge 2 ] || ci_die "--cat needs <path-in-esp> <output-file>"
+            cat_esp_file "$1" "$2"
+            shift 2
+            ;;
         --grow-tail)
             [ "$#" -ge 1 ] || ci_die "--grow-tail needs MiB"
             grow_tail "$1"

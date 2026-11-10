@@ -257,6 +257,23 @@ assert_eq "$(wf_grow_decide "$tmp/table/slack" /dev/vda4 "$((slack_last_lba + 34
   "already-full ${slack_last_lba}" \
   "ac-1 slack that rounds back to the current size is already-full"
 
+# A partition that starts after p4 means p4 is not the last one: growing it to the end of
+# the disk would run over that partition, so the decision refuses instead.
+cat >"$tmp/table/follower" <<FOLLOWER
+label: gpt
+device: /dev/vda
+unit: sectors
+first-lba: 34
+last-lba: ${last_lba}
+sector-size: 512
+
+/dev/vda4 : start=      ${p4_start}, size=      ${p4_shipped_size}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
+/dev/vda5 : start=      $((p4_start + p4_shipped_size)), size=        2048, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000005, name="vendor"
+FOLLOWER
+assert_eq "$(wf_grow_decide "$tmp/table/follower" /dev/vda4 "${disk_sectors}")" \
+  "fail:p4-not-last" \
+  "ac-1 a partition after p4 stops the growth instead of overwriting it"
+
 # A filesystem with 512-byte sectors needs no alignment: the behaviour is unchanged.
 assert_eq "$(WF_GROW_SECTORSIZE=512 wf_grow_decide "$tmp/table/current" /dev/vda4 "${disk_sectors}")" \
   "grow ${last_lba} ${p4_want_size}" \

@@ -28,6 +28,14 @@
 #   missing-sfdisk  no sfdisk in this initramfs; nothing was written
 #   fail:<token>    a step failed; the boot continues on the old geometry
 #
+# Which failures touched the disk:
+#   table byte-identical: missing-sfdisk, fail:p4-not-last (a partition starts after p4,
+#     so growing it would overwrite that one), fail:p4-beyond-disk (the table describes
+#     more disk than there is), fail:partition-table-write
+#   table written, the kernel or the filesystem did not follow: fail:partition-table-reread,
+#     fail:size-unchanged, fail:size-not-increased. These need a look at `.ab/grow` and
+#     `ab/log/grow.log` before assuming the geometry is old.
+#
 # Nothing in this file may stop a boot: every failure is returned as a token, and the
 # caller records it and carries on. Growth is idempotent because the decision compares
 # p4's end with the last usable LBA, and it never shrinks a partition.
@@ -258,6 +266,26 @@ wf_grow_decide() {
     case "${wf_gd_last}" in
         '' | *[!0-9]*)
             printf 'fail:disk-size-unknown'
+            return 0
+            ;;
+    esac
+    # Growing p4 to the end of the disk is only safe when p4 *is* the last partition.
+    # A layout with something after it (a user partition, a vendor partition) would be
+    # overwritten, and nothing in the table would warn about it.
+    wf_gd_next="$(awk -v p4start="${wf_gd_start}" '
+        match($0, /start=[ \t]*[0-9]+/) {
+            s = substr($0, RSTART, RLENGTH)
+            sub(/start=[ \t]*/, "", s)
+            s += 0
+            if (s > p4start && (min == "" || s < min)) min = s
+        }
+        END { if (min != "") print min }
+    ' "${wf_gd_dump}" 2>/dev/null)"
+    case "${wf_gd_next}" in
+        '' | *[!0-9]*) : ;;
+        *)
+            wf_grow_log "another partition starts at ${wf_gd_next}, after p4's start ${wf_gd_start}: refusing to grow"
+            printf 'fail:p4-not-last'
             return 0
             ;;
     esac

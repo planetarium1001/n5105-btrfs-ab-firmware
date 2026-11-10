@@ -182,11 +182,18 @@ export WF_ESP_DEV
 # just cannot hold much. `<state>` is done, already-full, missing-sfdisk or fail:<token>.
 
 if [ -n "${dev}" ] && [ -n "${p4}" ]; then
-    # Diagnose from a pulled disk, not from a serial console: the grow log lands next to
-    # the ring log on the ESP.
-    WF_GROW_LOG_FILE="/esp/ab/log/grow.log"
+    # Diagnose from a pulled disk, not from a serial console. The buffer lives on the
+    # initramfs tmpfs here: the ESP is only mounted later, and read-only, so writing
+    # "straight to /esp" (as an earlier version did) silently lost every line. The buffer
+    # is copied onto p4 once that is mounted, and ab-boot carries it to the ESP.
+    # /tmp does not exist in this initramfs (only bin proc sys dev mnt lib/modules are
+    # created), so the buffer lives in /run/grow - the same directory wf_grow_run keeps
+    # its table dumps in, which this line creates first because wf_grow_log appends to it
+    # before wf_grow_run gets that far.
+    mkdir -p /run/grow 2>/dev/null || :
+    WF_GROW_LOG_FILE="/run/grow/grow.log"
     export WF_GROW_LOG_FILE
-    mkdir -p /esp/ab/log 2>/dev/null || :
+    : >"${WF_GROW_LOG_FILE}" 2>/dev/null || :
     grow_line="$(wf_grow_run "${dev}" "${p4}")" || grow_line="fail:grow-crashed 0"
 elif [ -n "${dev_error}" ]; then
     # Writing a partition table on a disk nobody could identify is exactly the mistake
@@ -314,6 +321,12 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4r
     fi
     if wf_grow_record /mnt/p4root "${grow_state}" "${grow_last_lba}"; then
         wf_log "p4 growth recorded: result=${grow_state} last_lba=${grow_last_lba}"
+        # Carry the buffered log next to the record: p4 survives the boot and ab-boot
+        # copies it to the ESP, so a failure has a reason on the disk either way.
+        if [ -s "${WF_GROW_LOG_FILE}" ]; then
+            cat "${WF_GROW_LOG_FILE}" >>/mnt/p4root/.ab/grow.log 2>/dev/null ||
+                wf_log "warning: could not keep the grow log on p4"
+        fi
     else
         wf_log "warning: could not write the growth record on the p4 root subvolume"
     fi

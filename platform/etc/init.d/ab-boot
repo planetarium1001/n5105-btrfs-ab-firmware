@@ -134,6 +134,20 @@ mount_p4() {
 }
 
 # log_append <line...>: one full-file write with the documented truncation rule.
+# publish_grow_log: the initramfs keeps its grow decision on p4; copy it to the ESP so a
+# pulled ESP explains the boot without touching the data partition. Best effort: the log
+# is diagnostics, never a boot dependency.
+publish_grow_log() {
+	_grow_src="${AB_P4}/.ab/grow.log"
+	_grow_dst="${AB_ESP}/ab/log/grow.log"
+	[ -f "${_grow_src}" ] || return 0
+	mkdir -p "${AB_ESP}/ab/log" 2>/dev/null || return 0
+	cat "${_grow_src}" >"${_grow_dst}.tmp.$$" 2>/dev/null || return 0
+	sync
+	mv "${_grow_dst}.tmp.$$" "${_grow_dst}" 2>/dev/null || return 0
+	return 0
+}
+
 log_append() {
 	_log="${AB_ESP}/ab/log/boot-0.log"
 	_tmp="${_log}.tmp.$$"
@@ -263,6 +277,8 @@ start() {
 	mount_p4 || echo "ab-boot: cannot mount the writable partition, reclamation degraded"
 
 	rotate_logs
+	# The initramfs buffers its grow decision on p4; publish it next to the ring log.
+	publish_grow_log
 
 	# A growth the initramfs could not finish is finished here, where the filesystem is
 	# mounted once. Runs before anything reads the record, so the grow line below reports

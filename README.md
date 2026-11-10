@@ -32,6 +32,27 @@ Application-level packaging and configuration are out of scope.
 - `@platform` — platform tooling, versioned with the slot, read-only
 - `@overlay-<version>` — all writable state, shared by both slots
 
+### When the disk is bigger than the image
+
+The image is 514 MiB and p4 is 128 MiB inside it. On first boot the boot initramfs grows
+**p4 only** to the end of whatever disk the image was written to, then grows the filesystem
+into it; p1, p2 and p3 are never touched and every PARTUUID stays the same. That makes the
+same image usable on any NVMe or SATA disk, and it is why a backup restored onto a larger
+disk simply comes up with the extra space already available.
+
+Two things follow, and both are deliberate:
+
+- **It is idempotent.** The decision is re-evaluated on every boot. Once p4 reaches the end
+  of the disk the log says `stage=grow … result=already-full` and nothing is written.
+- **It never shrinks and never guesses.** Restoring a large disk's image onto a smaller
+  disk leaves the table describing space that does not exist; the growth then refuses with
+  `fail:p4-beyond-disk` and leaves the table alone. `ab/log/grow.log` on the ESP records
+  every decision.
+
+If you would rather keep unallocated space at the end of the disk (for another system, or a
+spare partition of your own), grow p4 by hand before the first boot and the automatic step
+will find it already full.
+
 ## Boot chain
 
 1. GRUB reads slot state from p1 and selects kernel and initrd.

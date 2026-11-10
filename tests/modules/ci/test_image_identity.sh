@@ -104,4 +104,15 @@ assert_contains "$s4_text" "stage=grow slot=a result=done" \
 assert_contains "$(cat "$root/scripts/ci/ab-fixtures.sh")" "--grow-tail" \
     "ac-5 the fixture implements --grow-tail"
 
+# The reason has to survive on the ESP, not only in the ring log: a machine without a UART
+# has no other place to read it.
+assert_contains "$s4_text" 'ab-fixtures.sh --cat ab/log/grow.log "${out}"' \
+    "ac-5 the run gates on the grow log reaching the ESP"
+assert_contains "$s4_text" 'grep -q '\''\[grow\]'\'' "${out}"' \
+    "ac-5 and on it carrying actual [grow] lines"
+assert_contains "$(cat "$root/scripts/ci/ab-fixtures.sh")" "mount_one_ro" \
+    "ac-5 the ESP reader mounts read-only"
+assert_contains "$(cat "$root/scripts/ci/ab-fixtures.sh")" "unmount_part() { # <mountpoint>" \
+    "ac-5 the ESP reader unmounts without disk.sh's helper"
+
 finish

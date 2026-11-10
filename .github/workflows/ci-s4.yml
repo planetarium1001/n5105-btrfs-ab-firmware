@@ -234,6 +234,18 @@ jobs:
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1.log"
 
+      # The ring log says the growth happened; this says the reason survived the boot on
+      # the ESP. Without it a failure with no UART still has no reason to show.
+      - name: The grow log reached the ESP
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          out="${RUNNER_TEMP}/ci/disk/grow.log"
+          bash scripts/ci/ab-fixtures.sh --cat ab/log/grow.log "${out}"
+          cat "${out}" | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grow.log"
+          grep -q '\[grow\]' "${out}" \
+            || { echo "ab/log/grow.log carries no [grow] lines" >&2; exit 1; }
+
       - name: "Verify: the runtime file and the state agree after the commit"
         id: verify1
         env:
