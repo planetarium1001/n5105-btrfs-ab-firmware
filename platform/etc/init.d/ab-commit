@@ -101,7 +101,10 @@ AB_FREE_FLOOR_KB="${AB_FREE_FLOOR_KB:-16384}"
 
 # The trees the health check inspects. Overridable so a test can describe a machine
 # without building one.
-AB_OVERLAY="${AB_OVERLAY:-/overlay}"
+# The composed root IS the writable layer: initramfs mounts @overlay-<version> as the
+# upper and switch_roots into it, so "/" is what the health check has to write to and
+# measure. A separate /overlay mount point never existed in the image.
+AB_OVERLAY="${AB_OVERLAY:-/}"
 AB_PROC="${AB_PROC:-/proc}"
 AB_SYSFS="${AB_SYSFS:-/sys}"
 
@@ -221,6 +224,9 @@ clear_stale_lock() {
 probe() {
 	_name="$1"
 	_started="$(date +%s)"
+	# Start from a known reason so a probe that returns non-zero without setting one is
+	# still reported with its name instead of the useless "unknown".
+	PROBE_REASON="probe-returned-nonzero"
 	if "probe_$2"; then
 		_elapsed=$(( $(date +%s) - _started ))
 		log_append "probe=${_name} result=pass"
