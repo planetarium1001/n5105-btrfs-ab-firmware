@@ -149,9 +149,16 @@ to explain itself.
 that loads the ruleset and exits, so the observable state is the ruleset itself. A slot with
 an empty ruleset is the failure this probe exists to catch.
 
-`wan-present` needs a network configuration to name a device. The upstream image has no
-`/etc/config/network` before first boot, so tests supply one through the same writable layer
-the user would.
+`wan-present` needs a network configuration to name a device, and the platform layer produces
+one: `ab-net-seed` runs at `S16`, before `S20network`, and on a system whose
+`/etc/config/network` is absent it calls upstream `board_detect` and `config_generate` and then
+applies the project defaults ([network.md](network.md)). A fresh install therefore has a device
+for this probe to read, and a seed that fails only logs `stage=net-seed result=fail` and lets
+the boot continue.
+
+A configuration that already exists is left untouched, which is also how a test supplies its
+own: a fixture injected through the same writable layer the user would wins over the generated
+one, so the probe can be exercised against a device name the test chose.
 
 ## Reclamation
 

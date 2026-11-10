@@ -1,0 +1,68 @@
+#!/bin/sh /etc/rc.common
+# ab-net-seed - first-boot network generation, before netifd starts.
+#
+# The image's writable layer comes up empty, and the upstream rootfs deliberately does
+# not carry /etc/config/network: upstream generates it in preinit, and this image
+# replaces preinit with the A/B initramfs. Without this hook a freshly written disk has
+# no address at all, and the wan-present health probe has nothing to look at.
+#
+# The work itself lives in platform/lib/net-defaults.sh; this file only decides when it
+# runs and where the result is reported:
+#
+#   START=16  - after ab-boot (15) has mounted the ESP, before network (20)
+#   boot()    - runs once per boot; the library is idempotent by construction, so a
+#               second boot does nothing at all
+#
+# A failure here is logged, never fatal: a machine without a network still has a
+# console, and rebooting into the other slot would not give it one.
+
+# START is consumed by /etc/rc.common, not by this file.
+# shellcheck disable=SC2034
+START=16
+
+NET_DEFAULTS_LIB="${NET_DEFAULTS_LIB:-/lib/net-defaults.sh}"
+AB_ESP="${AB_ESP:-/boot}"
+RING_LOG_MAX=32768
+
+# ring_log <line>: the same ring log ab-boot writes, so one file explains a boot.
+ring_log() {
+	log_dir="${AB_ESP}/ab/log"
+	log_file="${log_dir}/boot-0.log"
+	log_tmp="${log_file}.tmp.$$"
+	mkdir -p "${log_dir}" 2>/dev/null || return 0
+	[ -f "${log_file}" ] && cat "${log_file}" >"${log_tmp}" 2>/dev/null
+	printf '%s\n' "$*" >>"${log_tmp}" 2>/dev/null || return 0
+	if [ "$(wc -c <"${log_tmp}" 2>/dev/null || echo 0)" -gt "${RING_LOG_MAX}" ]; then
+		tail -c $((RING_LOG_MAX - 512)) "${log_tmp}" >"${log_tmp}.tail" 2>/dev/null &&
+			printf 'TRUNCATED=1\n' >>"${log_tmp}.tail" &&
+			mv "${log_tmp}.tail" "${log_tmp}"
+	fi
+	sync
+	mv "${log_tmp}" "${log_file}" 2>/dev/null || :
+	sync
+}
+
+boot() {
+	[ -f "${NET_DEFAULTS_LIB}" ] || {
+		ring_log "stage=net-seed result=fail reason=library-missing path=${NET_DEFAULTS_LIB}"
+		logger -t ab-net-seed "net-defaults library missing: ${NET_DEFAULTS_LIB}" 2>/dev/null
+		return 0
+	}
+	# shellcheck source=platform/lib/net-defaults.sh
+	. "${NET_DEFAULTS_LIB}"
+
+	output="$(wf_net_seed 2>&1)"
+	status=$?
+	while IFS= read -r line; do
+		[ -n "${line}" ] || continue
+		ring_log "${line}"
+		logger -t ab-net-seed "${line}" 2>/dev/null
+		printf '%s\n' "${line}"
+	done <<EOF
+${output}
+EOF
+	if [ "${status}" -ne 0 ]; then
+		ring_log "stage=net-seed result=fail status=${status}"
+	fi
+	return 0
+}

@@ -10,6 +10,7 @@ Each document covers one topic. Every number is either measured or has an explic
 | [boot-overlay.md](boot-overlay.md) | Boot sequence, layer responsibilities, mount composition and order, platform-layer injection, GRUB assertions, degraded boot |
 | [lifecycle.md](lifecycle.md) | Generation model, state file, update transaction, health checks, reclamation, logging, commands |
 | [conflicts-payload.md](conflicts-payload.md) | Three-way comparison, disposition, uci boundary, payload contract, validation, build inputs |
+| [network.md](network.md) | First-boot network generation, the shipped defaults (WAN port, bridge ports, LAN subnet), how to change them, and the WAN SSH exception |
 | [debug-ssh.md](debug-ssh.md) | Manual interactive debugging entry point: trigger, connection, prepared artifacts, session bounds, security, why it is not a gate |
 
 ## Conventions

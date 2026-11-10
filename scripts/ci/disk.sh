@@ -172,6 +172,7 @@ cp -a "${platform_src}/." "${platform_stage}/"
 # platform/etc/platform-release is a template: the version comes from the build.
 ci_render_release "${platform_stage}/etc/platform-release" \
     "${platform_version}" "${upstream_version}" "image"
+ci_render_net_defaults "${platform_stage}"
 
 # The btrfs user space tooling has no place in @sys (that tree must stay byte
 # identical to upstream), so stage "runtime" hands over a ready tree that is merged

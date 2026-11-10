@@ -217,10 +217,15 @@ jobs:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          # S16 ab-net-seed runs on every boot, before netifd. The image carries the
+          # network fixture written above, so the seed has to skip instead of rewriting
+          # it: ac-3 ("an existing /etc/config/network is never touched") observed on a
+          # real boot through the ring log, not in a stub.
           bash scripts/ci/ab-phase.sh --phase commit --slot a \
             --expect-committed a --expect-pending none \
             --expect-log 'stage=device' \
             --expect-log 'disk=/dev/vda' \
+            --expect-log 'stage=net-seed result=skip' \
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1.log"
 

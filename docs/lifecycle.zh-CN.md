@@ -126,8 +126,13 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 `fw4-present` 不找常驻进程：ImmortalWrt 25.12 的 `fw4` 是一次性渲染器，加载 ruleset 后就退出，
 可观测的状态就是 ruleset 本身。空 ruleset 正是这个探针要抓的故障。
 
-`wan-present` 需要一个网络配置来指认设备。上游镜像首次启动前没有 `/etc/config/network`，
-测试通过用户同样的可写层注入一份。
+`wan-present` 需要一个网络配置来指认设备，而这份配置由平台层产出：`ab-net-seed` 以 `S16` 启动，
+早于 `S20network`；`/etc/config/network` 不存在时它调用上游 `board_detect` 与 `config_generate`，
+再叠加项目默认值（见 [network.zh-CN.md](network.zh-CN.md)）。所以全新安装上这个探针有设备可读；
+生成失败只写 `stage=net-seed result=fail`，启动照常继续。
+
+已经存在的配置一律不动，测试也正是这样注入自己的配置：经用户同样的可写层注入的夹具优先于生成结果，
+于是探针可以针对测试自己选定的设备名来验证。
 
 ## 回收
 

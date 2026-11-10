@@ -38,6 +38,57 @@
 3. overlayfs 合成根：`lowerdir=@platform:@sys`，`upperdir=@overlay-<version>/upper`。
 4. `switch_root` 进入系统。
 
+## 默认网络
+
+刷完盘第一次启动就会自己通网。首启只在 `/etc/config/network` 不存在时跑 `ab-net-seed`
+（start `S16`，早于 `network`）：它调用上游的 `/bin/board_detect` 与 `/bin/config_generate`，
+再叠加本项目默认值。已经存在的配置 —— 你自己改的 `uci`、测试夹具、升级带过来的文件 ——
+一律不会被改写。细节、检查命令与变体见 [docs/network.zh-CN.md](docs/network.zh-CN.md)。
+
+| 接口 | 设备 | 协议 | 地址 |
+|---|---|---|---|
+| WAN | `eth0` | `dhcp` 客户端 | 上游网络下发的租约 |
+| LAN | `br-lan`，桥接 `eth1`、`eth2`、`eth3` | `static` | `192.168.100.1/24` |
+| LAN DHCP | `lan` 上的 dnsmasq | — | 上游的 `lan` 地址池，`/etc/config/dhcp` 不动 |
+
+**已知限制：只有一个以太网口的机器（例如用 QEMU 试跑）会以 LAN-only 启动。** 唯一的口进 `br-lan`，
+完全没有 `wan` 段，于是健康检查的 `wan-present` 探针每次启动都失败、槽会报自己不干净；这是本发布
+写明的实现口径而不是故障 —— 没有 WAN 接口的槽不可能有 WAN 设备。四口 N5105 走路由器模式，不受影响。
+
+- WAN 侧只放行 **22/tcp**，别的什么都不放：`/etc/config/firewall` 里一条
+  `config rule 'allow_ssh_wan'`。`wan` zone 仍是 `input 'REJECT'`，LuCI 的 `80/tcp` 不对 WAN 暴露。
+- 这条规则默认开，只为一个理由：设备通常接在主路由下面，`ssh root@<地址>` 是唯一不需要键盘
+  和 HDMI 线的入口。共享网络的 WAN 侧并不一定干净，一旦能从 LAN 进机器就把它关掉。
+
+改 LAN 网段，然后在新地址重连：
+
+```sh
+uci set network.lan.ipaddr='192.168.8.1/24'
+uci commit network
+/etc/init.d/network reload
+```
+
+把 WAN 换到另一个网口。`ip -br link` 告诉你哪个 `eth*` 对应哪个物理口：逐个口插网线，
+看哪一行变成 `UP`。
+
+```sh
+uci show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-lan'$/\1/p"
+# 打印 br-lan 那一段，形如 @device[0]；下面两条端口命令用它
+uci set network.wan.device='eth3'
+uci del_list 'network.@device[0].ports=eth3'
+uci add_list 'network.@device[0].ports=eth0'
+uci commit network
+/etc/init.d/network reload
+```
+
+关掉 WAN 22，命令行或 LuCI 均可（网络 → 防火墙 → 通信规则，规则名 `allow_ssh_wan`）：
+
+```sh
+uci delete firewall.allow_ssh_wan
+uci commit firewall
+/etc/init.d/firewall reload
+```
+
 ## 更新与回退
 
 - 更新写入非活动槽，不修改运行中的系统。
@@ -85,9 +136,11 @@
 - `MINOR` 表示项目目标彻底达成，只有那时才升到 `0.1.0`。
 - `PATCH` 表示阶段性里程碑，目标尚未达成。
 
-当前版本：`0.0.6` —— 健康检查现在真的会调到探针：只有可写层、防火墙 ruleset 与 WAN 设备
-都通过才提交槽；放弃待提交槽时先把决定写进 ESP，再对外宣布。流水线仍产出真载荷，并用设备端
-同一套校验器验证；打 tag 会发布镜像与对应载荷。
+当前版本：`0.0.7` —— 第一个在首启自己生成网络配置的发布：复用上游 `board_detect` 与
+`config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认
+`192.168.100.1/24`、WAN 侧默认只放行 `22/tcp`。`0.0.6` 起的健康检查不变：只有可写层、
+防火墙 ruleset 与 WAN 设备都通过才提交槽；放弃待提交槽时先把决定写进 ESP，再对外宣布。
+流水线仍产出真载荷，并用设备端同一套校验器验证；打 tag 会发布镜像与对应载荷。
 
 ## 许可证
 

@@ -24,6 +24,8 @@ trap 'rm -rf "$tmp"' EXIT
 disk_script="$root/scripts/ci/disk.sh"
 verify_script="$root/scripts/ci/image-verify.sh"
 qemu_script="$root/scripts/ci/qemu-smoke.sh"
+assemble_script="$root/scripts/ci/assemble.sh"
+payload_script="$root/scripts/ci/payload-build.sh"
 
 # ac-1 partition geometry, normalised so reformatting does not break the test
 geometry=$(sed -n '/^label: gpt$/,/^SFDISK$/p' "$disk_script" \
@@ -341,5 +343,111 @@ check_device "$tmp/label.json"
 assert_eq "$device_status" "1" "ac-7 a label that disagrees with the filesystem fails the build"
 assert_contains "$device_output" "labels.ab-data" \
   "ac-7 the failure names the label entry"
+
+# --------------------------------------------------------------------------- #
+# ac-3/ac-4 network seed in the artifacts: hook, start link and rendered constants
+# --------------------------------------------------------------------------- #
+# A first boot only reaches a configuration if three things ship together: the hook,
+# the rcS start link that runs it before netifd, and the rendered constants it applies.
+# The image (disk.sh) and the release payload (assemble.sh) are produced by two
+# different scripts, and each has to render before it tars. A render placed after the
+# tar produces a layer without etc/net-defaults.conf, and the box then quietly falls
+# back to the library's built-in defaults - a difference that only becomes visible when
+# a build overrides a CI_NET_* value, i.e. exactly on the release where it matters.
+first_line_of() { grep -n "$2" "$1" | head -n 1 | cut -d: -f1; }
+
+assert_contains "$(cat "$disk_script")" 'ci_render_net_defaults "${platform_stage}"' \
+  "ac-4 disk.sh renders net-defaults into the image's platform layer"
+assert_contains "$(cat "$assemble_script")" 'ci_render_net_defaults "${platform_stage}"' \
+  "ac-4 assemble.sh renders net-defaults into the payload's platform layer"
+# payload-build.sh is the payload the upgrade test installs; it ships a platform layer
+# too, so the same render has to happen there or an upgraded slot comes up on fallback
+# defaults.
+assert_contains "$(cat "$payload_script")" 'ci_render_net_defaults "' \
+  "ac-4 the upgrade payload renders net-defaults into its platform layer"
+
+for pair in "disk:${disk_script}" "assemble:${assemble_script}"; do
+  name="${pair%%:*}"
+  script="${pair#*:}"
+  render_line="$(first_line_of "$script" 'ci_render_net_defaults')"
+  tar_line="$(grep -n -- '-cf' "$script" | grep 'platform.tar' | head -n 1 | cut -d: -f1)"
+  [ -n "$render_line" ] && [ -n "$tar_line" ] && [ "$render_line" -lt "$tar_line" ] &&
+    assert_eq "before-tar" "before-tar" \
+      "ac-8 $name renders net-defaults before the platform layer is tarred" ||
+    assert_eq "render=${render_line:-none} tar=${tar_line:-none}" "render-before-tar" \
+      "ac-8 $name renders net-defaults before the platform layer is tarred"
+done
+
+# The behaviour, not just the call: stage the platform tree exactly the way both
+# producers do, tar it, and read the artifact back. This is what the image and the
+# payload really carry, so a function that stops writing the file, or a start link
+# that stops pointing at the hook, fails here.
+seed_stage="$tmp/platform-stage"
+mkdir -p "$seed_stage"
+cp -a "$root/platform/." "$seed_stage/"
+# In a subshell: scripts/ci/lib.sh turns on `set -e`, which this test must not inherit.
+(
+  # shellcheck source=scripts/ci/lib.sh
+  . "$root/scripts/ci/lib.sh"
+  ci_render_net_defaults "$seed_stage"
+  ci_platform_startlinks "$seed_stage"
+) >"$tmp/stage.log" 2>&1 || {
+  cat "$tmp/stage.log" >&2
+  assert_eq "staging-failed" "staged" "ac-4 the platform layer stages with the seed files"
+}
+seed_tar="$tmp/platform.tar"
+tar -cf "$seed_tar" -C "$seed_stage" .
+seed_members="$(tar -tf "$seed_tar" | sed 's|^\./||' | paste -sd, -)"
+assert_contains "${seed_members}," "etc/net-defaults.conf," \
+  "ac-4 the platform tarball carries etc/net-defaults.conf"
+assert_contains "${seed_members}," "etc/init.d/ab-net-seed," \
+  "ac-4 the platform tarball carries the seed hook"
+assert_contains "${seed_members}," "etc/rc.d/S16ab-net-seed," \
+  "ac-4 the platform tarball carries the S16 start link"
+assert_eq "$(printf '%s' "$seed_members" | tr ',' '\n' | grep -c '^etc/config/network$')" "0" \
+  "ac-3 the platform tarball does not bake a static /etc/config/network"
+
+seed_conf="$(tar -xOf "$seed_tar" ./etc/net-defaults.conf 2>/dev/null)"
+assert_contains "${seed_conf}" "NET_WAN_SSH=open" \
+  "ac-4 the shipped constants keep the WAN SSH exception open"
+assert_contains "${seed_conf}" "NET_LAN_ADDR=192.168.100.1" \
+  "ac-4 the shipped constants use the project LAN address, not 192.168.1.1"
+assert_contains "${seed_conf}" "NET_WAN_DEV=eth0" \
+  "ac-4 the shipped constants name eth0 as the WAN"
+# A placeholder that reached the artifact is a literal value to the library.
+if printf '%s' "${seed_conf}" | grep -Eq '@[A-Z_][A-Z0-9_]*@'; then
+  assert_eq "placeholder" "none" "ac-4 no placeholder survives into the platform tarball"
+else
+  assert_eq "none" "none" "ac-4 no placeholder survives into the platform tarball"
+fi
+
+seed_link_target="$(tar -tvf "$seed_tar" | sed -n 's|.*etc/rc\.d/S16ab-net-seed -> ||p' | head -n 1)"
+assert_eq "${seed_link_target}" "../init.d/ab-net-seed" \
+  "ac-4 the S16 start link points at the hook, so rcS runs it"
+seed_hook_body="$(tar -xOf "$seed_tar" ./etc/init.d/ab-net-seed 2>/dev/null)"
+assert_contains "${seed_hook_body}" "wf_net_seed" \
+  "ac-4 the shipped hook calls the library, not a copy of it"
+seed_lib_body="$(tar -xOf "$seed_tar" ./lib/net-defaults.sh 2>/dev/null)"
+assert_contains "${seed_lib_body}" "wf_net_seed()" \
+  "ac-4 the shipped library defines the entry point the hook calls"
+
+# The in-guest assertion runs before the first boot, so it reads the same three facts
+# out of the image. Pinning them here keeps the two halves of one contract together.
+guest_assert_body="$(cat "$root/tests/modules/image/guest-assert.sh")"
+for token in net-seed-startlink-missing net-seed-network-baked-in net-seed-placeholder \
+  net-seed-board-detect-missing; do
+  assert_contains "${guest_assert_body}" "${token}" \
+    "ac-3 the S2 guest assertion fails on ${token#net-seed-}"
+done
+
+# The one runtime half a boot can observe: S4 boot 1 carries the network fixture written
+# into the writable layer, so S16 has to log result=skip instead of rewriting it. That is
+# "no overwrite" seen on a real boot rather than in a stub, and it only holds while both
+# halves stay put - the fixture step and the log expectation.
+s4_flow="$(cat "$root/.github/workflows/ci-s4.yml")"
+assert_contains "${s4_flow}" 'ab-fixtures.sh --network' \
+  "ac-3 S4 injects a network fixture before the first boot"
+assert_contains "${s4_flow}" "--expect-log 'stage=net-seed result=skip'" \
+  "ac-3 S4 boot 1 asserts the seed skipped the existing configuration"
 
 finish

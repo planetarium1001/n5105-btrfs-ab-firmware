@@ -102,6 +102,7 @@ cp -a "${runtime_tree}/." "${platform_stage}/"
 
 ci_render_release "${platform_stage}/etc/platform-release" \
     "${platform_version}" "${upstream_version}" "payload"
+ci_render_net_defaults "${platform_stage}"
 ci_platform_modes "${platform_stage}"
 ci_platform_startlinks "${platform_stage}"
 [ -x "${platform_stage}/usr/sbin/btrfs" ] ||

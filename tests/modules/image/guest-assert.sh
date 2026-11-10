@@ -19,6 +19,11 @@
 #      initramfs copy of lib/disk-identity.sh is byte-identical to the one in
 #      @platform, the platform layer resolves the same disk, and ab/device.json records
 #      the four PARTUUIDs the upgrade path relies on
+#   8b. the first-boot network seed is shipped and armed: the hook, its rcS start link
+#      (S16, before the upstream network link), the rendered constants
+#      (192.168.100.1/24, eth0 as WAN, WAN SSH open), the upstream generators the
+#      library calls, and no baked /etc/config/network or /etc/board.json - the absence
+#      of that file is the only thing that makes the seed run
 #   9. exactly one frozen judge line is printed, then the machine powers off:
 #
 #        S2-RESULT=ok parts=4 images=<bytes>
@@ -388,6 +393,97 @@ done
 umount /mnt
 echo "[s2] ${checked} sample digest(s) verified from inside the guest"
 [ "${checked}" -gt 0 ] || report_failure no-samples
+
+# --------------------------------------------------------------------------- #
+# 4b. First-boot network seed: the image ships the chain, not a configuration
+#
+# This assertion runs before the image has ever booted, so it cannot read the *result*
+# of the seed - there is none yet. What it can prove is every input that decides
+# whether the first boot gets an address at all:
+#
+#   * the library, the hook and the rcS start link are in @platform, and the hook runs
+#     before the upstream network script (a S16 that sorts after S20 means the first
+#     boot comes up without an address and only a reboot fixes it)
+#   * the constants the build rendered say 192.168.100.1/24, eth0 as the WAN and the
+#     WAN SSH exception open - the same values ac-2 and ac-4 rest on
+#   * the upstream generators the library calls by absolute path are in @sys
+#   * neither /etc/config/network nor /etc/board.json is baked into @sys. Their
+#     absence is the trigger: it is the only state in which the seed runs, so an image
+#     that shipped a configuration would look identical on a running box and silently
+#     never generate one (and would then be free to overwrite it later).
+#
+# The runtime half - board.json written by board_detect, br-lan on 192.168.100.1, the
+# ports the guest really has, no wan section on a single-port machine, stage=net-seed
+# in the ring log - needs a booted system and is graded there: tests/modules/net drives
+# the decision with stubs, and S4 reads /boot/ab/log/boot-0.log back from the ESP.
+# Nothing here pretends to be a boot.
+# --------------------------------------------------------------------------- #
+
+mount -t btrfs -o ro "${DEV}2" /mnt || report_failure p2-mount-failed
+seed_plat=/mnt/@platform
+seed_conf="${seed_plat}/etc/net-defaults.conf"
+seed_hook="${seed_plat}/etc/init.d/ab-net-seed"
+seed_lib="${seed_plat}/lib/net-defaults.sh"
+
+[ -f "${seed_lib}" ] || report_failure net-seed-library-missing
+[ -f "${seed_hook}" ] || report_failure net-seed-hook-missing
+[ -f "${seed_conf}" ] || report_failure net-seed-conf-missing
+grep -q 'wf_net_seed' "${seed_lib}" || report_failure net-seed-library-without-entry
+grep -q 'wf_net_seed' "${seed_hook}" || report_failure net-seed-hook-without-call
+echo "[s2] net seed: library + hook + rendered constants are in @platform"
+
+# Read the four values out of the file the build rendered, not out of the source tree:
+# a render that silently produced nothing shows up here as an empty value.
+seed_addr="$(sed -n 's/^NET_LAN_ADDR=//p' "${seed_conf}" | tail -n 1)"
+seed_prefix="$(sed -n 's/^NET_LAN_PREFIX=//p' "${seed_conf}" | tail -n 1)"
+seed_wan="$(sed -n 's/^NET_WAN_DEV=//p' "${seed_conf}" | tail -n 1)"
+seed_ssh="$(sed -n 's/^NET_WAN_SSH=//p' "${seed_conf}" | tail -n 1)"
+# A placeholder that survived the render is a literal value to the library, e.g. a LAN
+# address of "@NET_LAN_ADDR@"; the build refuses it, and so does the image. Checked
+# before the values, so the reason names the real problem.
+if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${seed_conf}"; then
+    report_failure net-seed-placeholder
+fi
+# 192.168.100.1 and not the upstream 192.168.1.1: most home routers already own the
+# latter, and this box hangs off one of them.
+[ "${seed_addr}" = "192.168.100.1" ] || report_failure "net-seed-lan-${seed_addr:-empty}"
+[ "${seed_prefix}" = "24" ] || report_failure "net-seed-prefix-${seed_prefix:-empty}"
+[ "${seed_wan}" = "eth0" ] || report_failure "net-seed-wan-${seed_wan:-empty}"
+# This release line ships the exception open (docs/network.md documents how to close
+# it, and a CI_NET_WAN_SSH=closed build is a different release, not this image).
+[ "${seed_ssh}" = "open" ] || report_failure "net-seed-ssh-${seed_ssh:-empty}"
+echo "[s2] net seed: lan=${seed_addr}/${seed_prefix} wan=${seed_wan} wan-ssh=${seed_ssh}"
+
+# The start link is what makes rcS run the hook at all.
+seed_start="$(sed -n 's/^START=//p' "${seed_hook}" | tail -n 1)"
+[ "${seed_start}" = "16" ] || report_failure "net-seed-start-${seed_start:-empty}"
+[ -e "${seed_plat}/etc/rc.d/S16ab-net-seed" ] || report_failure net-seed-startlink-missing
+# Compare the number with the upstream network start link, which is the only thing that
+# makes "before network" a fact instead of a comment.
+seed_net_start="$(ls /mnt/@sys/etc/rc.d/ 2>/dev/null \
+    | sed -n 's/^S\([0-9][0-9]\)network$/\1/p' | head -n 1)"
+if [ -z "${seed_net_start}" ]; then
+    echo "[s2] SKIP net seed ordering: the upstream tree has no S20network start link to compare with"
+else
+    [ "${seed_start}" -lt "${seed_net_start}" ] \
+        || report_failure "net-seed-after-network-${seed_start}-${seed_net_start}"
+    echo "[s2] net seed: S${seed_start} runs before the upstream S${seed_net_start}network"
+fi
+
+# Without these two the hook logs result=fail reason=board-detect on the first boot and
+# the box comes up without an address, which is the failure this whole layer exists to
+# remove. They are called by absolute path, so the path is part of the contract.
+[ -x /mnt/@sys/bin/board_detect ] || report_failure net-seed-board-detect-missing
+[ -x /mnt/@sys/bin/config_generate ] || report_failure net-seed-config-generate-missing
+echo "[s2] net seed: /bin/board_detect and /bin/config_generate are in @sys"
+
+# A baked configuration would make the seed skip on every boot while the image still
+# looked healthy, and it would turn "your changes survive an upgrade" into a guess.
+[ ! -e /mnt/@sys/etc/config/network ] || report_failure net-seed-network-baked-in
+[ ! -e /mnt/@sys/etc/board.json ] || report_failure net-seed-board-json-baked-in
+echo "[s2] net seed: no /etc/config/network and no /etc/board.json in @sys (first boot must generate them)"
+
+umount /mnt
 
 # --------------------------------------------------------------------------- #
 # 5. p1 budget

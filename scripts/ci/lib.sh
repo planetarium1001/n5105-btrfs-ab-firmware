@@ -276,7 +276,39 @@ ci_platform_startlinks() {
     fi
     ${mkdir} -p "${dir}/etc/rc.d"
     ${ln} -sf ../init.d/ab-boot "${dir}/etc/rc.d/S15ab-boot"
+    ${ln} -sf ../init.d/ab-net-seed "${dir}/etc/rc.d/S16ab-net-seed"
     ${ln} -sf ../init.d/ab-commit "${dir}/etc/rc.d/S99ab-commit"
+}
+
+# ci_render_net_defaults <dir>: render scripts/ci/net-defaults.conf.in into the platform
+# layer as etc/net-defaults.conf. These are the only values that decide which port is the
+# WAN, which ports join the bridge and whether the WAN SSH exception exists, so they are
+# rendered from one template instead of being written out twice (image and payload).
+#
+# The CI_NET_* variables are the build-time overrides: an unset one keeps the shipped
+# default. NET_WAN_SSH=closed is how a second release line without the WAN exception is
+# produced, without a code change.
+ci_render_net_defaults() {
+    local dir="${1:?platform layer directory}"
+    local template="${CI_NET_DEFAULTS_TEMPLATE:-${CI_LIB_DIR}/net-defaults.conf.in}"
+    [ -f "${template}" ] || ci_die "net-defaults template not found: ${template}"
+    local out="${dir}/etc/net-defaults.conf"
+    mkdir -p "${dir}/etc"
+    sed \
+        -e "s|@NET_WAN_DEV@|${CI_NET_WAN_DEV:-eth0}|g" \
+        -e "s|@NET_LAN_DEVS@|${CI_NET_LAN_DEVS:-auto}|g" \
+        -e "s|@NET_LAN_ADDR@|${CI_NET_LAN_ADDR:-192.168.100.1}|g" \
+        -e "s|@NET_LAN_PREFIX@|${CI_NET_LAN_PREFIX:-24}|g" \
+        -e "s|@NET_WAN_SSH@|${CI_NET_WAN_SSH:-open}|g" \
+        "${template}" >"${out}" || ci_die "could not render ${out}"
+    if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${out}"; then
+        ci_die "net-defaults still carries unreplaced placeholders: ${out}"
+    fi
+    case "$(sed -n 's/^NET_WAN_SSH=//p' "${out}")" in
+        open|closed) : ;;
+        *) ci_die "NET_WAN_SSH must be open or closed: ${out}" ;;
+    esac
+    ci_log "rendered net-defaults: $(tr '\n' ' ' <"${out}" | sed -e 's/  */ /g')"
 }
 
 # ci_render_release <file> <platform-version> <upstream-version> <stage>

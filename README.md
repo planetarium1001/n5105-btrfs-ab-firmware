@@ -39,6 +39,64 @@ Application-level packaging and configuration are out of scope.
 3. overlayfs composes the root: `lowerdir=@platform:@sys`, `upperdir=@overlay-<version>/upper`.
 4. `switch_root` enters the system.
 
+## Default network
+
+A freshly flashed disk reaches the network on its own. The first boot runs `ab-net-seed`
+(start `S16`, before `network`) only when `/etc/config/network` is absent: it calls the
+upstream `/bin/board_detect` and `/bin/config_generate`, then applies this project's
+defaults. A configuration that already exists -- your own `uci` changes, a test fixture, a
+file an upgrade carried over -- is never rewritten. Details, checks and variants:
+[docs/network.md](docs/network.md).
+
+| Interface | Device | Protocol | Address |
+|---|---|---|---|
+| WAN | `eth0` | `dhcp` client | lease from the upstream network |
+| LAN | `br-lan` over `eth1`, `eth2`, `eth3` | `static` | `192.168.100.1/24` |
+| LAN DHCP | dnsmasq on `lan` | — | upstream's `lan` pool, `/etc/config/dhcp` untouched |
+
+**Known limitation: a machine with a single Ethernet port — a QEMU test run, for example — comes
+up LAN-only.** The one port joins `br-lan` and there is no `wan` section at all, so the
+`wan-present` health probe fails on every boot and the slot reports itself unhealthy; that is
+this release's documented behaviour, not a fault, because a slot with no WAN interface cannot
+have a WAN device. A four-port N5105 runs in router mode and is unaffected.
+
+- The WAN side accepts **22/tcp and nothing else**: one `config rule`, `allow_ssh_wan`. The
+  `wan` zone keeps `input 'REJECT'`, and LuCI's `80/tcp` is not exposed to the WAN.
+- That rule is open by default for one reason: the box normally sits under the main router,
+  and `ssh root@<address>` is the only way in that does not need a keyboard and an HDMI
+  cable. The WAN side of a shared network is not necessarily clean, so close it once the
+  box is reachable from the LAN.
+
+Change the LAN subnet, then reconnect at the new address:
+
+```sh
+uci set network.lan.ipaddr='192.168.8.1/24'
+uci commit network
+/etc/init.d/network reload
+```
+
+Move the WAN role to another port. `ip -br link` shows which `eth*` carries which socket:
+plug a cable into each socket and watch which line goes `UP`.
+
+```sh
+uci show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-lan'$/\1/p"
+# prints the br-lan section, e.g. @device[0]; the two lines below use it
+uci set network.wan.device='eth3'
+uci del_list 'network.@device[0].ports=eth3'
+uci add_list 'network.@device[0].ports=eth0'
+uci commit network
+/etc/init.d/network reload
+```
+
+Close WAN 22, in the shell or in LuCI under **Network -> Firewall -> Traffic Rules** (the
+rule is named `allow_ssh_wan`; 中文界面为 网络 -> 防火墙 -> 通信规则):
+
+```sh
+uci delete firewall.allow_ssh_wan
+uci commit firewall
+/etc/init.d/firewall reload
+```
+
 ## Update and rollback
 
 - Updates write to the inactive slot; the running system is never modified.
@@ -89,11 +147,14 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.6` — the health check now reaches its probes: a slot is committed only
-after the writable layer, the firewall ruleset and the WAN device have been checked, and the
-abandon path records the decision on the ESP before it announces it. The pipeline still builds
-a real payload, validates it with the same checker the device uses, and a tag publishes the
-image together with that payload.
+Current version: `0.0.7` — the first release whose first boot generates its own network
+configuration, by reusing the upstream `board_detect` and `config_generate` and layering this
+project's defaults on top: `eth1`..`eth3` in the `br-lan` bridge, LAN `192.168.100.1/24`, and a
+WAN side that accepts `22/tcp` and nothing else. The health check from `0.0.6` is unchanged: a
+slot is committed only after the writable layer, the firewall ruleset and the WAN device have
+been checked, and the abandon path records the decision on the ESP before it announces it. The
+pipeline still builds a real payload, validates it with the same checker the device uses, and a
+tag publishes the image together with that payload.
 
 ## License
 
