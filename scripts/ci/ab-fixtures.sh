@@ -8,6 +8,11 @@
 # against real ESP content.
 #
 # Actions (in the order given):
+#   --grow-tail <MiB>  append unused MiB to the image file, which is what a real disk
+#                      larger than the image looks like: the first boot then has to grow
+#                      p4 to the new end. Without this the image already fills its disk and
+#                      the growth path is never executed in CI at all - which is how a
+#                      broken last-lba field reached a machine.
 #   --network          write a minimal /etc/config/network into the writable layer so
 #                      the wan probe has a subject (S5 owns the production config)
 #   --payload <tar>    place an upgrade payload where the guest can reach it
@@ -275,11 +280,27 @@ break_p4() {
     ci_log "corrupted the writable partition, its mount must fail"
 }
 
+grow_tail() {
+    want="${1:?--grow-tail needs MiB}"
+    case "${want}" in
+        '' | *[!0-9]*) ci_die "--grow-tail needs a whole number of MiB" ;;
+    esac
+    before="$(ci_file_size "${CI_IMAGE}")"
+    truncate -s "+${want}M" "${CI_IMAGE}" || ci_die "cannot grow ${CI_IMAGE} by ${want} MiB"
+    after="$(ci_file_size "${CI_IMAGE}")"
+    ci_log "grew ${CI_IMAGE} from ${before} to ${after} bytes (+${want} MiB of unpartitioned tail)"
+}
+
 while [ "$#" -gt 0 ]; do
     action="$1"
     shift
     case "${action}" in
         --network) write_network_config ;;
+        --grow-tail)
+            [ "$#" -ge 1 ] || ci_die "--grow-tail needs MiB"
+            grow_tail "$1"
+            shift
+            ;;
         --break-slot)
             [ "$#" -ge 1 ] || ci_die "--break-slot needs a slot"
             break_slot "$1"

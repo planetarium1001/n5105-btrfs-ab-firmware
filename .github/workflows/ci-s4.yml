@@ -189,12 +189,16 @@ jobs:
       # The wan probe needs a device to look at; the production network config is
       # S5's job, so the harness writes a documented test fixture into the writable
       # layer.
-      - name: Add the test network fixture
+      # The image fills its own disk, so growth would never run. Appending unused space to
+      # the image file is exactly what "this image was written to a bigger disk" looks
+      # like, and it makes boot 1 exercise table write -> kernel re-read -> btrfs resize.
+      - name: Add the test network fixture and a disk tail to grow into
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/ab-fixtures.sh --network 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-network.log"
+          bash scripts/ci/ab-fixtures.sh --network --grow-tail 2048 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-network.log"
 
       - name: "Boot 1: commit slot a (gating)"
         id: boot1
@@ -226,6 +230,7 @@ jobs:
             --expect-log 'stage=device' \
             --expect-log 'disk=/dev/vda' \
             --expect-log 'stage=net-seed result=skip' \
+            --expect-log 'stage=grow slot=a result=done' \
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1.log"
 

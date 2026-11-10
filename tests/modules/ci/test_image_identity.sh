@@ -90,4 +90,18 @@ assert_contains "$iv_text" "ab/image.json" \
 assert_contains "$iv_text" 'CI_INITRAMFS_KIND:-boot' \
     "ac-2 image-verify compares it with what the build installed"
 
+# --------------------------------------------------------------------------- #
+# ac-5: the growth path is actually executed somewhere
+# --------------------------------------------------------------------------- #
+# A shipped image fills its own disk, so `grow` used to be a code path no test ever ran -
+# which is how a broken last-lba field reached a machine. The S4 fixture now appends a
+# tail and the first boot has to grow into it.
+s4_text="$(cat "$root/.github/workflows/ci-s4.yml")"
+assert_contains "$s4_text" "--grow-tail 2048" \
+    "ac-5 the S4 fixture gives the image a tail to grow into"
+assert_contains "$s4_text" "stage=grow slot=a result=done" \
+    "ac-5 the first boot is gated on a completed growth"
+assert_contains "$(cat "$root/scripts/ci/ab-fixtures.sh")" "--grow-tail" \
+    "ac-5 the fixture implements --grow-tail"
+
 finish

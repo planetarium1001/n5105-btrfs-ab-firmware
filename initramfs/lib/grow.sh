@@ -75,6 +75,13 @@ wf_grow_log() {
     if command -v wf_say_serial >/dev/null 2>&1; then
         wf_say_serial "[grow] $*"
     fi
+    # Measured on real hardware: the one line that mattered ("writing the partition table
+    # failed: ...") only ever existed on the serial console, and a machine without a UART
+    # therefore reported `fail:partition-table-write` with no reason at all. Keep the log
+    # on the ESP, where pulling the disk is enough to read it.
+    if [ -n "${WF_GROW_LOG_FILE:-}" ]; then
+        printf '[grow] %s\n' "$*" >>"${WF_GROW_LOG_FILE}" 2>/dev/null || :
+    fi
     return 0
 }
 
@@ -295,11 +302,19 @@ wf_grow_decide() {
 # table UUID and the other three partitions, must come out byte-identical, which is
 # what keeps the ESP and both slots addressable by the same identifiers after growth.
 wf_grow_table() {
-    awk -v dev="$3" -v size="$4" '
+    awk -v dev="$3" -v size="$4" -v last="$5" '
         BEGIN { changed = 0 }
         {
             name = $1
             sub(/:$/, "", name)
+            # The header line first: `last-lba` is what sfdisk validates the partition
+            # lines against. A dump taken from a 514 MiB image says 1052638, so growing p4
+            # to the end of a 128 GB disk without rewriting this line makes sfdisk refuse
+            # the table ("partition ends beyond last usable LBA") - measured on hardware.
+            if (last != "" && $1 == "last-lba:") {
+                print "last-lba: " last
+                next
+            }
             if (changed == 0 && name == dev && match($0, /size=[ \t]*[0-9]+/)) {
                 $0 = substr($0, 1, RSTART - 1) "size= " size substr($0, RSTART + RLENGTH)
                 changed = 1
@@ -333,8 +348,9 @@ wf_grow_apply() {
     wf_ga_p4="$2"
     wf_ga_size="$3"
     wf_ga_in="$4"
+    wf_ga_last="${5:-}"
     wf_ga_out="$(dirname "${wf_ga_in}")/partitions.after"
-    wf_grow_table "${wf_ga_in}" "${wf_ga_out}" "${wf_ga_p4}" "${wf_ga_size}" || {
+    wf_grow_table "${wf_ga_in}" "${wf_ga_out}" "${wf_ga_p4}" "${wf_ga_size}" "${wf_ga_last}" || {
         printf 'fail:partition-table-rewrite'
         return 0
     }
@@ -405,7 +421,7 @@ wf_grow_run() {
             wf_gr_rest="${wf_gr_decision#grow }"
             wf_gr_lba="${wf_gr_rest%% *}"
             wf_gr_size="${wf_gr_rest##* }"
-            wf_gr_applied="$(wf_grow_apply "${wf_gr_disk}" "${wf_gr_p4}" "${wf_gr_size}" "${wf_gr_dump}")"
+            wf_gr_applied="$(wf_grow_apply "${wf_gr_disk}" "${wf_gr_p4}" "${wf_gr_size}" "${wf_gr_dump}" "${wf_gr_lba}")"
             case "${wf_gr_applied}" in
                 done) printf 'done %s' "${wf_gr_lba}" ;;
                 *) printf '%s %s' "${wf_gr_applied}" "${wf_gr_lba}" ;;

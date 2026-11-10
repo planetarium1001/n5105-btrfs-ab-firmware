@@ -182,6 +182,11 @@ export WF_ESP_DEV
 # just cannot hold much. `<state>` is done, already-full, missing-sfdisk or fail:<token>.
 
 if [ -n "${dev}" ] && [ -n "${p4}" ]; then
+    # Diagnose from a pulled disk, not from a serial console: the grow log lands next to
+    # the ring log on the ESP.
+    WF_GROW_LOG_FILE="/esp/ab/log/grow.log"
+    export WF_GROW_LOG_FILE
+    mkdir -p /esp/ab/log 2>/dev/null || :
     grow_line="$(wf_grow_run "${dev}" "${p4}")" || grow_line="fail:grow-crashed 0"
 elif [ -n "${dev_error}" ]; then
     # Writing a partition table on a disk nobody could identify is exactly the mistake
