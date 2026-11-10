@@ -83,8 +83,8 @@ overlay_name="${CI_OVERLAY_NAME:-@overlay-${upstream_version}}"
 # powers off on any machine that is not virtio. v0.0.6 and v0.0.7 shipped exactly that,
 # because S2 builds with the probe and the release published S2's artifact. The build
 # now refuses it unless the caller says so explicitly.
-ii_refuse_probe "${initramfs_kind}" "${allow_probe_init}" ||
-    ci_die "refusing to build: ${II_REASON}"
+probe_reason="$(ii_refuse_probe "${initramfs_kind}" "${allow_probe_init}")" ||
+    ci_die "refusing to build: ${probe_reason}"
 ci_log "initramfs kind: ${initramfs_kind} ($(basename "${initramfs}"))"
 
 [ -f "${rootfs_tar}" ] || ci_die "upstream rootfs not found: ${rootfs_tar}"

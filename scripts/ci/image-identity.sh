@@ -28,17 +28,16 @@ ii_kind_known() {
     return 1
 }
 
-# ii_refuse_probe <kind> <allow>: 0 when the build may continue, 1 with a reason in
-# II_REASON when a probe image was requested without saying so out loud.
+# ii_refuse_probe <kind> <allow>: 0 when the build may continue; otherwise 1 and the
+# reason on stdout, so the caller can put it straight into its own fatal message.
 ii_refuse_probe() {
     local kind="${1:-}" allow="${2:-}"
-    II_REASON=""
     if ! ii_kind_known "${kind}"; then
-        II_REASON="unknown initramfs kind '${kind}' (expected one of: ${II_KINDS})"
+        printf '%s\n' "unknown initramfs kind '${kind}' (expected one of: ${II_KINDS})"
         return 1
     fi
     if [ "${kind}" = "probe" ] && [ "${allow}" != "1" ]; then
-        II_REASON="this image would carry the S1 probe initramfs, which is not bootable on real hardware; set CI_INITRAMFS_KIND=boot or CI_ALLOW_PROBE_INIT=1 on purpose"
+        printf '%s\n' "this image would carry the S1 probe initramfs, which is not bootable on real hardware; set CI_INITRAMFS_KIND=boot or CI_ALLOW_PROBE_INIT=1 on purpose"
         return 1
     fi
     return 0

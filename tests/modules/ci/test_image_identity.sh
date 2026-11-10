@@ -56,10 +56,10 @@ ii_refuse_probe boot 0 && assert_eq "ok" "ok" "ac-2 a boot image builds" \
     || assert_eq "refused" "ok" "ac-2 a boot image builds"
 ii_refuse_probe probe 1 && assert_eq "ok" "ok" "ac-2 an allowed probe image builds" \
     || assert_eq "refused" "ok" "ac-2 an allowed probe image builds"
-if ii_refuse_probe probe 0; then
+if refusal="$(ii_refuse_probe probe 0)"; then
     assert_eq "accepted" "refused" "ac-2 a probe image without permission is refused"
 else
-    assert_contains "${II_REASON}" "not bootable on real hardware" \
+    assert_contains "${refusal}" "not bootable on real hardware" \
         "ac-2 the refusal explains why, not just that"
 fi
 if ii_refuse_probe "" 1; then
