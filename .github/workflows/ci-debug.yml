@@ -374,6 +374,11 @@ jobs:
           } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
           if [ -n "${ssh_cmd}" ]; then
             printf 'CI_DEBUG_SSH_READY=1\n' >>"${GITHUB_ENV}"
+            # Also a file, so the session can be read by a script rather than by watching
+            # a live log. The token is not a bearer credential: limit-access-to-actor makes
+            # the relay accept only the dispatcher's own keys, which is why this file holds
+            # nothing else and never the web shell link.
+            printf '%s\n' "${ssh_cmd}" >"${CI_TMP_ROOT:?}/session-ssh.txt"
           else
             printf 'CI_DEBUG_SSH_READY=0\n' >>"${GITHUB_ENV}"
             # A tmate that came up but never got a name daemonises and survives the step.
@@ -384,6 +389,15 @@ jobs:
               pkill -x tmate || true
             fi
           fi
+
+      - name: Publish the connection string as a file
+        if: ${{ always() && env.CI_DEBUG_SSH_READY == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-session
+          path: ${{ runner.temp }}/ci/session-ssh.txt
+          if-no-files-found: error
+          retention-days: 1
 
       # The runner is held open for the human. Two conditions, both required: a published
       # session and a live tmate process. The bound is inside the job's own timeout, so the
