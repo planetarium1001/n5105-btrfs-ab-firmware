@@ -260,6 +260,8 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" 
     # the partition keeps its size and the next boot tries again.
     case "${grow_state}" in
         done | already-full)
+            # The resize target is the mount point, never the device.
+            wf_log "p4 step=resize target=/mnt/p4 state=${grow_state}"
             grow_fs="$(wf_grow_fs /mnt/p4)"
             case "${grow_fs}" in
                 done) wf_log "btrfs filesystem at max size" ;;
@@ -274,7 +276,15 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" 
     # The outcome goes to the p4 root subvolume, not to the generation's layer: the
     # root subvolume outlives every @overlay-<version> and ab-boot mounts it at
     # /mnt/p4 at runtime, which is where it reads this file.
+    #
+    # This is the only reason p4 is mounted a second time, and the mount is given back
+    # before the overlay is composed, so the device has exactly one mount again when the
+    # root is assembled. A leftover mount here would be invisible until switch_root, so
+    # the unmount is retried and its failure is reported.
+    wf_log "p4 step=record start device=${p4} state=${grow_state}"
+    record_mounted=0
     if mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root; then
+        record_mounted=1
         # The pre-change table is kept next to the record: if the write turns out to be
         # half-applied on a power cut, the old geometry is on the same disk.
         if wf_grow_backup /mnt/p4root; then
@@ -285,9 +295,21 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" 
         else
             wf_log "warning: could not write the growth record on the p4 root subvolume"
         fi
-        umount /mnt/p4root || wf_log "warning: could not unmount the p4 root subvolume"
     else
         wf_log "warning: p4 root subvolume not mountable, growth record skipped"
+    fi
+    if [ "${record_mounted}" = "1" ]; then
+        umount /mnt/p4root || {
+            wf_log "umount /mnt/p4root failed, retrying once"
+            sleep 1
+            umount /mnt/p4root || wf_log "warning: /mnt/p4root is still mounted"
+        }
+        if awk -v mp=/mnt/p4root '$2 == mp { found = 1 } END { exit !found }' \
+            /proc/mounts 2>/dev/null; then
+            wf_log "warning: p4 root subvolume is still mounted at /mnt/p4root"
+        else
+            wf_log "p4 step=record done, p4 has one mount again"
+        fi
     fi
 else
     # A broken writable partition must not stop the boot: the system still works,

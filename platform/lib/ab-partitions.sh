@@ -135,13 +135,26 @@ ab_partition_by_unique_name() {
 
 # ab_find_partition <partname> <number>: the partition the callers should mount.
 ab_find_partition() {
+    abp_want_name="$1"
+    abp_want_number="${2:-}"
+
     # 1. the disk we booted from decides. Nothing below this line may return a
-    #    partition that is not on it.
+    #    partition that is not on it. di_find_partition is the identity library's own
+    #    entry point for exactly this question - it tries the partition number on that
+    #    disk, cross-checks the GPT name against it, and refuses a disk whose numbering
+    #    does not match - so the policy lives there and this file only asks.
     if abp_boot_disk="$(ab_disk_device)"; then
-        ab_partition_by_number "${abp_boot_disk}" "$2" && return 0
-        ab_partition_by_name "$1" "${abp_boot_disk}" && return 0
+        if ab_have di_find_partition; then
+            di_find_partition "${abp_want_name}" "${abp_want_number}" "${abp_boot_disk}" 2>/dev/null && return 0
+            return 1
+        fi
+        # Library without that entry point: the same policy, with the disk scope done
+        # here (number on the disk first, then the name restricted to the disk).
+        ab_partition_by_number "${abp_boot_disk}" "${abp_want_number}" && return 0
+        ab_partition_by_name "${abp_want_name}" "${abp_boot_disk}" && return 0
         return 1
     fi
+
     # 2. no disk: the name alone, and only when it is unambiguous.
-    ab_partition_by_unique_name "$1"
+    ab_partition_by_unique_name "${abp_want_name}"
 }

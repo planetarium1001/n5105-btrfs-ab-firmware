@@ -253,6 +253,14 @@ else
 fi
 [ -n "${count}" ] || count=0
 
+# Keep the whole serial log next to the stage logs: the failure path only prints its
+# tail, and a boot that dies early or hangs for the full timeout needs everything that
+# came before. The upload step copies CI_LOG_DIR as-is.
+if [ -d "${CI_LOG_DIR:-}" ]; then
+    cp -f "${serial}" "${CI_LOG_DIR}/serial-${case_label}.log" 2>/dev/null \
+        || ci_warn "could not copy the serial log into ${CI_LOG_DIR}"
+fi
+
 ci_emit_output "serial_log" "${serial}"
 ci_emit_output "judge_line" "${judge_line}"
 ci_emit_output "boot_seconds" "${boot_seconds}"

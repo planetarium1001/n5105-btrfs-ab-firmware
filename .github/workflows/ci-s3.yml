@@ -62,9 +62,9 @@ on:
       upper:
         description: "Writable layer the boot chain mounted, for example @overlay-25.12.2"
         value: ${{ jobs.s3.outputs.upper }}
-      judge_line_grub:
-        description: "Frozen judge line from the firmware/GRUB boot"
-        value: ${{ jobs.s3.outputs.judge_line_grub }}
+      grub_boot_line:
+        description: "Boot hook evidence line from the firmware/GRUB boot"
+        value: ${{ jobs.s3.outputs.grub_boot_line }}
       module_count:
         description: "Modules unpacked into the boot initramfs"
         value: ${{ jobs.s3.outputs.module_count }}
@@ -95,7 +95,7 @@ jobs:
       slot: ${{ steps.judge.outputs.slot }}
       upper: ${{ steps.judge.outputs.upper }}
       module_count: ${{ steps.kmods.outputs.module_count }}
-      judge_line_grub: ${{ steps.boot3.outputs.judge_line }}
+      grub_boot_line: ${{ steps.judge_grub.outputs.device_line }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -218,8 +218,9 @@ jobs:
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot2.log"
 
       # Boot 3: the firmware runs GRUB, GRUB reads the runtime slot file and boots the
-      # committed entry. Nothing is injected: if the menu ignored the file or the file
-      # were wrong, this boot would not reach the judge line at all.
+      # committed entry, and the production system starts. This boot does NOT run a
+      # probe initramfs: there is no /s3.sh and no S3-RESULT line here, so the run stops
+      # on the first line our own boot hook prints and grades what it reported.
       - name: "Boot 3: the ESP boots through GRUB (gating)"
         id: boot3
         env:
@@ -227,36 +228,49 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
-          CI_JUDGE_PREFIX: S3-RESULT
+          CI_JUDGE_PREFIX: ""
+          CI_QEMU_STOP_PATTERN: "^ab-boot: stage="
           CI_QEMU_CASE: s3-grub
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot3.log"
 
-      # The GRUB boot has to land on the same slot and layer the kernel boots saw, and
-      # on the slot the ESP state names.
-      - name: Read the slot and layer from the GRUB judge line
+      # The boot that just happened was a real machine boot: the firmware found the ESP,
+      # GRUB picked an entry, our initramfs composed the root and our own hook ran. The
+      # evidence is the hook's own console output, not a probe that could only exist in
+      # a test initramfs.
+      - name: "Assert the GRUB boot reached our boot hook"
         id: judge_grub
         env:
-          JUDGE_LINE: ${{ steps.boot3.outputs.judge_line }}
+          SERIAL: ${{ steps.boot3.outputs.serial_log }}
           BOOT1_SLOT: ${{ steps.judge.outputs.slot }}
-          BOOT1_UPPER: ${{ steps.judge.outputs.upper }}
         run: |
-          slot="$(printf '%s' "${JUDGE_LINE}" | sed -n 's/.*slot=\([ab]\).*/\1/p')"
-          upper="$(printf '%s' "${JUDGE_LINE}" | sed -n 's/.*upper=\([^ ]*\).*/\1/p')"
-          echo "grub boot: slot=${slot:-unknown} upper=${upper:-unknown} (kernel boots: ${BOOT1_SLOT:-unknown}/${BOOT1_UPPER:-unknown})"
-          if [ "${slot}" != "${BOOT1_SLOT}" ]; then
-            echo "::error::GRUB booted slot ${slot:-none}, the committed slot is ${BOOT1_SLOT:-unknown}"
+          if [ ! -f "${SERIAL}" ]; then
+            echo "::error::no serial log from the GRUB boot"
             exit 1
           fi
-          if [ "${upper}" != "${BOOT1_UPPER}" ]; then
-            echo "::error::GRUB booted layer ${upper:-none}, the image uses ${BOOT1_UPPER:-unknown}"
+          fail=0
+          if ! grep -q 'ab-boot: stage=device disk=/dev/vda' "${SERIAL}"; then
+            echo "::error::the boot hook never identified the boot disk: our initramfs did not run, or the disk was not /dev/vda"
+            fail=1
+          fi
+          if ! grep -q 'ab-boot: running slot' "${SERIAL}"; then
+            echo "::error::the boot hook never reported a running slot"
+            fail=1
+          fi
+          if ! grep -q "ab-boot: running slot ${BOOT1_SLOT:-a} " "${SERIAL}"; then
+            echo "::error::the boot hook did not report slot ${BOOT1_SLOT:-a}, the slot the kernel boots used"
+            fail=1
+          fi
+          if [ "${fail}" -ne 0 ]; then
+            grep -E 'ab-boot:|ab-commit:|\[boot\]|S3-RESULT' "${SERIAL}" | tail -n 40 || tail -n 40 "${SERIAL}"
             exit 1
           fi
+          grep -E 'ab-boot: (stage=device|running slot)' "${SERIAL}" | head -n 4
           {
-            printf 'slot=%s\n' "${slot}"
-            printf 'upper=%s\n' "${upper}"
+            printf 'slot=%s\n' "${BOOT1_SLOT}"
+            printf 'device_line=%s\n' "$(grep -m 1 'ab-boot: stage=device' "${SERIAL}")"
           } >>"${GITHUB_OUTPUT}"
 
       - name: Collect diagnostics

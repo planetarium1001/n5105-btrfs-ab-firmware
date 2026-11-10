@@ -58,6 +58,29 @@ for workflow in ci-s3 ci-s4 ci-s5; do
     "ac-1 ${workflow} verifies the ESP it boots"
 done
 
+# A firmware boot runs the *production* initramfs: there is no /s3.sh and no probe
+# judge line, so a step that waits for one can only time out. The run has to stop on a
+# line our own hooks print, and grade those lines afterwards.
+s3_body_for_judge=$(cat "$workflows/ci-s3.yml")
+assert_eq "$(printf '%s\n' "$s3_body_for_judge" | grep -c 'CI_JUDGE_PREFIX: S3-RESULT')" "2" \
+  "ac-1 only the two probe boots expect an S3-RESULT line"
+assert_contains "$s3_body_for_judge" 'CI_QEMU_STOP_PATTERN: "^ab-boot: stage="' \
+  "ac-1 the GRUB boot stops on our own boot hook's first line"
+assert_contains "$s3_body_for_judge" "grep -q 'ab-boot: stage=device disk=/dev/vda'" \
+  "ac-1 the GRUB boot has to prove our initramfs ran, from the serial log"
+assert_contains "$s3_body_for_judge" "grep -q 'ab-boot: running slot'" \
+  "ac-1 the GRUB boot has to reach the boot hook's slot report"
+
+# A failed boot must stop the run with evidence instead of burning the timeout, so the
+# phases after it can report a reason.
+for workflow in ci-s4 ci-s5; do
+  body=$(cat "$workflows/${workflow}.yml")
+  assert_contains "$body" 'ab-commit: stage=healthcheck-done .*result=fail' \
+    "ac-1 ${workflow} stops the run when the health check never decides"
+  assert_contains "$body" 'ab-boot: stage=boot result=fail' \
+    "ac-1 ${workflow} stops the run when the boot hook cannot mount the ESP"
+done
+
 # The ESP check has to keep asserting what the menu depends on: the loader commands,
 # and the pair invariant that a failed try always has the committed slot as fallback.
 assert_contains "$render_script" 'for command in source test serial' \

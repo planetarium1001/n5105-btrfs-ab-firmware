@@ -206,7 +206,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
           CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s5-boot1
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -239,7 +239,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
           CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^S5-UPGRADE-DONE"
+          CI_QEMU_STOP_PATTERN: "^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)"
           CI_QEMU_CASE: s5-boot2
           CI_QEMU_TIMEOUT: "1200"
         run: |
@@ -276,7 +276,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
           CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s5-boot3
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -317,7 +317,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
           CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^ab-boot: running slot"
+          CI_QEMU_STOP_PATTERN: "^(ab-boot: running slot|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s5-boot4
           CI_QEMU_TIMEOUT: "900"
         run: |

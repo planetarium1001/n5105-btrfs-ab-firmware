@@ -153,8 +153,11 @@ WF_SLEEP="$tmp/bin/sleep"
 WF_SYS_BLOCK="$sys"
 WF_GROW_TMP="$tmp/work"
 WF_GROW_VERIFY_TRIES=2
+WF_MOUNTS="$tmp/mounts"
 export WF_SFDISK WF_BLOCKDEV WF_PARTX WF_BTRFS WF_SLEEP WF_SYS_BLOCK WF_GROW_TMP \
-  WF_GROW_VERIFY_TRIES
+  WF_GROW_VERIFY_TRIES WF_MOUNTS
+mkdir -p "$tmp/mnt/p4"
+printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "$tmp/mnt/p4" >"$WF_MOUNTS"
 
 reset_fixture
 
@@ -268,13 +271,27 @@ unchanged=$(STUB_NO_SIZE_CHANGE=1 wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
 assert_eq "${unchanged}" "fail:size-unchanged ${last_lba}" \
   "ac-3 a kernel that never shows the new size is recorded as fail:size-unchanged"
 
-# wf_grow_fs is the post-mount half of the contract.
+# wf_grow_fs is the post-mount half of the contract: the target is a MOUNT POINT, and a
+# device path or an unmounted directory must never reach btrfs-progs.
 reset_fixture
-assert_eq "$(wf_grow_fs /mnt/p4)" "done" "ac-3 btrfs filesystem resize max is reported as done"
-assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max /mnt/p4" \
+p4_mount="$tmp/mnt/p4"
+printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "${p4_mount}" >"$WF_MOUNTS"
+assert_eq "$(wf_grow_fs "${p4_mount}")" "done" \
+  "ac-3 btrfs filesystem resize max is reported as done"
+assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max ${p4_mount}" \
   "ac-3 the resize is run against the p4 mount point"
-assert_eq "$(STUB_BTRFS_FAIL=1 wf_grow_fs /mnt/p4)" "fail:btrfs-resize" \
+assert_eq "$(STUB_BTRFS_FAIL=1 wf_grow_fs "${p4_mount}")" "fail:btrfs-resize" \
   "ac-3 a failed filesystem resize is recorded as fail:btrfs-resize"
+
+# The device is not a resize target: btrfs would have no filesystem to name.
+rm -f "$tmp/btrfs.calls"
+assert_eq "$(wf_grow_fs /dev/vda4)" "fail:resize-target" \
+  "ac-3 a device path is refused as a resize target"
+assert_eq "$(wf_grow_fs /mnt/never-mounted)" "fail:resize-target" \
+  "ac-3 an unmounted directory is refused as a resize target"
+assert_eq "$(wf_grow_fs "")" "fail:resize-target" "ac-3 an empty target is refused"
+assert_eq "$(cat "$tmp/btrfs.calls" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "ac-3 no refused target ever reaches btrfs-progs"
 
 # --------------------------------------------------------------------------- #
 # 4Kn disks: sysfs counts 512-byte units, sfdisk counts logical sectors
@@ -437,8 +454,11 @@ assert_contains "${builder}" 'lib_dir="${CI_INITRAMFS_LIB_DIR-${CI_REPO_ROOT}/in
   "ac-5 the builder stages initramfs/lib by default"
 assert_contains "${builder}" 'install -m 0644 "${lib}" "${stage}/lib/$(basename "${lib}")"' \
   "ac-5 every helper is installed into /lib of the initramfs"
-assert_contains "${builder}" '*/initramfs/boot/init) CI_TOOL_BINARIES_OPTIONAL="sfdisk blockdev btrfs"' \
-  "ac-2 the boot initramfs defaults to sfdisk, blockdev and btrfs"
+assert_contains "${builder}" \
+  '*/initramfs/boot/init) CI_TOOL_BINARIES_OPTIONAL="sfdisk blockdev btrfs blkid"' \
+  "ac-2 the boot initramfs defaults to sfdisk, blockdev, btrfs and blkid"
+assert_contains "${builder}" 'blkid' \
+  "ac-2 blkid travels with the boot initramfs, for the label-based identity fallback"
 assert_contains "${builder}" 'ci_warn "optional tool not found in the build host, skipped: ${name}"' \
   "ac-3 a missing optional tool warns instead of failing the build"
 assert_contains "${builder}" 'copy_tool "${tool_path}"' \
@@ -474,6 +494,26 @@ assert_contains "${builder}" '|| ci_die "staged $(basename "${shared}") differs'
   "ac-7 a rewritten copy is a build failure"
 assert_contains "$boot_init" 'wf_grow_backup /mnt/p4root' \
   "ac-2 the init keeps the pre-growth table on the p4 root subvolume"
+
+# The p4 mount sequence: one mount for the resize and the upper, one short-lived mount
+# for the growth record, and no leftover mount when the root is composed.
+assert_contains "$boot_init" 'grow_fs="$(wf_grow_fs /mnt/p4)"' \
+  "ac-3 the resize is called with the mount point"
+assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs "${p4}"')" "0" \
+  "ac-3 the device is never passed as a resize target"
+assert_contains "$boot_init" 'mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root' \
+  "ac-3 the record mount is the p4 root subvolume"
+record_mount_line=$(code_line_of 'subvol=/" "${p4}" /mnt/p4root')
+record_umount_line=$(code_line_of 'umount /mnt/p4root')
+overlay_compose_line=$(code_line_of 'mount -t overlay overlay')
+assert_eq "$((record_umount_line < overlay_compose_line))" "1" \
+  "ac-3 the record mount is given back before the overlay is composed"
+assert_contains "$boot_init" 'umount /mnt/p4root failed, retrying once' \
+  "ac-3 a busy record mount is retried instead of being ignored"
+assert_contains "$boot_init" 'p4 root subvolume is still mounted at /mnt/p4root' \
+  "ac-3 a leftover record mount is reported"
+assert_contains "$boot_init" 'if [ "${degraded}" = "1" ]; then' \
+  "ac-3 no p4 subvolume is mounted when p4 itself is degraded"
 
 # --------------------------------------------------------------------------- #
 # The guest assertion runs the same decision, so it must load the helper first and

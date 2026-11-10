@@ -134,6 +134,9 @@ run_probe() {
 
 start() {
 	mount_esp || {
+		# The console line is what makes a failed CI run diagnosable: without it the
+		# only symptom was a boot that never printed a decision.
+		console_say "ab-commit: stage=healthcheck-done result=fail reason=esp-unresolved"
 		echo "ab-commit: cannot mount the ESP, skipping the health check"
 		exit 0
 	}
@@ -144,6 +147,7 @@ start() {
 	upper="$(field upper)"
 	rootfs="$(ab-slot rootfs "${slot}" 2>/dev/null)"
 	[ -n "${slot}" ] || {
+		console_say "ab-commit: stage=healthcheck-done result=fail reason=no-slot"
 		echo "ab-commit: cannot determine the running slot"
 		log_append "stage=healthcheck-done slot=? result=fail reason=no-slot"
 		exit 0
@@ -194,5 +198,6 @@ start() {
 	fi
 
 	log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}"
+	console_say "ab-commit: stage=healthcheck-done slot=${slot} result=fail reason=${failed} action=stay"
 	echo "ab-commit: health check failed on the committed slot ${slot} (${failed}), staying up"
 }

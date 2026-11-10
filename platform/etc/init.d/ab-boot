@@ -66,11 +66,12 @@ part_device() {
 record_disk() {
 	if [ "${AB_PARTITIONS_OK}" != "1" ]; then
 		log_append "stage=device slot=${1:-?} disk=unknown method=unavailable"
+		console_say "ab-boot: stage=device slot=${1:-?} disk=unknown method=unavailable"
 		return 1
 	fi
 	_identity="$(ab_disk_identity)" || {
 		log_append "stage=device slot=${1:-?} disk=unknown method=unresolved"
-		console_say "ab-boot: the boot disk could not be identified"
+		console_say "ab-boot: stage=device slot=${1:-?} disk=unknown method=unresolved"
 		return 1
 	}
 	# "disk=<dev> method=<token>" -> the two values the log and the console report
@@ -78,7 +79,9 @@ record_disk() {
 	_disk="${_disk%% *}"
 	_method="${_identity#*method=}"
 	log_append "stage=device slot=${1:-?} disk=${_disk:-unknown} method=${_method:-unknown}"
-	console_say "ab-boot: boot disk ${_disk:-unknown}, found by ${_method:-unknown}"
+	# Same key=values on the console: the serial log is what a failed CI run has, and
+	# "our init really ran" is exactly what it has to prove.
+	console_say "ab-boot: stage=device slot=${1:-?} disk=${_disk:-unknown} method=${_method:-unknown}"
 	return 0
 }
 
@@ -184,6 +187,10 @@ grow_result() {
 
 start() {
 	mount_esp || {
+		# Both channels: syslog for the running system, the console for the serial log,
+		# which is all a failed CI run has. A silent exit here looked like "our init
+		# never ran" and cost a 900 second timeout.
+		console_say "ab-boot: stage=boot result=fail reason=esp-unresolved"
 		echo "ab-boot: cannot mount the ESP, slot bookkeeping disabled"
 		exit 0
 	}
@@ -212,10 +219,10 @@ start() {
 	p4="$(field p4)"
 	rootfs="$(ab-slot rootfs "${slot}" 2>/dev/null)"
 
+	record_disk "${slot:-?}"
+
 	log_append "stage=boot slot=${slot:-?} upper=${upper:-?} rootfs=${rootfs:-?} result=ok"
 	console_say "ab-boot: running slot ${slot:-?} (${upper:-?}), generation ${generation:-?}, committed ${committed:-?}, p4=${p4:-?}"
-
-	record_disk "${slot:-?}"
 
 	# The state file is the truth for the menu: rewrite the runtime file before
 	# anything else reads it, so a boot after a power cut starts from a consistent pair.

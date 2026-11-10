@@ -345,9 +345,31 @@ wf_grow_run() {
 }
 
 # wf_grow_fs <p4 mount point>: grow the filesystem to the partition it now sits on.
-# Prints `done` or `fail:btrfs-resize`; the caller decides what to record.
+# Prints `done`, `fail:resize-target` or `fail:btrfs-resize`; the caller decides what to
+# record.
+#
+# The argument is a MOUNT POINT, never the device: `btrfs filesystem resize max /dev/vda4`
+# has no filesystem to name and fails, and a resize that silently did nothing would leave
+# a grown partition with a 64 MiB filesystem. The mount table is checked first so that
+# mistake cannot reach btrfs-progs at all.
 wf_grow_fs() {
-    if "${WF_BTRFS}" filesystem resize max "$1" >/dev/null 2>&1; then
+    wf_gf_target="${1:-}"
+    [ -n "${wf_gf_target}" ] || {
+        printf 'fail:resize-target'
+        return 0
+    }
+    case "${wf_gf_target}" in
+        /dev/*)
+            printf 'fail:resize-target'
+            return 0
+            ;;
+    esac
+    if ! awk -v mp="${wf_gf_target}" '$2 == mp { found = 1 } END { exit !found }' \
+        "${WF_MOUNTS:-/proc/mounts}" 2>/dev/null; then
+        printf 'fail:resize-target'
+        return 0
+    fi
+    if "${WF_BTRFS}" filesystem resize max "${wf_gf_target}" >/dev/null 2>&1; then
         printf 'done'
         return 0
     fi

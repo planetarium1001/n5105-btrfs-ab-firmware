@@ -20,7 +20,9 @@
 #   CI_TOOL_BINARIES_OPTIONAL
 #                      space separated tool names (resolved on the host) or paths that
 #                      are included when present and skipped with a warning when not.
-#                      Defaults to "sfdisk blockdev btrfs" for initramfs/boot/init,
+#                      Defaults to "sfdisk blockdev btrfs blkid" for initramfs/boot/init,
+#                      and ``blkid`` is what lets the identity resolver fall back to the
+#                      filesystem labels on a kernel that does not expose PARTNAME,
 #                      which is what the first-boot p4 growth needs; a build host
 #                      without them still produces a bootable image, and the init
 #                      reports result=missing-sfdisk at run time instead of the build
@@ -202,7 +204,7 @@ done
 # error, because an image that boots with a 64 MiB p4 is still a usable image.
 if [ -z "${CI_TOOL_BINARIES_OPTIONAL+set}" ]; then
     case "${init_script}" in
-        */initramfs/boot/init) CI_TOOL_BINARIES_OPTIONAL="sfdisk blockdev btrfs" ;;
+        */initramfs/boot/init) CI_TOOL_BINARIES_OPTIONAL="sfdisk blockdev btrfs blkid" ;;
         *) CI_TOOL_BINARIES_OPTIONAL="" ;;
     esac
 fi

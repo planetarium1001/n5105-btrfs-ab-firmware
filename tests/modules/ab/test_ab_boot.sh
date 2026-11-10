@@ -226,6 +226,19 @@ AB_DISK_IDENTITY_LIB=/nonexistent/disk-identity.sh \
   sh -c ". '$partitions_lib'; ab_find_partition ab-esp 1" >/dev/null 2>&1
 assert_eq "$?" "1" "ac-4 without the identity library nothing is guessed"
 
+# The console is what a failed CI run has: the ring log lives on the ESP. Both the
+# device identity and the failure to mount the ESP have to be visible there.
+ab_boot_src=$(cat "$ab_boot")
+assert_contains "$ab_boot_src" 'console_say "ab-boot: stage=device slot=' \
+  "ac-4 the device identity is reported on the console, not just in the ring log"
+assert_contains "$ab_boot_src" 'stage=boot result=fail reason=esp-unresolved' \
+  "ac-4 a boot that cannot mount the ESP says so on the console"
+ab_commit_src=$(cat "$root/platform/etc/init.d/ab-commit")
+assert_contains "$ab_commit_src" 'stage=healthcheck-done result=fail reason=esp-unresolved' \
+  "ac-4 a health check that cannot run says so on the console"
+assert_contains "$ab_commit_src" 'stage=healthcheck-done slot=${slot} result=fail reason=${failed} action=stay' \
+  "ac-4 a health check that fails on the committed slot prints a decision line"
+
 # --- ac-5 partition discovery uses the current name ------------------------
 assert_eq "$(grep -c 'ab-shared' "$ab_boot")" "0" \
   "ac-5 the retired ab-shared label is gone from the boot hook"

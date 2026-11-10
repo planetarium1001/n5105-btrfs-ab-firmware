@@ -204,7 +204,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot1
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -219,6 +219,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/ab-phase.sh --phase commit --slot a \
             --expect-committed a --expect-pending none \
+            --expect-log 'stage=device disk=/dev/vda' \
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1.log"
 
@@ -258,7 +259,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^ab-commit: abandoned slot="
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: abandoned slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot2
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -303,7 +304,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot3
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -318,6 +319,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/ab-phase.sh --phase commit --slot b \
             --expect-committed b --expect-pending none \
+            --expect-log 'stage=device disk=/dev/vda' \
             --expect-log 'stage=commit slot=b' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase3.log"
 
@@ -367,7 +369,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot4
           CI_QEMU_TIMEOUT: "900"
         run: |
