@@ -200,6 +200,11 @@ else
 fi
 conflicts=0
 uci_defaults=0
+scanned=0
+absent_payload=0
+same_payload=0
+untouched=0
+same_user=0
 report="${work}/conflicts.log"
 
 {
@@ -220,10 +225,23 @@ if [ "${baseline}" = "ok" ] && [ -d "${running_sys}/etc" ]; then
             etc/config/*) continue ;;
         esac
         new="${work}/rootfs-tree/${path}"
-        [ -f "${new}" ] || continue
-        cmp -s "${running_sys}/${path}" "${new}" && continue
-        [ -f "${upper}/${path}" ] || continue
-        cmp -s "${running_sys}/${path}" "${upper}/${path}" && continue
+        scanned=$((scanned + 1))
+        if [ ! -f "${new}" ]; then
+            absent_payload=$((absent_payload + 1))
+            continue
+        fi
+        if cmp -s "${running_sys}/${path}" "${new}"; then
+            same_payload=$((same_payload + 1))
+            continue
+        fi
+        if [ ! -f "${upper}/${path}" ]; then
+            untouched=$((untouched + 1))
+            continue
+        fi
+        if cmp -s "${running_sys}/${path}" "${upper}/${path}"; then
+            same_user=$((same_user + 1))
+            continue
+        fi
         printf 'conflict path=/%s result=keep-user action=report\n' "${path}" >>"${report}"
         conflicts=$((conflicts + 1))
     done
@@ -231,6 +249,8 @@ fi
 if [ -d "${work}/rootfs-tree/etc/uci-defaults" ]; then
     uci_defaults="$(find "${work}/rootfs-tree/etc/uci-defaults" -type f | wc -l | tr -d ' ')"
 fi
+printf 'scan checked=%s payload-absent=%s payload-same=%s user-untouched=%s user-same=%s upper=%s\n' \
+    "${scanned}" "${absent_payload}" "${same_payload}" "${untouched}" "${same_user}" "${upper:-none}" >>"${report}"
 printf 'conflicts=%s uci-defaults=%s\n' "${conflicts}" "${uci_defaults}" >>"${report}"
 
 # Publish the report on the ESP with the documented 32 KiB truncation.

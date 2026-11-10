@@ -176,10 +176,14 @@ cleanup_p4() {
 }
 trap cleanup_p4 EXIT
 if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-    if truncate -s 64M "${check_dir}/p4.img" 2>/dev/null \
-        && sudo mkfs.btrfs -q -f "${check_dir}/p4.img" >/dev/null 2>&1 \
-        && sudo mount -o loop "${check_dir}/p4.img" "${check_dir}/p4" 2>/dev/null; then
+    # btrfs refuses to format anything much below 114 MiB, so the scratch image is
+    # generous; it is sparse, so it costs almost nothing on disk.
+    if truncate -s 256M "${check_dir}/p4.img" 2>/dev/null \
+        && sudo mkfs.btrfs -q -f "${check_dir}/p4.img" 2>"${check_dir}/mkfs.p4.err" \
+        && sudo mount -o loop "${check_dir}/p4.img" "${check_dir}/p4" 2>>"${check_dir}/mkfs.p4.err"; then
         p4_mounted="true"
+    else
+        ci_log "mkfs/mount of the scratch partition failed: $(tr '\n' ' ' <"${check_dir}/mkfs.p4.err" 2>/dev/null)" >&2 || true
     fi
 fi
 [ "${p4_mounted}" = "true" ] ||
