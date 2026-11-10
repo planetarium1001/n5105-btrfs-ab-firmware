@@ -67,6 +67,12 @@ write_state a a 2
 slot_cmd commit >/dev/null 2>&1
 assert_contains "$(cat "$esp/ab/state.json")" '"committed": "a"' "ac-2 commit sets the committed slot"
 assert_contains "$(cat "$esp/ab/state.json")" '"pending": null' "ac-2 commit clears pending"
+# Committing the running slot must not erase a marker for the other slot: that marker
+# is a staged upgrade waiting for the next boot.
+write_state a b 2
+slot_cmd commit >/dev/null 2>&1
+assert_contains "$(cat "$esp/ab/state.json")" '"pending": "b"' \
+  "ac-2 commit keeps a pending marker for the other slot"
 assert_contains "$(cat "$esp/ab/state.json")" '"upper": "@overlay-25.12.3"' \
   "ac-2 commit keeps the layer names"
 assert_contains "$(cat "$esp/ab/state.json")" '"generation": 2' "ac-2 commit keeps the generation"

@@ -260,8 +260,17 @@ cmd_commit() {
     esac
     lock_state
     _generation="$(state_generation)" || die "state has no generation"
-    write_state "${_generation}" "${_slot}" "none"
-    say "ab-slot: committed slot ${_slot}, pending cleared"
+    # A pending slot that is not the one being committed is a staged upgrade for the
+    # next boot; committing the running slot must not erase that marker. The name is
+    # distinct on purpose: write_state sets its own _pending.
+    _keep_pending="$(state_pending 2>/dev/null || printf 'none')"
+    [ "${_keep_pending}" = "${_slot}" ] && _keep_pending="none"
+    write_state "${_generation}" "${_slot}" "${_keep_pending}"
+    if [ "${_keep_pending}" = "none" ]; then
+        say "ab-slot: committed slot ${_slot}, pending cleared"
+    else
+        say "ab-slot: committed slot ${_slot}, pending ${_pending} kept"
+    fi
 }
 
 cmd_pending() {
