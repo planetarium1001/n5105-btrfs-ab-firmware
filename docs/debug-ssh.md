@@ -6,16 +6,21 @@
 
 `ci-debug.yml` is a manual debugging entry point, not a pipeline stage. It installs the
 tooling the boot stages install, runs the same `scripts/ci/` stages they run, and then
-hands the runner to a session you can log into over SSH.
+hands the runner to a session you can log into over SSH. The session is
+`owenthereal/action-upterm`, pinned at commit `6c2d60e09009f59cb4c45c88767c78701f14d121`
+(v2.8.1).
 
 - Trigger: `workflow_dispatch` only. No `push`, no `pull_request`, no `workflow_call`.
 - Gate: none. It grades nothing, renders no verdict, and no other workflow calls it.
-  The one thing it publishes is a diagnostics artifact, `debug-<stage>-logs`, kept for
-  seven days: the build logs and the guest console of the session's first boot.
-- Lifetime: bounded twice -- `timeout-minutes` on the keep-alive step (150) and on the job
-  (240) -- and the keep-alive stops itself after 140 minutes even if nobody disconnects.
-- Access: `limit-access-to-actor: true`, so only the dispatcher's own SSH keys open the
-  shell.
+  What it publishes is short-lived: the connection details in the run **summary page**, the
+  same command as the `debug-session` artifact (one day), and `debug-<stage>-logs`
+  (seven days) with the build logs and the guest console of the session's first boot.
+- Lifetime: bounded three times -- `timeout-minutes: 10` on the session step,
+  `timeout-minutes: 150` on the keep-alive step, which stops itself after 140 minutes even
+  if nobody disconnects, and 240 minutes on the job.
+- Access: `limit-access-to-actor: true` with `full-access: true`, so only the dispatcher's
+  own GitHub SSH keys open the session, and those keys may run commands, transfer files and
+  forward loopback ports.
 
 `scripts/check_design.py debug-ssh` fails the build if any of those stop being true, so
 "someone wired it to `push`" is a red design check, not a review comment.
@@ -65,33 +70,54 @@ runner.
 
 ## Connecting
 
-The tmate step runs detached and the step after it publishes the connection string into
-the run's **summary page** (and the SSH command alone, never the web shell link, because
-the run log of a public repository is world readable):
+The session step runs `owenthereal/action-upterm` with `detached: true`, so it publishes
+`ssh-command`, `join-command` and `ssh-config` as step outputs and returns instead of
+holding the step open. The step after it writes `ssh-command` into this run's **summary
+page**; the next one uploads the same line as the `debug-session` artifact. Both are
+reachable from the run page in the browser, and a script can read the artifact without
+anybody watching a live log.
+
+**It is upterm, not tmate, and that is deliberate.** tmate's own README states that "the
+public tmate servers (ssh.tmate.io) were shut down in July 2025, so tmate no longer works
+out of the box". That is what this repository measured: every session attempt hung for its
+full timeout because `tmate wait tmate-ready` never became ready. `owenthereal/action-upterm`
+is the maintained replacement and keeps the property that matters here -- the session is
+authorised by the GitHub keys of the person who dispatched the run. Do not re-introduce a
+tmate step: there is no public relay left for it to reach.
+
+The summary block looks like this:
 
 ```
 ## Interactive session
 Connect with your own key (limit-access-to-actor):
-ssh <token>@<region>.tmate.io
+ssh session:<token>@uptermd.upterm.dev
 ```
 
 ```sh
-ssh <token>@<region>.tmate.io
+ssh session:<token>@uptermd.upterm.dev
 # or, when the key is not the default one:
-ssh -i ~/.ssh/id_ed25519 <token>@<region>.tmate.io
+ssh -i ~/.ssh/id_ed25519 session:<token>@uptermd.upterm.dev
 ```
 
-`limit-access-to-actor: true` means tmate authorises only the public SSH keys registered
-on the GitHub profile of the user who dispatched the run:
+`limit-access-to-actor: true` means upterm authorises only the public SSH keys registered
+on the GitHub profile of the user who triggered -- or re-ran -- the run:
 
 - You must have at least one SSH key on your GitHub account
   ([adding a key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account)).
-  With none, the step fails outright: `No public SSH keys registered with <login>'s
-  GitHub profile`.
-- Nobody else can use the string, even though the log is public. The string is a
-  locator, not a credential: the private key is the credential.
-- If the log also shows a `Web shell:` URL, treat it as a credential in its own right and
-  do not paste it anywhere. It is a bearer link, not covered by the key check.
+  With no key on the profile there is nothing to authorise, and a bot account never has
+  one: the action skips an actor without keys rather than opening the session to everybody,
+  so a run re-triggered by a bot can publish a command that no key can use.
+- Nobody else can use the string, even though the repository is public and the summary and
+  the artifact are readable by anyone who can see the run. The string locates the session;
+  the private key is the credential.
+- `full-access: true` is what makes the session usable for debugging: with it the authorised
+  keys can run commands, transfer files and forward loopback ports. It is set here because
+  watching a stalled boot is not a debug session, and because the job holds nothing worth
+  protecting (see Security below).
+- The summary and the artifact carry `ssh-command` only. The action also publishes
+  `join-command` and `ssh-config` outputs, which carry the same token; the workflow copies
+  neither of them, and all three should be treated as one credential -- do not paste any of
+  them anywhere.
 
 ## What the runner already has prepared
 
@@ -152,31 +178,40 @@ needed.
 ## Session lifetime, cost and cleanup
 
 - **6 hours is the hard cap** on any GitHub-hosted job. This workflow stops well before
-  it: the keep-alive step is bounded to 150 minutes and stops itself at 140, the job to 240.
-- `action-tmate` v3.24 has **no `max-duration` input** -- its `action.yml` declares only
-  `sudo`, `install-dependencies`, `limit-access-to-actor`, `detached`,
-  `connect-timeout-seconds`, `tmate-server-*`, `msys2-location` and `github-token`. The
-  bound is `timeout-minutes`, which is what the check enforces and what the comments in
-  the workflow say. `scripts/check_design.py debug-ssh` checks the keep-alive step too:
-  a bound that moved into a shell literal nobody inspects is the same as no bound.
-- **Reconnecting works while the runner is alive**: the tmate session outlives an SSH
-  disconnect, and the same string works again. It stops working when the session ends,
-  the 140-minute bound is reached, or the run is cancelled.
-- **Ending early, on purpose**: leave the session (`exit` or `tmate kill-server`). The
-  detached session ending is what makes the keep-alive step return and the job finish; the
-  `continue` file the action documents does *not* work in detached mode. Cancelling the
-  run from the UI also works -- the keep-alive is gated on `!cancelled()` on purpose, so a
-  cancel frees the runner instead of leaving a fresh sleep behind.
-- **Closing the laptop is not closing the session**: tmate is tmux underneath, so a
-  dropped connection leaves the session alive and billing. The bound above, and
-  cancelling the run, are what actually stop it.
+  it: the session step is bounded to 10 minutes, the keep-alive step to 150 minutes and it
+  stops itself at 140, the job to 240.
+- **What the action itself declares.** `action-upterm` v2.8.1, at the pinned commit, has
+  inputs `limit-access-to-actor`, `limit-access-to-users`, `allow-exec`, `allow-forwarding`,
+  `full-access`, `upterm-server` (default `ssh://uptermd.upterm.dev:22`), `known-hosts`,
+  `wait-timeout-minutes`, `upterm-version` and `detached`. None of them is a session
+  duration: the lifetime comes from `timeout-minutes` on the step (10) and on the job, which
+  is what `scripts/check_design.py debug-ssh` asserts and what the comments in the workflow
+  say. A bound moved into a shell literal nobody inspects is the same as no bound.
+- **`wait-timeout-minutes` is not the session's lifetime.** It is how long the action's post
+  step (`post-if: '!cancelled()'`) waits for a guest; in detached mode that wait happens at
+  the end of the job. Unset or `0` in detached mode means ten minutes, so the `5` in this
+  workflow is a deliberate shortening, not a default.
+- **Reconnecting works while the runner is alive**: the session outlives one SSH disconnect
+  and the same command can be typed again. It stops working when the session ends, when the
+  140-minute bound is reached, or when the run is cancelled. *Unverified:* whether the
+  community relay admits a second simultaneous guest, and what that guest would see; do not
+  plan around two people watching one session.
+- **Ending early, on purpose**: type `exit` in the shell, or close the SSH client, and the
+  session is done -- the post step finishes its wait, the keep-alive step sees the session
+  gone and returns, and the job tears down. Cancelling the run from the UI works too: the
+  keep-alive is gated on `!cancelled()` on purpose, so a cancel frees the runner instead of
+  leaving a fresh sleep behind.
+- **Closing the laptop is not closing the session**: the connection dropping does not end
+  the session on the runner, which stays open and billing. The bound above, and cancelling
+  the run, are what actually stop it.
 - **Cost**: a session occupies one of the plan's concurrent jobs (20 for Free, 40 Pro,
   60 Team, 500 Enterprise) for as long as it is open. A forgotten session costs runner
   minutes and, on a busy day, blocks a real run.
-- **Residue**: the runner is a disposable VM, so nothing survives the job. The run's
-  summary keeps the connection string, and the `debug-<stage>-logs` artifact (seven days)
-  keeps the boot evidence. After a session that mattered, delete the run:
-  `gh run delete <run-id>` (or delete the run from the UI).
+- **Residue**: the runner is a disposable VM, so the machine does not survive the job. What
+  survives is the run's **summary page** with the SSH command, the `debug-session` artifact
+  (one day) holding the same command as a file, and the `debug-<stage>-logs` artifact
+  (seven days) holding the boot evidence. After a session that mattered, delete the run once
+  the logs are no longer needed: `gh run delete <run-id>` (or delete it from the UI).
 - One session per branch: the `concurrency` group is `ci-debug-<ref>` with
   `cancel-in-progress: true`, so a second dispatch replaces the first instead of
   queueing two interactive runners.
@@ -188,17 +223,20 @@ The repository is **public** (`gh repo view --json visibility` reports `PUBLIC` 
 
 | Question | Answer |
 |---|---|
-| Is a tmate session connectable by anyone by default? | Yes. `limit-access-to-actor` defaults to `auto`, which restricts access only when the dispatcher happens to have a public SSH key on their profile. This workflow sets `true`, which is unconditional. |
+| Is a session connectable by anyone by default? | Not with this workflow. The action gates the guest through its `limit-access-to-*` inputs, so `limit-access-to-actor: true` is what turns the string into "useless without the dispatcher's key"; it is set unconditionally here, and the check fails if it is removed. |
 | Who can dispatch this workflow? | Only users with write access to the repository. Everyone else cannot start a session. |
-| Who can connect to a session? | Only the dispatcher's registered SSH keys. Not the author of a merged PR, not another maintainer, unless they dispatched it themselves. |
+| Who can connect to a session? | Only the GitHub SSH keys of the user who triggered or re-ran the run. Not the author of a merged PR, not another maintainer, unless they dispatched it themselves. Bot accounts carry no keys, so an actor without keys yields a session nobody can open. |
+| What does `full-access` add? | The authorised keys may run commands, transfer files and forward loopback ports, so the session is a real shell and not a spectator view. It is only granted together with `limit-access-to-actor`, and it is granted inside a VM that is destroyed afterwards. |
 | What does the session hold? | A read-only `GITHUB_TOKEN` (`permissions: contents: read`), the checkout, and the build scratch. The repository has no Actions secrets, so there is no secret to leak from the runner. |
-| What leaks anyway? | The connection string, the serial logs and every command typed in the session, all public in the run log. Treat "public log" as the default assumption, never paste an export that contains a secret. |
+| Who else is in the path? | The default relay, `uptermd.upterm.dev`, is a community service run by a third party: it brokers the connection and can see it. `upterm-server` and `known-hosts` point the action at a host you control instead, and **self-hosting is the hardened option** -- it is the only arrangement where the relay is not somebody else's machine. |
+| What leaks anyway? | The SSH command itself (summary page and `debug-session` artifact), the step log lines that print the token, the serial logs and every command typed in the session, all public in the run log. Once the session is open the command is a credential for whoever owns the authorising keys. Treat "public log" as the default assumption, never paste an export that contains a secret. |
 | Can it be widened? | Only by editing the workflow. `sudo` is unrestricted on hosted runners, so the session can install anything -- inside a VM that is destroyed afterwards, which is why this is a debugging tool and not a security boundary. |
 
 Two rules follow from the table:
 
 1. Dispatch from `main`, never from a branch you would not let run arbitrary code.
-2. After a session, delete the run when its log is no longer needed.
+2. After a session, delete the run when its log is no longer needed -- the summary and the
+   artifacts go with it.
 
 ## Why it cannot replace the CI gate
 

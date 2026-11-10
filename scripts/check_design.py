@@ -323,14 +323,14 @@ def check_text(problems: Problems) -> None:
 
 DEBUG_WORKFLOW = ROOT / ".github" / "workflows" / "ci-debug.yml"
 DEBUG_WORKFLOW_REL = ".github/workflows/ci-debug.yml"
-TMATE_ACTION = "mxschmitt/action-tmate"
+SESSION_ACTION = "owenthereal/action-upterm"
 # A release tag or a commit sha. A floating major such as `@v3` would let upstream change
 # what runs with the runner's credentials without anyone reviewing it.
 PINNED_REF_RE = re.compile(r"^(?:v\d+\.\d+\.\d+|[0-9a-f]{40})$")
-# action-tmate v3.24 has no `max-duration` input, so the bound is the step's
-# `timeout-minutes`; both spellings are accepted so the invariant survives an upgrade
-# that adds one. 360 minutes is the 6-hour job cap, the only ceiling GitHub enforces.
-SESSION_DURATION_KEYS = ("max-duration", "timeout-minutes")
+# The session step is bounded by `timeout-minutes`, and the guest wait by
+# `wait-timeout-minutes`; both spellings are accepted so the invariant survives a change of
+# action. 360 minutes is the 6-hour job cap, the only ceiling GitHub enforces.
+SESSION_DURATION_KEYS = ("max-duration", "timeout-minutes", "wait-timeout-minutes")
 MAX_SESSION_MINUTES = 360
 ON_LINE_RE = re.compile(r"""^(?:on|"on"|'on'):[ ]*(.*)$""")
 TRIGGER_KEY_RE = re.compile(r"^ {2}([A-Za-z_][\w-]*):")
@@ -449,32 +449,39 @@ def check_debug_ssh(problems: Problems) -> None:
     if re.search(r":\s*(?:write|write-all)\b", text):
         problems.add(where, "grants a write permission")
 
-    uses_index = next((i for i, line in enumerate(lines) if TMATE_ACTION + "@" in line), None)
+    uses_index = next((i for i, line in enumerate(lines) if SESSION_ACTION + "@" in line), None)
     if uses_index is None:
-        problems.add(where, f"no step uses {TMATE_ACTION}")
+        problems.add(where, f"no step uses {SESSION_ACTION}")
         return
-    ref = lines[uses_index].split(TMATE_ACTION + "@", 1)[1].split()[0].strip("'\"")
+    ref = lines[uses_index].split(SESSION_ACTION + "@", 1)[1].split()[0].strip("'\"")
     if not PINNED_REF_RE.match(ref):
         problems.add(
             where,
-            f"{TMATE_ACTION}@{ref} is not pinned to a release tag or a commit sha",
+            f"{SESSION_ACTION}@{ref} is not pinned to a release tag or a commit sha",
         )
 
     block = "\n".join(_step_lines(lines, uses_index))
     if not re.search(
         r"^\s*limit-access-to-actor:\s*['\"]?true['\"]?\s*(?:#.*)?$", block, re.MULTILINE
     ):
-        problems.add(where, "the tmate step must set limit-access-to-actor: true")
+        problems.add(where, "the session step must set limit-access-to-actor: true")
 
     bounds = {}
     for key in SESSION_DURATION_KEYS:
         match = re.search(rf"^\s*{re.escape(key)}:\s*(\S+)\s*(?:#.*)?$", block, re.MULTILINE)
         if match:
             bounds[key] = match.group(1).strip("'\"")
+    if not re.search(
+        r"^\s*full-access:\s*['\"]?true['\"]?\s*(?:#.*)?$", block, re.MULTILINE
+    ):
+        # Without it the guest can watch and approve nothing; the whole point is to run the
+        # tests inside the runner. It is only acceptable because the actor's keys gate it.
+        problems.add(where, "the session step must set full-access: true")
+
     if not bounds:
         problems.add(
             where,
-            "the tmate step has no duration bound (max-duration or timeout-minutes)",
+            "the session step has no duration bound (timeout-minutes or wait-timeout-minutes)",
         )
     for key, value in bounds.items():
         if not value.isdigit() or not 0 < int(value) <= MAX_SESSION_MINUTES:

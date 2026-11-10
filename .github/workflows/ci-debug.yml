@@ -21,23 +21,27 @@ name: ci-debug
 # What it does: installs the tooling the stage workflows install, runs the same
 # scripts/ci/ stages they run (resolve -> fetch -> kmods -> esp-prepare ->
 # platform-runtime -> initramfs -> disk, then optionally the payload, the fixtures and
-# the first boot), and hands the runner to a tmate session. No build logic lives here:
+# the first boot), and hands the runner to an upterm session. No build logic lives here:
 # every step is a call into scripts/ci/, and the input/output chaining uses the local
 # interface of lib.sh (CI_OUTPUT_ENV writes a KEY=VALUE file, ci_load_env_file exports
 # it as CI_*), so this file cannot drift away from the stage workflows.
 #
-# Pinned on purpose: mxschmitt/action-tmate is third-party code that runs with the
-# runner's credentials, so it is pinned to the v3.24 commit instead of the floating
-# `v3` the action's README suggests (a tag can be moved, a commit cannot). Bumping it
-# means editing the commit and the `# v3.2x` comment on that line; check_design.py
+# Pinned on purpose: owenthereal/action-upterm is third-party code that runs with the
+# runner's credentials, so it is pinned to the v2.8.1 commit instead of the floating
+# `main` the action's README suggests (a tag can be moved, a commit cannot). Bumping it
+# means editing the commit and the `# vX.Y.Z` comment on that line; check_design.py
 # rejects a ref that is neither vX.Y.Z nor a full commit sha.
 #
-# Session bounds: action-tmate v3.24 has no `max-duration` input -- action.yml at the
-# pinned commit declares only sudo, install-dependencies, limit-access-to-actor,
-# detached, connect-timeout-seconds, tmate-server-*, msys2-location and github-token.
-# The bound is therefore `timeout-minutes`, set on the session step (200) and on the
-# job (240): a session nobody is watching cannot run into the 6-hour job cap, and
-# check_design.py requires that duration key to be present and sane.
+# Why not tmate, which this workflow used first: tmate's own README states that the public
+# tmate relays were shut down in July 2025 and that tmate "no longer works out of the box".
+# Measured here: `tmate wait tmate-ready` never became ready and every session hung for its
+# full timeout. upterm keeps the property that matters - the guest is authorised by the
+# public SSH keys on the dispatcher's GitHub profile - and is maintained.
+#
+# Session bounds: the session step itself is bounded to 10 minutes, the keep-alive step to
+# 150 with a self-stop at 140, and the job to 240, which is well inside GitHub's 6-hour cap.
+# check_design.py requires the keep-alive bound to exist and to contain its own stop
+# condition, because a bound that moves into a shell literal nobody checks is no bound.
 
 on:
   # workflow_dispatch must stay the only trigger. A push or pull_request trigger would
@@ -308,49 +312,50 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # Advisory, never gating: the action picks a server region itself, so an unreachable
-      # nyc1 says "the relay is slow from this network", not "the session will fail". It is
-      # here because the failure this entry point had (eleven silent minutes) is
-      # indistinguishable from an unreachable relay, and one line of evidence settles it.
+
+      # Which relay answers, if any. Advisory, never gating: it is here because the failure
+      # this workflow had - a session that silently never came up - is indistinguishable
+      # from an unreachable relay in the job log.
       - name: Report whether the relay answers
         if: ${{ always() }}
         run: |
-          reachable=""
-          for host in nyc1.tmate.io sfo2.tmate.io; do
+          reached=""
+          for host in uptermd.upterm.dev; do
             if timeout 5 bash -c "exec 3<>/dev/tcp/${host}/22" 2>/dev/null; then
               echo "relay reachable: ${host}:22"
-              reachable="${reachable} ${host}"
+              reached="${reached} ${host}"
             else
               echo "relay NOT reachable: ${host}:22"
             fi
           done
-          {
-            printf 'relay: %s\n' "${reachable:-none of nyc1/sfo2 answered on port 22 (advisory)}"
-          } >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
+          printf 'relay: %s\n' "${reached:-none answered on port 22 (advisory)}" \
+            >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-      # The session itself. `limit-access-to-actor: true` is not optional here: this
-      # repository is public, so the run log -- including these connection details -- is
-      # world readable. `true` makes tmate authorise only the public SSH keys registered on
-      # the GitHub profile of the user who dispatched the run, and fails the step outright
-      # if that profile has none. It never widens access, and the job holds nothing but a
-      # read-only GITHUB_TOKEN.
+      # The session itself, over upterm. Not tmate: tmate's own README says the public
+      # tmate relays were shut down in July 2025 and that tmate "no longer works out of the
+      # box", which is exactly what this workflow measured - `tmate wait tmate-ready` never
+      # became ready and every session hung for its whole timeout. upterm is the maintained
+      # replacement and keeps the property that matters here: the guest is authorised by the
+      # public SSH keys on the dispatcher's GitHub profile, so the connection details are
+      # useless to anyone else even though the run log of a public repository is world
+      # readable. `full-access` is deliberate - a guest that may only watch is not a debug
+      # session - and it is only granted because `limit-access-to-actor` is on.
       #
-      # `detached: true` is what makes the details readable: the action waits for the relay
-      # to assign a name, publishes `ssh-command` / `ssh-address` / `web-url` as step
-      # outputs and returns, instead of holding the step open and printing the string into
-      # a live log nobody can read after the fact. Ten minutes of silence is the measured
-      # failure this replaces; the step bound keeps a dead relay cheap.
+      # `detached: true` publishes `ssh-command` / `join-command` / `ssh-config` as step
+      # outputs and returns, so the step after this one can write the string where a person
+      # or a script can read it.
       - name: Open the interactive SSH session
         id: session
         if: ${{ !cancelled() }}
         timeout-minutes: 10
-        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
+        uses: owenthereal/action-upterm@6c2d60e09009f59cb4c45c88767c78701f14d121 # v2.8.1
         with:
           limit-access-to-actor: true
+          full-access: true
           detached: true
-          # How long the post step waits for a client after the job ends. Bounded on
-          # purpose: an unattended session must not sit on the 240-minute job cap.
-          connect-timeout-seconds: 300
+          # In detached mode the post step waits this long for a guest once the regular
+          # steps end; bounded so an unattended session cannot sit on the job cap.
+          wait-timeout-minutes: 5
 
       - name: Publish the connection details
         if: ${{ always() }}
@@ -368,7 +373,7 @@ jobs:
               echo 'Web shell also printed in the session step log; it is a bearer link, so it'
               echo 'is deliberately not repeated here.'
             else
-              echo "No session: the tmate step did not publish a connection string."
+              echo "No session: the upterm step did not publish a connection string."
               echo "Session step outcome: ${{ steps.session.outcome }}"
             fi
           } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
@@ -381,12 +386,12 @@ jobs:
             printf '%s\n' "${ssh_cmd}" >"${CI_TMP_ROOT:?}/session-ssh.txt"
           else
             printf 'CI_DEBUG_SSH_READY=0\n' >>"${GITHUB_ENV}"
-            # A tmate that came up but never got a name daemonises and survives the step.
-            # Without this the keep-alive below would hold the runner for the session that
-            # is not there.
-            if pgrep -x tmate >/dev/null 2>&1; then
-              echo "killing the tmate process left behind by a session that never came up"
-              pkill -x tmate || true
+            # A relay client that came up but never got a session can outlive the step.
+            # Without this the keep-alive below would hold the runner for a session that is
+            # not there.
+            if pgrep -x upterm >/dev/null 2>&1; then
+              echo "killing the upterm process left behind by a session that never came up"
+              pkill -x upterm || true
             fi
           fi
 
@@ -400,7 +405,7 @@ jobs:
           retention-days: 1
 
       # The runner is held open for the human. Two conditions, both required: a published
-      # session and a live tmate process. The bound is inside the job's own timeout, so the
+      # session and a live upterm process. The bound is inside the job's own timeout, so the
       # job cap is never what ends a session, and cancelling the run still frees the runner
       # (`!cancelled()`), which is what the concurrency group promises.
       - name: Keep the runner alive
@@ -409,11 +414,11 @@ jobs:
         run: |
           echo "session open; the runner is held until the session ends or 140 minutes pass"
           started=$(date +%s)
-          while pgrep -x tmate >/dev/null 2>&1; do
+          while pgrep -x upterm >/dev/null 2>&1; do
             sleep 30
             if [ $(( $(date +%s) - started )) -ge 8400 ]; then
-              echo "stopped: the 140-minute bound was reached with tmate still running"
+              echo "stopped: the 140-minute bound was reached with upterm still running"
               exit 0
             fi
           done
-          echo "stopped: tmate exited, which is what closing the session does"
+          echo "stopped: upterm exited, which is what closing the session does"
