@@ -271,22 +271,31 @@ unchanged=$(STUB_NO_SIZE_CHANGE=1 wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
 assert_eq "${unchanged}" "fail:size-unchanged ${last_lba}" \
   "ac-3 a kernel that never shows the new size is recorded as fail:size-unchanged"
 
-# wf_grow_fs is the post-mount half of the contract: the target is a MOUNT POINT, and a
-# device path or an unmounted directory must never reach btrfs-progs.
+# wf_grow_fs takes the DEVICE while nothing of the filesystem is mounted (the boot
+# order), or a mount point when it is already mounted. Everything else is refused.
 reset_fixture
 p4_mount="$tmp/mnt/p4"
+: >"$WF_MOUNTS"
+assert_eq "$(wf_grow_fs /dev/vda4 /dev/vda)" "done" \
+  "ac-3 the unmounted device is a valid resize target"
+assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max /dev/vda4" \
+  "ac-3 the resize ran against the device, before any mount"
+
+# Once the device is mounted, the device path is the race that produced EBUSY/EINVAL.
 printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "${p4_mount}" >"$WF_MOUNTS"
+rm -f "$tmp/btrfs.calls"
+assert_eq "$(wf_grow_fs /dev/vda4 /dev/vda)" "fail:resize-target" \
+  "ac-3 a mounted device is refused as a resize target"
+assert_eq "$(cat "$tmp/btrfs.calls" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "ac-3 the refused mounted device never reaches btrfs-progs"
 assert_eq "$(wf_grow_fs "${p4_mount}")" "done" \
-  "ac-3 btrfs filesystem resize max is reported as done"
+  "ac-3 a mount point is accepted when the filesystem is mounted"
 assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max ${p4_mount}" \
-  "ac-3 the resize is run against the p4 mount point"
+  "ac-3 the resize is run against the mount point"
+
 assert_eq "$(STUB_BTRFS_FAIL=1 wf_grow_fs "${p4_mount}")" "fail:btrfs-resize" \
   "ac-3 a failed filesystem resize is recorded as fail:btrfs-resize"
-
-# The device is not a resize target: btrfs would have no filesystem to name.
 rm -f "$tmp/btrfs.calls"
-assert_eq "$(wf_grow_fs /dev/vda4)" "fail:resize-target" \
-  "ac-3 a device path is refused as a resize target"
 assert_eq "$(wf_grow_fs /mnt/never-mounted)" "fail:resize-target" \
   "ac-3 an unmounted directory is refused as a resize target"
 assert_eq "$(wf_grow_fs "")" "fail:resize-target" "ac-3 an empty target is refused"
@@ -301,13 +310,23 @@ echo "ERROR: cannot resize /mnt/p4root: device is busy" >&2
 exit 1
 STUB
 chmod +x "$tmp/bin/btrfs-noisy"
-noisy_out="$(WF_BTRFS="$tmp/bin/btrfs-noisy" wf_grow_fs "${p4_mount}" 2>&1)"
+# The boot path resizes the unmounted device, so that is the shape the diagnostics take.
+: >"$WF_MOUNTS"
+reset_fixture
+: >"$WF_MOUNTS"
+noisy_out="$(WF_BTRFS="$tmp/bin/btrfs-noisy" wf_grow_fs /dev/vda4 /dev/vda 2>&1)"
 assert_contains "${noisy_out}" "fail:btrfs-resize" \
   "ac-3 a failed resize still returns its token"
 assert_contains "${noisy_out}" "device is busy" \
   "ac-3 the btrfs-progs error is kept in the grow log"
-assert_contains "${noisy_out}" "[grow] btrfs filesystem resize max ${p4_mount} failed" \
+assert_contains "${noisy_out}" "[grow] btrfs filesystem resize max /dev/vda4 failed" \
   "ac-3 the failing command and its target are logged"
+assert_contains "${noisy_out}" "[grow] diag btrfs:" \
+  "ac-3 the failure dumps what btrfs-progs thinks the filesystem is"
+assert_contains "${noisy_out}" "[grow] diag device /dev/vda4:" \
+  "ac-3 the failure dumps the kernel's device size"
+assert_contains "${noisy_out}" "[grow] diag table: /dev/vda4 : start=" \
+  "ac-3 the failure dumps the partition table line"
 
 # --------------------------------------------------------------------------- #
 # 4Kn disks: sysfs counts 512-byte units, sfdisk counts logical sectors
@@ -514,25 +533,23 @@ assert_contains "$boot_init" 'wf_grow_backup /mnt/p4root' \
 
 # The p4 mount sequence: one mount for the resize and the upper, one short-lived mount
 # for the growth record, and no leftover mount when the root is composed.
-assert_contains "$boot_init" 'grow_fs="$(wf_grow_fs /mnt/p4root)"' \
-  "ac-3 the resize runs on the root subvolume mount point"
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs "${p4}"')" "0" \
-  "ac-3 the device is never passed as a resize target"
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs /mnt/p4"')" "0" \
-  "ac-3 the resize never runs on the generation mount"
+assert_contains "$boot_init" 'grow_fs="$(wf_grow_fs "${p4}" "${dev}")"' \
+  "ac-3 the resize takes the unmounted device"
+assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs /mnt/')" "0" \
+  "ac-3 no resize runs through a mount point in the boot path"
 assert_contains "$boot_init" \
   'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root' \
   "ac-3 the record mount is the p4 root subvolume"
 
 # The order is the fix for the EBUSY: exactly one mount while btrfs-progs resizes.
 root_mount_line=$(code_line_of 'subvol=/" "${p4}" /mnt/p4root')
-resize_line=$(code_line_of 'wf_grow_fs /mnt/p4root')
+resize_line=$(code_line_of 'wf_grow_fs "${p4}" "${dev}"')
 record_line=$(code_line_of 'wf_grow_record /mnt/p4root')
 record_umount_line=$(code_line_of 'umount /mnt/p4root')
 generation_mount_line=$(code_line_of 'subvol=/${upper}" "${p4}" /mnt/p4')
 overlay_compose_line=$(code_line_of 'mount -t overlay overlay')
-assert_eq "$((root_mount_line < resize_line))" "1" \
-  "ac-3 the resize runs after the single root-subvolume mount"
+assert_eq "$((resize_line < root_mount_line))" "1" \
+  "ac-3 the resize runs before the first mount of the filesystem"
 assert_eq "$((resize_line < record_line))" "1" \
   "ac-3 the resize happens before the growth record is written"
 assert_eq "$((record_line < record_umount_line))" "1" \
@@ -545,8 +562,8 @@ assert_contains "$boot_init" 'umount /mnt/p4root failed, retrying once' \
   "ac-3 a busy record mount is retried instead of being ignored"
 assert_contains "$boot_init" 'p4 root subvolume is still mounted at /mnt/p4root' \
   "ac-3 a leftover record mount is reported"
-assert_contains "$boot_init" 'p4 step=resize target=/mnt/p4root state=' \
-  "ac-3 the resize step names the mount point it used"
+assert_contains "$boot_init" 'p4 step=resize target=${p4} state=' \
+  "ac-3 the resize step names the device and says it is unmounted"
 assert_contains "$boot_init" 'if [ "${degraded}" = "1" ]; then' \
   "ac-3 no p4 subvolume is mounted when p4 itself is degraded"
 

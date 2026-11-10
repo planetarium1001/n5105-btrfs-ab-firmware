@@ -353,31 +353,59 @@ wf_grow_run() {
     esac
 }
 
-# wf_grow_fs <p4 mount point>: grow the filesystem to the partition it now sits on.
-# Prints `done`, `fail:resize-target` or `fail:btrfs-resize`; the caller decides what to
-# record.
+# wf_grow_fs <target> [<disk>]: grow the filesystem onto the partition it sits on.
+# Prints `done`, `fail:resize-target` or `fail:btrfs-resize`.
 #
-# The argument is a MOUNT POINT, never the device: `btrfs filesystem resize max /dev/vda4`
-# has no filesystem to name and fails, and a resize that silently did nothing would leave
-# a grown partition with a 64 MiB filesystem. The mount table is checked first so that
-# mistake cannot reach btrfs-progs at all.
+# <target> is either a mount point or, better, the unmounted device:
+#
+#   * the device while nothing of that filesystem is mounted — btrfs-progs opens the
+#     device directly, with no mount point to resolve. This is the resize a growpart-style
+#     tool does: partition table first, filesystem second, mounts last;
+#   * a mount point when the filesystem is already mounted, for a resize that has to
+#     happen later in the boot.
+#
+# Anything else is refused before btrfs-progs runs: an unmounted directory names no
+# filesystem, and a DEVICE THAT IS CURRENTLY MOUNTED is exactly the race that produced
+# both EBUSY (`Can't open blockdev`) and EINVAL (`unable to resize ...: Invalid
+# argument`) on the real machine.
+#
+# <disk> is only used for the failure diagnostics.
 wf_grow_fs() {
     wf_gf_target="${1:-}"
+    wf_gf_disk="${2:-}"
+    wf_gf_mounts="${WF_MOUNTS:-/proc/mounts}"
     [ -n "${wf_gf_target}" ] || {
         printf 'fail:resize-target'
         return 0
     }
+    # A mount point appears in column 2; a device in use appears in column 1. Both facts
+    # are needed: `/dev/sda4` as a target is only legal while it is in neither.
+    wf_gf_is_mountpoint=0
+    if awk -v mp="${wf_gf_target}" '$2 == mp { found = 1 } END { exit !found }' \
+        "${wf_gf_mounts}" 2>/dev/null; then
+        wf_gf_is_mountpoint=1
+    fi
+    wf_gf_is_mountsource=0
+    if awk -v dev="${wf_gf_target}" '$1 == dev { found = 1 } END { exit !found }' \
+        "${wf_gf_mounts}" 2>/dev/null; then
+        wf_gf_is_mountsource=1
+    fi
     case "${wf_gf_target}" in
         /dev/*)
-            printf 'fail:resize-target'
-            return 0
+            if [ "${wf_gf_is_mountsource}" = "1" ]; then
+                wf_grow_log "refusing to resize ${wf_gf_target}: the device is mounted"
+                printf 'fail:resize-target'
+                return 0
+            fi
+            ;;
+        *)
+            if [ "${wf_gf_is_mountpoint}" != "1" ]; then
+                wf_grow_log "refusing to resize ${wf_gf_target}: not a mount point"
+                printf 'fail:resize-target'
+                return 0
+            fi
             ;;
     esac
-    if ! awk -v mp="${wf_gf_target}" '$2 == mp { found = 1 } END { exit !found }' \
-        "${WF_MOUNTS:-/proc/mounts}" 2>/dev/null; then
-        printf 'fail:resize-target'
-        return 0
-    fi
     # btrfs-progs output is kept: the reason a resize failed (a busy device, a read-only
     # mount, a filesystem that is already at the end of the partition) is the only thing
     # that makes the failure diagnosable, and swallowing it cost a full CI round.
@@ -387,7 +415,45 @@ wf_grow_fs() {
         return 0
     fi
     wf_grow_log "btrfs filesystem resize max ${wf_gf_target} failed: ${wf_gf_output:-no output}"
+    wf_grow_diag "${wf_gf_target}" "${wf_gf_disk}"
     printf 'fail:btrfs-resize'
+}
+
+# wf_grow_diag <target> [<disk>]: the three numbers that explain a failed resize — what
+# the kernel thinks the device is, what btrfs-progs thinks the filesystem is, and the
+# partition entry that claims the size. All of it goes to stderr (and the serial port),
+# never to stdout.
+wf_grow_diag() {
+    wf_gd_target="${1:-}"
+    wf_gd_disk="${2:-}"
+    wf_gd_dev="${wf_gd_target}"
+    wf_gd_parent=""
+    if command -v di_parent_disk >/dev/null 2>&1; then
+        wf_gd_parent="$(di_parent_disk "${wf_gd_target}" 2>/dev/null)" || wf_gd_parent=""
+        if [ -n "${wf_gd_parent}" ]; then
+            wf_gd_dev="${wf_gd_parent}"
+        fi
+    fi
+    [ -n "${wf_gd_disk}" ] || wf_gd_disk="${wf_gd_dev}"
+    "${WF_BTRFS}" filesystem show "${wf_gd_target}" 2>&1 | while IFS= read -r wf_gd_line; do
+        wf_grow_log "diag btrfs: ${wf_gd_line}"
+    done
+    wf_gd_bytes="$("${WF_BLOCKDEV}" --getsize64 "${wf_gd_target}" 2>/dev/null)" || wf_gd_bytes=""
+    if [ -n "${wf_gd_bytes}" ]; then
+        wf_grow_log "diag device ${wf_gd_target}: ${wf_gd_bytes} bytes"
+    fi
+    if [ -n "${wf_gd_disk}" ]; then
+        wf_gd_dir="${WF_GROW_TMP}/grow"
+        mkdir -p "${wf_gd_dir}" 2>/dev/null
+        if "${WF_SFDISK}" -d "${wf_gd_disk}" >"${wf_gd_dir}/partitions.diag" 2>/dev/null; then
+            wf_gd_line="$(sed -n "s|^\(${wf_gd_target}[[:space:]]*:.*\)$|\1|p" \
+                "${wf_gd_dir}/partitions.diag" 2>/dev/null | head -n 1)"
+            if [ -n "${wf_gd_line}" ]; then
+                wf_grow_log "diag table: ${wf_gd_line}"
+            fi
+        fi
+    fi
+    return 0
 }
 
 # wf_grow_backup <directory>: copy the pre-change partition table into

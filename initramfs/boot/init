@@ -6,8 +6,8 @@
 #   0. p4  first-boot growth: the partition table is rewritten so p4 reaches the end of
 #          the disk, the kernel re-reads it, and the outcome lands in
 #          <p4 root subvolume>/.ab/grow as `result=<state> last_lba=<n>`
-#   1. p4  root subvolume      rw,compress=zstd:6,discard=async   -> /mnt/p4root
-#          then                 btrfs filesystem resize max /mnt/p4root
+#   1. p4  unmounted device    btrfs filesystem resize max <device>   (no mount yet)
+#          then                 root subvolume rw,compress=zstd:6    -> /mnt/p4root
 #          then                 .ab/partitions.before, .ab/grow, umount
 #   2. p4  @overlay-<version>  rw,compress=zstd:6,discard=async
 #                              subvol=@overlay-<version>         -> /mnt/p4
@@ -31,9 +31,10 @@
 # Only @overlay carries compress=; a filesystem has exactly one compression level, so
 # the child mounts repeat no compress option at all.
 #
-# The first mount of p4 is the root subvolume, and it carries `compress=` and
-# `discard=`: `compress=` is only applied by the first mount of a filesystem, and this
-# mount is also the only one present while btrfs-progs resizes it. The generation layer
+# The filesystem is resized before anything is mounted, on the device itself: btrfs-progs
+# then has no mount point to resolve and no second mount to trip over. The root subvolume
+# is the first mount after that, and it carries `compress=` and `discard=`: `compress=` is
+# only applied by the first mount of a filesystem. The generation layer
 # is mounted afterwards with the same options; repeating them is harmless because the
 # filesystem already has its level. The read-only layers are mounted under @-names so the
 # overlay command line literally carries both layer names. The writable layer name comes
@@ -204,6 +205,32 @@ esac
 wf_log "p4 growth: ${grow_state} (last usable LBA ${grow_last_lba})"
 
 # --------------------------------------------------------------------------- #
+# 3b. Filesystem resize, still before ANY mount
+# --------------------------------------------------------------------------- #
+# btrfs-progs resizes the partition's filesystem, and it must do that while nothing of
+# that filesystem is mounted: on the real machine, resizing through a mount point right
+# after the partition grew failed with EINVAL, and resizing with two mounts present
+# failed with EBUSY (`/dev/vda4: Can't open blockdev`). With the device unmounted,
+# btrfs-progs opens the device directly — partition table first, filesystem second,
+# mounts last, which is the order growpart-style tools use.
+#
+# A resize failure is recorded, never fatal: the partition keeps its size and the
+# runtime retry in ab-boot gets another chance with p4 mounted.
+case "${grow_state}" in
+    done | already-full)
+        wf_log "p4 step=resize target=${p4} state=${grow_state} (unmounted)"
+        grow_fs="$(wf_grow_fs "${p4}" "${dev}")"
+        case "${grow_fs}" in
+            done) wf_log "btrfs filesystem at max size" ;;
+            *)
+                wf_log "btrfs filesystem resize failed, recording ${grow_fs}"
+                grow_state="${grow_fs}"
+                ;;
+        esac
+        ;;
+esac
+
+# --------------------------------------------------------------------------- #
 # 4. State from the ESP
 # --------------------------------------------------------------------------- #
 
@@ -252,41 +279,21 @@ mkdir -p /mnt/p4 /mnt/p4root /mnt/@platform /mnt/@sys
 degraded=0
 
 # --------------------------------------------------------------------------- #
-# 5a. p4, first pass: ONE mount of the filesystem root does the resize and keeps
-#     the growth record
+# 5a. p4, first pass: mount the filesystem root once to keep the growth record
 # --------------------------------------------------------------------------- #
-# btrfs-progs opens the device exclusively while it resizes, so the resize has to run
-# while the filesystem has exactly one mount. When /mnt/p4 and /mnt/p4root were both
-# mounted, `btrfs filesystem resize max` failed with EBUSY, the kernel logged
-# `/dev/vda4: Can't open blockdev`, and a grown partition kept its 64 MiB filesystem.
+# The resize already happened in section 3b, on the unmounted device. This mount only
+# exists to write `.ab/grow` and `.ab/partitions.before` on the root subvolume: it
+# outlives every generation layer, and ab-boot mounts it at /mnt/p4 at runtime.
 #
-# The root subvolume is that single mount, and it is also where `.ab/grow` and the
-# pre-growth table belong: the root subvolume outlives every generation layer and
-# ab-boot mounts it at /mnt/p4 at runtime.
-#
-# This first mount carries compress= and discard=: `compress=` is only applied by the
-# first mount of a filesystem, and the generation mount below repeats the same level.
+# This is also the first mount of the filesystem, so it carries compress= and discard=:
+# `compress=` is only applied by the first mount, and the generation mount below repeats
+# the same level. The mount is given back before that second mount, so btrfs-progs and
+# the overlay never see the filesystem mounted twice.
 if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root; then
     p4root_line="$(awk '$2 == "/mnt/p4root" { print }' /proc/mounts)"
     case "${p4root_line}" in
         *compress=*) : ;;
         *) wf_fail p4-compress-option-missing ;;
-    esac
-
-    case "${grow_state}" in
-        done | already-full)
-            # The resize target is the mount point, never the device, and this is the only
-            # mount of the filesystem at the time it runs.
-            wf_log "p4 step=resize target=/mnt/p4root state=${grow_state}"
-            grow_fs="$(wf_grow_fs /mnt/p4root)"
-            case "${grow_fs}" in
-                done) wf_log "btrfs filesystem at max size" ;;
-                *)
-                    wf_log "btrfs filesystem resize failed, recording ${grow_fs}"
-                    grow_state="${grow_fs}"
-                    ;;
-            esac
-            ;;
     esac
 
     wf_log "p4 step=record start device=${p4} state=${grow_state}"
