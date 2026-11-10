@@ -194,6 +194,11 @@ fi
 [ "${p4_mounted}" = "true" ] ||
     ci_die "cannot mount a scratch writable partition, the payload check needs one"
 
+# The checker runs straight out of the checkout, where the tools are stored without the
+# executable bit, so the same mode rule the image build uses is applied first.
+ci_platform_modes "${CI_REPO_ROOT}/platform" || true
+ci_platform_startlinks "${CI_REPO_ROOT}/platform" || true
+
 check_output="${assemble_dir}/payload-check.log"
 if ! PATH="${CI_REPO_ROOT}/platform/usr/sbin:${PATH}" \
     AB_ESP="${check_dir}/esp" AB_P4="${check_dir}/p4" \
