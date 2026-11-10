@@ -267,11 +267,7 @@ populate_slot() {
     # Executability follows the directory convention, so a new tool under usr/sbin is
     # runnable without touching this script.
     ci_platform_modes "${mnt}/@platform" sudo
-    # The init.d hooks need start links so rcS picks them up. The source tree only holds
-    # the scripts, so the link directory is created here.
-    sudo mkdir -p "${mnt}/@platform/etc/rc.d"
-    sudo ln -sf ../init.d/ab-boot "${mnt}/@platform/etc/rc.d/S15ab-boot"
-    sudo ln -sf ../init.d/ab-commit "${mnt}/@platform/etc/rc.d/S99ab-commit"
+    ci_platform_startlinks "${mnt}/@platform" sudo
 
     # Platform layer budget: the layer lives inside a slot filesystem, so an
     # oversized layer eats the space the slot needs for its own writes.

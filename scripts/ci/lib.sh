@@ -265,3 +265,16 @@ ci_platform_modes() {
         find "${dir}/${sub}" -type f -exec ${argv} 0755 {} +
     done
 }
+
+# ci_platform_startlinks <dir> [sudo]: the init.d hooks only run when the rcS start
+# links exist, and those links are not part of the source tree, so every producer of a
+# platform layer has to create them.
+ci_platform_startlinks() {
+    local dir="$1" ln="ln" mkdir="mkdir"
+    if [ "${2:-}" = "sudo" ]; then
+        ln="sudo ln"; mkdir="sudo mkdir"
+    fi
+    ${mkdir} -p "${dir}/etc/rc.d"
+    ${ln} -sf ../init.d/ab-boot "${dir}/etc/rc.d/S15ab-boot"
+    ${ln} -sf ../init.d/ab-commit "${dir}/etc/rc.d/S99ab-commit"
+}
