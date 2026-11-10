@@ -82,6 +82,13 @@ set -u
 PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
+# The btrfs binary. Named because the PATH below ends with the system directories on
+# purpose (a chroot or a test has to be able to supply its own), which also means a test
+# cannot hide the tool by trimming PATH: on a machine with btrfs-progs installed it is
+# found again behind any prefix. Pointing this at a path that does not exist is how the
+# "no tool" branch gets exercised on a machine that has the tool.
+AB_BTRFS="${AB_BTRFS:-btrfs}"
+
 AB_ESP="${AB_ESP:-/boot}"
 AB_P4="${AB_P4:-/mnt/p4}"
 AB_CMD="${AB_CMD:-/proc/cmdline}"
@@ -557,7 +564,7 @@ cmd_gc() {
     [ -d "${AB_P4}" ] || die "writable partition is not mounted at ${AB_P4}"
     # Without the tool there is nothing to reclaim *with*: say so instead of
     # reporting an empty, successful pass.
-    command -v btrfs >/dev/null 2>&1 || {
+    command -v "${AB_BTRFS}" >/dev/null 2>&1 || {
         say "ab-slot: btrfs tool not found, reclamation skipped"
         say "reason=btrfs-tool-missing"
         exit 1
@@ -567,7 +574,7 @@ cmd_gc() {
     _keep_b="$(state_upper b)" || die "state has no layer for slot b"
     _pending="$(state_pending)" || die "state has no pending field"
 
-    _layers="$(btrfs subvolume list "${AB_P4}" 2>/dev/null | sed -n 's/.* path @overlay-.*/&/p' | sed -n 's/.* path //p' | sort)"
+    _layers="$("${AB_BTRFS}" subvolume list "${AB_P4}" 2>/dev/null | sed -n 's/.* path @overlay-.*/&/p' | sed -n 's/.* path //p' | sort)"
     [ -n "${_layers}" ] || { say "ab-slot: no writable layers found"; return 0; }
 
     for _layer in ${_layers}; do
@@ -590,8 +597,8 @@ cmd_gc() {
             continue
         fi
         say "ab-slot: deleting ${_layer}"
-        btrfs subvolume delete -C "${AB_P4}/${_layer}" >/dev/null || die "cannot delete ${_layer}"
-        btrfs subvolume sync "${AB_P4}" >/dev/null 2>&1
+        "${AB_BTRFS}" subvolume delete -C "${AB_P4}/${_layer}" >/dev/null || die "cannot delete ${_layer}"
+        "${AB_BTRFS}" subvolume sync "${AB_P4}" >/dev/null 2>&1
     done
 }
 

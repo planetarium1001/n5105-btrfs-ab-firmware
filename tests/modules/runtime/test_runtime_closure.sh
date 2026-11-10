@@ -100,8 +100,12 @@ for tool in sed awk tr mkdir mv rm sync find cat printf sha256sum; do
   [ -x "/usr/bin/$(basename "$tool")" ] && ln -sf "/usr/bin/$(basename "$tool")" "$tmp/nobin/$tool" 2>/dev/null
 done
 
-out="$(PATH="$tmp/nobin:/bin:/usr/bin" AB_ESP="$esp" AB_CMD=/dev/null AB_P4="$tmp/p4" \
-  sh platform/usr/sbin/ab-slot gc 2>&1)"
+# ab-slot appends the system directories to PATH on purpose (a chroot has to be able to
+# supply its own btrfs), so trimming PATH does not hide the tool on a machine that has
+# btrfs-progs installed - the case silently stopped testing the missing-tool path there.
+# AB_BTRFS is the seam: point it at a path that does not exist.
+out="$(AB_BTRFS="$tmp/nobin/btrfs" PATH="$tmp/nobin:/bin:/usr/bin" AB_ESP="$esp" \
+  AB_CMD=/dev/null AB_P4="$tmp/p4" /bin/sh platform/usr/sbin/ab-slot gc 2>&1)"
 assert_eq "$?" "1" "ac-3 gc exits non-zero without the btrfs tool"
 assert_contains "$out" "reason=btrfs-tool-missing" "ac-3 gc names the missing tool"
 assert_eq "$(printf '%s' "$out" | grep -c 'deleting')" "0" "ac-3 gc does not claim to have deleted anything"

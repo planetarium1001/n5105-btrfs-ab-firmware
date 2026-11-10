@@ -17,6 +17,14 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 MODULES_DIR="$ROOT/tests/modules"
 OUT_DIR="$ROOT/tests/.out"
 
+# A test that runs inside a GitHub Actions step inherits that step's file-command
+# channels: a script under test then writes its outputs (and its log lines) into
+# GITHUB_OUTPUT/GITHUB_STEP_SUMMARY instead of stdout, and every assertion that greps
+# stdout fails on a machine where the suite is supposed to pass. Measured on an
+# ubuntu-latest runner: three tests failed there and passed on a laptop for exactly this
+# reason. The suite owns its environment, so it takes those channels away from the tests.
+unset GITHUB_OUTPUT GITHUB_ENV GITHUB_STEP_SUMMARY GITHUB_PATH GITHUB_STATE
+
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 MODULE_FILTER=""
 LIST_ONLY=0
