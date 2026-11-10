@@ -51,11 +51,12 @@ mkdir -p "$esp/ab/log" "$p4"
 
 # --- payload builder --------------------------------------------------------
 # build_payload <dir> <version> [--bad-format] [--missing <member>] [--bad-digest]
-#               [--vermagic <module-ver> <kernel-ver>]
+#               [--vermagic <module-ver> <kernel-ver>] [--banner <text>] [--banner <text>]
 build_payload() {
   local dir="$1" version="$2"
   shift 2
-  local bad_format=0 missing="" bad_digest=0 module_ver="6.12.103" kernel_ver="6.12.103" mixed_ver=""
+  local bad_format=0 missing="" bad_digest=0 module_ver="6.12.103" kernel_ver="6.12.103"
+  local banner="" mixed_ver=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bad-format) bad_format=1; shift ;;
@@ -63,12 +64,14 @@ build_payload() {
       --bad-digest) bad_digest=1; shift ;;
       --vermagic) module_ver="$2"; kernel_ver="$3"; shift 3 ;;
       --mixed-vermagic) mixed_ver="$2"; shift 2 ;;
+      --banner) banner="$2"; shift 2 ;;
       *) echo "bad arg $1" >&2; return 1 ;;
     esac
   done
+  [ -n "$banner" ] || banner="payload $version"
   rm -rf "$dir"
   mkdir -p "$dir/rootfs/etc" "$dir/cpio/lib/modules/$module_ver"
-  printf 'rootfs %s\n' "$version" >"$dir/rootfs/etc/banner"
+  printf '%s\n' "$banner" >"$dir/rootfs/etc/banner"
   printf '#!/bin/sh\n' >"$dir/rootfs/sbin-init"
   tar -czf "$dir/rootfs.tar.gz" -C "$dir/rootfs" .
   printf 'vermagic=%s SMP mod_unload \n' "$kernel_ver" >"$dir/kernel.bin"
@@ -124,6 +127,50 @@ assert_contains "$out" "modules agree on ${module_ver:-}" "ac-1 the module verma
 assert_file_exists "$esp/ab/conflicts.log" "ac-1 the conflict report is published on the ESP"
 assert_eq "$(tail -n 1 "$esp/ab/conflicts.log")" "conflicts=0 uci-defaults=0" \
   "ac-1 a payload without user edits reports no conflict"
+
+# --- ac-1b conflict matrix ---------------------------------------------------
+# The baseline is the running slot's @sys, the payload is the new tree and the upper
+# is the user's copy. A conflict is "the payload changed it and the user changed it".
+make_baseline() { # <text>
+  mkdir -p "$tmp/slots/a/@sys/etc" "$tmp/p4/@overlay-25.12.2/upper/etc"
+  printf '%s\n' "$1" >"$tmp/slots/a/@sys/etc/banner"
+}
+make_user_copy() { # <text>
+  mkdir -p "$tmp/p4/@overlay-25.12.2/upper/etc"
+  printf '%s\n' "$1" >"$tmp/p4/@overlay-25.12.2/upper/etc/banner"
+}
+
+conflict_count() { sed -n 's/^conflicts=\([0-9]*\).*/\1/p' "$esp/ab/conflicts.log" | tail -n 1; }
+
+# payload changed it, the user changed it too -> report, but do not block
+make_baseline "distro default"
+make_user_copy "user edited"
+changed_by_both="$(build_payload "$tmp/c-both" 25.12.3-test2 --banner "payload default")"
+out="$(run_upgrade "$changed_by_both")"
+assert_eq "$?" "0" "ac-1b a conflict does not block the upgrade"
+assert_eq "$(conflict_count)" "1" "ac-1b a file changed on both sides is reported"
+assert_contains "$(cat "$esp/ab/conflicts.log")" "conflict path=/etc/banner result=keep-user" \
+  "ac-1b the conflict names the path and the resolution"
+assert_contains "$(cat "$esp/ab/conflicts.log")" "baseline=ok" "ac-1b the report records a readable baseline"
+
+# payload changed it, the user did not -> no conflict
+make_baseline "distro default"
+rm -rf "$tmp/p4/@overlay-25.12.2"
+changed_by_payload="$(build_payload "$tmp/c-payload" 25.12.3-test3 --banner "payload default")"
+out="$(run_upgrade "$changed_by_payload")"
+assert_eq "$?" "0" "ac-1b the upgrade still succeeds"
+assert_eq "$(conflict_count)" "0" "ac-1b a payload-only change is not a conflict"
+
+# the user changed it, the payload did not -> no conflict
+make_baseline "distro default"
+make_user_copy "user edited"
+same_in_payload="$(build_payload "$tmp/c-none" 25.12.3-test4 --banner "distro default")"
+out="$(run_upgrade "$same_in_payload")"
+assert_eq "$?" "0" "ac-1b the upgrade still succeeds"
+assert_eq "$(conflict_count)" "0" "ac-1b a user-only change is not a conflict"
+
+rm -rf "$tmp/slots" "$tmp/p4"
+mkdir -p "$tmp/p4"
 
 # --- ac-2 manifest shape ----------------------------------------------------
 bad_format="$(build_payload "$tmp/bad-format" 25.12.3 --bad-format)"

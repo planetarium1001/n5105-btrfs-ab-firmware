@@ -43,6 +43,9 @@ say() {
 }
 
 console_say() {
+    # procd sends hook stdout to syslog, so milestones go to the console; where the
+    # console is not writable (a build host, a chroot) this stays silent on purpose.
+    [ -w /dev/console ] || return 0
     printf '%s\n' "$*" >/dev/console 2>/dev/null || :
 }
 
@@ -181,17 +184,34 @@ esac
 running_layer="$(ab-slot status 2>/dev/null | sed -n 's/^.*upper=\([^ ]*\) .*/\1/p')"
 
 slots_root="${AB_SLOTS_ROOT:-/mnt/slots}"
-mkdir -p "${slots_root}/${running}"
 running_sys="${slots_root}/${running}/@sys"
+baseline="unreadable"
+if [ -d "${running_sys}/etc" ]; then
+    baseline="ok"
+else
+    # The boot initramfs mounts the slot subvolumes for itself and those mounts are
+    # gone once userspace runs, so the baseline has to be mounted again here. The
+    # comparison is only meaningful when it can be read; a missing baseline is
+    # reported, never guessed at.
+    if running_mp="$(upgrade_slot_mount "${running}" 2>/dev/null)" && [ -d "${running_mp}/@sys/etc" ]; then
+        running_sys="${running_mp}/@sys"
+        baseline="ok"
+    fi
+fi
 conflicts=0
 uci_defaults=0
 report="${work}/conflicts.log"
 
 {
-    printf 'conflicts rootfs=%s generated=%s\n' "${rootfs_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'conflicts rootfs=%s generated=%s baseline=%s\n' \
+        "${rootfs_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${baseline}"
 } >"${report}"
+if [ "${baseline}" != "ok" ]; then
+    say "ab-upgrade: warning: cannot read the running slot baseline (${running_sys}), no conflict can be detected"
+    console_say "ab-upgrade: warning baseline=unreadable slot=${running}"
+fi
 
-if [ -d "${running_sys}/etc" ]; then
+if [ "${baseline}" = "ok" ] && [ -d "${running_sys}/etc" ]; then
     upper="${AB_P4}/${running_layer}/upper"
     # Non-uci configuration only; /etc/config is uci's own grammar and is delivered
     # through idempotent uci-defaults scripts instead of being compared.

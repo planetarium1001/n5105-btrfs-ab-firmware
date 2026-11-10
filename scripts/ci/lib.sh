@@ -278,3 +278,19 @@ ci_platform_startlinks() {
     ${ln} -sf ../init.d/ab-boot "${dir}/etc/rc.d/S15ab-boot"
     ${ln} -sf ../init.d/ab-commit "${dir}/etc/rc.d/S99ab-commit"
 }
+
+# ci_render_release <file> <platform-version> <upstream-version> <stage>
+# The release file is a template in the source tree; every producer of a platform
+# layer renders it the same way, and refuses to pack a file with placeholders left.
+ci_render_release() {
+    local file="${1:?release file}" platform="${2:?platform version}" upstream="${3:?upstream version}" stage="${4:?stage}"
+    [ -f "${file}" ] || ci_die "release template not found: ${file}"
+    cat >"${file}" <<RELEASE
+PLATFORM_VERSION=${platform}
+UPSTREAM_VERSION=${upstream}
+PLATFORM_STAGE=${stage}
+RELEASE
+    if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${file}"; then
+        ci_die "release file still carries unreplaced placeholders: ${file}"
+    fi
+}

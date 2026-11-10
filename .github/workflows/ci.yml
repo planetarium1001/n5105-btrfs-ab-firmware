@@ -32,6 +32,9 @@ name: CI
 #   stage=verify    resolve, verify, report
 
 on:
+  # release.yml calls this workflow on a tag, so a published release is built by the
+  # same stages that normal pushes run.
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -109,6 +112,8 @@ jobs:
       contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
+      upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
 
   # Stage 4: upstream-consumption spike - boot the official kernel with the probe

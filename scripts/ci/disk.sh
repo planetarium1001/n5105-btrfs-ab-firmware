@@ -160,13 +160,8 @@ mkdir -p "${platform_stage}"
 cp -a "${platform_src}/." "${platform_stage}/"
 
 # platform/etc/platform-release is a template: the version comes from the build.
-sed -i -e "s|@PLATFORM_VERSION@|${platform_version}|g" \
-    -e "s|@UPSTREAM_VERSION@|${upstream_version}|g" \
-    -e "s|@PLATFORM_STAGE@|image|g" \
-    "${platform_stage}/etc/platform-release"
-if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${platform_stage}/etc/platform-release"; then
-    ci_die "platform-release still carries unreplaced placeholders"
-fi
+ci_render_release "${platform_stage}/etc/platform-release" \
+    "${platform_version}" "${upstream_version}" "image"
 
 # The btrfs user space tooling has no place in @sys (that tree must stay byte
 # identical to upstream), so stage "runtime" hands over a ready tree that is merged

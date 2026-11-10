@@ -15,10 +15,20 @@ on:
         description: "Resolved upstream version, recorded in the payload manifest"
         required: true
         type: string
+      upstream_base_url:
+        description: "Release directory URL for the target"
+        required: false
+        type: string
+        default: ""
       kernel_package:
         description: "Kernel package version, recorded in the payload manifest"
         required: true
         type: string
+      kmods_dir:
+        description: "Kernel module directory name on the mirror"
+        required: false
+        type: string
+        default: ""
     outputs:
       payload_manifest_sha256:
         description: "sha256 of the produced payload manifest"
@@ -44,16 +54,21 @@ jobs:
   assemble:
     name: assemble payload
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     permissions:
       contents: read
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
+      CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
+      CI_KMODS_DIR: ${{ inputs.kmods_dir }}
     outputs:
       payload_manifest_sha256: ${{ steps.assemble.outputs.payload_manifest_sha256 }}
       payload_total_bytes: ${{ steps.assemble.outputs.payload_total_bytes }}
+      payload_sha256: ${{ steps.assemble.outputs.payload_manifest_sha256 }}
       payload_members: ${{ steps.assemble.outputs.payload_members }}
+      payload_path: ${{ steps.assemble.outputs.payload_path }}
+      payload_check: ${{ steps.assemble.outputs.payload_check }}
       artifact_name: payload
     steps:
       - name: Check out the repository
@@ -67,8 +82,44 @@ jobs:
           name: upstream-files
           path: ${{ runner.temp }}/ci/fetch
 
+      - name: Install tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cpio kmod
+          if [ ! -x /bin/busybox ]; then
+            sudo apt-get install -y --no-install-recommends busybox-static \
+              || sudo apt-get install -y --no-install-recommends busybox-initramfs
+          fi
+
+      - name: Unpack the btrfs and vfat module closure
+        id: kmods
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+
+      - name: Resolve the btrfs runtime closure
+        id: runtime
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/platform-runtime.sh 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/runtime.log"
+
+      - name: Build the boot initramfs
+        id: initramfs
+        env:
+          CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
+          CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+          CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
+          CI_EXTRA_FILES: ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+
       - name: Assemble payload
         id: assemble
+        env:
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/assemble.log"
@@ -77,7 +128,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: payload
-          path: ${{ runner.temp }}/ci/assemble/payload
+          path: |
+            ${{ runner.temp }}/ci/assemble/payload.tar
+            ${{ runner.temp }}/ci/assemble/payload/manifest.json
+            ${{ runner.temp }}/ci/assemble/payload-check.log
           if-no-files-found: error
           retention-days: 7
 

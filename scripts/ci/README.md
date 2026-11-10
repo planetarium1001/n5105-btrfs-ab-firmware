@@ -16,6 +16,7 @@ reproduced locally with the same inputs the workflow passes.
 | `.github/workflows/ci-s3.yml` | s3 (layered boot) |
 | `.github/workflows/ci-s4.yml` | s4 (slot state machine, three boots) |
 | `.github/workflows/ci-s5.yml` | s5 (upgrade payload, reclamation, degraded boot) |
+| `.github/workflows/release.yml` | tag-triggered publisher, calls `ci.yml` |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -46,6 +47,7 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `platform-runtime.sh` | s5 | resolve and stage the btrfs tooling for the platform layer |
 | `elf_extract.py` | s5 (via platform-runtime.sh) | pull executables and shared objects out of apk v3 packages |
 | `payload-build.sh` | s5 | build the test upgrade payload (rootfs, kernel, initramfs, platform layer, manifest) |
+| `release.sh` | release | name, compress, checksum and describe the published artifacts |
 | `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
 | `diagnostics.sh` | all | environment facts, disk usage and file inventories for failure triage |
@@ -418,4 +420,45 @@ starts the early reclamation; if the tool is broken the log records
 `stage=btrfs-check result=fail reason=...` and reclamation is skipped with the same
 reason. The S5 run gates on that console line (`s5-phase.sh --phase toolchain`), so a
 platform layer without a working tool cannot pass.
+
+## S6: payload production, conflicts and releases
+
+### One validator
+
+`assemble` used to publish a manifest that admitted which members were missing. It now
+builds the real payload — upstream rootfs and kernel, the boot initramfs, and the
+platform layer with the btrfs tooling — and then hands the tar to
+`platform/usr/sbin/ab-upgrade --check`. That checker is the only definition of a valid
+payload: manifest shape, member digests, one kernel build across the initramfs modules,
+free space, conflict report. A payload that passes here is one the device would accept,
+and there is no second copy of the rules to drift.
+
+The stage needs a mounted writable partition because the checker reads `p4` from
+`/proc/mounts`; it mounts a 64 MiB tmpfs for that and unmounts it afterwards.
+
+### Conflicts: what was wrong
+
+The report always said `conflicts=0`. The comparison itself was right, but its baseline
+was not: it looked for the running slot at `/mnt/slots/<slot>/@sys`, a path the boot
+initramfs never leaves behind — it mounts the slot subvolumes for itself and those
+mounts vanish at `switch_root`. The loop was therefore skipped and the count stayed
+zero. `ab-upgrade` now mounts the running slot's filesystem when that path is absent,
+and records `baseline=ok` or `baseline=unreadable` in the report header so a skipped
+comparison can never again look like a clean one. Three directions are tested: changed
+on both sides (reported, upgrade proceeds), payload only (silent), user only (silent).
+
+`S5` now fails with `reason=conflicts-not-detected` or `reason=conflict-baseline-unreadable`
+if the fixture's deliberate conflict does not show up, so the path stays covered.
+
+### Releases
+
+`release.sh` turns a verified build into `n5105-ab-<platform>-<upstream>.img.gz`, the
+matching `.tar`, `SHA256SUMS` and `release-notes.md`. The compressed image is
+decompressed again and compared with the raw image digest before it is published.
+
+`.github/workflows/release.yml` runs on `v*` tags only, calls the ordinary pipeline
+(`ci.yml` gained `workflow_call`) and grants `contents: write` to the publishing job
+alone. Pushing to `main` validates and never publishes. The upstream version and the
+input digests come from the payload manifest, so the notes describe exactly what CI
+built.
 

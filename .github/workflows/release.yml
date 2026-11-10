@@ -1,0 +1,116 @@
+name: release
+
+# Publishing is a tag action, never a branch action: pushing to main validates, a tag
+# releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
+# something the same stages already proved.
+#
+#   git tag v0.0.5 && git push origin v0.0.5
+#
+# Produces a GitHub Release carrying the image, the update payload, SHA256SUMS and
+# release-notes.md. `contents: write` is granted to the publishing job only.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the disk image
+        uses: actions/download-artifact@v4
+        with:
+          name: disk-image
+          path: ${{ runner.temp }}/ci/disk
+
+      - name: Download the update payload
+        uses: actions/download-artifact@v4
+        with:
+          name: payload
+          path: ${{ runner.temp }}/ci/payload
+
+      # The upstream version and the input digests come from the payload manifest the
+      # assemble stage produced, so the release notes describe exactly what was built.
+      - name: Select the versions
+        id: versions
+        run: |
+          set -euo pipefail
+          manifest="${RUNNER_TEMP}/ci/payload/payload/manifest.json"
+          [ -f "${manifest}" ] || { echo "payload manifest not found: ${manifest}" >&2; exit 1; }
+          python3 - "${manifest}" >"${RUNNER_TEMP}/ci/versions.env" <<'PYTHON'
+          import json, sys
+          doc = json.load(open(sys.argv[1], encoding="utf-8"))
+          members = doc["members"]
+          print(f"upstream_version={doc['rootfs']}")
+          print(f"rootfs_sha={members['rootfs.tar.gz']['sha256']}")
+          print(f"kernel_sha={members['kernel.bin']['sha256']}")
+          PYTHON
+          . "${RUNNER_TEMP}/ci/versions.env"
+          {
+            printf 'tag=%s\n' "${GITHUB_REF_NAME}"
+            printf 'platform_version=%s\n' "${GITHUB_REF_NAME#v}"
+            printf 'upstream_version=%s\n' "${upstream_version}"
+            printf 'rootfs_sha=%s\n' "${rootfs_sha}"
+            printf 'kernel_sha=%s\n' "${kernel_sha}"
+            printf 'image_gz=%s\n' "$(ls "${RUNNER_TEMP}/ci/disk"/*.img.gz | head -n 1)"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Render the release artifacts
+        id: release
+        env:
+          CI_IMAGE_GZ: ${{ steps.versions.outputs.image_gz }}
+          CI_PAYLOAD: ${{ runner.temp }}/ci/payload/payload.tar
+          CI_PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+          CI_UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
+          CI_UPSTREAM_ROOTFS_SHA256: ${{ steps.versions.outputs.rootfs_sha }}
+          CI_UPSTREAM_KERNEL_SHA256: ${{ steps.versions.outputs.kernel_sha }}
+          CI_RELEASE_TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/release.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/release.log"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.versions.outputs.tag }}
+          RELEASE_DIR: ${{ runner.temp }}/ci/release
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} exists, uploading the artifacts again"
+            gh release upload "${TAG}" "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar \
+              "${RELEASE_DIR}/SHA256SUMS" --clobber
+          else
+            gh release create "${TAG}" \
+              --title "N5105 AB firmware ${TAG#v}" \
+              --notes-file "${RELEASE_DIR}/release-notes.md" \
+              "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS"
+          fi
+
+      - name: Record the release in the run summary
+        run: |
+          {
+            printf '## Release %s\n\n' "${{ steps.versions.outputs.tag }}"
+            printf '| Artifact | SHA256 |\n| --- | --- |\n'
+            awk '{ printf "| `%s` | `%s` |\n", $2, $1 }' "${{ runner.temp }}/ci/release/SHA256SUMS"
+          } >>"${GITHUB_STEP_SUMMARY}"

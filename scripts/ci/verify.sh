@@ -46,7 +46,7 @@ if [ -d "${CI_REPO_ROOT}/initramfs" ]; then
         init_scripts+=("${path}")
     done < <(find "${CI_REPO_ROOT}/initramfs" -type f ! -name '*.md' | LC_ALL=C sort)
 fi
-# Test scripts under tests/modules/{image,ab,upgrade} run in either dialect, so the shebang
+# Test scripts under tests/modules/{image,ab,upgrade,runtime,release} run in either dialect, so the shebang
 # decides; only those modules are linted here, the rest of tests/ is owned elsewhere.
 bash_test_scripts=()
 # The platform layer ships shell that runs on the target, so it is linted as POSIX sh
@@ -56,7 +56,7 @@ if [ -d "${CI_REPO_ROOT}/platform" ]; then
         init_scripts+=("${path}")
     done < <(find "${CI_REPO_ROOT}/platform" -type f ! -name '*.md' ! -name 'platform-release' | LC_ALL=C sort)
 fi
-for module in image ab upgrade runtime; do
+for module in image ab upgrade runtime release; do
     [ -d "${CI_REPO_ROOT}/tests/modules/${module}" ] || continue
     while IFS= read -r path; do
         case "$(head -n 1 "${path}")" in

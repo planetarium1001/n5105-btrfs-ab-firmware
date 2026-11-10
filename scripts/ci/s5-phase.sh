@@ -170,15 +170,26 @@ sudo grep -q "stage=commit slot=${slot}" "${boot_log}" 2>/dev/null ||
     fail_phase "no-commit-record"
 ci_log "boot log records the commit of slot ${slot}"
 
-# Conflicts: the report exists and its header is well formed.
+# Conflicts: the report exists, its baseline was readable, and the fixture's conflict
+# was actually detected (the fixture edits /etc/banner on both sides on purpose).
 conflicts=0
 if sudo test -f "${esp}/ab/conflicts.log"; then
     conflicts="$(sudo sed -n 's/^conflicts=\([0-9]*\).*/\1/p' "${esp}/ab/conflicts.log" | head -n 1)"
     [ -n "${conflicts}" ] || conflicts=0
+    if ! sudo grep -q 'baseline=ok' "${esp}/ab/conflicts.log"; then
+        ci_warn "the conflict report has no readable baseline, so no comparison happened"
+        sudo sed -e 's/^/[s5-phase]   /' "${esp}/ab/conflicts.log"
+        fail_phase "conflict-baseline-unreadable"
+    fi
 else
     fail_phase "conflicts-report-missing"
 fi
 ci_log "conflict report: ${conflicts} conflict(s)"
+if [ "${conflicts}" -lt 1 ]; then
+    ci_warn "the fixture changes /etc/banner on both sides, so at least one conflict is expected"
+    sudo sed -e 's/^/[s5-phase]   /' "${esp}/ab/conflicts.log"
+    fail_phase "conflicts-not-detected"
+fi
 
 # Reclamation: the early gc in ab-boot reports how many layers it removed.
 reclaimed="$(sudo sed -n 's/.*stage=gc .*reclaimed=\([0-9]*\).*/\1/p' "${boot_log}" | tail -n 1)"

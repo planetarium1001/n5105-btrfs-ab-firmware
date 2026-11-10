@@ -26,8 +26,13 @@ done
 subdirs=$(find "$WORKFLOWS" -mindepth 1 -type d | wc -l | tr -d ' ')
 assert_eq "$subdirs" "0" "no subdirectories under .github/workflows"
 stages=$(find "$WORKFLOWS" -maxdepth 1 -name 'ci-*.yml' | wc -l | tr -d ' ')
-targets=$(grep -h "uses: \./" "$WORKFLOWS"/*.yml | sed 's/.*uses: \.\///' | sort -u)
+targets=$(grep -h "uses: \./" "$WORKFLOWS"/*.yml | sed 's/.*uses: \.\///' | grep '/ci-' | sort -u)
+# ci.yml is the entry and release.yml is the tag-triggered publisher; both call the
+# reusable stage workflows and are not stages themselves, so they must not be counted.
 assert_eq "$(printf '%s\n' "$targets" | wc -l | tr -d ' ')" "$stages" "every stage workflow is referenced"
+for entry in ci.yml release.yml; do
+  assert_file_exists "$root/.github/workflows/${entry}" "root workflow exists: ${entry}"
+done
 while read -r target; do
   [[ -z "$target" ]] && continue
   assert_file_exists "$root/$target" "uses target exists: $target"
@@ -52,8 +57,15 @@ assert_contains "$verify" "check_design.py" "verify runs the design checks"
 assert_contains "$verify" "bash -n" "verify runs a syntax check"
 assert_contains "$verify" "shellcheck" "verify runs shellcheck"
 
-# ac-6 assemble never fabricates missing members
-assert_contains "$(cat "$CI_SCRIPTS/assemble.sh")" "missing_members" "assemble records missing members"
+# ac-6 assemble builds a complete payload and validates it with the product checker;
+# a member it cannot produce is a build failure, never a manifest entry that admits it
+assemble_script="$(cat "$CI_SCRIPTS/assemble.sh")"
+assert_contains "$assemble_script" "ab-upgrade" "assemble validates with ab-upgrade"
+assert_contains "$assemble_script" "--check" "assemble validates in check mode"
+assert_contains "$assemble_script" "platform.tar" "assemble ships the platform layer"
+assert_contains "$assemble_script" "initramfs.cpio.gz" "assemble ships the boot initramfs"
+assert_eq "$(printf '%s' "${assemble_script}" | grep -c 'missing_members')" "0" \
+  "assemble no longer publishes a payload with missing members"
 
 # the initramfs builder must never overwrite the real busybox with an applet symlink
 assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'applet}" = busybox ] && continue' \
