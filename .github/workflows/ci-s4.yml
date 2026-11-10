@@ -219,7 +219,8 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/ab-phase.sh --phase commit --slot a \
             --expect-committed a --expect-pending none \
-            --expect-log 'stage=device disk=/dev/vda' \
+            --expect-log 'stage=device' \
+            --expect-log 'disk=/dev/vda' \
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1.log"
 
@@ -319,7 +320,8 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/ab-phase.sh --phase commit --slot b \
             --expect-committed b --expect-pending none \
-            --expect-log 'stage=device disk=/dev/vda' \
+            --expect-log 'stage=device' \
+            --expect-log 'disk=/dev/vda' \
             --expect-log 'stage=commit slot=b' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase3.log"
 

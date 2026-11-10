@@ -171,6 +171,20 @@ Space thresholds:
 
 No qgroup quota is used; exclusive space is measured on demand with `btrfs filesystem du -s`.
 
+### Finishing a growth the initramfs could not
+
+`btrfs filesystem resize` refuses to open the device while the filesystem is mounted
+more than once, which is what the initramfs has to do to write the record and the
+pre-change table. When it fails there it writes `result=fail:btrfs-resize` into
+`.ab/grow` and continues.
+
+`ab-boot` then finishes the job once the system is up: `/mnt/p4` is the only mount of
+that filesystem there, which is the state btrfs-progs needs, so it runs
+`btrfs filesystem resize max /mnt/p4`, appends btrfs' own output to `ab/log/resize.log`,
+adds one `stage=resize result=… source=ab-boot` line to the ring log, and rewrites
+`.ab/grow` to `result=done` so the record stays the single truth. A failure there only
+logs; the next boot tries again.
+
 ## Logging
 
 Directory `/boot/ab/log/`, total budget about 350 KiB.
@@ -188,14 +202,15 @@ Directory `/boot/ab/log/`, total budget about 350 KiB.
   rename; the health check appends its own probe lines afterwards
 - write points: `initramfs-enter`, `lower-mounted`, `overlay-mounted`, `switch-root`,
   `slot-cfg` (the hint GRUB will read), `grow` (the first-boot growth result),
-  `healthcheck-done`, `commit` or `abandon`, `done`
+  `resize` (a growth finished at runtime, see below), `healthcheck-done`, `commit` or
+  `abandon`, `done`
 
 Record fields are frozen as `key=value`:
 
 ```
 stage=<stage> slot=<a|b> upper=<layer> rootfs=<version> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
-reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written>
+reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written|btrfs-resize>
 action=<commit|reboot-to-committed|degraded-boot>
 next=<a|b>
 ```

@@ -60,14 +60,13 @@ WF_CONSOLES="${WF_CONSOLES:-/proc/consoles}"
 # the judge line.
 wf_console_is_serial() {
     [ -r "${WF_CONSOLES}" ] || return 1
-    while read -r wf_cis_name wf_cis_flags wf_cis_rest; do
-        [ "${wf_cis_name}" = "$(basename "${WF_SERIAL}")" ] || continue
-        case "${wf_cis_flags}" in
-            *U*) return 1 ;;
-            *) return 0 ;;
-        esac
-    done <"${WF_CONSOLES}"
-    return 1
+    wf_cis_flags="$(awk -v want="$(basename "${WF_SERIAL}")" \
+        '$1 == want { print $2; exit }' "${WF_CONSOLES}" 2>/dev/null)"
+    [ -n "${wf_cis_flags}" ] || return 1
+    case "${wf_cis_flags}" in
+        *U*) return 1 ;;
+    esac
+    return 0
 }
 
 # wf_say <line...>: one milestone line on every console that can carry it.

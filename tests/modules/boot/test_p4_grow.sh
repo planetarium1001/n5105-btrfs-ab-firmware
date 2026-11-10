@@ -293,6 +293,22 @@ assert_eq "$(wf_grow_fs "")" "fail:resize-target" "ac-3 an empty target is refus
 assert_eq "$(cat "$tmp/btrfs.calls" 2>/dev/null | wc -l | tr -d ' ')" "0" \
   "ac-3 no refused target ever reaches btrfs-progs"
 
+# btrfs-progs output is the only evidence for why a resize failed, so it is kept in the
+# [grow] log instead of being thrown away.
+cat >"$tmp/bin/btrfs-noisy" <<'STUB'
+#!/bin/sh
+echo "ERROR: cannot resize /mnt/p4root: device is busy" >&2
+exit 1
+STUB
+chmod +x "$tmp/bin/btrfs-noisy"
+noisy_out="$(WF_BTRFS="$tmp/bin/btrfs-noisy" wf_grow_fs "${p4_mount}" 2>&1)"
+assert_contains "${noisy_out}" "fail:btrfs-resize" \
+  "ac-3 a failed resize still returns its token"
+assert_contains "${noisy_out}" "device is busy" \
+  "ac-3 the btrfs-progs error is kept in the grow log"
+assert_contains "${noisy_out}" "[grow] btrfs filesystem resize max ${p4_mount} failed" \
+  "ac-3 the failing command and its target are logged"
+
 # --------------------------------------------------------------------------- #
 # 4Kn disks: sysfs counts 512-byte units, sfdisk counts logical sectors
 # --------------------------------------------------------------------------- #
@@ -388,7 +404,8 @@ assert_contains "$boot_init" '. /lib/disk-identity.sh' \
   "ac-5 the init loads the single device identity implementation"
 assert_eq "$(printf '%s' "${boot_init}" | grep -c 'ab-shared')" "0" \
   "ac-5 the retired ab-shared PARTNAME is gone from the boot path"
-assert_contains "$boot_init" 'mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root' \
+assert_contains "$boot_init" \
+  'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root' \
   "ac-4 the record is written on the p4 root subvolume, not in a generation layer"
 assert_contains "$boot_init" "p4-partial" "ac-5 a failed subvolume mount is reported as p4-partial"
 
@@ -497,21 +514,39 @@ assert_contains "$boot_init" 'wf_grow_backup /mnt/p4root' \
 
 # The p4 mount sequence: one mount for the resize and the upper, one short-lived mount
 # for the growth record, and no leftover mount when the root is composed.
-assert_contains "$boot_init" 'grow_fs="$(wf_grow_fs /mnt/p4)"' \
-  "ac-3 the resize is called with the mount point"
+assert_contains "$boot_init" 'grow_fs="$(wf_grow_fs /mnt/p4root)"' \
+  "ac-3 the resize runs on the root subvolume mount point"
 assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs "${p4}"')" "0" \
   "ac-3 the device is never passed as a resize target"
-assert_contains "$boot_init" 'mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root' \
+assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs /mnt/p4"')" "0" \
+  "ac-3 the resize never runs on the generation mount"
+assert_contains "$boot_init" \
+  'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root' \
   "ac-3 the record mount is the p4 root subvolume"
-record_mount_line=$(code_line_of 'subvol=/" "${p4}" /mnt/p4root')
+
+# The order is the fix for the EBUSY: exactly one mount while btrfs-progs resizes.
+root_mount_line=$(code_line_of 'subvol=/" "${p4}" /mnt/p4root')
+resize_line=$(code_line_of 'wf_grow_fs /mnt/p4root')
+record_line=$(code_line_of 'wf_grow_record /mnt/p4root')
 record_umount_line=$(code_line_of 'umount /mnt/p4root')
+generation_mount_line=$(code_line_of 'subvol=/${upper}" "${p4}" /mnt/p4')
 overlay_compose_line=$(code_line_of 'mount -t overlay overlay')
-assert_eq "$((record_umount_line < overlay_compose_line))" "1" \
-  "ac-3 the record mount is given back before the overlay is composed"
+assert_eq "$((root_mount_line < resize_line))" "1" \
+  "ac-3 the resize runs after the single root-subvolume mount"
+assert_eq "$((resize_line < record_line))" "1" \
+  "ac-3 the resize happens before the growth record is written"
+assert_eq "$((record_line < record_umount_line))" "1" \
+  "ac-3 the record is written before the mount is given back"
+assert_eq "$((record_umount_line < generation_mount_line))" "1" \
+  "ac-3 the generation mount happens only after the root subvolume is unmounted"
+assert_eq "$((generation_mount_line < overlay_compose_line))" "1" \
+  "ac-3 the generation layer is mounted before the overlay is composed"
 assert_contains "$boot_init" 'umount /mnt/p4root failed, retrying once' \
   "ac-3 a busy record mount is retried instead of being ignored"
 assert_contains "$boot_init" 'p4 root subvolume is still mounted at /mnt/p4root' \
   "ac-3 a leftover record mount is reported"
+assert_contains "$boot_init" 'p4 step=resize target=/mnt/p4root state=' \
+  "ac-3 the resize step names the mount point it used"
 assert_contains "$boot_init" 'if [ "${degraded}" = "1" ]; then' \
   "ac-3 no p4 subvolume is mounted when p4 itself is degraded"
 

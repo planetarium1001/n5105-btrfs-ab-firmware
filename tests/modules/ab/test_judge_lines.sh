@@ -66,7 +66,7 @@ assert_eq "$(printf '%s\n' "$s3_body_for_judge" | grep -c 'CI_JUDGE_PREFIX: S3-R
   "ac-1 only the two probe boots expect an S3-RESULT line"
 assert_contains "$s3_body_for_judge" 'CI_QEMU_STOP_PATTERN: "^ab-boot: stage="' \
   "ac-1 the GRUB boot stops on our own boot hook's first line"
-assert_contains "$s3_body_for_judge" "grep -q 'ab-boot: stage=device disk=/dev/vda'" \
+assert_contains "$s3_body_for_judge" "grep -qE 'ab-boot: stage=device .*disk=/dev/vda'" \
   "ac-1 the GRUB boot has to prove our initramfs ran, from the serial log"
 assert_contains "$s3_body_for_judge" "grep -q 'ab-boot: running slot'" \
   "ac-1 the GRUB boot has to reach the boot hook's slot report"
@@ -80,6 +80,17 @@ for workflow in ci-s4 ci-s5; do
   assert_contains "$body" 'ab-boot: stage=boot result=fail' \
     "ac-1 ${workflow} stops the run when the boot hook cannot mount the ESP"
 done
+
+# ab-phase.sh --expect-log greps with -F (a literal fragment), so the phase
+# assertions must be literals that appear in the ring log line - a regex would never
+# match and the phase would fail for the wrong reason.
+s4_body_for_judge=$(cat "$workflows/ci-s4.yml")
+assert_contains "$s4_body_for_judge" "--expect-log 'stage=device'" \
+  "ac-1 the s4 phases assert our boot hook ran (literal fragment)"
+assert_contains "$s4_body_for_judge" "--expect-log 'disk=/dev/vda'" \
+  "ac-1 the s4 phases assert the disk was identified (literal fragment)"
+assert_eq "$(printf '%s\n' "$s4_body_for_judge" | grep -c 'stage=device disk=/dev/vda')" "0" \
+  "ac-1 no phase passes a fragment that cannot match the ring log line"
 
 # The ESP check has to keep asserting what the menu depends on: the loader commands,
 # and the pair invariant that a failed try always has the committed slot as fallback.

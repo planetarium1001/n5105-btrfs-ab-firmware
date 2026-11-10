@@ -73,6 +73,7 @@ slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data
 | --- | --- | --- |
 | 布局完好 | `ab-slot status` | 一行输出，`p4=ok`，有已提交槽 |
 | 本次启动被记录 | `ab-slot log` | 有 `stage=boot`、`stage=btrfs-check result=ok`、`stage=commit` |
+| 扩容有结论 | `ab-slot log` | `stage=grow result=done`（运行期补做完则是 `stage=resize result=ok`） |
 | 工具可用 | `btrfs --version` | 打印 `btrfs-progs` 版本行 |
 | 可写层可见 | `btrfs subvolume list /mnt/p4` | 包含 `ab-slot status` 报告的那一层 |
 | 防火墙已加载 | `nft list table inet fw4` | 有表，不是报错 |
@@ -157,6 +158,7 @@ ab-slot log --prev
 | `next=` 不是预期的槽 | 引导提示没写成功，或被更早的启动留旧了 | `ab-slot next --write` 按 `ab/state.json` 重写它；日志里 `stage=slot-cfg` 记着写入了哪个值 |
 | 升级后总回到已提交槽 | 候选槽在进入用户态前就失败了 | 日志里有 `action=fail-safe-abandon` 与 `reason=`；此时已没有 pending，修好原因后重新安装载荷 |
 | `ab-slot status` 显示 `disk=unknown` | 引导盘无法被识别 | 日志里 `stage=device` 会写明；对照实际写入的盘检查 GPT 名称与 `ab/device.json` |
+| 出现 `stage=resize result=fail:btrfs-resize` | 文件系统没扩成功（initramfs 里或运行期再次失败） | `ab/log/resize.log` 里有 btrfs 自己的报错；分区保持原尺寸，下一次启动重试 |
 | 日志里没有 `btrfs=ok` | 平台层丢了工具 | 重新刷镜像，工具随平台层发布 |
 
 每次失败都会在日志里留一个 `reason=` 记号，和 CI 判据行用的是同一套记号，所以机器上的现象与构建结果可以直接对照，不用猜。

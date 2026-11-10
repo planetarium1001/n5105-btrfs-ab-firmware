@@ -251,7 +251,7 @@ jobs:
             exit 1
           fi
           fail=0
-          if ! grep -q 'ab-boot: stage=device disk=/dev/vda' "${SERIAL}"; then
+          if ! grep -qE 'ab-boot: stage=device .*disk=/dev/vda' "${SERIAL}"; then
             echo "::error::the boot hook never identified the boot disk: our initramfs did not run, or the disk was not /dev/vda"
             fail=1
           fi

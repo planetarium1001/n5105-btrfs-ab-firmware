@@ -83,6 +83,7 @@ Run these on the machine before you trust it with anything:
 | --- | --- | --- |
 | the layout is intact | `ab-slot status` | one line, `p4=ok`, a committed slot |
 | the boot was recorded | `ab-slot log` | `stage=boot`, `stage=btrfs-check result=ok`, `stage=commit` |
+| the growth finished | `ab-slot log` | `stage=grow result=done` (or `stage=resize result=ok` after a runtime rescue) |
 | the tooling works | `btrfs --version` | a `btrfs-progs` banner |
 | the layers are reachable | `btrfs subvolume list /mnt/p4` | the layer named by `ab-slot status` |
 | the firewall came up | `nft list table inet fw4` | a table, not an error |
@@ -183,6 +184,7 @@ ab-slot log --prev
 | `next=` is not the slot you expect | the boot hint was not written, or was written by an older boot | `ab-slot next --write` rewrites it from `ab/state.json`; the log shows `stage=slot-cfg` with the value it wrote |
 | the machine keeps coming back to the committed slot after an update | the candidate failed before userspace | the log holds `action=fail-safe-abandon` and `reason=`; nothing is pending any more, so install the payload again once the cause is fixed |
 | `disk=unknown` in `ab-slot status` | the boot disk could not be identified | the log names it in `stage=device`; check the GPT names and `ab/device.json` against the disk you actually wrote |
+| `stage=resize result=fail:btrfs-resize` | the filesystem could not be extended, in the initramfs or again at runtime | `ab/log/resize.log` holds btrfs' own message; the partition keeps its size and the next boot retries |
 | `btrfs=ok` missing from the log | the platform layer lost its tooling | reinstall from the image; the tool ships in the platform layer |
 
 Every failure carries a `reason=` token in the log, which is the same token the CI

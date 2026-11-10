@@ -113,6 +113,14 @@ assert_contains "${boot_init}" 'wf_say "[boot] stage=device disk=' \
 assert_eq "$(printf '%s' "${boot_init}" | grep -c "printf '\[boot\]" || true)" "0" \
   "ac-4 the init keeps no raw printf for boot markers"
 
+# grow.sh diagnostics have to reach the serial port too: a [grow] line that only lands on
+# the local screen is not evidence for the machine that has no screen.
+grow_lib="$(cat "$root/initramfs/lib/grow.sh")"
+assert_contains "${grow_lib}" 'command -v wf_say >/dev/null 2>&1' \
+  "ac-4 the growth helper uses wf_say when the boot initramfs has it"
+assert_contains "${grow_lib}" 'wf_say "[grow] $*"' \
+  "ac-4 growth diagnostics are mirrored to every console"
+
 # The judge-line shape itself is frozen and must survive the change.
 assert_contains "${fail_body}" 'S3-RESULT=fail reason=' "ac-4 the judge line shape is unchanged"
 assert_contains "$(cat "$root/initramfs/boot/post.sh")" \

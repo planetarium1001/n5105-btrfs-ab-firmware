@@ -101,6 +101,11 @@ cat >"$bin/btrfs" <<'STUB'
 case "$1" in
   --version) printf 'btrfs-progs v6.12\n' ;;
   subvolume) exit 0 ;;
+  filesystem)
+    printf '%s\n' "$*" >>"${STUB_BTRFS_LOG:-/dev/null}"
+    [ "${STUB_BTRFS_RESIZE_FAIL:-0}" = "1" ] && { printf 'ERROR: resize failed\n' >&2; exit 1; }
+    exit 0
+    ;;
 esac
 exit 0
 STUB
@@ -121,6 +126,10 @@ run_boot() {
 }
 
 boot_log() { cat "$esp/ab/log/boot-0.log"; }
+lines_in_file() {
+  [ -f "$1" ] || { printf '0'; return 0; }
+  printf '%s' "$(grep -c . "$1" 2>/dev/null | tr -d ' ')"
+}
 next_slot() { sh -c ". '$slot_cfg_lib'; ab_slot_cfg_get '$esp/boot/grub/ab-slot.cfg'"; }
 
 # --- ac-1 the boot is recorded ---------------------------------------------
@@ -250,6 +259,48 @@ for other in "$root/platform/etc/init.d/ab-commit" "$root/platform/lib/upgrade/p
   assert_eq "$(grep -c '/dev/vda' "$other")" "0" \
     "ac-5 no device name is hard coded in ${other#"$root"/}"
 done
+
+# --- ac-7 a growth the initramfs could not finish is finished at runtime -------
+#
+# `btrfs filesystem resize` fails with EBUSY while the initramfs has the filesystem
+# mounted more than once, and records `result=fail:btrfs-resize`. Here the same
+# filesystem is mounted once, so the growth is retried and the record becomes the truth
+# again: `result=done`.
+export STUB_BTRFS_LOG="$tmp/btrfs.log"
+: >"$STUB_BTRFS_LOG"
+write_state a none 9
+mkdir -p "$p4/.ab"
+printf 'result=fail:btrfs-resize last_lba=921566\n' >"$p4/.ab/grow"
+run_boot
+assert_eq "$?" "0" "ac-7 the boot still succeeds"
+assert_contains "$(cat "$STUB_BTRFS_LOG")" "filesystem resize max ${p4}" \
+  "ac-7 the resize is run against the single mount point"
+assert_contains "$(boot_log)" "stage=resize result=ok source=ab-boot" \
+  "ac-7 the rescue is recorded"
+assert_eq "$(cat "$p4/.ab/grow")" "result=done last_lba=921566" \
+  "ac-7 the record becomes done and keeps its geometry"
+assert_contains "$(boot_log)" "stage=grow slot=a result=done" \
+  "ac-7 the boot hook then reports what the record says"
+assert_file_exists "$esp/ab/log/resize.log" "ac-7 btrfs' own output is kept"
+
+# A second boot must not resize again: the record no longer says it failed.
+: >"$STUB_BTRFS_LOG"
+run_boot
+assert_eq "$(lines_in_file "$STUB_BTRFS_LOG")" "0" \
+  "ac-7 a finished growth is not retried"
+assert_eq "$(cat "$p4/.ab/grow")" "result=done last_lba=921566" \
+  "ac-7 the record stays done"
+
+# A resize that fails again only logs: the boot goes on and the record keeps saying why.
+: >"$STUB_BTRFS_LOG"
+printf 'result=fail:btrfs-resize last_lba=921566\n' >"$p4/.ab/grow"
+STUB_BTRFS_RESIZE_FAIL=1 run_boot
+assert_eq "$?" "0" "ac-7 a failing resize does not block the boot"
+assert_contains "$(boot_log)" "stage=resize result=fail:btrfs-resize source=ab-boot" \
+  "ac-7 the failure is recorded with its reason"
+assert_contains "$(cat "$p4/.ab/grow")" "result=fail:btrfs-resize" \
+  "ac-7 the record keeps the failure, so the next boot tries again"
+unset STUB_BTRFS_LOG
 
 # --- ac-6 the candidate marker ---------------------------------------------
 write_state a b 6

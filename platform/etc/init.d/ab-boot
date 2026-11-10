@@ -173,6 +173,40 @@ heal_slot_cfg() {
 	return 1
 }
 
+# resize_from_record: finish a filesystem growth the initramfs could not do.
+#
+# The initramfs grows p4 while the filesystem is mounted more than once, which makes
+# `btrfs filesystem resize` fail with EBUSY and record `result=fail:btrfs-resize` in
+# .ab/grow. Here the same filesystem is mounted exactly once, on /mnt/p4, which is the
+# exclusive state btrfs-progs needs, so the growth can be finished from the running
+# system. The record stays the single truth: on success it is rewritten to `done`, and
+# the boot hook's own grow line then reports that.
+#
+# Never blocks a boot: btrfs' own output goes to ab/log/resize.log (the device can be
+# asked what happened), the ring log gets one line, and every failure only logs.
+resize_from_record() {
+	is_mounted "${AB_P4}" || return 0
+	_resize_grow="${AB_P4}/.ab/grow"
+	[ -f "${_resize_grow}" ] || return 0
+	grep -q 'result=fail:btrfs-resize' "${_resize_grow}" 2>/dev/null || return 0
+	mkdir -p "${AB_ESP}/ab/log" 2>/dev/null
+	if btrfs filesystem resize max "${AB_P4}" >>"${AB_ESP}/ab/log/resize.log" 2>&1; then
+		_resize_lba="$(sed -n 's/.*last_lba=//p' "${_resize_grow}" | head -n 1)"
+		if printf 'result=done last_lba=%s\n' "${_resize_lba}" >"${_resize_grow}.tmp" 2>/dev/null &&
+			mv "${_resize_grow}.tmp" "${_resize_grow}" 2>/dev/null; then
+			sync 2>/dev/null || :
+		else
+			rm -f "${_resize_grow}.tmp" 2>/dev/null || :
+		fi
+		log_append "stage=resize result=ok source=ab-boot"
+		console_say "ab-boot: filesystem grown to the partition size, the initramfs left it for us"
+		return 0
+	fi
+	log_append "stage=resize result=fail:btrfs-resize source=ab-boot"
+	console_say "ab-boot: filesystem growth still failing, see ab/log/resize.log"
+	return 0
+}
+
 # grow_result: the first-boot growth result that the initramfs recorded on p4.
 #
 # The initramfs writes p4's subvolume root, so `.ab/grow` is either directly on the
@@ -208,6 +242,11 @@ start() {
 	mount_p4 || echo "ab-boot: cannot mount the writable partition, reclamation degraded"
 
 	rotate_logs
+
+	# A growth the initramfs could not finish is finished here, where the filesystem is
+	# mounted once. Runs before anything reads the record, so the grow line below reports
+	# what is actually true.
+	resize_from_record
 
 	status_line="$(ab-slot status 2>/dev/null)"
 	field() {

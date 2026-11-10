@@ -147,6 +147,16 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 
 不使用 qgroup 配额；独占空间按需用 `btrfs filesystem du -s` 测量。
 
+### 运行期补做完扩容
+
+`btrfs filesystem resize` 在同一文件系统被多次挂载时打不开设备，而 initramfs 为了写记录和扩容前的
+分区表恰好要挂两次。它在那边失败时会往 `.ab/grow` 写 `result=fail:btrfs-resize` 并继续启动。
+
+系统起来后由 `ab-boot` 补做：运行期 `/mnt/p4` 是该文件系统的唯一挂载，正是 btrfs-progs 需要的独占
+状态，于是它执行 `btrfs filesystem resize max /mnt/p4`，把 btrfs 自己的输出追加到
+`ab/log/resize.log`，在环形日志里加一行 `stage=resize result=… source=ab-boot`，并把 `.ab/grow`
+改回 `result=done`，让记录继续是唯一真相。这里失败只记日志，下一次启动再试。
+
 ## 日志
 
 目录 `/boot/ab/log/`，总预算约 350 KiB。
@@ -162,7 +172,7 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 - 单文件 32 KiB，超出截断并写入 `TRUNCATED=1` 标记
 - 启动钩子每次启动最多 8 次写入，均为整文件写入：临时文件、`sync`、rename；健康检查随后追加自己的探针行
 - 写入点：`initramfs-enter`、`lower-mounted`、`overlay-mounted`、`switch-root`、
-  `slot-cfg`（GRUB 下次要读的提示）、`grow`（首启扩容结果）、
+  `slot-cfg`（GRUB 下次要读的提示）、`grow`（首启扩容结果）、`resize`（运行期补做的扩容，见下）、
   `healthcheck-done`、`commit` 或 `abandon`、`done`
 
 记录字段冻结为 `key=value`：
@@ -170,7 +180,7 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 ```
 stage=<阶段> slot=<a|b> upper=<层名> rootfs=<版本> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
-reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written>
+reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written|btrfs-resize>
 action=<commit|reboot-to-committed|degraded-boot>
 next=<a|b>
 ```

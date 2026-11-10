@@ -52,8 +52,14 @@ WF_GPT_TAIL_SECTORS="${WF_GPT_TAIL_SECTORS:-34}"
 WF_GROW_VERIFY_TRIES="${WF_GROW_VERIFY_TRIES:-5}"
 
 # wf_grow_log <line...>: diagnostics go to stderr so callers can capture the single
-# result token from stdout without losing the log.
+# result token from stdout without losing the log. When the boot initramfs has loaded
+# lib/wf.sh (it does, it sources both), the line also reaches every console through
+# wf_say: a `[grow]` line that only lands on the local screen is not evidence.
 wf_grow_log() {
+    if command -v wf_say >/dev/null 2>&1; then
+        wf_say "[grow] $*"
+        return 0
+    fi
     printf '[grow] %s\n' "$*" >&2
 }
 
@@ -369,10 +375,15 @@ wf_grow_fs() {
         printf 'fail:resize-target'
         return 0
     fi
-    if "${WF_BTRFS}" filesystem resize max "${wf_gf_target}" >/dev/null 2>&1; then
+    # btrfs-progs output is kept: the reason a resize failed (a busy device, a read-only
+    # mount, a filesystem that is already at the end of the partition) is the only thing
+    # that makes the failure diagnosable, and swallowing it cost a full CI round.
+    if wf_gf_output="$("${WF_BTRFS}" filesystem resize max "${wf_gf_target}" 2>&1)"; then
+        wf_grow_log "btrfs filesystem resize max ${wf_gf_target}: ${wf_gf_output:-ok}"
         printf 'done'
         return 0
     fi
+    wf_grow_log "btrfs filesystem resize max ${wf_gf_target} failed: ${wf_gf_output:-no output}"
     printf 'fail:btrfs-resize'
 }
 

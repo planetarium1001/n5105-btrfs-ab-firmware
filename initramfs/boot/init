@@ -6,14 +6,16 @@
 #   0. p4  first-boot growth: the partition table is rewritten so p4 reaches the end of
 #          the disk, the kernel re-reads it, and the outcome lands in
 #          <p4 root subvolume>/.ab/grow as `result=<state> last_lba=<n>`
-#   1. p4  @overlay-<version>  rw,compress=zstd:6,discard=async
+#   1. p4  root subvolume      rw,compress=zstd:6,discard=async   -> /mnt/p4root
+#          then                 btrfs filesystem resize max /mnt/p4root
+#          then                 .ab/partitions.before, .ab/grow, umount
+#   2. p4  @overlay-<version>  rw,compress=zstd:6,discard=async
 #                              subvol=@overlay-<version>         -> /mnt/p4
-#          then                 btrfs filesystem resize max /mnt/p4
-#   2. p2  @platform           ro,noatime                      -> /mnt/@platform
-#   3. p2  @sys               ro,noatime                       -> /mnt/@sys
-#   4. overlay lowerdir=/mnt/@platform:/mnt/@sys
+#   3. p2  @platform           ro,noatime                      -> /mnt/@platform
+#   4. p2  @sys               ro,noatime                       -> /mnt/@sys
+#   5. overlay lowerdir=/mnt/@platform:/mnt/@sys
 #              upperdir=/mnt/p4/upper workdir=/mnt/p4/work   -> /newroot
-#   5. p4  @data               rw,noatime                       -> /newroot/data
+#   6. p4  @data               rw,noatime                       -> /newroot/data
 #      p4  @docker             rw,noatime,nodatacow,nodatasum   -> /newroot/opt/docker
 #      p4  @swap               rw,noatime,nodatacow,nodatasum   -> /newroot/swap
 #
@@ -29,12 +31,14 @@
 # Only @overlay carries compress=; a filesystem has exactly one compression level, so
 # the child mounts repeat no compress option at all.
 #
-# The writable layer is mounted first because `compress=` is only applied by the
-# first mount of a filesystem; mounting a read-only layer first would leave the
-# parameter out of the kernel. The read-only layers are mounted under @-names so the
-# overlay command line literally carries both layer names. The writable layer name
-# comes from the state file (@overlay-<upstream version>), never from the generation
-# counter: the counter orders generations, the name identifies them.
+# The first mount of p4 is the root subvolume, and it carries `compress=` and
+# `discard=`: `compress=` is only applied by the first mount of a filesystem, and this
+# mount is also the only one present while btrfs-progs resizes it. The generation layer
+# is mounted afterwards with the same options; repeating them is harmless because the
+# filesystem already has its level. The read-only layers are mounted under @-names so the
+# overlay command line literally carries both layer names. The writable layer name comes
+# from the state file (@overlay-<upstream version>), never from the generation counter:
+# the counter orders generations, the name identifies them.
 #
 # Everything asserted here is re-checked from inside the composed root by
 # /s3-post.sh, which switch_root hands control to as the new /init.
@@ -240,29 +244,41 @@ generation="$(wf_generation "${STATE}")" || generation=unknown
 wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
 
 # --------------------------------------------------------------------------- #
-# 5. Mount order: writable layer first, then the read-only layers
+# 5. Mount order: p4 root subvolume (resize, record), then the generation layer,
+#    then the read-only layers
 # --------------------------------------------------------------------------- #
 
 mkdir -p /mnt/p4 /mnt/p4root /mnt/@platform /mnt/@sys
 degraded=0
-if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" /mnt/p4; then
-    p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
-    case "${p4_line}" in
+
+# --------------------------------------------------------------------------- #
+# 5a. p4, first pass: ONE mount of the filesystem root does the resize and keeps
+#     the growth record
+# --------------------------------------------------------------------------- #
+# btrfs-progs opens the device exclusively while it resizes, so the resize has to run
+# while the filesystem has exactly one mount. When /mnt/p4 and /mnt/p4root were both
+# mounted, `btrfs filesystem resize max` failed with EBUSY, the kernel logged
+# `/dev/vda4: Can't open blockdev`, and a grown partition kept its 64 MiB filesystem.
+#
+# The root subvolume is that single mount, and it is also where `.ab/grow` and the
+# pre-growth table belong: the root subvolume outlives every generation layer and
+# ab-boot mounts it at /mnt/p4 at runtime.
+#
+# This first mount carries compress= and discard=: `compress=` is only applied by the
+# first mount of a filesystem, and the generation mount below repeats the same level.
+if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root; then
+    p4root_line="$(awk '$2 == "/mnt/p4root" { print }' /proc/mounts)"
+    case "${p4root_line}" in
         *compress=*) : ;;
         *) wf_fail p4-compress-option-missing ;;
     esac
-    wf_log "p4 mounted with compress= (${upper})"
 
-    # The partition was already grown before this mount, so the filesystem sees the
-    # larger device and can be extended onto it. This also runs on already-full, where
-    # it is a no-op, so a boot that grew the table but died before resizing the
-    # filesystem is repaired on the next start. A resize failure is recorded, not fatal:
-    # the partition keeps its size and the next boot tries again.
     case "${grow_state}" in
         done | already-full)
-            # The resize target is the mount point, never the device.
-            wf_log "p4 step=resize target=/mnt/p4 state=${grow_state}"
-            grow_fs="$(wf_grow_fs /mnt/p4)"
+            # The resize target is the mount point, never the device, and this is the only
+            # mount of the filesystem at the time it runs.
+            wf_log "p4 step=resize target=/mnt/p4root state=${grow_state}"
+            grow_fs="$(wf_grow_fs /mnt/p4root)"
             case "${grow_fs}" in
                 done) wf_log "btrfs filesystem at max size" ;;
                 *)
@@ -273,44 +289,47 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" 
             ;;
     esac
 
-    # The outcome goes to the p4 root subvolume, not to the generation's layer: the
-    # root subvolume outlives every @overlay-<version> and ab-boot mounts it at
-    # /mnt/p4 at runtime, which is where it reads this file.
-    #
-    # This is the only reason p4 is mounted a second time, and the mount is given back
-    # before the overlay is composed, so the device has exactly one mount again when the
-    # root is assembled. A leftover mount here would be invisible until switch_root, so
-    # the unmount is retried and its failure is reported.
     wf_log "p4 step=record start device=${p4} state=${grow_state}"
-    record_mounted=0
-    if mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root; then
-        record_mounted=1
-        # The pre-change table is kept next to the record: if the write turns out to be
-        # half-applied on a power cut, the old geometry is on the same disk.
-        if wf_grow_backup /mnt/p4root; then
-            wf_log "pre-growth partition table kept in .ab/partitions.before"
-        fi
-        if wf_grow_record /mnt/p4root "${grow_state}" "${grow_last_lba}"; then
-            wf_log "p4 growth recorded: result=${grow_state} last_lba=${grow_last_lba}"
-        else
-            wf_log "warning: could not write the growth record on the p4 root subvolume"
-        fi
+    # The pre-change table is kept next to the record: if the write turns out to be
+    # half-applied on a power cut, the old geometry is on the same disk.
+    if wf_grow_backup /mnt/p4root; then
+        wf_log "pre-growth partition table kept in .ab/partitions.before"
+    fi
+    if wf_grow_record /mnt/p4root "${grow_state}" "${grow_last_lba}"; then
+        wf_log "p4 growth recorded: result=${grow_state} last_lba=${grow_last_lba}"
     else
-        wf_log "warning: p4 root subvolume not mountable, growth record skipped"
+        wf_log "warning: could not write the growth record on the p4 root subvolume"
     fi
-    if [ "${record_mounted}" = "1" ]; then
-        umount /mnt/p4root || {
-            wf_log "umount /mnt/p4root failed, retrying once"
-            sleep 1
-            umount /mnt/p4root || wf_log "warning: /mnt/p4root is still mounted"
-        }
-        if awk -v mp=/mnt/p4root '$2 == mp { found = 1 } END { exit !found }' \
-            /proc/mounts 2>/dev/null; then
-            wf_log "warning: p4 root subvolume is still mounted at /mnt/p4root"
-        else
-            wf_log "p4 step=record done, p4 has one mount again"
-        fi
+    # The mount is given back before the generation mount, so the filesystem is never
+    # mounted twice while btrfs-progs or the overlay is working on it.
+    umount /mnt/p4root || {
+        wf_log "umount /mnt/p4root failed, retrying once"
+        sleep 1
+        umount /mnt/p4root || wf_log "warning: /mnt/p4root is still mounted"
+    }
+    if awk -v mp=/mnt/p4root '$2 == mp { found = 1 } END { exit !found }' \
+        /proc/mounts 2>/dev/null; then
+        wf_log "warning: p4 root subvolume is still mounted at /mnt/p4root"
+    else
+        wf_log "p4 step=record done, the filesystem has no mount again"
     fi
+else
+    # The root subvolume is not mountable, so the resize and the record cannot happen.
+    # The generation mount below still gets its chance: only the root subvolume may be
+    # broken, and a boot with a degraded p4 is better than no boot.
+    wf_log "warning: p4 root subvolume not mountable; resize and growth record skipped"
+fi
+
+# --------------------------------------------------------------------------- #
+# 5b. p4, second pass: the generation's writable layer, mounted for the overlay
+# --------------------------------------------------------------------------- #
+if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" /mnt/p4; then
+    p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
+    case "${p4_line}" in
+        *compress=*) : ;;
+        *) wf_fail p4-compress-option-missing ;;
+    esac
+    wf_log "p4 mounted with compress= (${upper})"
 else
     # A broken writable partition must not stop the boot: the system still works,
     # it just cannot persist anything. The upper moves to tmpfs and the boot is
