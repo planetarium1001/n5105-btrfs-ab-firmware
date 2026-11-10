@@ -160,8 +160,8 @@ cat >"${check_dir}/esp/ab/state.json" <<JSON
   "committed": "a",
   "pending": null,
   "slots": {
-    "a": { "rootfs": "${upstream_version}", "upper": "@overlay-${upstream_version}" },
-    "b": { "rootfs": "${upstream_version}", "upper": "@overlay-${upstream_version}" }
+    "a": { "rootfs": "0.0.0-scratch", "upper": "@overlay-${upstream_version}" },
+    "b": { "rootfs": "0.0.0-scratch", "upper": "@overlay-${upstream_version}" }
   }
 }
 JSON

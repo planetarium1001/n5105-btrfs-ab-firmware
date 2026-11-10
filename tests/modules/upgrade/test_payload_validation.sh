@@ -35,6 +35,7 @@ cat >"$bin/ab-slot" <<'STUB'
 #!/bin/sh
 case "${1:-status}" in
   status) printf '%s\n' "${STUB_STATUS:-slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=none p4=ok}" ;;
+  rootfs) printf '%s\n' "${STUB_ROOTFS:-25.12.2}" ;;
   *) exit 0 ;;
 esac
 STUB
@@ -152,6 +153,12 @@ assert_eq "$(conflict_count)" "1" "ac-1b a file changed on both sides is reporte
 assert_contains "$(cat "$esp/ab/conflicts.log")" "conflict path=/etc/banner result=keep-user" \
   "ac-1b the conflict names the path and the resolution"
 assert_contains "$(cat "$esp/ab/conflicts.log")" "baseline=ok" "ac-1b the report records a readable baseline"
+assert_contains "$(cat "$esp/ab/conflicts.log")" "running=a" "ac-1b the report names the running slot"
+assert_contains "$(cat "$esp/ab/conflicts.log")" "baseline-path=" "ac-1b the report names the baseline path"
+assert_eq "$(grep -c '^scan checked=' "$esp/ab/conflicts.log")" "1" \
+  "ac-1b the scan leaves a diagnostic line"
+assert_contains "$(cat "$esp/ab/conflicts.log")" "payload-same=" \
+  "ac-1b the scan reports why files were skipped"
 
 # payload changed it, the user did not -> no conflict
 make_baseline "distro default"
@@ -169,6 +176,20 @@ out="$(run_upgrade "$same_in_payload")"
 assert_eq "$?" "0" "ac-1b the upgrade still succeeds"
 assert_eq "$(conflict_count)" "0" "ac-1b a user-only change is not a conflict"
 
+rm -rf "$tmp/slots" "$tmp/p4"
+mkdir -p "$tmp/p4"
+
+# --- ac-1c the same payload cannot be installed twice ------------------------
+# After a successful update the payload is what the new slot runs; a leftover copy
+# must not be installed again, because it would rewrite the healthy slot from the
+# slot that is being tested.
+make_baseline "distro default"
+cp "$esp/ab/state.json" "$tmp/state.before"
+installed_payload="$(build_payload "$tmp/c-installed" 25.12.3-test5 --banner "payload default")"
+out="$(run_upgrade "$installed_payload" STUB_STATUS='slot=a upper=@overlay-25.12.3-test5 generation=2 committed=a pending=none p4=ok' \
+  STUB_ROOTFS=25.12.3-test5)"
+assert_eq "$?" "74" "ac-1c a payload the running slot already carries is refused"
+assert_contains "$out" "reason=payload-already-installed" "ac-1c the refusal names the reason"
 rm -rf "$tmp/slots" "$tmp/p4"
 mkdir -p "$tmp/p4"
 

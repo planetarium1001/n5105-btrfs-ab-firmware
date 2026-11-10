@@ -462,3 +462,27 @@ alone. Pushing to `main` validates and never publishes. The upstream version and
 input digests come from the payload manifest, so the notes describe exactly what CI
 built.
 
+### Why a leftover payload cannot re-run
+
+The first S6 run reported `conflicts=0` with `payload-same=215`: every file in the
+payload's `etc` was byte identical to the baseline. The baseline was right — the
+*payload was already installed*. The update fixture installs `ab-upgrade` through
+`/etc/rc.local`, the update snapshots the running layer, and the snapshot inherited
+that `rc.local`, so the next boot ran the upgrade again from the new slot. In that run
+the running slot is the slot the payload just created, so the baseline and the payload
+are the same tree and the comparison is meaningless.
+
+Two changes close it from both sides:
+
+* `ab-upgrade` refuses a payload whose rootfs version equals the running slot's
+  (`payload-already-installed`, exit 74) *before* it extracts anything or touches the
+  conflict report, so a stale payload can never rewrite the healthy slot;
+* the fixture's `rc.local` deletes itself before upgrading, so the snapshot cannot
+  carry it forward.
+
+The conflict report header now names the running slot and the baseline path
+(`running=<slot> baseline=ok|unreadable baseline-path=<path>`) next to the existing
+`scan checked=... payload-same=... upper=...` line, so a zero count always comes with
+the numbers that explain it. The upgrade test suite asserts that the diagnostic line is
+present.
+

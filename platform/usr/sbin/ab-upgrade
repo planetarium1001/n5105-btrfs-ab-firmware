@@ -172,6 +172,23 @@ pct=$((avail * 100 / total))
 [ "${pct}" -ge 5 ] || refuse "low-space-${pct}pct"
 say "ab-upgrade: ${pct}% free on ${AB_P4}"
 
+# A slot can only be upgraded to something it is not already running. Without this
+# guard a payload left behind on the machine would silently rewrite the healthy slot
+# from the failed-update slot on the next boot, and the result would look like a clean
+# "no conflict" install because the baseline already equals the payload.
+running="$(printf '%s' "${status_out}" | sed -n 's/^slot=\([ab]\) .*/\1/p')"
+case "${running}" in
+    a) other=b ;;
+    b) other=a ;;
+    *) refuse "no-running-slot" ;;
+esac
+installed="$(ab-slot rootfs "${running}" 2>/dev/null)"
+if [ "${installed}" = "${rootfs_version}" ]; then
+    say "ab-upgrade: slot ${running} already runs ${rootfs_version}"
+    refuse "payload-already-installed"
+fi
+say "ab-upgrade: running slot ${running} on ${installed}, installing ${rootfs_version} into slot ${other}"
+
 # The payload's rootfs is unpacked into tmpfs: the conflict comparison needs both
 # trees side by side, and nothing is written to the slot yet.
 mkdir -p "${work}/rootfs-tree"
@@ -181,13 +198,11 @@ tar -xzf "${work}/rootfs.tar.gz" -C "${work}/rootfs-tree" 2>/dev/null || refuse 
 # 5. Conflict report (produced before writing; never blocks the update)
 # --------------------------------------------------------------------------- #
 
-running="$(ab-slot status 2>/dev/null | sed -n 's/^slot=\([ab]\) .*/\1/p')"
-case "${running}" in
-    a) other=b ;;
-    b) other=a ;;
-    *) refuse "no-running-slot" ;;
-esac
+# The scan compares three trees: the running slot's @sys (the baseline), the payload's
+# rootfs and the user's copy in the writable layer. Both the slot and its layer come
+# from the same status snapshot, so they cannot disagree.
 running_layer="$(printf '%s' "${status_out}" | sed -n 's/^.*upper=\([^ ]*\) .*/\1/p')"
+[ -n "${running_layer}" ] || refuse "slot-status-without-layer"
 
 slots_root="${AB_SLOTS_ROOT:-/mnt/slots}"
 running_sys="${slots_root}/${running}/@sys"
@@ -214,8 +229,8 @@ same_user=0
 report="${work}/conflicts.log"
 
 {
-    printf 'conflicts rootfs=%s generated=%s baseline=%s\n' \
-        "${rootfs_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${baseline}"
+    printf 'conflicts rootfs=%s generated=%s running=%s baseline=%s baseline-path=%s\n' \
+        "${rootfs_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${running}" "${baseline}" "${running_sys}"
 } >"${report}"
 if [ "${baseline}" != "ok" ]; then
     say "ab-upgrade: warning: cannot read the running slot baseline (${running_sys}), no conflict can be detected"

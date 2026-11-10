@@ -206,6 +206,11 @@ install_auto_upgrade() {
     sudo tee "${target}/etc/rc.local" >/dev/null <<'RCLOCAL'
 #!/bin/sh
 # Test fixture: run the upgrade once the system finished booting.
+#
+# The script removes itself *before* upgrading: the upgrade snapshots the running
+# layer, and a copy of this script inside that snapshot would run the upgrade again on
+# the next boot, this time with the payload already installed.
+rm -f /etc/rc.local
 echo "ab-upgrade-test: starting" >/dev/console
 ab-upgrade /payload.tar
 echo "ab-upgrade: exit=$?" >/dev/console
