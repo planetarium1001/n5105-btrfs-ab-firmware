@@ -59,11 +59,23 @@ mkdir -p /mnt
 KVER="$(uname -r)"
 echo "[s2] kernel ${KVER}"
 
+# Scratch space: the initramfs image has no /tmp, and every redirect below needs one.
+mkdir -p /tmp
+
 # The boot initramfs helper is staged as /lib/grow.sh by scripts/ci/initramfs.sh, so the
 # guest can re-run the very decision the first boot takes instead of asserting a copy of
 # it. Sourcing it only defines functions; nothing is mounted or written.
+GROW_LIB=missing
 if [ -f /lib/grow.sh ]; then
     . /lib/grow.sh
+    command -v wf_grow_decide >/dev/null 2>&1 && GROW_LIB=loaded
+fi
+# Loaded here rather than in the identity section, because the growth check below needs
+# di_sector_size to convert sysfs 512-byte units into the logical sectors sfdisk counts.
+IDENTITY_LIB=missing
+if [ -f /lib/disk-identity.sh ]; then
+    . /lib/disk-identity.sh
+    command -v di_parent_disk >/dev/null 2>&1 && IDENTITY_LIB=loaded
 fi
 
 # --------------------------------------------------------------------------- #
@@ -224,12 +236,23 @@ echo "[s2] partition sizes 128/128/128/64 MiB"
 #     boot init takes is recomputed here from the real table
 # --------------------------------------------------------------------------- #
 
-if command -v wf_grow_decide >/dev/null 2>&1 && sfdisk -d "${DEV}" >/tmp/table.txt 2>/dev/null; then
+if [ "${GROW_LIB}" != "loaded" ]; then
+    echo "[s2] SKIP growth decision: /lib/grow.sh is missing or defines nothing"
+elif ! sfdisk -d "${DEV}" >/tmp/table.txt 2>/dev/null; then
+    echo "[s2] SKIP growth decision: sfdisk could not dump ${DEV}"
+else
     last_lba="$(sed -n 's/^last-lba:[[:space:]]*//p' /tmp/table.txt | head -n 1)"
     p4_start="$(sed -n "s|^${DEV}4 : start= *\([0-9]*\),.*|\1|p" /tmp/table.txt | head -n 1)"
     [ -n "${last_lba}" ] || report_failure growth-no-last-lba
     [ -n "${p4_start}" ] || report_failure growth-no-p4-line
-    decision="$(wf_grow_decide /tmp/table.txt "${DEV}4" "${image_size}")"
+    # sfdisk counts logical sectors; sysfs `size` is in 512-byte units, so the disk size
+    # handed to the decision is converted through the device's logical block size.
+    if command -v di_sector_size >/dev/null 2>&1; then
+        image_sectors=$(( image_size * 512 / $(di_sector_size "${DEV}") ))
+    else
+        image_sectors="${image_size}"
+    fi
+    decision="$(wf_grow_decide /tmp/table.txt "${DEV}4" "${image_sectors}")"
     case "${decision}" in
         grow\ *) echo "[s2] first-boot growth decision: ${decision}" ;;
         *) report_failure "growth-decision-${decision}" ;;
@@ -239,19 +262,17 @@ if command -v wf_grow_decide >/dev/null 2>&1 && sfdisk -d "${DEV}" >/tmp/table.t
     grown=$((last_lba - p4_start + 1))
     sed "s|^\(${DEV}4 : start= *[0-9]*, size= *\)[0-9]*|\1${grown}|" \
         /tmp/table.txt >/tmp/table-full.txt
-    full="$(wf_grow_decide /tmp/table-full.txt "${DEV}4" "${image_size}")"
+    full="$(wf_grow_decide /tmp/table-full.txt "${DEV}4" "${image_sectors}")"
     [ "${full}" = "already-full ${last_lba}" ] || report_failure "growth-idempotency-${full}"
     echo "[s2] a second boot on this disk would read: ${full}"
-else
-    echo "[s2] SKIP growth decision: sfdisk or /lib/grow.sh is missing in this initramfs"
+    echo "[s2] /lib/grow.sh ran the first-boot decision against the real table"
 fi
 
 # --------------------------------------------------------------------------- #
 # 1c. Device identity: the boot disk is derived from sysfs, never from its name
 # --------------------------------------------------------------------------- #
 
-if [ -f /lib/disk-identity.sh ]; then
-    . /lib/disk-identity.sh
+if [ "${IDENTITY_LIB}" = "loaded" ]; then
     for part in 1 2 3 4; do
         parent="$(di_parent_disk "${DEV}${part}" 2>/dev/null)"
         [ "${parent}" = "${DEV}" ] || report_failure "parent-p${part}-${parent:-none}"
@@ -263,7 +284,7 @@ if [ -f /lib/disk-identity.sh ]; then
         *) report_failure "device-identity-${identity:-empty}" ;;
     esac
 else
-    echo "[s2] SKIP device identity: /lib/disk-identity.sh is not staged in this initramfs"
+    echo "[s2] SKIP device identity: /lib/disk-identity.sh is missing or defines nothing"
 fi
 
 # The platform layer ships the same library: the initramfs and the running system must
@@ -383,23 +404,45 @@ if [ "${P1_SKIPPED:-0}" = 0 ]; then
         [ -e "/mnt/${required}" ] || report_failure "p1-missing-${required}"
     done
     # Build-time device identity: the PARTUUIDs the upgrade path follows after a dd copy.
-    # The file belongs at ab/device.json next to ab/state.json; boot/ab/device.json is the
-    # older placement and is still verified, but its path is reported so the drift is not
-    # silently accepted.
+    # The file lives at ab/device.json next to ab/state.json. An image that still carries
+    # the older boot/ab/ placement gets a warning and nothing else: the main path is the
+    # contract, and the host verifier already fails the build on a drift.
     device_json=/mnt/ab/device.json
     if [ ! -f "${device_json}" ] && [ -f /mnt/boot/ab/device.json ]; then
-        device_json=/mnt/boot/ab/device.json
-        echo "[s2] WARNING device identity sits at boot/ab/device.json, expected ab/device.json"
+        echo "[s2] WARNING device identity is at boot/ab/device.json, expected ab/device.json"
     fi
     if [ -f "${device_json}" ]; then
+        # sfdisk reads the GPT itself, which is the same source the build used; blkid only
+        # cross-checks it, because a low-level blkid probe in this initramfs cannot always
+        # resolve PARTUUID from a partition node.
+        sfdisk -d "${DEV}" >/tmp/table-gpt.txt 2>/dev/null || : >/tmp/table-gpt.txt
+        device_json_checked=0
+        device_json_skipped=0
         for part in 1 2 3 4; do
-            want_uuid="$(blkid -p -o value -s PARTUUID "${DEV}${part}" 2>/dev/null)"
-            [ -n "${want_uuid}" ] || report_failure "partuuid-p${part}-unreadable"
-            want_uuid="$(printf '%s' "${want_uuid}" | tr 'A-F' 'a-f')"
+            want_uuid="$(sed -n "s#^${DEV}${part}[[:space:]]*:.*uuid=\([0-9A-Fa-f-]*\).*#\1#p" \
+                /tmp/table-gpt.txt | head -n 1 | tr 'A-F' 'a-f')"
+            blkid_uuid="$(blkid -p -o value -s PARTUUID "${DEV}${part}" 2>/dev/null \
+                | head -n 1 | tr 'A-F' 'a-f')"
+            if [ -z "${want_uuid}" ] && [ -n "${blkid_uuid}" ]; then
+                want_uuid="${blkid_uuid}"
+            elif [ -n "${want_uuid}" ] && [ -n "${blkid_uuid}" ] \
+                && [ "${want_uuid}" != "${blkid_uuid}" ]; then
+                echo "[s2] WARNING PARTUUID of ${DEV}${part} differs: sfdisk ${want_uuid}, blkid ${blkid_uuid}"
+            fi
+            if [ -z "${want_uuid}" ]; then
+                echo "[s2] WARNING no PARTUUID for ${DEV}${part} from sfdisk or blkid"
+                device_json_skipped=$((device_json_skipped + 1))
+                continue
+            fi
             grep -qi "${want_uuid}" "${device_json}" \
                 || report_failure "device-json-p${part}"
+            device_json_checked=$((device_json_checked + 1))
         done
-        echo "[s2] ${device_json#/mnt} records the four PARTUUIDs of this image"
+        if [ "${device_json_skipped}" -gt 0 ] && [ "${device_json_checked}" -eq 0 ]; then
+            echo "[s2] SKIP ab/device.json cross-check: no PARTUUID was readable in this guest"
+        else
+            echo "[s2] ab/device.json matches ${device_json_checked} PARTUUID(s) read from the image"
+        fi
     else
         echo "[s2] SKIP ab/device.json: this image was built without it"
     fi

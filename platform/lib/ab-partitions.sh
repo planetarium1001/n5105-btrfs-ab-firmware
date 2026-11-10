@@ -112,7 +112,6 @@ ab_partition_by_unique_name() {
     ab_have di_find_partitions_by_name || return 1
     ab_have di_parent_disk || return 1
     abp_candidate=""
-    abp_disk=""
     abp_disks=0
     # `set -u` callers must not trip over an unset accumulator.
     abp_seen=""
@@ -127,7 +126,6 @@ ab_partition_by_unique_name() {
         esac
         abp_seen="${abp_seen}${abp_seen:+ }${abp_parent}"
         abp_disks=$((abp_disks + 1))
-        abp_disk="${abp_parent}"
         abp_candidate="${abp_part}"
     done
     [ "${abp_disks}" = "1" ] || return 1

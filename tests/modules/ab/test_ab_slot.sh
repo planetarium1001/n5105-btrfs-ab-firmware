@@ -237,6 +237,28 @@ slot_cmd next --write >/dev/null 2>&1
 assert_eq "$(next_slot)" "a" "ac-8 with nothing pending the heal points at the committed slot"
 assert_eq "$(slot_cmd next 2>/dev/null)" "next=a" "ac-8 the next boot can be read back"
 
+# --- ac-9 the tool works where the platform layer puts it --------------------
+#
+# The CI fixtures run the shipped binary against a mounted image and pass only AB_ESP
+# and AB_CMD, so the writer has to be found next to the tool inside the layer rather
+# than at /lib. The installed path is simply absent on a build host.
+write_state a none 1
+rm -f "$esp/boot/grub/ab-slot.cfg"
+AB_ESP="$esp" AB_CMD="$cmdline" AB_P4="$tmp/p4" AB_MOUNTS="$mounts_partial" \
+  sh "$ab_slot" pending b >/dev/null 2>&1
+assert_eq "$?" "0" "ac-9 pending works without AB_SLOT_CFG_LIB, as the fixtures call it"
+assert_eq "$(cat "$esp/boot/grub/ab-slot.cfg")" "$(printf 'set fallback=0\nset default=1')" \
+  "ac-9 the writer next to the tool is used"
+
+# A tool with no writer anywhere is still a loud failure: that is a broken layer.
+lonely="$tmp/lonely"
+mkdir -p "$lonely"
+cp "$ab_slot" "$lonely/ab-slot"
+write_state a none 1
+AB_ESP="$esp" AB_CMD="$cmdline" AB_P4="$tmp/p4" AB_MOUNTS="$mounts_partial" \
+  sh "$lonely/ab-slot" pending b >/dev/null 2>&1
+assert_eq "$?" "1" "ac-9 a tool with no writer at all fails instead of pretending"
+
 # --- ac-5 gc ----------------------------------------------------------------
 p4="$fake_p4"
 mkdir -p "$p4/@overlay-25.12.2" "$p4/@overlay-25.12.3" "$p4/@overlay-25.12.1" "$p4/@docker"

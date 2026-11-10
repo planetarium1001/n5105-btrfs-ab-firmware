@@ -161,7 +161,9 @@ wf_log "partitions on ${dev:-an unresolved disk}: esp=${esp:-none} slot-a=${slot
 # The failure path has to reach the ESP even when it fails before mounting it: a pending
 # slot that cannot finish the initramfs must not be selected again by GRUB, so wf_fail
 # rewrites the slot hint before it powers off.
+# shellcheck disable=SC2034  # read by wf_failsafe_abandon in lib/wf.sh
 WF_ESP_DEV="${esp}"
+export WF_ESP_DEV
 
 # --------------------------------------------------------------------------- #
 # 3. First-boot growth of p4, before anything is mounted

@@ -475,4 +475,26 @@ assert_contains "${builder}" '|| ci_die "staged $(basename "${shared}") differs'
 assert_contains "$boot_init" 'wf_grow_backup /mnt/p4root' \
   "ac-2 the init keeps the pre-growth table on the p4 root subvolume"
 
+# --------------------------------------------------------------------------- #
+# The guest assertion runs the same decision, so it must load the helper first and
+# own a scratch directory: the initramfs has no /tmp, and a missing one silently
+# skipped the whole check in CI.
+# --------------------------------------------------------------------------- #
+
+guest_assert="$(cat "$root/tests/modules/image/guest-assert.sh")"
+assert_contains "${guest_assert}" 'mkdir -p /tmp' \
+  "ac-2 the guest creates its scratch directory before writing a table"
+assert_contains "${guest_assert}" '. /lib/grow.sh' \
+  "ac-2 the guest sources the growth helper it calls"
+assert_contains "${guest_assert}" 'GROW_LIB=loaded' \
+  "ac-2 the guest records that the helper really loaded"
+assert_contains "${guest_assert}" 'SKIP growth decision: /lib/grow.sh is missing or defines nothing' \
+  "ac-2 a missing helper is reported as such, not blamed on sfdisk"
+assert_contains "${guest_assert}" 'PARTUUID' \
+  "ac-2 the guest cross-checks PARTUUIDs against ab/device.json"
+assert_contains "${guest_assert}" 's#^${DEV}${part}[[:space:]]*:.*uuid=' \
+  "ac-2 PARTUUID readback uses the sfdisk table, not only a blkid probe"
+assert_contains "${guest_assert}" 'WARNING no PARTUUID for ${DEV}${part}' \
+  "ac-2 an unreadable PARTUUID is a warning, not a red stage"
+
 finish

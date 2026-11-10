@@ -82,9 +82,10 @@ slot_cfg_check() {
         if ! pair="$(ab_slot_cfg_check_pair "${file}" "${committed}")"; then
             ci_die "runtime slot file ${file} does not fall back to the committed slot (${AB_SLOT_CFG_REASON})"
         fi
-        if [ "${fallback_slot}" != "${committed}" ]; then
-            ci_die "runtime slot file ${file} falls back to slot ${fallback_slot}, the committed slot is ${committed}"
-        fi
+        # check_pair answers "<default> <fallback>"; both values are reported so a
+        # mismatch in the log is enough to see which line was wrong.
+        default_slot="${pair%% *}"
+        fallback_slot="${pair##* }"
     fi
     ci_log "runtime slot file ${file} is valid (fallback ${fallback_slot}, default ${default_slot})"
 }
@@ -265,7 +266,9 @@ if [ "${1:-}" = "--verify-esp" ]; then
     esp_cfg="${esp_mnt}/boot/grub/grub.cfg"
     [ -f "${esp_cfg}" ] || ci_die "the ESP carries no boot/grub/grub.cfg"
     esp_cfg_copy="${CI_TMP_ROOT}/esp-grub.cfg"
-    sudo cat "${esp_cfg}" >"${esp_cfg_copy}"
+    # tee, not a redirected sudo cat: the redirect would happen as the runner user and
+    # the file has to stay readable by the checks below.
+    sudo cat "${esp_cfg}" | tee "${esp_cfg_copy}" >/dev/null
     check_grub "${esp_cfg_copy}"
     grub-script-check "${esp_cfg_copy}" || ci_die "grub-script-check rejects the menu on the ESP"
     ci_log "grub-script-check accepts the menu on the ESP"

@@ -159,20 +159,45 @@ qemu_args+=(
 )
 
 if [ "${mode}" = "uefi" ] || [ "${mode}" = "uefi-disk" ]; then
-    ovmf=""
+    # OVMF is two pflash images: a read-only code image and a writable variable store.
+    # `-bios <CODE>` looks simpler but does not work with the 4 MiB split images the
+    # runner ships -- QEMU exits within a second and the guest never reaches the
+    # serial log, which is exactly how the old informational OVMF boot was failing.
+    ovmf_code=""
     for candidate in \
-        /usr/share/OVMF/OVMF_CODE.fd \
         /usr/share/OVMF/OVMF_CODE_4M.fd \
+        /usr/share/OVMF/OVMF_CODE.fd \
         /usr/share/ovmf/OVMF.fd \
         /usr/share/ovmf/x64/OVMF.fd; do
         if [ -f "${candidate}" ]; then
-            ovmf="${candidate}"
+            ovmf_code="${candidate}"
             break
         fi
     done
-    [ -n "${ovmf}" ] || ci_die "no OVMF firmware found for the uefi mode"
-    ci_log "OVMF firmware: ${ovmf}"
-    qemu_args+=(-bios "${ovmf}")
+    [ -n "${ovmf_code}" ] || ci_die "no OVMF code image found for the ${mode} mode"
+    ovmf_vars=""
+    for candidate in \
+        /usr/share/OVMF/OVMF_VARS_4M.fd \
+        /usr/share/OVMF/OVMF_VARS.fd \
+        /usr/share/ovmf/OVMF_VARS.fd \
+        /usr/share/ovmf/x64/OVMF_VARS.fd; do
+        if [ -f "${candidate}" ]; then
+            ovmf_vars="${candidate}"
+            break
+        fi
+    done
+    if [ -n "${ovmf_vars}" ]; then
+        vars_copy="${qemu_dir}/OVMF_VARS-${mode}.fd"
+        cp "${ovmf_vars}" "${vars_copy}"
+        ci_log "OVMF code: ${ovmf_code}, writable variables: ${vars_copy} (from ${ovmf_vars})"
+        qemu_args+=(
+            -drive "if=pflash,format=raw,unit=0,readonly=on,file=${ovmf_code}"
+            -drive "if=pflash,format=raw,unit=1,file=${vars_copy}"
+        )
+    else
+        ci_log "OVMF firmware: ${ovmf_code} (-bios, no variable store found)"
+        qemu_args+=(-bios "${ovmf_code}")
+    fi
 fi
 
 ci_log "booting (${mode}, tcg, ${mem} MiB, limit ${timeout_s}s)"
@@ -207,6 +232,12 @@ if [ "${stopped_on_judge}" = "1" ]; then
     ci_log "qemu stopped on the judge line after ${boot_seconds}s"
 else
     ci_log "qemu exited with ${qemu_rc} after ${boot_seconds}s (124 means the timeout fired)"
+    if [ "${boot_seconds}" -lt 10 ]; then
+        # An early exit is a QEMU or firmware error, not a slow guest: show what QEMU
+        # itself said, otherwise the only symptom is "no judge line".
+        ci_warn "qemu exited within ${boot_seconds}s, its own output follows:"
+        tail -n 20 "${qemu_dir}/qemu-${mode}.out" 2>/dev/null | sed 's/^/[qemu]   /' || true
+    fi
 fi
 
 # --------------------------------------------------------------------------- #

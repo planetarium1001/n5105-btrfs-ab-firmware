@@ -82,13 +82,32 @@ DATA_MOUNT=/data
 DOCKER_MOUNT=/opt/docker
 SWAP_MOUNT=/swap
 
-# The file writer is shared with ab-boot and with the image build. A platform layer
-# without it is a broken installation: the hint would silently stop moving, which is
-# the failure this whole mechanism exists to prevent, so the callers say so.
+# The file writer is shared with ab-boot, the boot initramfs and the image build. A
+# platform layer without it is a broken installation: the hint would silently stop
+# moving, which is the failure this whole mechanism exists to prevent, so the callers
+# say so.
+#
+# The installed path is tried first. When this tool runs from somewhere else - a mounted
+# image, a chroot, the CI fixtures that drive the shipped binary against an image - the
+# copy that ships next to it inside the platform layer is used instead, so the tool
+# works where it is and no caller has to know the layout.
+slot_cfg_lib_path() {
+    _lib_base="$(basename "${AB_SLOT_CFG_LIB}")"
+    _lib_self="$(dirname "$0")"
+    for _lib_candidate in "${AB_SLOT_CFG_LIB}" \
+        "${_lib_self}/../../lib/${_lib_base}" \
+        "${_lib_self}/../lib/${_lib_base}"; do
+        [ -f "${_lib_candidate}" ] || continue
+        printf '%s' "${_lib_candidate}"
+        return 0
+    done
+    return 1
+}
+
 SLOT_CFG_LIB_OK=0
-if [ -f "${AB_SLOT_CFG_LIB}" ]; then
+if SLOT_CFG_LIB="$(slot_cfg_lib_path)"; then
     # shellcheck source=platform/lib/ab-slot-cfg.sh
-    . "${AB_SLOT_CFG_LIB}"
+    . "${SLOT_CFG_LIB}"
     SLOT_CFG_LIB_OK=1
 fi
 
@@ -272,7 +291,7 @@ slot_cfg_sync() {
 # state stays authoritative; ab-boot heals the file on the next boot.
 sync_or_die() {
     if ! _sync_value="$(slot_cfg_sync)"; then
-        say "ab-slot: the state file was updated but ${AB_SLOT_CFG} was not; the next boot keeps the committed entry until ab-boot heals it${AB_SLOT_CFG_REASON:+ (${AB_SLOT_CFG_REASON})}"
+        say "ab-slot: the state file was updated but ${AB_SLOT_CFG} was not (writer: ${AB_SLOT_CFG_LIB}); the next boot keeps the committed entry until ab-boot heals it${AB_SLOT_CFG_REASON:+ (${AB_SLOT_CFG_REASON})}"
         exit 1
     fi
     say "ab-slot: the next boot runs slot ${_sync_value}"
@@ -351,8 +370,13 @@ cmd_status() {
     # What GRUB will do next, read back from the file it sources.
     _next="$(ab_slot_cfg_get "${AB_SLOT_CFG}" 2>/dev/null)" || _next="unknown"
     # Which disk this machine is, and how that was established: the shared discovery
-    # answer, never a guess made here.
-    _identity="$(ab_disk_identity 2>/dev/null)" || _identity="disk=unknown method=unavailable"
+    # answer, never a guess made here. A missing helper and an unresolved disk are
+    # reported differently, because they call for different fixes.
+    if [ "${PARTITIONS_LIB_OK}" = "1" ] && [ "${AB_DISK_IDENTITY_OK:-0}" = "1" ]; then
+        _identity="$(ab_disk_identity 2>/dev/null)" || _identity="disk=unknown method=unresolved"
+    else
+        _identity="disk=unknown method=unavailable"
+    fi
 
     printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s\n' \
         "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}" \
