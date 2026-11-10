@@ -99,6 +99,28 @@ if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${work}/content/platform/etc/platform-release"
 fi
 # The layer that ships in a payload must be as runnable as the one baked into the image,
 # including the rcS start links, otherwise an upgraded slot never starts the hooks.
+# The platform layer is the first lower layer of the merged root, so any file in it hides
+# the same path in @sys. scripts/ci/platform-runtime.sh already skips libraries the root
+# filesystem provides, and this verifies the result: a payload is the one place where the
+# layer and the rootfs are staged separately, and a shadowed musl, libz or libgcc would
+# come up as a system whose tools do not run - which from the outside is "the upgrade
+# broke everything". Files the rootfs already has are dropped from the layer; the btrfs
+# tool itself is never dropped, because the layer is where it is meant to live.
+tar -tzf "${work}/stage/rootfs.tar.gz" | sed 's|^\./||' | sort -u >"${work}/rootfs-members.txt"
+( cd "${runtime_tree}" && find . \( -type f -o -type l \) | sed 's|^\./||' ) | sort -u \
+    >"${work}/runtime-members.txt"
+: >"${work}/shadowed-platform.txt"
+while IFS= read -r member; do
+    [ -n "${member}" ] || continue
+    [ "${member}" = "usr/sbin/btrfs" ] && continue
+    grep -qxF "${member}" "${work}/rootfs-members.txt" || continue
+    printf '%s\n' "${member}" >>"${work}/shadowed-platform.txt"
+    rm -f "${work}/content/platform/${member}"
+done <"${work}/runtime-members.txt"
+shadowed="$(tr '\n' ' ' <"${work}/shadowed-platform.txt")"
+if [ -n "${shadowed}" ]; then
+    ci_log "payload platform layer: dropped the runtime files the root filesystem already provides: ${shadowed}"
+fi
 ci_platform_modes "${work}/content/platform"
 ci_platform_startlinks "${work}/content/platform"
 # The one file that has to be there for an upgraded slot to be usable at all.
@@ -141,5 +163,6 @@ ci_emit_output "payload_sha256" "${sha}"
 ci_emit_output "payload_version" "${payload_version}"
 ci_emit_output "payload_layer" "@overlay-${payload_version}"
 ci_emit_output "payload_platform_bytes" "${platform_bytes}"
+ci_emit_output "payload_platform_shadowed" "${shadowed}"
 
 ci_log "stage payload finished"

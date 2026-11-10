@@ -1,0 +1,182 @@
+{
+  "acceptance": [
+    "manual-only ci-debug.yml exists and cannot be triggered by push/pull_request",
+    "tmate session is key-gated (limit-access-to-actor: true), pinned and time-bounded",
+    "docs/debug-ssh.md + .zh-CN.md document trigger, connection, capability, security and why it is not a gate",
+    "check_design.py enforces the workflow invariants and docs/README indexes the new doc",
+    "local verification green: ruby YAML parse, check_design.py all, tests --module design, tests --module ci, full suite"
+  ],
+  "blockers": [],
+  "commands": [
+    {
+      "command": "gh repo view --json name,visibility,owner",
+      "exit": 0,
+      "note": "visibility=PUBLIC, owner planetarium1001 -- this decides the security section: the run log, including the tmate connection string, is world readable"
+    },
+    {
+      "command": "gh secret list / gh variable list",
+      "exit": 0,
+      "note": "both empty: the runner holds no Actions secret, so the shell exposes only a read-only GITHUB_TOKEN"
+    },
+    {
+      "command": "curl -sSL https://raw.githubusercontent.com/mxschmitt/action-tmate/v3.24/action.yml",
+      "exit": 0,
+      "note": "inputs are sudo, install-dependencies, limit-access-to-actor, detached, connect-timeout-seconds, tmate-server-*, msys2-location, github-token -- there is no max-duration and no continue parameter; continue is a FILE (/continue or $GITHUB_WORKSPACE/continue) per src/index.js:268-271"
+    },
+    {
+      "command": "curl -sSL https://api.github.com/repos/mxschmitt/action-tmate/releases/latest",
+      "exit": 0,
+      "note": "latest tag v3.24 published 2026-05-29; repo pushed 2026-11-06, 3591 stars, not archived -> actively maintained, still the recommended route"
+    },
+    {
+      "command": "curl -sSL 'https://api.github.com/repos/csexton/debugger-action/commits?per_page=3'",
+      "exit": 0,
+      "note": "default branch's newest commit is 2020-07-19; not archived but effectively abandoned, uses @master and its own 15-minute keepalive -> do not use"
+    },
+    {
+      "command": "gh api repos/planetarium1001/n5105-btrfs-ab-firmware/actions/jobs/129829278501",
+      "exit": 0,
+      "note": "s4 job 12:28:30->12:33:31 = 5 min 01 s; boots 61/55/57/56 s; checkout->ready image 62 s. s5 job 129829278537 boot 3 ran 12:31:35->12:46:35 = exactly the 900 s CI_QEMU_TIMEOUT then failed -> the debug default boot_timeout is 1200 s"
+    },
+    {
+      "command": "grep -n 'accel\\|kvm' scripts/ci/qemu-smoke.sh",
+      "exit": 0,
+      "note": "line 139 hardcodes -accel tcg, so the pipeline never needs KVM; standard hosted runners expose no usable /dev/kvm (nested virt is a larger-runner feature), and the workflow records it instead of asserting it"
+    },
+    {
+      "command": "ruby -ryaml -e 'YAML.load_file(\".github/workflows/ci-debug.yml\")'",
+      "exit": 0,
+      "note": "parses; 7 steps, last one is the pinned tmate step with limit-access-to-actor=true and timeout-minutes=200 (PyYAML is not installed on this machine)"
+    },
+    {
+      "command": "python3 scripts/check_design.py all",
+      "exit": 0,
+      "note": "12 checks ok including the new debug-ssh; the two docs keep 9 headings each and every relative link resolves"
+    },
+    {
+      "command": "./tests/run.sh --module design && ./tests/run.sh --module ci",
+      "exit": 0,
+      "note": "design 1/0 (runs debug-ssh), ci 2/0 (pipeline stage counts and step env wiring)"
+    },
+    {
+      "command": "./tests/run.sh",
+      "exit": 0,
+      "note": "full suite 22/0 after the three test-file edits"
+    },
+    {
+      "command": "5x negative test: push trigger, @v3 ref, limit-access-to-actor: auto, no duration bound, contents: write",
+      "exit": 1,
+      "note": "each mutation made debug-ssh red with the expected message, then the file was restored and diff-confirmed identical -- the check actually guards all five invariants"
+    }
+  ],
+  "context": "medium",
+  "files_changed": [
+    ".github/workflows/ci-debug.yml",
+    "docs/debug-ssh.md",
+    "docs/debug-ssh.zh-CN.md",
+    "docs/README.md",
+    "docs/README.zh-CN.md",
+    "scripts/check_design.py",
+    "tests/modules/design/test_docs.sh",
+    "tests/modules/ci/test_pipeline.sh",
+    "tests/modules/ci/test_step_env.sh",
+    "workspaces/ssh-debug/handoff.md",
+    "workspaces/ssh-debug/status.json"
+  ],
+  "handoff_path": "workspaces/ssh-debug/handoff.md",
+  "knowledge_candidates": [
+    {
+      "id": "ssh-debug-01-fact",
+      "kind": "fact",
+      "owner_id": "ssh-debug",
+      "source": "workspaces/ssh-debug/handoff.md",
+      "status": "proposed",
+      "text": "mxschmitt/action-tmate v3.24 (released 2026-05-29) has no max-duration input and no continue parameter: action.yml declares only sudo, install-dependencies, limit-access-to-actor, detached, connect-timeout-seconds, tmate-server-*, msys2-location, github-token. The session lifetime is bounded by the step/job timeout-minutes, and 'continuing the workflow' means creating the FILE /continue or $GITHUB_WORKSPACE/continue (src/index.js:268-271). Any design that wants a 'max-duration' must write timeout-minutes instead; passing max-duration only produces an 'Unexpected input' warning and does nothing."
+    },
+    {
+      "id": "ssh-debug-02-pitfall",
+      "kind": "pitfall",
+      "owner_id": "ssh-debug",
+      "source": "workspaces/ssh-debug/handoff.md",
+      "status": "proposed",
+      "text": "limit-access-to-actor defaults to 'auto', which is NOT safe by default: with no public SSH key on the dispatcher's GitHub profile the action logs a warning and starts a session anyone can join. Only the literal true forces users.listPublicKeysForUser(actor) and throws 'No public SSH keys registered with <login>' when that list is empty. For a public repository the run log (and therefore the connection string) is world readable, so 'auto' plus no registered key is a fully open shell. The Web shell URL, when printed, is a bearer link and is not covered by the key check."
+    },
+    {
+      "id": "ssh-debug-03-fact",
+      "kind": "fact",
+      "owner_id": "ssh-debug",
+      "source": "workspaces/ssh-debug/handoff.md",
+      "status": "proposed",
+      "text": "Standard GitHub-hosted ubuntu-latest runners have no usable /dev/kvm (nested virtualisation is a Linux larger-runner feature), and this pipeline does not need it: scripts/ci/qemu-smoke.sh hardcodes -accel tcg. Measured 2026-11-10 from run 42815980945: a uefi-disk boot takes 55-61 s, the s4 job 5 min 01 s, and the s4 section from checkout to a finished disk image 62 s. s5 boot 3 ('commit the upgraded slot and reclaim') consumed its entire 900 s CI_QEMU_TIMEOUT and failed, so any manual or CI boot of the post-upgrade slot needs a budget above 900 s."
+    },
+    {
+      "id": "ssh-debug-04-decision",
+      "kind": "decision",
+      "owner_id": "ssh-debug",
+      "source": "workspaces/ssh-debug/handoff.md",
+      "status": "proposed",
+      "text": "A manual debugging workflow reuses scripts/ci/ through their documented local interface instead of duplicating stage logic: CI_OUTPUT_ENV writes a KEY=VALUE file per stage, ci_load_env_file exports it as CI_*, and the resolved values that must survive into later steps are copied into $GITHUB_ENV with the same lowercase->CI_ mapping. That keeps ci-debug.yml unable to drift from ci-s4/ci-s5, and it is why tests/modules/ci/test_step_env.sh now distinguishes 'wired by env:' from 'wired by the loader' while forbidding the loader in every stage workflow."
+    },
+    {
+      "id": "ssh-debug-05-pitfall",
+      "kind": "pitfall",
+      "owner_id": "ssh-debug",
+      "source": "workspaces/ssh-debug/handoff.md",
+      "status": "proposed",
+      "text": "Adding any file to .github/workflows changes the CI cache key: scripts/ci/resolve.sh hashes every .github/workflows/*.yml into it, so the first run after landing a new workflow re-downloads rootfs/kernel/kmods from the mirror and only then settles. Expect one slower run, not a regression. Also, a new ci-*.yml file is picked up by tests/modules/ci/test_pipeline.sh's stage glob and by tests/modules/ci/test_step_env.sh's static env wiring scan, so a non-stage workflow with that name prefix needs both tests told what it is."
+    }
+  ],
+  "next": "Lead: review the diff (3 new files + 6 edits, no commit). Then, if you accept it, the first real dispatch should be `gh workflow run ci-debug.yml --ref main -f stage=build-disk` as a smoke test before spending a session on stage=s5; that run also proves the GITHUB_ENV chaining and the step-output wiring that could only be verified statically here. Decisions left open: whether 'delete the run afterwards' belongs in docs/lifecycle.md as policy, and whether to add stage=assemble/s3 options later.",
+  "none_reason": "",
+  "rounds": 1,
+  "schema": 2,
+  "state": "review",
+  "todos": [
+    {
+      "id": "ssh-debug-01",
+      "status": "done",
+      "text": "确认仓库可见性（PUBLIC）与有无 Actions secret，作为安全结论的依据"
+    },
+    {
+      "id": "ssh-debug-02",
+      "status": "done",
+      "text": "核对 action-tmate 当前版本/输入项、csexton 停更状态、GitHub 官方调试手段，记录核对日期"
+    },
+    {
+      "id": "ssh-debug-03",
+      "status": "done",
+      "text": "取实测数据：s4/s5 job 与每次 uefi-disk 引导耗时、s5 boot3 用满 900 秒、KVM 与 TCG 现状"
+    },
+    {
+      "id": "ssh-debug-04",
+      "status": "done",
+      "text": "写 .github/workflows/ci-debug.yml：仅 workflow_dispatch、最小权限、复用 scripts/ci/、tmate 钉版本并设上限"
+    },
+    {
+      "id": "ssh-debug-05",
+      "status": "done",
+      "text": "写 docs/debug-ssh.md 与 .zh-CN.md（各 9 个 ## 标题），并在 docs/README 两份索引里登记"
+    },
+    {
+      "id": "ssh-debug-06",
+      "status": "done",
+      "text": "在 scripts/check_design.py 增加 debug-ssh 检查并接入 design 测试模块"
+    },
+    {
+      "id": "ssh-debug-07",
+      "status": "done",
+      "text": "修好两个被新 workflow 影响的 ci 模块测试（stage 计数、step env 静态扫描）"
+    },
+    {
+      "id": "ssh-debug-08",
+      "status": "done",
+      "text": "本地验证：ruby YAML 解析、check_design all、module design/ci、全量 tests，以及 5 组反向变异验证"
+    },
+    {
+      "id": "ssh-debug-09",
+      "status": "done",
+      "text": "写 handoff.md 与 status.json（schema 2）"
+    }
+  ],
+  "updated_at": "2026-11-10T21:52:00+08:00"
+}

@@ -1,0 +1,272 @@
+name: ci-debug
+
+# MANUAL DEBUGGING ENTRY POINT -- NOT A DELIVERY PIPELINE STAGE.
+#
+# Nothing published depends on this file. It is workflow_dispatch only, no other
+# workflow calls it, it produces no artifact and it grades nothing. The stage
+# workflows ci-s1..ci-s5 and the CI entry point ci.yml stay the only gate; a release
+# is still built and judged by exactly the stages a push runs. scripts/check_design.py
+# ("debug-ssh") fails if this file ever gains a push trigger, a floating action ref or
+# a session without a bound.
+#
+# Why it exists: S4 and S5 grade a boot the guest cannot grade itself. The failure mode
+# is "the upgraded slot comes up and the health check never finishes", which needs eyes
+# on a live runner, not another push. Measured on run 42815980945 (2026-11-10):
+#   s4 job 5 min 01 s total, its four uefi-disk boots 61/55/57/56 s each
+#   s5 boot 3 ("commit the upgraded slot and reclaim") consumed its whole 900 s
+#   CI_QEMU_TIMEOUT and failed -- one push-and-wait per hypothesis costs ~10 min
+#
+# What it does: installs the tooling the stage workflows install, runs the same
+# scripts/ci/ stages they run (resolve -> fetch -> kmods -> esp-prepare ->
+# platform-runtime -> initramfs -> disk, then optionally the payload, the fixtures and
+# the first boot), and hands the runner to a tmate session. No build logic lives here:
+# every step is a call into scripts/ci/, and the input/output chaining uses the local
+# interface of lib.sh (CI_OUTPUT_ENV writes a KEY=VALUE file, ci_load_env_file exports
+# it as CI_*), so this file cannot drift away from the stage workflows.
+#
+# Pinned on purpose: mxschmitt/action-tmate is third-party code that runs with the
+# runner's credentials, so it is pinned to the v3.24 commit instead of the floating
+# `v3` the action's README suggests (a tag can be moved, a commit cannot). Bumping it
+# means editing the commit and the `# v3.2x` comment on that line; check_design.py
+# rejects a ref that is neither vX.Y.Z nor a full commit sha.
+#
+# Session bounds: action-tmate v3.24 has no `max-duration` input -- action.yml at the
+# pinned commit declares only sudo, install-dependencies, limit-access-to-actor,
+# detached, connect-timeout-seconds, tmate-server-*, msys2-location and github-token.
+# The bound is therefore `timeout-minutes`, set on the session step (200) and on the
+# job (240): a session nobody is watching cannot run into the 6-hour job cap, and
+# check_design.py requires that duration key to be present and sane.
+
+on:
+  # workflow_dispatch must stay the only trigger. A push or pull_request trigger would
+  # hand every contributor a path to an interactive shell on a repository runner.
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "How far the session should prepare before the shell opens"
+        type: choice
+        options:
+          - none
+          - build-disk
+          - s4
+          - s5
+        default: build-disk
+      boot_timeout:
+        description: "CI_QEMU_TIMEOUT for the optional first boot, in seconds"
+        type: string
+        default: "1200"
+
+permissions:
+  contents: read
+
+concurrency:
+  # One interactive runner per branch. A second dispatch cancels the first, so a
+  # session left open by accident cannot sit on a runner for its whole bound.
+  group: ci-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Same scratch layout the stage workflows use: everything lands under
+  # $RUNNER_TEMP/ci and nothing is written into the checkout.
+  CI_TMP_ROOT: ${{ runner.temp }}/ci
+  CI_LOG_DIR: ${{ runner.temp }}/ci/logs
+  # The stage workflows default this to 0.0.2 for s4/s5; match them.
+  CI_PLATFORM_VERSION: "0.0.2"
+  # These three paths are the defaults of fetch.sh, initramfs.sh and disk.sh, named
+  # once here so the fixture and boot steps use the same files the prepare produced.
+  CI_DEBUG_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+  CI_DEBUG_INITRAMFS: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+  CI_DEBUG_IMAGE: ${{ runner.temp }}/ci/disk/n5105-ab-image.img
+
+jobs:
+  debug:
+    name: interactive shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the image, QEMU and loopback tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 \
+            ovmf grub-common zstd curl busybox-static
+          mkfs.btrfs --version
+          qemu-system-x86_64 --version | head -n 1
+          losetup --version | head -n 1
+
+      # Facts first: the human on the other end needs to know what this machine can do
+      # before trusting a boot budget. /dev/kvm is expected to be absent on a standard
+      # runner, and the pipeline runs `-accel tcg` either way
+      # (scripts/ci/qemu-smoke.sh), so this step records and never asserts.
+      - name: Report the runner
+        run: |
+          uname -srm
+          printf 'cpus=%s\n' "$(nproc)"
+          free -m | head -n 2
+          systemd-detect-virt || true
+          if [ -w /dev/kvm ]; then
+            echo "/dev/kvm is writable: this runner exposes KVM"
+          else
+            echo "no usable /dev/kvm: QEMU runs under TCG, as in CI"
+          fi
+          df -h "${RUNNER_TEMP}" | tail -n 1
+          sudo -n true && echo "passwordless sudo: yes" || echo "passwordless sudo: NO"
+
+      # The chain ci-s4/ci-s5 run, stopped at the disk image: everything after that is
+      # what the session is for. A failure here is not fatal -- the human gets the shell
+      # anyway, which is the whole point of a debug entry point.
+      - name: Prepare the disk image (resolve, fetch, kmods, ESP, runtime, initramfs, disk)
+        id: prepare
+        if: ${{ inputs.stage != 'none' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p "${CI_TMP_ROOT}" "${CI_LOG_DIR}"
+          log="${CI_LOG_DIR}/debug-prepare.log"
+          # shellcheck source=scripts/ci/lib.sh
+          . scripts/ci/lib.sh
+
+          CI_OUTPUT_ENV="${CI_TMP_ROOT}/resolve.env" \
+            bash scripts/ci/resolve.sh 2>&1 | tee -a "${log}"
+          ci_load_env_file "${CI_TMP_ROOT}/resolve.env"
+
+          # The resolved inputs have to survive this step: the stage scripts read the
+          # CI_* names, and $GITHUB_ENV is the only channel that reaches the steps below
+          # (ci_load_env_file exports into the current shell only). This is the same
+          # lowercase-to-CI_ mapping the loader does, written out because there is no
+          # Actions equivalent of "export for the rest of the job".
+          while IFS='=' read -r key value; do
+            [ -n "${key}" ] || continue
+            printf 'CI_%s=%s\n' "$(printf '%s' "${key}" | tr '[:lower:]' '[:upper:]')" "${value}" \
+              >>"${GITHUB_ENV}"
+          done <"${CI_TMP_ROOT}/resolve.env"
+
+          bash scripts/ci/fetch.sh 2>&1 | tee -a "${log}"
+
+          CI_OUTPUT_ENV="${CI_TMP_ROOT}/kmods.env" \
+            bash scripts/ci/kmods.sh 2>&1 | tee -a "${log}"
+          ci_load_env_file "${CI_TMP_ROOT}/kmods.env"
+
+          CI_OUTPUT_ENV="${CI_TMP_ROOT}/esp.env" \
+            bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${log}"
+          ci_load_env_file "${CI_TMP_ROOT}/esp.env"
+
+          bash scripts/ci/platform-runtime.sh 2>&1 | tee -a "${log}"
+
+          # Same kernel, initramfs and extra files the stage workflows hand to
+          # initramfs.sh, so the boot path under debug is the one under test.
+          CI_KERNEL_VERSION="${CI_KERNEL_VERSION:?kmods did not report a kernel version}" \
+            CI_INITRAMFS_OUT="${CI_DEBUG_INITRAMFS}" \
+            CI_INIT_SCRIPT="${GITHUB_WORKSPACE}/initramfs/boot/init" \
+            CI_EXTRA_FILES="${GITHUB_WORKSPACE}/initramfs/lib/wf.sh:/lib/wf.sh ${GITHUB_WORKSPACE}/initramfs/boot/post.sh:/s3-post.sh" \
+            CI_OUTPUT_ENV="${CI_TMP_ROOT}/initramfs.env" \
+            bash scripts/ci/initramfs.sh 2>&1 | tee -a "${log}"
+
+          CI_ESP_DIR="${CI_ESP_DIR:?esp-prepare did not report a directory}" \
+            CI_INITRAMFS="${CI_DEBUG_INITRAMFS}" \
+            CI_DISK_OUT="${CI_DEBUG_IMAGE}" \
+            CI_PLATFORM_RUNTIME_DIR="${CI_TMP_ROOT}/runtime" \
+            CI_OUTPUT_ENV="${CI_TMP_ROOT}/disk.env" \
+            bash scripts/ci/disk.sh 2>&1 | tee -a "${log}"
+          ci_load_env_file "${CI_TMP_ROOT}/disk.env"
+
+          # The same preflight the stage workflows gate on: a session where the ESP does
+          # not boot through GRUB would waste the human's time.
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE_PATH:?disk.sh did not report an image}" 2>&1 \
+            | tee -a "${log}"
+
+          {
+            printf 'image=%s\n' "${CI_IMAGE_PATH}"
+            printf 'initramfs=%s\n' "${CI_DEBUG_INITRAMFS}"
+            printf 'kernel=%s\n' "${CI_DEBUG_KERNEL}"
+          } >>"${GITHUB_OUTPUT}"
+
+          {
+            printf 'image: `%s`\n' "${CI_IMAGE_PATH}"
+            printf 'initramfs: `%s`\n' "${CI_DEBUG_INITRAMFS}"
+            printf 'kernel: `%s`\n' "${CI_DEBUG_KERNEL}"
+            printf 'logs: `%s`\n' "${CI_LOG_DIR}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      # s4 starts from a fresh image plus the network fixture; s5 additionally needs the
+      # upgrade payload it installs on boot 2. Everything the fixtures mutate is part of
+      # the state under investigation, so the prepare stops at the first boot and every
+      # later boot is driven by hand inside the session.
+      - name: Prepare the stage fixtures and payload
+        if: ${{ inputs.stage == 's4' || inputs.stage == 's5' }}
+        continue-on-error: true
+        env:
+          STAGE_INPUT: ${{ inputs.stage }}
+          CI_IMAGE: ${{ steps.prepare.outputs.image }}
+          CI_INITRAMFS: ${{ steps.prepare.outputs.initramfs }}
+          CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
+        run: |
+          set -euo pipefail
+          log="${CI_LOG_DIR}/debug-fixtures.log"
+          # shellcheck source=scripts/ci/lib.sh
+          . scripts/ci/lib.sh
+          if [ "${STAGE_INPUT}" = "s5" ]; then
+            CI_OUTPUT_ENV="${CI_TMP_ROOT}/payload.env" \
+              bash scripts/ci/payload-build.sh 2>&1 | tee -a "${log}"
+            ci_load_env_file "${CI_TMP_ROOT}/payload.env"
+            bash scripts/ci/ab-fixtures.sh \
+              --network \
+              --user-banner "user banner, edited before the upgrade" \
+              --orphan-layer @overlay-25.12.1 \
+              --payload "${CI_PAYLOAD_PATH:?payload-build did not report a payload}" 2>&1 \
+              | tee -a "${log}"
+          else
+            bash scripts/ci/ab-fixtures.sh --network 2>&1 | tee -a "${log}"
+          fi
+
+      # The first gating boot of the chosen stage, run once so the session opens next to
+      # the state that needs looking at. Boot 3 of s5 needed more than its 900 s budget
+      # on 2026-11-10, hence the larger default boot_timeout.
+      - name: Run the first boot of the chosen stage
+        if: ${{ inputs.stage == 's4' || inputs.stage == 's5' }}
+        continue-on-error: true
+        env:
+          STAGE_INPUT: ${{ inputs.stage }}
+          BOOT_TIMEOUT: ${{ inputs.boot_timeout }}
+          CI_KERNEL: ${{ steps.prepare.outputs.kernel }}
+          CI_INITRAMFS: ${{ steps.prepare.outputs.initramfs }}
+          CI_QEMU_DISK: ${{ steps.prepare.outputs.image }}
+          CI_QEMU_MODE: uefi-disk
+          CI_JUDGE_PREFIX: ""
+        run: |
+          set -euo pipefail
+          boot_timeout="${BOOT_TIMEOUT:-1200}"
+          case "${boot_timeout}" in
+            '' | *[!0-9]*) echo "boot_timeout is not a number, using 1200"; boot_timeout=1200 ;;
+          esac
+          if [ "${boot_timeout}" -le 0 ]; then boot_timeout=1200; fi
+          stop='^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+          if [ "${STAGE_INPUT}" = "s5" ]; then
+            stop='^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)'
+          fi
+          CI_QEMU_STOP_PATTERN="${stop}" \
+            CI_QEMU_CASE="${STAGE_INPUT}-boot1" \
+            CI_QEMU_TIMEOUT="${boot_timeout}" \
+            bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR}/debug-boot1.log"
+
+      # The session itself. `limit-access-to-actor: true` is not optional here: this
+      # repository is public, so the run log -- including these connection details -- is
+      # world readable. `true` makes tmate authorise only the public SSH keys registered
+      # on the GitHub profile of the user who dispatched the run, and fails the step
+      # outright if that profile has none. It never widens access, and the job still
+      # holds nothing but a read-only GITHUB_TOKEN.
+      - name: Open the interactive SSH session
+        if: ${{ !cancelled() }}
+        timeout-minutes: 200
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
+        with:
+          limit-access-to-actor: true

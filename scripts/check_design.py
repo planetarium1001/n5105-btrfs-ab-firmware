@@ -318,6 +318,123 @@ def check_text(problems: Problems) -> None:
             problems.add(rel, "contains tab characters")
 
 
+DEBUG_WORKFLOW = ROOT / ".github" / "workflows" / "ci-debug.yml"
+DEBUG_WORKFLOW_REL = ".github/workflows/ci-debug.yml"
+TMATE_ACTION = "mxschmitt/action-tmate"
+# A release tag or a commit sha. A floating major such as `@v3` would let upstream change
+# what runs with the runner's credentials without anyone reviewing it.
+PINNED_REF_RE = re.compile(r"^(?:v\d+\.\d+\.\d+|[0-9a-f]{40})$")
+# action-tmate v3.24 has no `max-duration` input, so the bound is the step's
+# `timeout-minutes`; both spellings are accepted so the invariant survives an upgrade
+# that adds one. 360 minutes is the 6-hour job cap, the only ceiling GitHub enforces.
+SESSION_DURATION_KEYS = ("max-duration", "timeout-minutes")
+MAX_SESSION_MINUTES = 360
+ON_LINE_RE = re.compile(r"""^(?:on|"on"|'on'):[ ]*(.*)$""")
+TRIGGER_KEY_RE = re.compile(r"^ {2}([A-Za-z_][\w-]*):")
+
+
+def _trigger_keys(text: str) -> list[str] | None:
+    """Top-level keys of the workflow's `on:` block, or None when there is none."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = ON_LINE_RE.match(line)
+        if not match:
+            continue
+        inline = match.group(1).split("#", 1)[0].strip()
+        if inline:
+            return [part.strip() for part in inline.strip("[]").split(",") if part.strip()]
+        keys: list[str] = []
+        for follow in lines[index + 1:]:
+            if not follow.strip() or follow.lstrip().startswith("#"):
+                continue
+            if not follow.startswith(" "):
+                break
+            nested = TRIGGER_KEY_RE.match(follow)
+            if nested:
+                keys.append(nested.group(1))
+        return keys
+    return None
+
+
+def _step_lines(lines: list[str], index: int) -> list[str]:
+    """Lines of the step holding lines[index]: its `- ` item up to the next sibling."""
+    start = index
+    while start > 0 and not lines[start].lstrip().startswith("- "):
+        start -= 1
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    end = start + 1
+    while end < len(lines):
+        line = lines[end]
+        if line.lstrip().startswith("- ") and len(line) - len(line.lstrip()) <= indent:
+            break
+        end += 1
+    return lines[start:end]
+
+
+def check_debug_ssh(problems: Problems) -> None:
+    """ci-debug.yml stays a manual, bounded, key-gated debugging entry point.
+
+    Three ways this file could quietly stop being safe: a trigger that runs it without
+    a human asking, a floating action ref that changes under us, or a session with no
+    end. Each is an assertion here rather than a comment in the workflow.
+    """
+    where = DEBUG_WORKFLOW_REL
+    if not DEBUG_WORKFLOW.is_file():
+        problems.add(where, "workflow does not exist")
+        return
+    text = DEBUG_WORKFLOW.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    triggers = _trigger_keys(text)
+    if triggers is None:
+        problems.add(where, "missing a top-level on: block")
+    elif triggers != ["workflow_dispatch"]:
+        problems.add(
+            where,
+            f"must be triggered by workflow_dispatch only, found {triggers}",
+        )
+
+    if not re.search(r"^permissions:\s*$", text, re.MULTILINE):
+        problems.add(where, "missing an explicit top-level permissions block")
+    if re.search(r":\s*(?:write|write-all)\b", text):
+        problems.add(where, "grants a write permission")
+
+    uses_index = next((i for i, line in enumerate(lines) if TMATE_ACTION + "@" in line), None)
+    if uses_index is None:
+        problems.add(where, f"no step uses {TMATE_ACTION}")
+        return
+    ref = lines[uses_index].split(TMATE_ACTION + "@", 1)[1].split()[0].strip("'\"")
+    if not PINNED_REF_RE.match(ref):
+        problems.add(
+            where,
+            f"{TMATE_ACTION}@{ref} is not pinned to a release tag or a commit sha",
+        )
+
+    block = "\n".join(_step_lines(lines, uses_index))
+    if not re.search(
+        r"^\s*limit-access-to-actor:\s*['\"]?true['\"]?\s*(?:#.*)?$", block, re.MULTILINE
+    ):
+        problems.add(where, "the tmate step must set limit-access-to-actor: true")
+
+    bounds = {}
+    for key in SESSION_DURATION_KEYS:
+        match = re.search(rf"^\s*{re.escape(key)}:\s*(\S+)\s*(?:#.*)?$", block, re.MULTILINE)
+        if match:
+            bounds[key] = match.group(1).strip("'\"")
+    if not bounds:
+        problems.add(
+            where,
+            "the tmate step has no duration bound (max-duration or timeout-minutes)",
+        )
+    for key, value in bounds.items():
+        if not value.isdigit() or not 0 < int(value) <= MAX_SESSION_MINUTES:
+            problems.add(
+                where,
+                f"{key} must be whole minutes within 1..{MAX_SESSION_MINUTES}, "
+                f"found {value!r}",
+            )
+
+
 CHECKS = {
     "partitions": check_partitions,
     "esp-data-only": check_esp_data_only,
@@ -330,6 +447,7 @@ CHECKS = {
     "links": check_links,
     "text": check_text,
     "retired-names": check_retired_tokens,
+    "debug-ssh": check_debug_ssh,
 }
 
 

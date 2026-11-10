@@ -111,7 +111,7 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 
 | 探针 | 通过条件 |
 |---|---|
-| `overlay-writable` | `/overlay` 可写且剩余空间大于 5% |
+| `overlay-writable` | `/overlay` 可写且剩余空间至少 16 MiB（绝对下限而非百分比：同一条规则在 128 MiB 的测试镜像和几百 GiB 的真机盘上必须表示同一件事） |
 | `fw4-present` | nft ruleset 非空且存在 `inet fw4` 表 |
 | `wan-present` | `network.wan` 引用的设备存在 |
 
@@ -147,6 +147,11 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 
 不使用 qgroup 配额；独占空间按需用 `btrfs filesystem du -s` 测量。
 
+探针开跑之前，先确认这棵树是一棵树：依次读 `/proc/cmdline`、`/proc/mounts`、`/sys/class/net`。
+升级后的槽若没挂上 `/proc`，三个探针会因为同一个原因全红，所以这个原因单独成行
+（`stage=preflight … reason=proc-cmdline-unreadable`），而不是三条无名的 `result=fail` ——
+这正是"探针写错了"和"这个槽没正常起来"的区别。
+
 ### 运行期补做完扩容
 
 `btrfs filesystem resize` 在同一文件系统被多次挂载时打不开设备，而 initramfs 为了写记录和扩容前的
@@ -181,7 +186,8 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 
 ```
 stage=<阶段> slot=<a|b> upper=<层名> rootfs=<版本> result=<ok|fail>
-probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
+probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail> [reason=<token>]
+stage=preflight slot=<a|b> result=fail reason=<proc-cmdline-unreadable|proc-mounts-unreadable|sysfs-missing>
 reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written|btrfs-resize>
 action=<commit|reboot-to-committed|degraded-boot>
 next=<a|b>

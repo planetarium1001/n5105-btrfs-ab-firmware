@@ -40,6 +40,109 @@ assert_contains "$build_src" 'payload_platform_bytes' \
   "ac-1 the platform layer size is published for the report"
 
 # --------------------------------------------------------------------------- #
+# ac-1b: a real payload build, with the runtime closure merged in
+#
+# The interesting question is not "is the file there" but "does the layer hide anything
+# the root filesystem already provides". The platform layer is the first lower layer of
+# the merged root, so a second copy of musl, libz or libgcc in it wins over @sys and the
+# upgraded system stops running its own tools - which is what a broken upgrade looks like.
+# --------------------------------------------------------------------------- #
+
+fixtures="$tmp/fixtures"
+mkdir -p "$fixtures/fetch/upstream" "$fixtures/bin" "$fixtures/rootfs/etc" \
+  "$fixtures/runtime/usr/sbin" "$fixtures/runtime/lib" "$fixtures/runtime/usr/lib"
+printf 'init\n' >"$fixtures/rootfs/etc/init"
+# libz is provided by the root filesystem, so the layer must not carry a second copy.
+printf 'system libz\n' >"$fixtures/rootfs/libz-marker"
+mkdir -p "$fixtures/rootfs/lib"
+printf 'system libz\n' >"$fixtures/rootfs/lib/libz.so.1"
+tar -czf "$fixtures/fetch/upstream/rootfs.tar.gz" -C "$fixtures/rootfs" .
+printf 'kernel\n' >"$fixtures/fetch/upstream/kernel.bin"
+printf 'initramfs\n' >"$fixtures/initramfs.cpio.gz"
+: >"$fixtures/runtime/usr/sbin/btrfs"
+printf 'runtime libz\n' >"$fixtures/runtime/lib/libz.so.1"
+printf 'runtime zstd\n' >"$fixtures/runtime/usr/lib/libzstd.so.1"
+
+# bsdtar does not know the GNU ownership flags the build uses for reproducibility; strip
+# them so the stage runs unchanged on a developer machine.
+cat >"$fixtures/bin/tar" <<'SHIM'
+#!/bin/sh
+kept=""
+for arg in "$@"; do
+  case "${arg}" in
+    --numeric-owner | --owner=* | --group=*) continue ;;
+  esac
+  kept="${kept} ${arg}"
+done
+# shellcheck disable=SC2086  # the arguments are rebuilt on purpose
+exec /usr/bin/tar ${kept}
+SHIM
+chmod +x "$fixtures/bin/tar"
+# BSD sed cannot combine -i with several -e expressions; write the result in place
+# instead, which is what the Linux build host gets from GNU sed.
+cat >"$fixtures/bin/sed" <<'SHIM'
+#!/bin/sh
+if [ "${1:-}" = "-i" ]; then
+  shift
+  script=""
+  while [ "${1:-}" = "-e" ]; do
+    script="${script} -e $2"
+    shift 2
+  done
+  target="$1"
+  # shellcheck disable=SC2086  # the expressions are single words by construction
+  /usr/bin/sed ${script} "${target}" >"${target}.shim" && mv "${target}.shim" "${target}"
+  exit $?
+fi
+exec /usr/bin/sed "$@"
+SHIM
+chmod +x "$fixtures/bin/sed"
+
+payload_out="$tmp/out/payload.tar"
+PATH="$fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$tmp/ci" CI_LOG_DIR="$tmp/ci/logs" CI_FETCH_DIR="$fixtures/fetch" \
+  CI_INITRAMFS="$fixtures/initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_RUNTIME_DIR="$fixtures/runtime" CI_PAYLOAD_OUT="$payload_out" \
+  CI_EMIT_OUTPUT="$tmp/ci/outputs.env" \
+  bash "$payload_build" >"$tmp/build.log" 2>&1
+build_rc=$?
+assert_eq "$build_rc" "0" "ac-1 a payload builds with the runtime closure merged"
+assert_file_exists "$payload_out" "ac-1 the payload tar was produced"
+
+mkdir -p "$tmp/unpacked/platform"
+tar -xf "$payload_out" -C "$tmp/unpacked"
+tar -xf "$tmp/unpacked/platform.tar" -C "$tmp/unpacked/platform" || {
+  echo "could not unpack platform.tar" >&2
+  exit 1
+}
+# The layer must be a real tree, not an empty extraction that makes every check pass.
+assert_file_exists "$tmp/unpacked/platform/usr/sbin/btrfs" \
+  "ac-1 the platform layer unpacks to a tree"
+assert_file_exists "$tmp/unpacked/platform/etc/init.d/ab-boot" \
+  "ac-1 and carries the platform hooks"
+assert_eq "$([ -x "$tmp/unpacked/platform/usr/sbin/btrfs" ] && echo yes)" "yes" \
+  "ac-1 the payload platform layer carries an executable btrfs"
+assert_eq "$([ -e "$tmp/unpacked/platform/lib/libz.so.1" ] && echo shadowed || echo absent)" "absent" \
+  "ac-1 a library the root filesystem provides is not shadowed by the layer"
+assert_eq "$([ -e "$tmp/unpacked/platform/usr/lib/libzstd.so.1" ] && echo kept || echo lost)" "kept" \
+  "ac-1 a library only the runtime provides is kept"
+assert_contains "$(cat "$tmp/build.log")" "dropped the runtime files the root filesystem already provides: lib/libz.so.1" \
+  "ac-1 the drop is reported"
+assert_contains "$(cat "$tmp/ci/outputs.env" 2>/dev/null || cat "$tmp/build.log")" \
+  "payload_platform_shadowed" \
+  "ac-1 the report names the dropped file"
+# The build must refuse a payload without the tooling.
+rm -rf "$tmp/ci2"
+PATH="$fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$tmp/ci2" CI_LOG_DIR="$tmp/ci2/logs" CI_FETCH_DIR="$fixtures/fetch" \
+  CI_INITRAMFS="$fixtures/initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_RUNTIME_DIR="$tmp/no-runtime" CI_PAYLOAD_OUT="$tmp/out/payload2.tar" \
+  bash "$payload_build" >"$tmp/build2.log" 2>&1
+assert_eq "$?" "1" "ac-1 a payload without a runtime tree is refused"
+assert_contains "$(cat "$tmp/build2.log")" "runtime tree not found" \
+  "ac-1 the refusal says what is missing"
+
+# --------------------------------------------------------------------------- #
 # ac-2: the mode rules the payload uses keep the tool executable
 # --------------------------------------------------------------------------- #
 

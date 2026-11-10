@@ -130,7 +130,7 @@ Runs after `done` completes, with a 150 second timeout:
 
 | Probe | Passes when |
 |---|---|
-| `overlay-writable` | `/overlay` is writable with more than 5% free |
+| `overlay-writable` | `/overlay` is writable with at least 16 MiB free (an absolute floor, not a percentage: the same rule has to mean the same thing on a 128 MiB test image and on a disk measured in hundreds of GiB) |
 | `fw4-present` | the nft ruleset is non-empty and the `inet fw4` table is present |
 | `wan-present` | a device referenced by `network.wan` exists |
 
@@ -170,6 +170,12 @@ Space thresholds:
 | below 5% | `platform_check_image` returns 74 and the update is refused |
 
 No qgroup quota is used; exclusive space is measured on demand with `btrfs filesystem du -s`.
+
+Before any probe runs, the tree has to be a tree: `/proc/cmdline`, `/proc/mounts` and
+`/sys/class/net` are read first. An upgraded slot that comes up without `/proc` fails all
+three probes for one reason, so that reason gets its own line
+(`stage=preflight … reason=proc-cmdline-unreadable`) instead of three anonymous failures -
+the difference between "the health check is wrong" and "this slot did not boot properly".
 
 ### Finishing a growth the initramfs could not
 
@@ -212,7 +218,8 @@ Record fields are frozen as `key=value`:
 
 ```
 stage=<stage> slot=<a|b> upper=<layer> rootfs=<version> result=<ok|fail>
-probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
+probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail> [reason=<token>]
+stage=preflight slot=<a|b> result=fail reason=<proc-cmdline-unreadable|proc-mounts-unreadable|sysfs-missing>
 reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written|btrfs-resize>
 action=<commit|reboot-to-committed|degraded-boot>
 next=<a|b>

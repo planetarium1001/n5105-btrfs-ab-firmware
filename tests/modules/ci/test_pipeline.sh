@@ -25,7 +25,7 @@ done
 # ac-2 reusable workflows live at the top level and all targets resolve
 subdirs=$(find "$WORKFLOWS" -mindepth 1 -type d | wc -l | tr -d ' ')
 assert_eq "$subdirs" "0" "no subdirectories under .github/workflows"
-stages=$(find "$WORKFLOWS" -maxdepth 1 -name 'ci-*.yml' | wc -l | tr -d ' ')
+stages=$(find "$WORKFLOWS" -maxdepth 1 -name 'ci-*.yml' ! -name 'ci-debug.yml' | wc -l | tr -d ' ')
 targets=$(grep -h "uses: \./" "$WORKFLOWS"/*.yml | sed 's/.*uses: \.\///' | grep '/ci-' | sort -u)
 # ci.yml is the entry and release.yml is the tag-triggered publisher; both call the
 # reusable stage workflows and are not stages themselves, so they must not be counted.
@@ -45,7 +45,10 @@ assert_contains "$(cat "$CI_SCRIPTS/lib.sh")" "CI_TOOLS_VERSION" "tool epoch par
 assert_contains "$(cat "$CI_SCRIPTS/resolve.sh")" "sha256" "script digests participate in the key"
 
 # ac-4 diagnostics are uploaded even when a stage fails
+# ci-debug.yml is a manual debugging entry point, not a stage: it uploads nothing on
+# purpose and is excluded from the stage counts above for the same reason.
 for workflow in "$WORKFLOWS"/ci-*.yml; do
+  [[ $(basename "$workflow") == ci-debug.yml ]] && continue
   count=$(grep -c "if: always()" "$workflow")
   [[ $count -ge 2 ]] && result=ok || result=thin
   assert_eq "$result" "ok" "$(basename "$workflow") collects and uploads diagnostics unconditionally"

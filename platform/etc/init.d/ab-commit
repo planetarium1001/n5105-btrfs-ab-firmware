@@ -92,17 +92,42 @@ field() {
 	return 1
 }
 
-# probe_overlay_writable: /overlay is writable and has more than 5% free.
+# The floor for the writable layer, in KiB. An absolute number on purpose: a percentage
+# means something different on the 128 MiB test image than on a real 500 GiB partition,
+# and the question the health check asks is "can the next upgrade and the reclamation
+# still write", not "is more than a twentieth left". 16 MiB is roughly a payload write
+# plus the ring log.
+AB_FREE_FLOOR_KB="${AB_FREE_FLOOR_KB:-16384}"
+
+# The trees the health check inspects. Overridable so a test can describe a machine
+# without building one.
+AB_OVERLAY="${AB_OVERLAY:-/overlay}"
+AB_PROC="${AB_PROC:-/proc}"
+AB_SYSFS="${AB_SYSFS:-/sys}"
+
+# probe_overlay_writable: /overlay is writable and has room left.
 probe_overlay_writable() {
-	[ -d /overlay ] || return 1
-	_probe_file="/overlay/.ab-probe.$$"
-	: >"${_probe_file}" 2>/dev/null || return 1
+	PROBE_REASON=""
+	[ -d "${AB_OVERLAY}" ] || {
+		PROBE_REASON=no-overlay
+		return 1
+	}
+	_probe_file="${AB_OVERLAY}/.ab-probe.$$"
+	: >"${_probe_file}" 2>/dev/null || {
+		PROBE_REASON="not-writable:${_probe_file}"
+		return 1
+	}
 	rm -f "${_probe_file}"
-	_total="$(df -k /overlay 2>/dev/null | awk 'NR == 2 { print $2 }')"
-	_avail="$(df -k /overlay 2>/dev/null | awk 'NR == 2 { print $4 }')"
-	[ -n "${_total}" ] && [ -n "${_avail}" ] || return 1
-	[ "${_total}" -gt 0 ] || return 1
-	[ $((_avail * 100 / _total)) -gt 5 ]
+	_avail="$(df -k "${AB_OVERLAY}" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+	[ -n "${_avail}" ] || {
+		PROBE_REASON=no-df
+		return 1
+	}
+	[ "${_avail}" -ge "${AB_FREE_FLOOR_KB}" ] || {
+		PROBE_REASON="free-${_avail}k-below-${AB_FREE_FLOOR_KB}k"
+		return 1
+	}
+	return 0
 }
 
 # probe_fw4: the nft ruleset is non-empty and the firewall is actually loaded.
@@ -111,22 +136,65 @@ probe_overlay_writable() {
 # it to nft and exits, so an idle system has no fw4 process to look for. Both shapes
 # pass: a resident firewall process, or the loaded ruleset in the inet fw4 table.
 probe_fw4() {
-	command -v nft >/dev/null 2>&1 || return 1
-	_ruleset="$(nft list ruleset 2>/dev/null)" || return 1
-	[ -n "${_ruleset}" ] || return 1
+	PROBE_REASON=""
+	command -v nft >/dev/null 2>&1 || {
+		PROBE_REASON=no-nft
+		return 1
+	}
+	_ruleset="$(nft list ruleset 2>/dev/null)" || {
+		PROBE_REASON=nft-ruleset-unreadable
+		return 1
+	}
+	[ -n "${_ruleset}" ] || {
+		PROBE_REASON=nft-ruleset-empty
+		return 1
+	}
 	nft list table inet fw4 >/dev/null 2>&1 && return 0
 	pidof fw4 >/dev/null 2>&1 && return 0
 	pgrep -f fw4 >/dev/null 2>&1 && return 0
+	PROBE_REASON=no-fw4-table-or-process
 	return 1
 }
 
 # probe_wan: the device behind network.wan exists.
 probe_wan() {
-	command -v uci >/dev/null 2>&1 || return 1
+	PROBE_REASON=""
+	command -v uci >/dev/null 2>&1 || {
+		PROBE_REASON=no-uci
+		return 1
+	}
 	_dev="$(uci -q get network.wan.device 2>/dev/null)"
 	[ -n "${_dev}" ] || _dev="$(uci -q get network.wan.ifname 2>/dev/null)"
-	[ -n "${_dev}" ] || return 1
-	[ -e "/sys/class/net/${_dev}" ]
+	[ -n "${_dev}" ] || {
+		PROBE_REASON=no-wan-device-in-uci
+		return 1
+	}
+	[ -e "${AB_SYSFS}/class/net/${_dev}" ] || {
+		PROBE_REASON="no-interface:${_dev}"
+		return 1
+	}
+	return 0
+}
+
+# preflight: the running system has to be a system before any probe can mean anything.
+# A slot that comes up without /proc is not a failing health check, it is a broken tree,
+# and the difference has to be visible in one line - three anonymous "result=fail" lines
+# send the reader looking at the probes instead of at the boot.
+preflight() {
+	PREFLIGHT_REASON=""
+	[ -r "${AB_PROC}/cmdline" ] || {
+		PREFLIGHT_REASON=proc-cmdline-unreadable
+		return 1
+	}
+	[ -r "${AB_PROC}/mounts" ] || {
+		PREFLIGHT_REASON=proc-mounts-unreadable
+		return 1
+	}
+	[ -d "${AB_SYSFS}/class/net" ] || {
+		PREFLIGHT_REASON=sysfs-missing
+		return 1
+	}
+	return 0
 }
 
 # clear_stale_lock: a lock directory that no live writer can own any more, left behind by
@@ -160,7 +228,7 @@ probe() {
 		return 0
 	fi
 	_elapsed=$(( $(date +%s) - _started ))
-	log_append "probe=${_name} result=fail"
+	log_append "probe=${_name} result=fail reason=${PROBE_REASON:-unknown}"
 	echo "ab-commit: probe ${_name} fail (${_elapsed}s)"
 	return 1
 }
@@ -192,7 +260,15 @@ start() {
 
 	deadline=$(( $(date +%s) + BUDGET ))
 	failed=""
+	# The tree has to be a tree before the probes are asked anything: a slot that boots
+	# without /proc fails every probe for the same reason, and that reason is the report.
+	if ! preflight; then
+		failed="preflight-${PREFLIGHT_REASON}"
+		log_append "stage=preflight slot=${slot} result=fail reason=${PREFLIGHT_REASON}"
+		console_say "ab-commit: stage=preflight slot=${slot} result=fail reason=${PREFLIGHT_REASON}"
+	fi
 	for probe in overlay-writable fw4-present wan-present; do
+		[ -z "${failed}" ] || break
 		if [ "$(date +%s)" -ge "${deadline}" ]; then
 			failed="healthcheck-timeout"
 			log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=healthcheck-timeout"
@@ -206,7 +282,7 @@ start() {
 		if run_probe "${probe}" "${probe_fn}"; then
 			console_say "probe=${probe} result=pass"
 		else
-			console_say "probe=${probe} result=fail"
+			console_say "probe=${probe} result=fail reason=${PROBE_REASON:-unknown}"
 			failed="healthcheck-failed"
 		fi
 	done
@@ -240,7 +316,7 @@ start() {
 		exit 0
 	fi
 
-	log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}"
+	log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${PROBE_REASON:+ detail=${PROBE_REASON}}"
 	console_say "ab-commit: stage=healthcheck-done slot=${slot} result=fail reason=${failed} action=stay"
 	echo "ab-commit: health check failed on the committed slot ${slot} (${failed}), staying up"
 }
