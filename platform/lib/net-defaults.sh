@@ -33,6 +33,16 @@ ND_BIN_DIR="${ND_BIN_DIR:-/bin}"
 ND_UCI="${ND_UCI:-uci}"
 # Where the generated board file is staged. Under ND_ROOT so a test never touches /tmp.
 ND_BOARD_TMP="${ND_BOARD_TMP:-${ND_ROOT}/tmp/board.json}"
+# Written only after the project defaults were applied for real. "The file exists" is not
+# the same question: the upstream 99-default-settings uci-defaults runs at S10, before
+# this hook, and creates a network file that carries nothing but `config globals`. A seed
+# that trusted mere existence skipped itself forever on real hardware (v0.0.7, measured:
+# three boots, three `result=skip reason=network-present`, and a box serving 192.168.1.1
+# on eth0 with no WAN at all).
+ND_MARKER="${ND_MARKER:-${ND_ROOT}/etc/config/.ab-net-seed}"
+# The evidence file a human can read after pulling the disk: which mode, which ports, and
+# whether the marker was written.
+ND_ESP="${ND_ESP:-/boot}"
 
 # Defaults, used when the rendered configuration file is missing a key. They match
 # scripts/ci/net-defaults.conf.in; the file is what the build renders.
@@ -87,6 +97,63 @@ nd_eth_devices() {
     done | LC_ALL=C sort
 }
 
+# nd_net_configured: does the network file carry at least one interface? A file with only
+# `config globals` (what uci-defaults leaves behind before this hook runs) answers no, and
+# so does an empty one.
+nd_net_configured() {
+    [ -s "${ND_ROOT}/etc/config/network" ] || return 1
+    grep -q "^config interface " "${ND_ROOT}/etc/config/network" 2>/dev/null
+}
+
+# nd_repairable: is this the upstream default, untouched? The distinction matters twice:
+# a v0.0.7 machine left the generator output in place (br-lan{eth0}, 192.168.1.1/24,
+# wan eth1) and must be repaired, while a configuration somebody edited must never be
+# rewritten. Only the exact upstream fingerprint is repaired.
+nd_repairable() {
+    nd_rp_file="${ND_ROOT}/etc/config/network"
+    [ -s "${nd_rp_file}" ] || return 1
+    grep -q '192\.168\.1\.1/24' "${nd_rp_file}" 2>/dev/null || return 1
+    grep -q "list ports 'eth0'" "${nd_rp_file}" 2>/dev/null || return 1
+    # More than one bridge port means somebody already worked on it.
+    [ "$(grep -c "list ports" "${nd_rp_file}" 2>/dev/null)" = "1" ] || return 1
+    return 0
+}
+
+# nd_marker_write <mode> <wan> <lan-ports>: the record that this machine has been seeded.
+nd_marker_write() {
+    nd_mw_dir="$(dirname "${ND_MARKER}")"
+    mkdir -p "${nd_mw_dir}" 2>/dev/null || return 1
+    {
+        printf 'mode=%s\n' "${1:-}"
+        printf 'wan=%s\n' "${2:-}"
+        printf 'lan_ports=%s\n' "${3:-}"
+        printf 'addr=%s/%s\n' "$(nd_conf_get NET_LAN_ADDR "${ND_LAN_ADDR}")" "$(nd_conf_get NET_LAN_PREFIX "${ND_LAN_PREFIX}")"
+        printf 'at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    } >"${ND_MARKER}.tmp" 2>/dev/null || return 1
+    mv "${ND_MARKER}.tmp" "${ND_MARKER}" 2>/dev/null || return 1
+    return 0
+}
+
+# nd_evidence_write <result> <mode> <wan> <lan-ports>: ab/net.json on the ESP, so a disk
+# pulled out of a machine explains its own network without anybody booting it.
+nd_evidence_write() {
+    mkdir -p "${ND_ESP}/ab" 2>/dev/null || return 0
+    {
+        printf '{\n'
+        printf '  "result": "%s",\n' "${1:-unknown}"
+        printf '  "mode": "%s",\n' "${2:-}"
+        printf '  "wan": "%s",\n' "${3:-}"
+        printf '  "lan_ports": "%s",\n' "${4:-}"
+        printf '  "wired_devices": "%s",\n' "$(nd_eth_devices | tr '\n' ' ' | sed 's/ *$//')"
+        printf '  "addr": "%s/%s",\n' "$(nd_conf_get NET_LAN_ADDR "${ND_LAN_ADDR}")" "$(nd_conf_get NET_LAN_PREFIX "${ND_LAN_PREFIX}")"
+        printf '  "marker": "%s",\n' "$([ -s "${ND_MARKER}" ] && echo present || echo absent)"
+        printf '  "at": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+        printf '}\n'
+    } >"${ND_ESP}/ab/net.json.tmp" 2>/dev/null && \
+        mv "${ND_ESP}/ab/net.json.tmp" "${ND_ESP}/ab/net.json" 2>/dev/null || :
+    return 0
+}
+
 # nd_br_lan_section: the anonymous `config device` section that names br-lan, as uci
 # indexes it. config_generate creates it; when it is missing (a board whose lan is not
 # a bridge) a named one is created instead, so the ports still have a home.
@@ -113,8 +180,12 @@ nd_apply_defaults() {
     nd_all="$(nd_eth_devices | tr '\n' ' ')"
     nd_all="${nd_all% }"
     if [ -z "${nd_all}" ]; then
-        nd_say "result=fail reason=no-ethernet"
-        return 1
+        # The NICs are not registered yet (igc probes late on the N5105). Do not write the
+        # marker: S25 ab-net-reconcile runs again once netifd is up, and a later boot
+        # retries as well. Leaving the upstream default in place is what this avoids.
+        nd_say "result=pending reason=no-ethernet"
+        nd_evidence_write pending "" "" ""
+        return 0
     fi
     nd_count=0
     for nd_dev in ${nd_all}; do
@@ -222,6 +293,10 @@ nd_apply_defaults() {
         nd_say "wan-ssh=open"
     fi
 
+    if ! nd_marker_write "${nd_mode}" "${nd_wan_dev:-none}" "${nd_lan_ports}"; then
+        nd_say "note=marker-unwritable path=${ND_MARKER}"
+    fi
+    nd_evidence_write ok "${nd_mode}" "${nd_wan_dev:-none}" "${nd_lan_ports}"
     nd_say "result=ok mode=${nd_mode} wan=${nd_wan_dev:-none} lan-ports=${nd_lan_ports} addr=${nd_addr}/${nd_prefix}"
     return 0
 }
@@ -232,33 +307,47 @@ nd_apply_defaults() {
 wf_net_seed() {
     nd_load_conf
 
-    if [ -s "${ND_ROOT}/etc/config/network" ]; then
-        nd_say "result=skip reason=network-present"
+    if [ -s "${ND_MARKER}" ]; then
+        nd_say "result=skip reason=seeded"
         return 0
     fi
 
-    if [ ! -s "${ND_ROOT}/etc/board.json" ]; then
-        mkdir -p "${ND_ROOT}/etc" "$(dirname "${ND_BOARD_TMP}")" || :
-        if ! "${ND_BIN_DIR}/board_detect" "${ND_BOARD_TMP}" >/dev/null 2>&1; then
-            nd_say "result=fail reason=board-detect"
-            return 1
+    if nd_net_configured; then
+        if nd_repairable; then
+            # The generator's own output, untouched: this is the state a v0.0.7 machine
+            # was stuck in (no marker, upstream default, no WAN). Repair it in place.
+            nd_say "note=unseeded-upstream-default-repair"
+        else
+            # Somebody configured this. Leave it exactly as it is and only record that we
+            # saw it, so a later boot does not come back for it.
+            nd_marker_write foreign "${ND_WAN_DEV}" "${ND_LAN_DEVS}"
+            nd_evidence_write skip foreign "${ND_WAN_DEV}" "${ND_LAN_DEVS}"
+            nd_say "result=skip reason=foreign-config"
+            return 0
         fi
-        mv "${ND_BOARD_TMP}" "${ND_ROOT}/etc/board.json" || {
-            nd_say "result=fail reason=board-json"
-            return 1
-        }
     fi
 
-    # The same generator upstream runs from preinit. It refuses to do anything when both
-    # network and system already exist, which is why the absence of network above is the
-    # only state that reaches this line.
-    if ! "${ND_BIN_DIR}/config_generate" >/dev/null 2>&1; then
-        nd_say "result=fail reason=config-generate"
-        return 1
-    fi
-    if [ ! -s "${ND_ROOT}/etc/config/network" ]; then
-        nd_say "result=fail reason=config-generate-empty"
-        return 1
+    if ! nd_net_configured; then
+        if [ ! -s "${ND_ROOT}/etc/board.json" ]; then
+            mkdir -p "${ND_ROOT}/etc" "$(dirname "${ND_BOARD_TMP}")" || :
+            if ! "${ND_BIN_DIR}/board_detect" "${ND_BOARD_TMP}" >/dev/null 2>&1; then
+                nd_say "result=fail reason=board-detect"
+                return 1
+            fi
+            mv "${ND_BOARD_TMP}" "${ND_ROOT}/etc/board.json" || {
+                nd_say "result=fail reason=board-json"
+                return 1
+            }
+        fi
+        # The same generator upstream runs from preinit.
+        if ! "${ND_BIN_DIR}/config_generate" >/dev/null 2>&1; then
+            nd_say "result=fail reason=config-generate"
+            return 1
+        fi
+        if ! nd_net_configured; then
+            nd_say "result=fail reason=config-generate-empty"
+            return 1
+        fi
     fi
 
     nd_apply_defaults || return 1

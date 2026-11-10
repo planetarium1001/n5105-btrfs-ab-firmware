@@ -9,32 +9,42 @@ result. Everything you change afterwards lives in the writable layer and is left
 
 ## When the seed runs
 
-`platform/etc/init.d/ab-net-seed` starts at `S16`, ahead of the `S20network` that starts
-netifd:
+Two hooks, in this order:
 
 ```
-S15 ab-boot        A/B bookkeeping, no network
-S16 ab-net-seed    board_detect + config_generate + project defaults
-S20 network        netifd brings up br-lan and wan, dnsmasq serves the LAN
+S15 ab-boot            A/B bookkeeping, no network
+S16 ab-net-seed        board_detect + config_generate + project defaults (first try)
+S20 network            netifd brings up br-lan and wan, dnsmasq serves the LAN
+S25 ab-net-reconcile   second try, only if S16 could not finish
 ```
 
-One condition decides the whole seed, and it is the file itself:
+What decides it is a **marker**, `/etc/config/.ab-net-seed`, not the presence of the
+configuration file. That distinction is not pedantic: the upstream `99-default-settings`
+uci-defaults runs at `S10`, before this hook, and creates a network file that carries
+nothing but `config globals`. A seed that trusted "the file exists" skipped itself forever,
+which is exactly what a v0.0.7 machine did - it kept the generator default
+(`br-lan{eth0}`, `192.168.1.1/24`, `wan eth1`), served no WAN at all, and logged
+`result=skip reason=network-present` on every boot.
 
-```sh
-[ -s /etc/config/network ] && return 0      # present: leave it alone
-/bin/board_detect /tmp/board.json           # absent: what upstream preinit would do
-/bin/config_generate                        # writes network and system
-# then, once, the project defaults: port roles, address, wan, the 22/tcp rule
-```
+The decision, in words:
 
-- No marker file and no version number: idempotence is carried by "the file exists". The
-  second boot of the same image logs `stage=net-seed result=skip reason=network-present` and
-  changes nothing.
-- A user `uci` change, a fixture injected through the writable layer, and a configuration an
-  upgrade carried over are all "the file exists". None of them is rewritten.
-- A failure does not block the boot: `ab-net-seed` adds a `stage=net-seed result=fail
-  reason=<token>` line to the ring log and `rcS` continues. A machine without network still
-  has its console, and a rollback would not produce a network either.
+- marker present -> `result=skip reason=seeded`, nothing is read and nothing is written;
+- no configuration at all -> `board_detect` + `config_generate`, then the project defaults;
+- a configuration that still carries the **untouched upstream fingerprint**
+  (`192.168.1.1/24` and exactly one bridge port, `eth0`) -> repaired in place, because that
+  is the state a v0.0.7 machine was stuck in;
+- any other configuration -> `result=skip reason=foreign-config`; the marker is written so
+  later boots stay away, and the file is not touched.
+
+The NICs may not exist yet at `S16` (the igc ports on the N5105 appear around thirteen
+seconds in). When `no eth*` is found the seed writes **no marker** and logs
+`result=pending reason=no-ethernet`; `S25 ab-net-reconcile` runs again after netifd and
+reloads the network once, so the machine heals itself in the same boot. A failure never
+blocks the boot: the reason goes to the ring log and `rcS` continues.
+
+Every attempt also writes `ab/net.json` onto the ESP - `result`, `mode`, `wan`,
+`lan_ports`, the wired devices it saw, whether the marker exists - so a disk pulled out of
+a machine explains its own network without anybody booting it.
 
 ## Defaults
 

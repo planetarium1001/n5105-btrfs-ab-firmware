@@ -1,0 +1,73 @@
+#!/bin/sh /etc/rc.common
+# ab-net-reconcile - second chance for the network seed, after netifd is up.
+#
+# The seed runs at S16, before the NIC drivers have necessarily registered their ports.
+# On the N5105 the igc ports appear around thirteen seconds in, i.e. after S16: the seed
+# then finds no `eth*`, correctly refuses to guess, and writes no marker. Without this
+# hook the machine keeps the upstream default it generated (br-lan{eth0}, wan{eth1}) and
+# nothing ever repairs it - which is exactly what a real v0.0.7 machine did.
+#
+# So: if the marker is still missing, seed again now that the ports exist, and reload the
+# network once so the corrected configuration is the one that is running. The hook is a
+# no-op on every later boot (the marker exists) and when S16 already succeeded.
+
+# START is consumed by /etc/rc.common, not by this file.
+# shellcheck disable=SC2034
+START=25
+
+NET_DEFAULTS_LIB="${NET_DEFAULTS_LIB:-/lib/net-defaults.sh}"
+NET_MARKER="${NET_MARKER:-/etc/config/.ab-net-seed}"
+AB_ESP="${AB_ESP:-/boot}"
+RING_LOG_MAX=32768
+
+ring_log() {
+	log_dir="${AB_ESP}/ab/log"
+	log_file="${log_dir}/boot-0.log"
+	log_tmp="${log_file}.tmp.$$"
+	mkdir -p "${log_dir}" 2>/dev/null || return 0
+	[ -f "${log_file}" ] && cat "${log_file}" >"${log_tmp}" 2>/dev/null
+	printf '%s\n' "$*" >>"${log_tmp}" 2>/dev/null || return 0
+	if [ "$(wc -c <"${log_tmp}" 2>/dev/null || echo 0)" -gt "${RING_LOG_MAX}" ]; then
+		tail -c $((RING_LOG_MAX - 512)) "${log_tmp}" >"${log_tmp}.tail" 2>/dev/null &&
+			printf 'TRUNCATED=1\n' >>"${log_tmp}.tail" &&
+			mv "${log_tmp}.tail" "${log_tmp}"
+	fi
+	sync
+	mv "${log_tmp}" "${log_file}" 2>/dev/null || :
+	sync
+}
+
+boot() {
+	[ -s "${NET_MARKER}" ] && return 0
+	[ -f "${NET_DEFAULTS_LIB}" ] || {
+		ring_log "stage=net-reconcile result=fail reason=library-missing"
+		return 0
+	}
+	# shellcheck source=platform/lib/net-defaults.sh
+	. "${NET_DEFAULTS_LIB}"
+
+	output="$(wf_net_seed 2>&1)"
+	status=$?
+	while IFS= read -r line; do
+		[ -n "${line}" ] || continue
+		ring_log "reconcile ${line}"
+		logger -t ab-net-reconcile "${line}" 2>/dev/null
+	done <<EOF
+${output}
+EOF
+	if [ "${status}" -ne 0 ]; then
+		ring_log "stage=net-reconcile result=fail status=${status}"
+		return 0
+	fi
+	[ -s "${NET_MARKER}" ] || return 0
+	# The configuration on disk changed after netifd already read it: reload once so the
+	# running system matches the file, rather than leaving the box on the upstream default
+	# until the next boot.
+	ring_log "stage=net-reconcile result=ok reload=1"
+	if /etc/init.d/network reload >/dev/null 2>&1; then
+		ring_log "stage=net-reload result=ok"
+	else
+		ring_log "stage=net-reload result=fail"
+	fi
+	return 0
+}

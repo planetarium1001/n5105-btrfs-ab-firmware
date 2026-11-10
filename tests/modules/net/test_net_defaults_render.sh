@@ -68,7 +68,7 @@ fi
 
 ci_platform_startlinks "$tmp/rc" >/dev/null 2>&1
 # The links point into ../init.d, so they are dangling in this scratch tree by design.
-for link in S15ab-boot S16ab-net-seed S99ab-commit; do
+for link in S15ab-boot S16ab-net-seed S25ab-net-reconcile S99ab-commit; do
     target="$(readlink "$tmp/rc/etc/rc.d/$link" 2>/dev/null)"
     assert_eq "${target}" "../init.d/${link#S[0-9][0-9]}" "ac-5 the start link ${link} exists"
 done
@@ -85,6 +85,15 @@ assert_eq "$seed_start" "16" "ac-5 ab-net-seed declares START=16"
 [ "${seed_start:-99}" -lt 20 ] &&
     assert_eq "before-network" "before-network" "ac-5 the seed runs before network (S20)" ||
     assert_eq "start=${seed_start}" "start<20" "ac-5 the seed runs before network (S20)"
+
+# The reconcile hook is the other way round: it exists precisely because the ports can
+# show up after netifd already started.
+reconcile_start="$(start_of "$root/platform/etc/init.d/ab-net-reconcile")"
+assert_eq "$reconcile_start" "25" "ac-5 ab-net-reconcile declares START=25"
+[ "${reconcile_start:-0}" -gt 20 ] &&
+    assert_eq "after-network" "after-network" "ac-5 the reconcile runs after network (S20)" ||
+    assert_eq "start=${reconcile_start}" "start>20" "ac-5 the reconcile runs after network (S20)"
+assert_file_exists "$root/platform/etc/init.d/ab-net-reconcile" "ac-5 the reconcile hook ships in the platform layer"
 
 # The library and the hook are part of the platform layer, not of the rootfs: the
 # rootfs has to stay byte identical to upstream.

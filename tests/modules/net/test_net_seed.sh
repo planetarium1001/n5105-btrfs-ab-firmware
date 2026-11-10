@@ -142,6 +142,8 @@ run_seed() {
         export ND_STUB_LOG="$dir/stub.log"
         export ND_STUB_UCI_SHOW="$dir/uci-show-network.txt"
         export ND_CONF="$dir/etc/net-defaults.conf"
+        export ND_MARKER="$dir/etc/config/.ab-net-seed"
+        export ND_ESP="$dir/esp"
         # shellcheck source=platform/lib/net-defaults.sh
         . "$lib"
         wf_net_seed
@@ -186,18 +188,44 @@ esac
 # ac-3: an existing configuration is the user's, not ours
 # --------------------------------------------------------------------------- #
 
+# 1. A configuration somebody edited is never rewritten: no marker, but also no uci.
 keep="$tmp/keep"
 mksystem "$keep" eth0 eth1 eth2 eth3
 mkdir -p "$keep/etc/config"
-printf "config interface 'lan'\n\toption device 'br-lan'\n" >"$keep/etc/config/network"
+printf "config interface 'lan'\n\toption device 'br-lan'\n\tlist ipaddr '10.10.10.1/24'\n" >"$keep/etc/config/network"
 out="$(run_seed "$keep" 2>&1)"
 status=$?
 
-assert_eq "$status" "0" "ac-3 an existing configuration seeds as a no-op"
-assert_contains "$out" "result=skip reason=network-present" "ac-3 the reason is reported"
+assert_eq "$status" "0" "ac-3 a foreign configuration is left alone"
+assert_contains "$out" "result=skip reason=foreign-config" "ac-3 the skip reason is the foreign one"
 assert_eq "$(cat "$keep/stub.log" 2>/dev/null)" "" "ac-3 neither the generators nor uci are called"
 assert_eq "$(cat "$keep/etc/config/network")" "config interface 'lan'
-	option device 'br-lan'" "ac-3 the existing file is byte-identical afterwards"
+	option device 'br-lan'
+	list ipaddr '10.10.10.1/24'" "ac-3 the file is byte-identical afterwards"
+assert_file_exists "$keep/etc/config/.ab-net-seed" "ac-3 the marker is written so later boots stay away"
+
+# 2. The untouched upstream default (what a v0.0.7 machine carried) is repaired instead
+#    of skipped: that box had no WAN at all and would never have healed itself.
+heal="$tmp/heal"
+mksystem "$heal" eth0 eth1 eth2 eth3
+mkdir -p "$heal/etc/config"
+cat >"$heal/etc/config/network" <<'NET'
+config device
+	option name 'br-lan'
+	option type 'bridge'
+	list ports 'eth0'
+
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	list ipaddr '192.168.1.1/24'
+NET
+out="$(run_seed "$heal" 2>&1)"
+assert_contains "$out" "note=unseeded-upstream-default-repair" "ac-3 the upstream default is recognised"
+assert_contains "$out" "result=ok mode=router" "ac-3 and repaired into router mode"
+assert_contains "$(cat "$heal/stub.log")" "add_list network.lan.ipaddr=192.168.100.1/24" \
+  "ac-3 the LAN address becomes the project default"
+assert_file_exists "$heal/etc/config/.ab-net-seed" "ac-3 the repair writes the marker"
 
 # --------------------------------------------------------------------------- #
 # ac-5: one port cannot be a router
@@ -253,6 +281,34 @@ assert_contains "$(cat "$nobridge/stub.log")" "set network.brlan.name=br-lan" "t
 assert_contains "$(cat "$nobridge/stub.log")" "add_list network.brlan.ports=eth1" "ports land on the created bridge"
 
 # --------------------------------------------------------------------------- #
+# Deferral: no NICs yet (igc probes after S16) - log it, write no marker, retry later
+# --------------------------------------------------------------------------- #
+
+late="$tmp/late"
+mksystem "$late"            # no eth* at all, and no pre-existing network file
+out="$(run_seed "$late" 2>&1)"
+status=$?
+assert_eq "$status" "0" "a boot without ethernet is not a failure"
+assert_contains "$out" "result=pending reason=no-ethernet" "the deferral is reported"
+[ -f "$late/etc/config/.ab-net-seed" ] &&
+    assert_eq "marker" "no-marker" "the deferral writes no marker" ||
+    assert_eq "no-marker" "no-marker" "the deferral writes no marker"
+
+# The evidence file exists even then, so a pulled disk explains why nothing was configured.
+assert_file_exists "$late/esp/ab/net.json" "the ESP carries ab/net.json on a deferral"
+
+# --------------------------------------------------------------------------- #
+# Evidence: ab/net.json says what was decided
+# --------------------------------------------------------------------------- #
+
+assert_file_exists "$fresh/esp/ab/net.json" "a seeded machine leaves ab/net.json on the ESP"
+net_json="$(cat "$fresh/esp/ab/net.json" 2>/dev/null)"
+assert_contains "$net_json" '"result": "ok"' "the evidence records the result"
+assert_contains "$net_json" '"mode": "router"' "the evidence records the mode"
+assert_contains "$net_json" '"wan": "eth0"' "the evidence records the WAN port"
+assert_contains "$net_json" '"marker": "present"' "the evidence records the marker"
+
+# --------------------------------------------------------------------------- #
 # Failure paths: reported, never fatal to the caller
 # --------------------------------------------------------------------------- #
 
@@ -266,6 +322,6 @@ assert_contains "$out" "result=fail reason=config-generate" "the failing stage i
 
 # A second run over a seeded system does nothing, which is the whole idempotence story.
 out="$(run_seed "$fresh" 2>&1)"
-assert_contains "$out" "result=skip reason=network-present" "a second boot is a no-op"
+assert_contains "$out" "result=skip reason=seeded" "a second boot is a no-op"
 
 finish

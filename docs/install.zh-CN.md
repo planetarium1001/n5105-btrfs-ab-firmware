@@ -362,6 +362,11 @@ mkdir -p /data/evidence
 } >/data/evidence/first-boot.log 2>&1
 ```
 
+如果机器完全连不上，盘上已经带齐解释问题所需的东西：挂上 ESP（`PARTNAME ab-esp`，FAT），读
+`ab/net.json`（首启网络的决定：模式、看到的网口、是否只是推迟）、`ab/log/boot-0.log`（本次启动的
+环形日志）与 `ab/log/resize.log`（首启扩容）。这三份文件不需要开机、不需要 SSH、不需要 console；
+GRUB 也帮不上忙——ESP 上那个 standalone EFI 二进制里没有 `cat` 模块。
+
 在笔记本上：
 
 ```sh

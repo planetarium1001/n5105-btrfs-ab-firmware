@@ -21,7 +21,6 @@ sys="$tmp/sys/block"
 mkdir -p "$sys/vda" "$sys/vda/vda4" "$tmp/work" "$tmp/bin" "$tmp/table" "$tmp/mnt/p4"
 mkdir -p "$sys/vda/queue"
 printf '512\n' >"$sys/vda/queue/logical_block_size"
-printf '921600\n' >"$sys/vda/size"
 printf 'DEVTYPE=disk\nDEVNAME=vda\n' >"$sys/vda/uevent"
 printf '0\n' >"$sys/vda/removable"
 printf '4\n' >"$sys/vda/vda4/partition"
@@ -39,6 +38,9 @@ case "${p4_start}" in '' | *[!0-9]*) p4_start=788480 ;; esac
 # is exercised whatever size disk.sh ships.
 disk_sectors=$((p4_start + p4_shipped - 1 + 34 + 2045))
 last_lba=$((disk_sectors - 34))
+# The device capacity is what the decision trusts, so the fixture has to declare a disk
+# that ends at this table's last usable LBA.
+printf '%s\n' "${disk_sectors}" >"$sys/vda/size"
 p4_grown=$(((last_lba - p4_start + 1) / 8 * 8))
 printf '%s\n' "${p4_shipped}" >"$sys/vda4/size"
 

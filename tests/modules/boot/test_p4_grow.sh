@@ -249,7 +249,11 @@ sector-size: 512
 
 /dev/vda4 : start=      ${p4_start}, size=      ${p4_shipped_size}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
 SLACK
-assert_eq "$(wf_grow_decide "$tmp/table/slack" /dev/vda4 "${disk_sectors}")" \
+# The device, not the dump, decides where the disk ends (measured on real hardware:
+# `sfdisk -d` keeps reporting the table's own last-lba after an image lands on a bigger
+# disk). The device here ends three sectors past p4, which is the slack this cases is
+# about, so the alignment still rounds the gain away.
+assert_eq "$(wf_grow_decide "$tmp/table/slack" /dev/vda4 "$((slack_last_lba + 34))")" \
   "already-full ${slack_last_lba}" \
   "ac-1 slack that rounds back to the current size is already-full"
 
@@ -479,6 +483,10 @@ reset_fixture
 printf '4096\n' >"$sys/vda/queue/logical_block_size"
 # 16384 logical sectors of 4096 bytes are 131072 sysfs units of 512 bytes.
 printf '%s\n' 131072 >"$sys/vda4/size"
+# The disk ends where this table's last usable LBA is, so the growth target comes from
+# the table above and the case stays about the 512/4096 unit conversion.
+# 115166 + 34 = 115200 logical sectors of 4096 bytes = 921600 sysfs units.
+printf '%s\n' 921600 >"$sys/vda/size"
 cat >"$tmp/table/current" <<'TABLE4K'
 label: gpt
 label-id: 4F2B1C3D-5E6F-7081-9203-A4B5C6D7E8F0

@@ -51,8 +51,14 @@ WF_SECTOR_BYTES="${WF_SECTOR_BYTES:-512}"
 # created with 512-byte sectors.
 WF_GROW_SECTORSIZE="${WF_GROW_SECTORSIZE:-4096}"
 # The end of a GPT disk is unusable: 32 sectors of backup entry array plus one header
-# sector. The last usable LBA is therefore total_sectors - 34, which is also what
-# sfdisk prints as `last-lba`; the value is only computed when the dump omits it.
+# sector. The last usable LBA is therefore total_sectors - 34.
+#
+# Measured on real hardware: `sfdisk -d` reports `last-lba` from the table's own header,
+# not from the device. An image written for a 514 MiB disk keeps reporting 1052638 after
+# it lands on a 128 GB NVMe, the decision below then concludes "already at the end of the
+# disk", nothing grows, and `btrfs resize max` is handed a target of zero
+# (`ERROR: unable to resize: Invalid argument`). So the device capacity is the primary
+# source and the dump is the cross-check, which is the other way round from before.
 WF_GPT_TAIL_SECTORS="${WF_GPT_TAIL_SECTORS:-34}"
 # Re-reading a partition table is asynchronous on some kernels, so the size check is
 # retried instead of trusted on the first read.
@@ -186,18 +192,28 @@ wf_grow_part_field() {
 # `last-lba` wins because it already accounts for the backup GPT; the arithmetic
 # fallback keeps the helper usable on dumps that only carry partition lines.
 wf_grow_last_lba() {
-    wf_gl_value="$(sed -n 's/^last-lba:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1)"
-    case "${wf_gl_value}" in
-        '' | *[!0-9]*) : ;;
+    wf_gl_table="$(sed -n 's/^last-lba:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1)"
+    case "${2:-}" in
+        '' | *[!0-9]* | 0) : ;;
         *)
-            printf '%s' "${wf_gl_value}"
+            wf_gl_device=$(($2 - WF_GPT_TAIL_SECTORS))
+            case "${wf_gl_table}" in
+                '' | *[!0-9]*) : ;;
+                *)
+                    if [ "${wf_gl_table}" -ne "${wf_gl_device}" ]; then
+                        wf_grow_log "table last-lba=${wf_gl_table} device last-lba=${wf_gl_device} (using the device)"
+                    fi
+                    ;;
+            esac
+            printf '%s' "${wf_gl_device}"
             return 0
             ;;
     esac
-    case "${2:-}" in
+    # No capacity from sysfs or blockdev: the table's own value is all there is.
+    case "${wf_gl_table}" in
         '' | *[!0-9]*) return 1 ;;
     esac
-    printf '%s' "$(($2 - WF_GPT_TAIL_SECTORS))"
+    printf '%s' "${wf_gl_table}"
 }
 
 # wf_grow_decide <dump> <p4device> <disk sectors>

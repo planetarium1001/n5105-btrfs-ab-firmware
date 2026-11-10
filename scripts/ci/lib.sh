@@ -277,6 +277,7 @@ ci_platform_startlinks() {
     ${mkdir} -p "${dir}/etc/rc.d"
     ${ln} -sf ../init.d/ab-boot "${dir}/etc/rc.d/S15ab-boot"
     ${ln} -sf ../init.d/ab-net-seed "${dir}/etc/rc.d/S16ab-net-seed"
+    ${ln} -sf ../init.d/ab-net-reconcile "${dir}/etc/rc.d/S25ab-net-reconcile"
     ${ln} -sf ../init.d/ab-commit "${dir}/etc/rc.d/S99ab-commit"
 }
 

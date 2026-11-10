@@ -472,6 +472,13 @@ mkdir -p /data/evidence
 } >/data/evidence/first-boot.log 2>&1
 ```
 
+When the machine cannot be reached at all, the disk carries everything needed to explain
+why: mount the ESP (`PARTNAME ab-esp`, FAT) and read `ab/net.json` (what the seed decided,
+which ports it saw, whether it was a deferral), then `ab/log/boot-0.log` (the ring log of
+the running boot) and `ab/log/resize.log` (the first-boot growth). Those three files need
+no boot, no SSH and no console; GRUB itself cannot help here - the standalone EFI binary on
+the ESP has no `cat` module.
+
 From the laptop:
 
 ```sh

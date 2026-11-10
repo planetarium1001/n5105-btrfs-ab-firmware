@@ -8,28 +8,35 @@ ImmortalWrt 镜像相同的上游程序生成，再在这个结果上叠加本�
 
 ## 生成时机
 
-`platform/etc/init.d/ab-net-seed` 以 `S16` 启动，早于拉起 netifd 的 `S20network`：
+两个钩子，顺序固定：
 
 ```
-S15 ab-boot        A/B 记账，不碰网络
-S16 ab-net-seed    board_detect + config_generate + 项目默认叠加
-S20 network        netifd 拉起 br-lan 与 wan，dnsmasq 在 LAN 发地址
+S15 ab-boot            A/B 记账，不碰网络
+S16 ab-net-seed        board_detect + config_generate + 项目默认（第一次尝试）
+S20 network            netifd 拉起 br-lan 与 wan，dnsmasq 在 LAN 发地址
+S25 ab-net-reconcile   只在 S16 没能完成时再试一次
 ```
 
-整个生成由一个条件决定，而且这个条件就是文件本身：
+决定它跑不跑的是**标记文件** `/etc/config/.ab-net-seed`，不是"配置文件存不存在"。这个区别不是吹毛求疵：
+上游的 `99-default-settings` 在 `S10`（比本钩子早）就会写出一个只含 `config globals` 的
+`/etc/config/network`。信"文件存在"的实现会永久跳过自己——`v0.0.7` 的真机就是这样：它一直保留
+生成器的默认值（`br-lan{eth0}`、`192.168.1.1/24`、`wan eth1`），完全没有 WAN，每次启动都只写
+`result=skip reason=network-present`。
 
-```sh
-[ -s /etc/config/network ] && return 0      # 已存在：一律不动
-/bin/board_detect /tmp/board.json           # 不存在：补回上游 preinit 做的事
-/bin/config_generate                        # 写 network 与 system
-# 然后只做一次项目默认：端口角色、地址、wan、那条 22/tcp 规则
-```
+判定规则：
 
-- 没有 marker、没有版本号判断：幂等由"文件存在"表达。同一镜像第二次启动只写一行
-  `stage=net-seed result=skip reason=network-present`，别的不做。
-- 用户自己改过的 `uci`、经可写层注入的夹具、升级带过来的配置，都等于"文件存在"，一个都不会被重写。
-- 失败不阻塞启动：`ab-net-seed` 往环形日志写 `stage=net-seed result=fail reason=<token>` 后 `rcS`
-  继续。没网的机器 console 仍然可用，而且回滚也变不出一个网络来。
+- 标记在 → `result=skip reason=seeded`，不读也不写；
+- 完全没有配置 → `board_detect` + `config_generate`，再叠加项目默认；
+- 配置仍带着**未被动过的上游指纹**（`192.168.1.1/24` 且桥只有一个口 `eth0`）→ 原地修复，
+  因为 `v0.0.7` 的机器正是卡在这个状态；
+- 其它任何配置 → `result=skip reason=foreign-config`，写标记让后续启动不再来碰，文件一个字不改。
+
+`S16` 时网口可能还没出现（N5105 的 igc 口在十三秒左右才注册）。拿不到 `eth*` 时**不写标记**并记
+`result=pending reason=no-ethernet`；`S25 ab-net-reconcile` 在 netifd 之后重试并 reload 一次，
+于是同一次开机就能自愈。任何失败都不阻塞启动：原因进环形日志，`rcS` 继续。
+
+每次尝试还会把结果写到 ESP 的 `ab/net.json`：`result`、`mode`、`wan`、`lan_ports`、看到的网口、
+标记是否存在——拔下盘就能解释这台机器的网络状态，不用开机能进系统。
 
 ## 默认值
 
