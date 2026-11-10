@@ -342,11 +342,17 @@ start() {
 	fi
 
 	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
-		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${failed_detail:+ detail=${failed_detail}} action=reboot-to-committed"
-		console_say "ab-commit: abandoned slot=${slot} reason=${failed}"
+		# The state write comes first and the console line last, like the commit branch
+		# above. This is not cosmetic: whoever watches the console - a user, or the CI
+		# harness that powers the machine off one second after it sees the line - treats
+		# the line as "the decision has been recorded". Printing it before `ab-slot
+		# abandon` said that about a write that had not happened yet, and a power cut in
+		# between (or a harness that kills the VM) left a slot still marked pending.
 		rm -f "${AB_ESP}/ab/candidate"
 		ab-slot abandon
 		sync
+		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${failed_detail:+ detail=${failed_detail}} action=reboot-to-committed"
+		console_say "ab-commit: abandoned slot=${slot} reason=${failed}"
 		reboot
 		exit 0
 	fi

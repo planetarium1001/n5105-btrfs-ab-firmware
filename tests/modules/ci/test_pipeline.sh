@@ -45,8 +45,9 @@ assert_contains "$(cat "$CI_SCRIPTS/lib.sh")" "CI_TOOLS_VERSION" "tool epoch par
 assert_contains "$(cat "$CI_SCRIPTS/resolve.sh")" "sha256" "script digests participate in the key"
 
 # ac-4 diagnostics are uploaded even when a stage fails
-# ci-debug.yml is a manual debugging entry point, not a stage: it uploads nothing on
-# purpose and is excluded from the stage counts above for the same reason.
+# ci-debug.yml is a manual debugging entry point, not a stage: its only upload is the
+# short-lived debug-<stage>-logs diagnostics artifact, it renders no verdict, and it is
+# excluded from the stage counts above for that reason.
 for workflow in "$WORKFLOWS"/ci-*.yml; do
   [[ $(basename "$workflow") == ci-debug.yml ]] && continue
   count=$(grep -c "if: always()" "$workflow")

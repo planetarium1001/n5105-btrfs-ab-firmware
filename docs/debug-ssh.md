@@ -9,7 +9,9 @@ tooling the boot stages install, runs the same `scripts/ci/` stages they run, an
 hands the runner to a session you can log into over SSH.
 
 - Trigger: `workflow_dispatch` only. No `push`, no `pull_request`, no `workflow_call`.
-- Gate: none. It grades nothing, publishes no artifact, and no other workflow calls it.
+- Gate: none. It grades nothing, renders no verdict, and no other workflow calls it.
+  The one thing it publishes is a diagnostics artifact, `debug-<stage>-logs`, kept for
+  seven days: the build logs and the guest console of the session's first boot.
 - Lifetime: bounded by `timeout-minutes` (200 on the session step, 240 on the job).
 - Access: `limit-access-to-actor: true`, so only the dispatcher's own SSH keys open the
   shell.

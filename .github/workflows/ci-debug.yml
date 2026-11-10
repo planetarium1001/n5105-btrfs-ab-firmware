@@ -3,7 +3,9 @@ name: ci-debug
 # MANUAL DEBUGGING ENTRY POINT -- NOT A DELIVERY PIPELINE STAGE.
 #
 # Nothing published depends on this file. It is workflow_dispatch only, no other
-# workflow calls it, it produces no artifact and it grades nothing. The stage
+# workflow calls it, it grades nothing, and the only thing it publishes is a
+# short-lived diagnostics artifact (debug-<stage>-logs, 7 days) holding the boot
+# logs of the session. The stage
 # workflows ci-s1..ci-s5 and the CI entry point ci.yml stay the only gate; a release
 # is still built and judged by exactly the stages a push runs. scripts/check_design.py
 # ("debug-ssh") fails if this file ever gains a push trigger, a floating action ref or
@@ -272,6 +274,39 @@ jobs:
             CI_QEMU_CASE="${STAGE_INPUT}-boot1" \
             CI_QEMU_TIMEOUT="${boot_timeout}" \
             bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR}/debug-boot1.log"
+
+      # The stop pattern matches the success line and the failure lines alike, so "the
+      # guest stopped on the judge line" says nothing on its own; this entry point used to
+      # keep the serial log to itself, and a session where the health check decided wrongly
+      # looked exactly like one where it decided well. This step is separate from the boot
+      # and gated on `always()` on purpose: under `set -euo pipefail` a failing
+      # qemu-smoke.sh would abort the boot step before any echo, which is precisely the
+      # hang and timeout case the lines are needed for.
+      - name: Print the boot decision
+        if: ${{ always() && inputs.stage != 'none' }}
+        run: |
+          for serial in "${CI_TMP_ROOT:?}"/qemu/serial-*.log; do
+            [ -f "${serial}" ] || continue
+            printf '\n== %s ==\n' "${serial}"
+            # ab-boot without a narrowing: the growth, p4 and reclamation verdicts are
+            # part of the answer, and s5's own judge line is printed by the guest.
+            grep -E '^(probe=|ab-commit:|ab-boot:|S5-UPGRADE-DONE|ab-upgrade)' "${serial}" || true
+          done
+
+      # Everything the boot produced, before the session opens. `always()` rather than
+      # `!cancelled()`: a run cancelled while a boot hangs still has the log that says so,
+      # and that is the case this artifact exists for.
+      - name: Upload the boot evidence
+        if: ${{ always() && inputs.stage != 'none' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-${{ inputs.stage }}-logs
+          # qemu-smoke.sh copies each console to $CI_LOG_DIR/serial-<case>.log, so the
+          # logs directory alone carries them; the raw qemu/ copy is deliberately not
+          # uploaded twice.
+          path: ${{ runner.temp }}/ci/logs
+          if-no-files-found: warn
+          retention-days: 7
 
       # The session itself. `limit-access-to-actor: true` is not optional here: this
       # repository is public, so the run log -- including these connection details -- is

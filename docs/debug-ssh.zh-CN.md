@@ -7,7 +7,8 @@
 `ci-debug.yml` 是人工调试入口，不是流水线阶段。它装上引导类阶段需要的工具，跑与它们相同的 `scripts/ci/` 阶段，然后把 runner 交给一个可以 SSH 登录的会话。
 
 - 触发：只有 `workflow_dispatch`。没有 `push`、没有 `pull_request`、没有 `workflow_call`。
-- 门禁：没有。它不判定任何东西、不产出产物，也没有别的 workflow 调用它。
+- 门禁：没有。它不判定任何东西、不出结论，也没有别的 workflow 调用它。它只产出一份
+  诊断产物 `debug-<stage>-logs`，保留 7 天：会话首次启动的构建日志与 guest 控制台。
 - 时长：由 `timeout-minutes` 限定（会话步骤 200 分钟，job 240 分钟）。
 - 访问：`limit-access-to-actor: true`，只有派发者自己的 SSH 密钥能进入 shell。
 

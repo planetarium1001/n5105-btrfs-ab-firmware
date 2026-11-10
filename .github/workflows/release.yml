@@ -4,7 +4,7 @@ name: release
 # releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
 # something the same stages already proved.
 #
-#   git tag v0.0.5 && git push origin v0.0.5
+#   git tag -a v0.0.6 -m "0.0.6: ..." && git push origin v0.0.6
 #
 # Produces a GitHub Release carrying the image, the update payload, SHA256SUMS and
 # release-notes.md. `contents: write` is granted to the publishing job only.

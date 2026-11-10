@@ -89,10 +89,11 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.5` — the pipeline builds a real payload, validates it with the same
-checker the device uses, and a tag publishes the image together with that payload. Every
-stage is exercised in QEMU: install, commit, injected failure with rollback, upgrade,
-reclamation and a degraded writable partition.
+Current version: `0.0.6` — the health check now reaches its probes: a slot is committed only
+after the writable layer, the firewall ruleset and the WAN device have been checked, and the
+abandon path records the decision on the ESP before it announces it. The pipeline still builds
+a real payload, validates it with the same checker the device uses, and a tag publishes the
+image together with that payload.
 
 ## License
 

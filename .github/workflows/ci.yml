@@ -83,7 +83,12 @@ jobs:
   fetch:
     name: fetch
     needs: resolve
-    if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'fetch' || inputs.stage == 'assemble') }}
+    # Every stage except `verify` consumes the upstream artifacts, so resuming one of them
+    # has to resume this one too: with the enumeration this condition used to have
+    # (`all`, `fetch`, `assemble`), dispatching `stage: s4` skipped fetch, which skipped
+    # s4 as well (`needs.fetch.result == 'success'`) and left the stage selector unable to
+    # do the one thing it exists for.
+    if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage != 'verify') }}
     uses: ./.github/workflows/ci-fetch.yml
     permissions:
       contents: read

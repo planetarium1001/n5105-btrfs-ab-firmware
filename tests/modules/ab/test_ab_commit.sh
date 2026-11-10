@@ -229,9 +229,14 @@ printf '/dev/fake %s vfat rw,noatime 0 0\n' "$esp" >"$mounts_file"
 calls="$machine/ab-slot.calls"
 reboot_calls="$machine/reboot.calls"
 console_log="$machine/console.log"
+# One file holding both the ab-slot calls and the console lines, in the order they
+# happened: the abandon branch has to write the state before it announces it, and two
+# separate logs cannot show that.
+seq="$machine/sequence.log"
 : >"$calls"
 : >"$reboot_calls"
 : >"$console_log"
+: >"$seq"
 
 # start() mounts the ESP, writes the ring log and reads the slot through ab-slot: all
 # three are pointed at the fake machine so nothing here touches the host.
@@ -244,13 +249,15 @@ AB_FREE_FLOOR_KB=0
 export AB_ESP AB_MOUNTS AB_OVERLAY AB_PROC AB_SYSFS AB_FREE_FLOOR_KB
 
 STUB_AB_SLOT_CALLS="$calls"
+STUB_SEQ="$seq"
 STUB_SLOT=a
 STUB_PENDING=none
-export STUB_AB_SLOT_CALLS STUB_SLOT STUB_PENDING
+export STUB_AB_SLOT_CALLS STUB_SEQ STUB_SLOT STUB_PENDING
 
 cat >"$stub_bin/ab-slot" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >>"${STUB_AB_SLOT_CALLS}"
+printf 'ab-slot %s\n' "$*" >>"${STUB_SEQ}"
 case "$1" in
   status) printf 'slot=%s pending=%s upper=@overlay-25.12.2\n' "${STUB_SLOT}" "${STUB_PENDING}" ;;
   rootfs) printf '25.12.2\n' ;;
@@ -268,7 +275,10 @@ chmod +x "$stub_bin/pidof" "$stub_bin/pgrep"
 # console_say and reboot have to stop at the test: one would write to the real console,
 # the other would restart the machine under the runner.
 # shellcheck disable=SC2317  # called by start() in the subshells below
-console_say() { printf '%s\n' "$*" >>"$console_log"; }
+console_say() {
+  printf '%s\n' "$*" >>"$console_log"
+  printf 'console %s\n' "$*" >>"$seq"
+}
 # shellcheck disable=SC2317  # called by start() in the subshells below
 reboot() { printf 'reboot\n' >>"$reboot_calls"; }
 
@@ -336,6 +346,9 @@ assert_eq "$(grep -c '^commit' "$calls")" "0" "ac-4 and never committed"
 assert_contains "$(cat "$reboot_calls")" "reboot" "ac-4 the machine reboots into the committed slot"
 assert_contains "$(cat "$console_log")" "ab-commit: abandoned slot=b reason=healthcheck-failed" \
   "ac-4 and says so on the console"
+assert_eq "$(awk '/^ab-slot abandon$/ {a = NR} /^console ab-commit: abandoned/ {c = NR} END {print (a && c && a < c) ? "state-then-console" : "out-of-order"}' "$seq")" \
+  "state-then-console" \
+  "ac-4 the abandon is written to the ESP before it is announced"
 
 # Two probes fail: the summary line quotes the FIRST one. With every probe running to the
 # end, the live PROBE_REASON holds the last failure, so a slot with two faults is exactly
