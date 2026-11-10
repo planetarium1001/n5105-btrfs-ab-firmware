@@ -181,9 +181,14 @@ if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     if truncate -s 256M "${check_dir}/p4.img" 2>/dev/null \
         && sudo mkfs.btrfs -q -f "${check_dir}/p4.img" 2>"${check_dir}/mkfs.p4.err" \
         && sudo mount -o loop "${check_dir}/p4.img" "${check_dir}/p4" 2>>"${check_dir}/mkfs.p4.err"; then
+        # The state names the writable layer, and the health check verifies that the layer
+        # really exists on the partition, so the scratch filesystem has to carry it.
+        sudo btrfs subvolume create "${check_dir}/p4/@overlay-${upstream_version}" >/dev/null 2>&1 || true
+        sudo mkdir -p "${check_dir}/p4/@overlay-${upstream_version}/upper" \
+            "${check_dir}/p4/@overlay-${upstream_version}/work" 2>/dev/null || true
         p4_mounted="true"
     else
-        ci_log "mkfs/mount of the scratch partition failed: $(tr '\n' ' ' <"${check_dir}/mkfs.p4.err" 2>/dev/null)" >&2 || true
+        ci_log "mkfs/mount of the scratch partition failed: $(tr '\n' ' ' <"${check_dir}/mkfs.p4.err" 2>/dev/null)" || true
     fi
 fi
 [ "${p4_mounted}" = "true" ] ||
