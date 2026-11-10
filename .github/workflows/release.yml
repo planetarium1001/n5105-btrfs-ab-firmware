@@ -37,11 +37,50 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download the disk image
+      # The image a machine may be flashed with: produced by S3, the stage that boots the
+      # *production* initramfs. S2's artifact is named image-probe for a reason - v0.0.6
+      # and v0.0.7 published it by mistake and every real machine shut down at the GRUB
+      # menu with S1-RESULT=fail reason=no-device-node.
+      - name: Download the flashable image
         uses: actions/download-artifact@v4
         with:
-          name: disk-image
+          name: image-flashable
           path: ${{ runner.temp }}/ci/disk
+
+      # Defence in depth: the bytes about to be published are opened and asked which
+      # initramfs they carry. A probe image, or one without ab/image.json, stops the
+      # release here instead of on somebody's desk.
+      - name: Refuse an image that is not bootable
+        run: |
+          set -euo pipefail
+          img_gz="$(ls "${RUNNER_TEMP}"/ci/disk/*.img.gz | head -n 1)"
+          [ -n "${img_gz}" ] || { echo "no image to publish" >&2; exit 1; }
+          img="${RUNNER_TEMP}/ci/disk/publish.img"
+          gunzip -c "${img_gz}" >"${img}"
+          loop="$(sudo losetup --find --show --partscan "${img}")"
+          p1="${RUNNER_TEMP}/ci/disk/p1"
+          cleanup() {
+            sudo umount "${p1}" 2>/dev/null || true
+            sudo losetup -d "${loop}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          sudo mkdir -p "${p1}"
+          sudo mount -o ro "${loop}p1" "${p1}"
+          kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' "${p1}/ab/image.json" 2>/dev/null || echo unreadable)"
+          echo "image kind: ${kind}"
+          [ "${kind}" = "boot" ] || { echo "refusing to publish an image whose kind is '${kind}'" >&2; exit 1; }
+          sudo cp "${p1}/initrd-a" "${RUNNER_TEMP}/ci/disk/initrd-a"
+          sudo chmod 0644 "${RUNNER_TEMP}/ci/disk/initrd-a"
+          cleanup
+          trap - EXIT
+          gzip -dc "${RUNNER_TEMP}/ci/disk/initrd-a" | cpio -i --to-stdout init >"${RUNNER_TEMP}/ci/disk/init.head" 2>/dev/null || true
+          head -3 "${RUNNER_TEMP}/ci/disk/init.head"
+          grep -q "S3 boot init" "${RUNNER_TEMP}/ci/disk/init.head" || { echo "the published initrd is not the production boot init" >&2; exit 1; }
+          if grep -q "S1-RESULT" "${RUNNER_TEMP}/ci/disk/init.head"; then
+            echo "the published initrd is the S1 probe" >&2
+            exit 1
+          fi
+          echo "image is bootable: production init, kind=boot"
 
       - name: Download the update payload
         uses: actions/download-artifact@v4

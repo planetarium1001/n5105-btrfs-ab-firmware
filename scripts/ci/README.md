@@ -39,7 +39,8 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `qemu-smoke.sh` | s1, s2, s3, s4, s5 | boot it under QEMU and assert the frozen judge line; `CI_QEMU_MODE=uefi-disk` boots the ESP through OVMF so GRUB, not QEMU, supplies kernel/initrd/cmdline |
 | `apk-crosscheck.sh` | s1 | optional: compare the closure with what upstream `apk` installs |
 | `esp-prepare.sh` | s2 | take the ESP tree (GRUB) from the upstream combined-EFI image |
-| `disk.sh` | s2 | assemble and compress the four-partition image |
+| `disk.sh` | s2, s3, s4, s5 | assemble and compress the four-partition image; refuses the probe initramfs unless `CI_ALLOW_PROBE_INIT=1` |
+| `image-identity.sh` | via `disk.sh` | which initramfs an image carries (`probe`/`boot`) and whether it may be built; writes `ab/image.json` onto the ESP |
 | `image-verify.sh` | s2 | host-side geometry assertions and the guest expectation file |
 | `grub-render.sh` | s2/s4 | render `boot/grub/grub.cfg` and assert the five GRUB rules |
 | `ab-fixtures.sh` | s4 | shape the test image between boots (network, broken slot, pending) |
@@ -51,6 +52,28 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
 | `diagnostics.sh` | all | environment facts, disk usage and file inventories for failure triage |
+
+## Image artifact names
+
+An image carries one of two initramfs trees, and only one of them boots real hardware.
+The names say which, so nobody has to remember:
+
+| Artifact | Built by | Initramfs | Write it to a disk? |
+| --- | --- | --- | --- |
+| `image-probe` | s2 | S1 module-load probe (`initramfs/init`) | **never** - it looks for `/dev/vda` and powers off on anything else |
+| `image-flashable` | s3 | production boot init (`initramfs/boot/init`) | yes - this is the image the release publishes |
+| release `*.img.gz` | release (from `image-flashable`) | production boot init | yes |
+
+The image records its own identity in `ab/image.json` on the ESP (`"kind": "boot"|"probe"`).
+Three gates depend on it: `disk.sh` refuses to build a probe image without
+`CI_ALLOW_PROBE_INIT=1`, `image-verify.sh` cross-checks the record against what the build
+installed, and the release job re-opens the ESP, reads `ab/image.json` and greps `initrd-a`
+for the production init before publishing anything.
+
+Why this exists: v0.0.6 and v0.0.7 published s2's probe image. Every QEMU stage was green
+because s3/s4/s5 each rebuild the image for themselves - no stage ever booted the published
+artifact - and the first real machine shut down at the GRUB menu with
+`S1-RESULT=fail reason=no-device-node`.
 
 ## Stage graph
 

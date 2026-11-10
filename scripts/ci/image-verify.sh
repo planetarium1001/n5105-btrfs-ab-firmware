@@ -302,6 +302,16 @@ if [ "${esp_bytes}" -ge $((64 * 1024 * 1024)) ]; then
 fi
 [ -n "$(sudo find "${p1}" -type f -iname '*.efi' | head -n 1)" ] \
     || ci_die "p1 has no EFI loader"
+# Which initramfs this image carries, cross-checked against what the caller said it
+# installed: an image that silently turns into a probe image is not flashable, and the
+# only place that is cheap to notice is here, before anything boots it.
+image_json="${p1}/ab/image.json"
+[ -f "${image_json}" ] || ci_die "p1 is missing ab/image.json (which initramfs does it carry?)"
+image_kind="$(sudo sed -n 's/.*"kind": *"\([a-z]*\)".*/\1/p' "${image_json}" | head -n 1)"
+[ -n "${image_kind}" ] || ci_die "ab/image.json carries no kind"
+[ "${image_kind}" = "${CI_INITRAMFS_KIND:-boot}" ] \
+    || ci_die "ab/image.json says kind=${image_kind}, the build installed ${CI_INITRAMFS_KIND:-boot}"
+note "ab/image.json records the ${image_kind} initramfs"
 for required in \
     boot/grub \
     vmlinuz-a vmlinuz-b \

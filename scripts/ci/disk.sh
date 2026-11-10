@@ -27,7 +27,10 @@
 # Inputs (environment):
 #   CI_FETCH_DIR      directory holding upstream/rootfs.tar.gz and upstream/kernel.bin
 #   CI_ESP_DIR        ESP tree prepared by the esp stage
-#   CI_INITRAMFS      initramfs image to install as initrd-a/b for now
+#   CI_INITRAMFS      initramfs image to install as initrd-a/b
+#   CI_INITRAMFS_KIND which initramfs this is: boot (default) or probe
+#   CI_ALLOW_PROBE_INIT  must be 1 to build an image carrying the S1 probe; the probe
+#                     is a CI fixture, not something a machine can boot
 #   CI_DISK_DIR       scratch directory (default: $CI_TMP_ROOT/disk)
 #   CI_DISK_OUT       output image path (default: $CI_DISK_DIR/<name>.img)
 #   CI_PLATFORM_VERSION  version recorded in the platform release file
@@ -39,7 +42,7 @@
 #   CI_AB_SLOT_CFG_SOURCE  host path of the rendered ab-slot.cfg (default: the path
 #                        grub-render reports, else <grub.cfg dir>/ab-slot.cfg)
 #
-# Outputs: image_path, image_gz_path, image_bytes, image_gz_bytes, rootfs_files,
+# Outputs: image_path, image_gz_path, image_bytes, image_gz_bytes, image_kind, rootfs_files,
 #          rootfs_bytes, esp_bytes, part_layout
 
 set -euo pipefail
@@ -47,6 +50,8 @@ set -euo pipefail
 CI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/lib.sh
 . "${CI_SCRIPT_DIR}/lib.sh"
+# shellcheck source=scripts/ci/image-identity.sh
+. "${CI_SCRIPT_DIR}/image-identity.sh"
 
 on_error() {
     local status=$?
@@ -62,6 +67,8 @@ ci_require_cmd sudo losetup sfdisk mkfs.vfat mkfs.btrfs chattr gzip tar
 fetch_dir="${CI_FETCH_DIR:-${CI_TMP_ROOT}/fetch}"
 esp_dir="${CI_ESP_DIR:?CI_ESP_DIR is required}"
 initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required}"
+initramfs_kind="${CI_INITRAMFS_KIND:-boot}"
+allow_probe_init="${CI_ALLOW_PROBE_INIT:-0}"
 rootfs_tar="${fetch_dir}/upstream/rootfs.tar.gz"
 kernel="${fetch_dir}/upstream/kernel.bin"
 disk_dir="${CI_DISK_DIR:-${CI_TMP_ROOT}/disk}"
@@ -71,6 +78,14 @@ upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required, the wr
 # The writable layer is named after the upstream release: @overlay-<version>, with a
 # -r<N> suffix when the same release is shipped again with a different platform layer.
 overlay_name="${CI_OVERLAY_NAME:-@overlay-${upstream_version}}"
+
+# An image that carries the probe initramfs is a CI fixture: it looks for /dev/vda and
+# powers off on any machine that is not virtio. v0.0.6 and v0.0.7 shipped exactly that,
+# because S2 builds with the probe and the release published S2's artifact. The build
+# now refuses it unless the caller says so explicitly.
+ii_refuse_probe "${initramfs_kind}" "${allow_probe_init}" ||
+    ci_die "refusing to build: ${II_REASON}"
+ci_log "initramfs kind: ${initramfs_kind} ($(basename "${initramfs}"))"
 
 [ -f "${rootfs_tar}" ] || ci_die "upstream rootfs not found: ${rootfs_tar}"
 [ -f "${kernel}" ] || ci_die "upstream kernel not found: ${kernel}"
@@ -260,9 +275,14 @@ sudo tee "${p1}/ab/state.json" >/dev/null <<STATE
 }
 STATE
 sudo chmod 0644 "${p1}/ab/state.json"
+ii_image_json "${initramfs_kind}" "$(basename "${initramfs}")" \
+    "${platform_version}" "${upstream_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    | sudo tee "${p1}/ab/image.json" >/dev/null
+sudo chmod 0644 "${p1}/ab/image.json"
 sudo cp "${kernel}" "${p1}/vmlinuz-a"
 sudo cp "${kernel}" "${p1}/vmlinuz-b"
-# S2 installs the probe initramfs in both slots; S3 replaces it with the real one.
+# Both slots get the same initrd. Which one it is (boot|probe) is recorded in
+# ab/image.json and enforced by ii_refuse_probe above.
 sudo cp "${initramfs}" "${p1}/initrd-a"
 sudo cp "${initramfs}" "${p1}/initrd-b"
 sudo chmod 0644 "${p1}/vmlinuz-a" "${p1}/vmlinuz-b" "${p1}/initrd-a" "${p1}/initrd-b"
@@ -422,6 +442,7 @@ ci_emit_output "image_path" "${image}"
 ci_emit_output "image_gz_path" "${gz_path}"
 ci_emit_output "image_bytes" "${image_bytes}"
 ci_emit_output "image_gz_bytes" "${gz_bytes}"
+ci_emit_output "image_kind" "${initramfs_kind}"
 ci_emit_output "rootfs_files" "${rootfs_files}"
 ci_emit_output "rootfs_bytes" "${rootfs_bytes}"
 # part_layout names partitions by GPT PARTNAME, the same key image-verify.sh reads back.

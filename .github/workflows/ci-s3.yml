@@ -283,6 +283,18 @@ jobs:
           bash scripts/ci/diagnostics.sh s3 "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
+      # The image this stage actually booted: production initramfs, both slots, and the
+      # only image a machine may be flashed with. It is what the release publishes; S2's
+      # image-probe exists to test assembly and is never bootable outside QEMU.
+      - name: Upload the flashable image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-flashable
+          path: ${{ runner.temp }}/ci/disk/*.img.gz
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload probe artifacts
         if: always()
         uses: actions/upload-artifact@v4

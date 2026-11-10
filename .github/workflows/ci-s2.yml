@@ -155,6 +155,12 @@ jobs:
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
           CI_INITRAMFS: ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
           CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
+          # S2 assembles the image before the boot chain exists, so it installs the S1
+          # module-load probe as initrd - and says so out loud, because a probe image
+          # only answers /dev/vda: on any real machine it powers off. The artifact below
+          # is named image-probe for the same reason.
+          CI_INITRAMFS_KIND: probe
+          CI_ALLOW_PROBE_INIT: "1"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
@@ -165,6 +171,8 @@ jobs:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
           CI_DISK_DIR: ${{ runner.temp }}/ci/disk
           CI_EXPECT_OUT: ${{ runner.temp }}/ci/disk/s2-expect.txt
+          # image-verify cross-checks ab/image.json against what the build installed.
+          CI_INITRAMFS_KIND: probe
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/image-verify.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/image-verify.log"
@@ -227,7 +235,7 @@ jobs:
         # 80 MB per run for no extra evidence.
         uses: actions/upload-artifact@v4
         with:
-          name: disk-image
+          name: image-probe
           path: ${{ runner.temp }}/ci/disk/*.img.gz
           if-no-files-found: ignore
           retention-days: 1

@@ -33,6 +33,22 @@ boards), an Ethernet cable to the upstream router, one more cable and a laptop f
 side, and a way to note things down. The port mapping you write down in the checklist is part
 of the result.
 
+### Which artifact to write
+
+Only an image built with the *production* boot initramfs can boot a real machine. The CI
+publishes exactly one of those, under one of two names:
+
+| Where | Name | Use |
+| --- | --- | --- |
+| GitHub release | `n5105-ab-<platform>-<upstream>.img.gz` | write this one; it is the only file the release job proved bootable |
+| Actions artifact (tag builds) | `image-flashable` | the same bytes, for testing before a release |
+| Actions artifact (every build) | `image-probe` | **never write this**: it is the S1 module probe, it looks for `/dev/vda` and powers off on real hardware |
+
+Which one an image carries is recorded inside it: mount the ESP (`PARTNAME ab-esp`, FAT) and
+read `ab/image.json` - `"kind": "boot"` is writable, `"kind": "probe"` is a CI fixture. The
+release job refuses to publish anything whose `kind` is not `boot`, and also reads `initrd-a`
+out of the image and checks it is the production init.
+
 The image is a plain GPT layout: an EFI system partition, two slot filesystems and a
 shared btrfs partition holding the writable layers. It boots on x86-64 UEFI only;
 legacy BIOS boot is not supported. The target machine needs the N5105 v5 board with
