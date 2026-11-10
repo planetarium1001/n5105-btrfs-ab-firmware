@@ -116,10 +116,16 @@ assert_eq "$(printf '%s' "${boot_init}" | grep -c "printf '\[boot\]" || true)" "
 # grow.sh diagnostics have to reach the serial port too: a [grow] line that only lands on
 # the local screen is not evidence for the machine that has no screen.
 grow_lib="$(cat "$root/initramfs/lib/grow.sh")"
-assert_contains "${grow_lib}" 'command -v wf_say >/dev/null 2>&1' \
-  "ac-4 the growth helper uses wf_say when the boot initramfs has it"
-assert_contains "${grow_lib}" 'wf_say "[grow] $*"' \
-  "ac-4 growth diagnostics are mirrored to every console"
+assert_contains "${grow_lib}" "printf '[grow] %s\\n' \"\$*\" >&2" \
+  "ac-4 growth diagnostics stay on stderr"
+assert_contains "${grow_lib}" 'command -v wf_say_serial >/dev/null 2>&1' \
+  "ac-4 the growth helper mirrors through the serial-only helper"
+assert_contains "${grow_lib}" 'wf_say_serial "[grow] $*"' \
+  "ac-4 growth diagnostics are mirrored to the serial port"
+assert_eq "$(printf '%s' "${grow_lib}" | grep -c 'wf_say \"\[grow\]')" "0" \
+  "ac-4 the growth helper never writes to stdout through wf_say"
+assert_contains "${wf_lib}" 'wf_say_serial()' \
+  "ac-4 the serial-only helper exists in wf.sh"
 
 # The judge-line shape itself is frozen and must survive the change.
 assert_contains "${fail_body}" 'S3-RESULT=fail reason=' "ac-4 the judge line shape is unchanged"

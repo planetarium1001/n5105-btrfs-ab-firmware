@@ -102,10 +102,42 @@ ensure_platform_bin() {
 state_ab_slot() {
     ensure_platform_bin
     mount_one "${loopdev}p1" esp
+    # The shipped ab-slot reads the writer of boot/grub/ab-slot.cfg from the platform
+    # layer. That layer is installed at /lib inside the image, not on this build host, so
+    # the repository copy is handed over explicitly: it is the same file the layer ships,
+    # and without it ab-slot refuses to move the hint (a packaging detail, not an image
+    # problem).
     # shellcheck disable=SC2086  # arguments are simple words
-    sudo AB_ESP="${work}/esp" AB_CMD=/dev/null sh "${platform_slot_bin}" $1 ${2:-} 2>&1 |
+    sudo AB_ESP="${work}/esp" AB_CMD=/dev/null \
+        AB_SLOT_CFG_LIB="${CI_REPO_ROOT}/platform/lib/ab-slot-cfg.sh" \
+        AB_PARTITIONS_LIB="${CI_REPO_ROOT}/platform/lib/ab-partitions.sh" \
+        sh "${platform_slot_bin}" $1 ${2:-} 2>&1 |
         sed 's/^/[ab-slot]   /'
     sudo sync
+    # Marking a slot pending has to move the menu the next boot reads, on the ESP, before
+    # the machine ever gets a chance to boot. Asserted here so a state file that moved
+    # without its hint cannot pass as a staged upgrade.
+    if [ "$1" = "pending" ] && [ -f "${work}/esp/boot/grub/ab-slot.cfg" ]; then
+        want_default=""
+        want_fallback=""
+        case "${2:-}" in
+            a) want_default=0 ;;
+            b) want_default=1 ;;
+        esac
+        case "$(sudo sed -n 's/.*"committed": *"\([ab]\)".*/\1/p' "${work}/esp/ab/state.json" | head -n 1)" in
+            a) want_fallback=0 ;;
+            b) want_fallback=1 ;;
+        esac
+        if [ -n "${want_default}" ] && [ -n "${want_fallback}" ]; then
+            if ! sudo grep -q "^set default=${want_default}$" "${work}/esp/boot/grub/ab-slot.cfg"; then
+                ci_die "pending ${2:-?} did not point the menu at it: $(sudo cat "${work}/esp/boot/grub/ab-slot.cfg" | tr '\n' ' ')"
+            fi
+            if ! sudo grep -q "^set fallback=${want_fallback}$" "${work}/esp/boot/grub/ab-slot.cfg"; then
+                ci_die "pending ${2:-?} lost the committed slot as the fallback: $(sudo cat "${work}/esp/boot/grub/ab-slot.cfg" | tr '\n' ' ')"
+            fi
+            ci_log "menu now tries slot ${2:-?} and falls back to the committed slot"
+        fi
+    fi
     sudo umount "${work}/esp"
 }
 

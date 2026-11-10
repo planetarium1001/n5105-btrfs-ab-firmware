@@ -53,14 +53,16 @@ WF_GROW_VERIFY_TRIES="${WF_GROW_VERIFY_TRIES:-5}"
 
 # wf_grow_log <line...>: diagnostics go to stderr so callers can capture the single
 # result token from stdout without losing the log. When the boot initramfs has loaded
-# lib/wf.sh (it does, it sources both), the line also reaches every console through
-# wf_say: a `[grow]` line that only lands on the local screen is not evidence.
+# lib/wf.sh (it does, it sources both), the line is also mirrored to the serial port
+# through wf_say_serial — never to stdout, which belongs to the result.
 wf_grow_log() {
-    if command -v wf_say >/dev/null 2>&1; then
-        wf_say "[grow] $*"
-        return 0
-    fi
     printf '[grow] %s\n' "$*" >&2
+    # The serial mirror is a side channel, never stdout: wf_grow_run's stdout is the
+    # parsed result and must stay exactly one line.
+    if command -v wf_say_serial >/dev/null 2>&1; then
+        wf_say_serial "[grow] $*"
+    fi
+    return 0
 }
 
 # wf_grow_sysfs_units <device>: the kernel's size for a block device as sysfs reports
@@ -271,10 +273,11 @@ wf_grow_apply() {
         return 0
     }
     wf_ga_before="$(wf_grow_sectors "${wf_ga_p4}")" || wf_ga_before=""
-    "${WF_SFDISK}" --no-reread "${wf_ga_disk}" <"${wf_ga_out}" >/dev/null 2>&1 || {
+    if ! wf_ga_err="$("${WF_SFDISK}" --no-reread "${wf_ga_disk}" <"${wf_ga_out}" 2>&1)"; then
+        wf_grow_log "writing the partition table failed: ${wf_ga_err:-no output}"
         printf 'fail:partition-table-write'
         return 0
-    }
+    fi
     wf_grow_log "partition table written with p4 size ${wf_ga_size}"
     wf_grow_reread "${wf_ga_disk}" || {
         printf 'fail:partition-table-reread'

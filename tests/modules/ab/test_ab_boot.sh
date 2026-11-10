@@ -291,6 +291,26 @@ assert_eq "$(lines_in_file "$STUB_BTRFS_LOG")" "0" \
 assert_eq "$(cat "$p4/.ab/grow")" "result=done last_lba=921566" \
   "ac-7 the record stays done"
 
+# No record at all: nothing is resized, nothing is written.
+: >"$STUB_BTRFS_LOG"
+rm -f "$p4/.ab/grow"
+run_boot
+assert_eq "$?" "0" "ac-7 a boot without a growth record succeeds"
+assert_eq "$(lines_in_file "$STUB_BTRFS_LOG")" "0" \
+  "ac-7 without a record there is no resize at all"
+
+# The platform layer's btrfs is what runs on a device; this test host may not have one.
+# A missing tool is a logged failure like any other, never a failed boot.
+mv "$bin/btrfs" "$bin/btrfs.off"
+printf 'result=fail:btrfs-resize last_lba=921566\n' >"$p4/.ab/grow"
+run_boot
+assert_eq "$?" "0" "ac-7 a missing btrfs does not fail the boot"
+assert_contains "$(boot_log)" "stage=resize result=fail:btrfs-resize source=ab-boot" \
+  "ac-7 a missing btrfs is recorded as a failed resize"
+assert_contains "$(cat "$p4/.ab/grow")" "result=fail:btrfs-resize" \
+  "ac-7 the record still says what happened"
+mv "$bin/btrfs.off" "$bin/btrfs"
+
 # A resize that fails again only logs: the boot goes on and the record keeps saying why.
 : >"$STUB_BTRFS_LOG"
 printf 'result=fail:btrfs-resize last_lba=921566\n' >"$p4/.ab/grow"

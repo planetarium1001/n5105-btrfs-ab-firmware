@@ -69,15 +69,25 @@ wf_console_is_serial() {
     return 0
 }
 
-# wf_say <line...>: one milestone line on every console that can carry it.
-wf_say() {
-    printf '%s\n' "$*"
+# wf_say_serial <line...>: mirror one line to the serial device and nowhere else.
+#
+# Helpers whose stdout is captured and parsed (initramfs/lib/grow.sh) must be able to
+# reach the serial log without writing a single byte to stdout: a `[grow] ...` line that
+# leaks into the captured value turns `done 921566` into `[grow]` and the whole growth
+# state into fail:grow-crashed.
+wf_say_serial() {
     [ -e "${WF_SERIAL}" ] || return 0
     wf_console_is_serial && return 0
     # Append, not overwrite: a character device does not care, but a regular file (a
     # fixture, or a serial port redirected to a file) must keep every line.
     printf '%s\n' "$*" >>"${WF_SERIAL}" 2>/dev/null || :
     return 0
+}
+
+# wf_say <line...>: one milestone line on every console that can carry it.
+wf_say() {
+    printf '%s\n' "$*"
+    wf_say_serial "$@"
 }
 
 wf_log() {

@@ -92,6 +92,18 @@ assert_contains "$s4_body_for_judge" "--expect-log 'disk=/dev/vda'" \
 assert_eq "$(printf '%s\n' "$s4_body_for_judge" | grep -c 'stage=device disk=/dev/vda')" "0" \
   "ac-1 no phase passes a fragment that cannot match the ring log line"
 
+# The fixtures drive the *shipped* ab-slot against a mounted image. It reads its writer
+# from the platform layer, which is installed at /lib inside the image and nowhere on the
+# build host, so the fixture must hand over the repository copy - otherwise `pending`
+# refuses to move the hint and the stage fails for a packaging reason.
+fixtures_body=$(cat "$root/scripts/ci/ab-fixtures.sh")
+assert_contains "$fixtures_body" 'AB_SLOT_CFG_LIB="${CI_REPO_ROOT}/platform/lib/ab-slot-cfg.sh"' \
+  "ac-1 the fixtures point ab-slot at the repository writer"
+assert_contains "$fixtures_body" 'grep -q "^set default=' \
+  "ac-1 the fixtures assert the menu moved when a slot is marked pending"
+assert_contains "$fixtures_body" 'grep -q "^set fallback=' \
+  "ac-1 the fixtures assert the committed slot stayed the fallback"
+
 # The ESP check has to keep asserting what the menu depends on: the loader commands,
 # and the pair invariant that a failed try always has the committed slot as fallback.
 assert_contains "$render_script" 'for command in source test serial' \

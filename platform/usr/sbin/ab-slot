@@ -291,7 +291,7 @@ slot_cfg_sync() {
 # state stays authoritative; ab-boot heals the file on the next boot.
 sync_or_die() {
     if ! _sync_value="$(slot_cfg_sync)"; then
-        say "ab-slot: the state file was updated but ${AB_SLOT_CFG} was not (writer: ${AB_SLOT_CFG_LIB}); the next boot keeps the committed entry until ab-boot heals it${AB_SLOT_CFG_REASON:+ (${AB_SLOT_CFG_REASON})}"
+        say "ab-slot: the state file was updated but ${AB_SLOT_CFG} was not (writer: ${SLOT_CFG_LIB:-${AB_SLOT_CFG_LIB}, not found}); the next boot keeps the committed entry until ab-boot heals it${AB_SLOT_CFG_REASON:+ (${AB_SLOT_CFG_REASON})}"
         exit 1
     fi
     say "ab-slot: the next boot runs slot ${_sync_value}"
