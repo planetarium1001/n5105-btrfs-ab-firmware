@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Stage "disk": assemble the four-partition disk image.
 #
-# Geometry, frozen by docs/partitions.md:
+# Geometry, frozen by docs/partitions.md. Every partition carries two names: the GPT
+# PARTNAME that the code discovers partitions by, and the filesystem LABEL humans read.
 #
-#   p1  ab-esp     128 MiB  vfat   GRUB, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
-#   p2  ab-slot-a  128 MiB  btrfs  @sys, @platform
-#   p3  ab-slot-b  128 MiB  btrfs  @sys, @platform
-#   p4  ab-shared   64 MiB  btrfs  @overlay-<version> (upper/, work/), @docker, @swap, @data
+#   p1  ab-esp     128 MiB  vfat   ESP      GRUB, ab-slot.cfg, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
+#   p2  ab-slot-a  128 MiB  btrfs  slot-a   @sys, @platform
+#   p3  ab-slot-b  128 MiB  btrfs  slot-b   @sys, @platform
+#   p4  ab-data     64 MiB  btrfs  data     @overlay-<version> (upper/, work/), @docker, @swap, @data
+#
+# PARTNAME keeps the ab- prefix because discovery walks /sys/class/block/*/uevent, where
+# a bare "data" or "esp" would collide with any other disk attached to the same machine.
+# LABEL carries no version: the version already lives in @overlay-<version>,
+# /etc/platform-release and ab/state.json, and relabelling on every release adds a FAT
+# and btrfs superblock write that power loss can interrupt.
 #
 # The image is 450 MiB: 1 MiB of alignment before p1, 448 MiB of partitions and 1 MiB
 # of tail so the backup GPT has room. p4 only ships 64 MiB by design; first boot grows
@@ -28,6 +35,8 @@
 #   CI_PLATFORM_RUNTIME_DIR  btrfs tooling staged by the runtime stage (default: $CI_TMP_ROOT/runtime)
 #   CI_PLATFORM_LIMIT_BYTES  budget for the unpacked @platform layer (default: 8 MiB)
 #   CI_GRUB_TEMPLATE     GRUB template (default: scripts/ci/grub.cfg.in)
+#   CI_AB_SLOT_CFG_SOURCE  host path of the rendered ab-slot.cfg (default: the path
+#                        grub-render reports, else <grub.cfg dir>/ab-slot.cfg)
 #
 # Outputs: image_path, image_gz_path, image_bytes, image_gz_bytes, rootfs_files,
 #          rootfs_bytes, esp_bytes, part_layout
@@ -105,7 +114,7 @@ unit: sectors
 start=   2048, size=262144, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="ab-esp"
 start= 264192, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-slot-a"
 start= 526336, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-slot-b"
-start= 788480, size=131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-shared"
+start= 788480, size=131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-data"
 SFDISK
 # Re-attach so the kernel scans the table it has just been given; this is more
 # reliable than poking the in-kernel table with partx.
@@ -183,20 +192,41 @@ platform_tar="${disk_dir}/platform.tar"
 ci_log "platform layer: $(tar -tf "${platform_tar}" | wc -l | tr -d ' ') entries, $(ci_file_size "${platform_tar}") bytes"
 
 grub_output="${disk_dir}/grub.cfg"
+# grub-render publishes its results through ci_emit_output. Point CI_OUTPUT_ENV at a file
+# of our own so this stage can read the menu and ab-slot.cfg paths back; the step's
+# Actions output file keeps receiving the same keys as before.
+grub_outputs="${disk_dir}/grub-render.outputs"
+: >"${grub_outputs}"
 CI_GRUB_OUTPUT="${grub_output}" \
     CI_GRUB_TEMPLATE="${CI_GRUB_TEMPLATE:-${CI_REPO_ROOT}/scripts/ci/grub.cfg.in}" \
     CI_COMMITTED_SLOT="${CI_COMMITTED_SLOT:-a}" \
+    CI_OUTPUT_ENV="${grub_outputs}" \
     bash "${CI_SCRIPT_DIR}/grub-render.sh" >"${disk_dir}/grub-render.log" 2>&1 \
     || ci_die "GRUB configuration rendering failed, see ${disk_dir}/grub-render.log"
 grub_sha="$(ci_sha256 "${grub_output}")"
 ci_log "GRUB configuration rendered (sha256 ${grub_sha})"
 
+# The menu learns which slot to try from a two-line config fragment next to it. GRUB's
+# own environment block is not available here: the shipped BOOTX64.EFI carries no env
+# module, so `load_env`/`save_env` do not exist and the fragment is plain `set` lines the
+# menu `source`s. grub-render writes it from ab/state.json, so this stage never invents
+# its content: it installs the file, or stops. A missing fragment on a real machine is a
+# menu with no slot decision at all.
+ab_slot_cfg_src="$(sed -n 's/^ab_slot_cfg_path=//p' "${grub_outputs}" | tail -n 1)"
+[ -n "${ab_slot_cfg_src}" ] || ab_slot_cfg_src="${CI_AB_SLOT_CFG_SOURCE:-}"
+[ -n "${ab_slot_cfg_src}" ] || ab_slot_cfg_src="$(dirname "${grub_output}")/ab-slot.cfg"
+[ -f "${ab_slot_cfg_src}" ] \
+    || ci_die "GRUB slot configuration not found: ${ab_slot_cfg_src} (grub-render must publish ab_slot_cfg_path)"
+ci_log "GRUB slot configuration: ${ab_slot_cfg_src} ($(ci_file_size "${ab_slot_cfg_src}") bytes)"
+
 # --------------------------------------------------------------------------- #
 # 2. p1: ESP
 # --------------------------------------------------------------------------- #
 
+# The FAT label is the short human-facing name: "ESP", not a versioned or vendor-prefixed
+# string. mkfs.vfat stores it in the FAT32 label field, which is 11 characters wide.
 # shellcheck disable=SC2024  # the log path is owned by the runner user
-sudo mkfs.vfat -F 32 -n "WF-ESP" "${dev_p1}" >"${disk_dir}/mkfs-p1.log" 2>&1
+sudo mkfs.vfat -F 32 -n "ESP" "${dev_p1}" >"${disk_dir}/mkfs-p1.log" 2>&1
 mount_part "${dev_p1}" p1
 p1="${mount_target}"
 
@@ -206,6 +236,11 @@ sudo cp -a "${esp_dir}/." "${p1}/"
 # modules and the EFI loader, not the configuration.
 sudo mkdir -p "${p1}/boot/grub"
 sudo cp "${grub_output}" "${p1}/boot/grub/grub.cfg"
+# The fragment sits next to the menu it configures. The menu `source`s it at the very
+# end, after every entry is defined, so a missing or truncated fragment still leaves a
+# bootable menu behind; nothing in the image's GRUB can write an env block.
+sudo cp "${ab_slot_cfg_src}" "${p1}/boot/grub/ab-slot.cfg"
+sudo chmod 0644 "${p1}/boot/grub/ab-slot.cfg"
 sudo mkdir -p "${p1}/ab/log"
 
 # ab/state.json describes the installed state: both slots on generation 1, slot a
@@ -230,7 +265,7 @@ sudo cp "${initramfs}" "${p1}/initrd-a"
 sudo cp "${initramfs}" "${p1}/initrd-b"
 sudo chmod 0644 "${p1}/vmlinuz-a" "${p1}/vmlinuz-b" "${p1}/initrd-a" "${p1}/initrd-b"
 unmount_part "${p1}"
-ci_log "p1 populated: ESP tree, ab/state.json, ab/log/, vmlinuz-a/b, initrd-a/b"
+ci_log "p1 populated: ESP tree, grub.cfg, ab-slot.cfg, ab/state.json, ab/log/, vmlinuz-a/b, initrd-a/b"
 
 # --------------------------------------------------------------------------- #
 # 3. p2 / p3: the two system slots
@@ -246,9 +281,10 @@ rootfs_files="$(sudo find "${rootfs_tree}" -type f | wc -l | tr -d ' ')"
 rootfs_bytes="$(sudo du -sb "${rootfs_tree}" | cut -f1)"
 ci_log "rootfs tree: ${rootfs_files} file(s), ${rootfs_bytes} bytes"
 
-# populate_slot <device> <label> <partition-name>
+# populate_slot <device> <partname> <label> <partition-tag>
+# partname goes into the GPT (already written above), label into the btrfs superblock.
 populate_slot() {
-    local device="$1" label="$2" tag="$3"
+    local device="$1" partname="$2" label="$3" tag="$4"
     # shellcheck disable=SC2024  # the log path is owned by the runner user
     sudo mkfs.btrfs -f -m dup -d single -L "${label}" "${device}" >"${disk_dir}/mkfs-${tag}.log" 2>&1
     mount_part "${device}" "${tag}"
@@ -274,18 +310,18 @@ populate_slot() {
     fi
 
     unmount_part "${mnt}"
-    ci_log "p${tag#p} populated: @sys (${rootfs_files} file(s)) + @platform (${platform_bytes} bytes)"
+    ci_log "p${tag#p} (${partname}/${label}) populated: @sys (${rootfs_files} file(s)) + @platform (${platform_bytes} bytes)"
 }
 
-populate_slot "${dev_p2}" "ab-slot-a" p2
-populate_slot "${dev_p3}" "ab-slot-b" p3
+populate_slot "${dev_p2}" "ab-slot-a" "slot-a" p2
+populate_slot "${dev_p3}" "ab-slot-b" "slot-b" p3
 
 # --------------------------------------------------------------------------- #
-# 4. p4: the shared writable partition
+# 4. p4: the writable data partition
 # --------------------------------------------------------------------------- #
 
 # shellcheck disable=SC2024  # the log path is owned by the runner user
-sudo mkfs.btrfs -f -m single -d single -L "ab-shared" "${dev_p4}" >"${disk_dir}/mkfs-p4.log" 2>&1
+sudo mkfs.btrfs -f -m single -d single -L "data" "${dev_p4}" >"${disk_dir}/mkfs-p4.log" 2>&1
 mount_part "${dev_p4}" p4
 p4="${mount_target}"
 sudo btrfs subvolume create "${p4}/${overlay_name}" "${p4}/@docker" "${p4}/@swap" "${p4}/@data" >/dev/null
@@ -293,7 +329,71 @@ sudo mkdir -p "${p4}/${overlay_name}/upper" "${p4}/${overlay_name}/work"
 # Writable-container and swap subvolumes are allocated without COW or checksums.
 sudo chattr +C "${p4}/@docker" "${p4}/@swap"
 unmount_part "${p4}"
-ci_log "p4 populated: ${overlay_name}, @docker, @swap, @data"
+ci_log "p4 (ab-data/data) populated: ${overlay_name}, @docker, @swap, @data"
+
+# --------------------------------------------------------------------------- #
+# 4b. Device identity: the PARTUUIDs the running system recognises this disk by
+# --------------------------------------------------------------------------- #
+
+# PARTUUID comes from the GPT, not from any filesystem: the disk GUID and the per
+# partition GUIDs live in the partition table, so they are identical after `dd` to
+# another disk of any size or name. That is exactly why the running system can trust
+# them as the first identity level that owes nothing to a device name (design section
+# 6): /dev/sda, /dev/nvme0n1 and /dev/mmcblk0 all carry the same PARTUUIDs as the image.
+gpt_id="$(sudo blkid -s PTUUID -o value "${loopdev}" 2>/dev/null || true)"
+if [ -z "${gpt_id}" ]; then
+    gpt_id="$(sudo sfdisk -d "${loopdev}" 2>/dev/null | sed -n 's/^label-id: *//p' | head -n 1)"
+fi
+[ -n "${gpt_id}" ] || ci_die "no GPT disk GUID on ${loopdev}: blkid and sfdisk both returned nothing"
+gpt_id="$(printf '%s' "${gpt_id}" | tr 'A-F' 'a-f')"
+
+# partuuid <device>: blkid first, the sfdisk dump second, never an empty value. A build
+# that writes a blank PARTUUID would disable the strongest identity level silently.
+partuuid() {
+    local device="$1" value=""
+    value="$(sudo blkid -s PARTUUID -o value "${device}" 2>/dev/null || true)"
+    if [ -z "${value}" ]; then
+        value="$(sudo sfdisk -d "${loopdev}" 2>/dev/null \
+            | sed -n "s#^${device}[[:space:]]*:.*uuid=\([0-9A-Fa-f-]*\).*#\1#p" | head -n 1)"
+    fi
+    [ -n "${value}" ] \
+        || ci_die "no PARTUUID for ${device}: blkid and the sfdisk dump both returned nothing"
+    printf '%s' "${value}" | tr 'A-F' 'a-f'
+}
+
+partuuid_esp="$(partuuid "${dev_p1}")"
+partuuid_slot_a="$(partuuid "${dev_p2}")"
+partuuid_slot_b="$(partuuid "${dev_p3}")"
+partuuid_data="$(partuuid "${dev_p4}")"
+
+# p1 is mounted a second time: the identity file belongs on the ESP, but the PARTUUIDs
+# only exist once every partition device does. The ESP mounts at /boot on the running
+# system, so the file lands at ab/device.json on the ESP and reads back as
+# /boot/ab/device.json -- the same directory that already holds state.json.
+mount_part "${dev_p1}" p1-identity
+p1_identity="${mount_target}"
+sudo mkdir -p "${p1_identity}/ab"
+sudo tee "${p1_identity}/ab/device.json" >/dev/null <<DEVICE
+{
+  "format": "ab-device/1",
+  "disk": { "label_id": "${gpt_id}" },
+  "partitions": {
+    "ab-esp": { "partuuid": "${partuuid_esp}" },
+    "ab-slot-a": { "partuuid": "${partuuid_slot_a}" },
+    "ab-slot-b": { "partuuid": "${partuuid_slot_b}" },
+    "ab-data": { "partuuid": "${partuuid_data}" }
+  },
+  "labels": {
+    "ab-esp": "ESP",
+    "ab-slot-a": "slot-a",
+    "ab-slot-b": "slot-b",
+    "ab-data": "data"
+  }
+}
+DEVICE
+sudo chmod 0644 "${p1_identity}/ab/device.json"
+unmount_part "${p1_identity}"
+ci_log "ab/device.json written: disk ${gpt_id} with four PARTUUIDs"
 
 # --------------------------------------------------------------------------- #
 # 5. Close the image
@@ -322,7 +422,8 @@ ci_emit_output "image_bytes" "${image_bytes}"
 ci_emit_output "image_gz_bytes" "${gz_bytes}"
 ci_emit_output "rootfs_files" "${rootfs_files}"
 ci_emit_output "rootfs_bytes" "${rootfs_bytes}"
-ci_emit_output "part_layout" "ab-esp:2048+262144,ab-slot-a:264192+262144,ab-slot-b:526336+262144,ab-shared:788480+131072"
+# part_layout names partitions by GPT PARTNAME, the same key image-verify.sh reads back.
+ci_emit_output "part_layout" "ab-esp:2048+262144,ab-slot-a:264192+262144,ab-slot-b:526336+262144,ab-data:788480+131072"
 
 ci_log "image bytes: ${image_bytes}, gz bytes: ${gz_bytes}"
 ci_log "stage disk finished"

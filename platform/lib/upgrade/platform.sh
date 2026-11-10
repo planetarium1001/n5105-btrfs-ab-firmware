@@ -21,11 +21,30 @@
 #
 # The state file is never written by hand here: ab-slot owns it, so every mutation
 # goes through `ab-slot layer` and `ab-slot pending`.
+#
+# The same holds for the ESP file that tells GRUB which slot to boot
+# (/boot/grub/ab-slot.cfg): `ab-slot pending` writes it through
+# platform/lib/ab-slot-cfg.sh, and this adapter only reads it back to prove the
+# candidate will actually be booted. There is no second writer in the platform layer,
+# on purpose: two writers would drift, and the drift would show up as "the update
+# installed but the machine never tried it".
 
 AB_ESP="${AB_ESP:-/boot}"
 AB_P4="${AB_P4:-/mnt/p4}"
 AB_SLOTS_ROOT="${AB_SLOTS_ROOT:-/mnt/slots}"
 AB_MIN_FREE_PCT=5
+
+# Partition discovery is shared: platform/lib/disk-identity.sh decides which disk this
+# machine booted from and platform/lib/ab-partitions.sh turns that into device nodes.
+# There is no hard coded device name here; an unidentifiable disk makes the upgrade
+# refuse instead of mounting a guessed partition.
+AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
+AB_PARTITIONS_OK=0
+if [ -f "${AB_PARTITIONS_LIB}" ]; then
+    # shellcheck source=platform/lib/ab-partitions.sh
+    . "${AB_PARTITIONS_LIB}"
+    AB_PARTITIONS_OK=1
+fi
 
 # Read by the caller to build its refusal message.
 # shellcheck disable=SC2034
@@ -56,28 +75,14 @@ upgrade_slot_mount() {
         b) _part=3 ;;
         *) return 1 ;;
     esac
-    _dev="$(upgrade_find_partition "ab-slot-$1" "/dev/vda${_part}")" || return 1
+    [ "${AB_PARTITIONS_OK}" = "1" ] || return 1
+    _dev="$(ab_find_partition "ab-slot-$1" "${_part}")" || return 1
     _mp="${AB_SLOTS_ROOT}/$1"
     mkdir -p "${_mp}" || return 1
     if ! awk -v mp="${_mp}" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts; then
         mount -o rw,noatime "${_dev}" "${_mp}" || return 1
     fi
     printf '%s' "${_mp}"
-}
-
-upgrade_find_partition() {
-    for _event in /sys/class/block/*/uevent; do
-        [ -f "${_event}" ] || continue
-        case "$(sed -n 's/^DEVTYPE=//p' "${_event}")" in
-            partition) : ;;
-            *) continue ;;
-        esac
-        if [ "$(sed -n 's/^PARTNAME=//p' "${_event}")" = "$1" ]; then
-            printf '/dev/%s' "$(basename "$(dirname "${_event}")")"
-            return 0
-        fi
-    done
-    printf '%s' "$2"
 }
 
 # upgrade_free_pct <path>: integer percentage of free space.
@@ -235,6 +240,18 @@ platform_upgrade_end() {
     ab-slot pending "${_target}" >/dev/null 2>&1 ||
         upgrade_fail "state-pending-write-failed" || return 1
 
-    _upgrade_log "upgrade: slot ${_target} is pending on ${_version} (${_layer})"
+    # The candidate is only tried if GRUB reads a file that names it. ab-slot writes
+    # that file through the shared writer; this reads it back instead of writing its
+    # own copy, so the platform layer has exactly one implementation to keep right.
+    _next="$(ab-slot next 2>/dev/null)"
+    case "${_next}" in
+        "next=${_target}") : ;;
+        *)
+            upgrade_fail "next-boot-not-${_target}-${_next:-unknown}"
+            return 1
+            ;;
+    esac
+
+    _upgrade_log "upgrade: slot ${_target} is pending on ${_version} (${_layer}), ${_next}"
     return 0
 }

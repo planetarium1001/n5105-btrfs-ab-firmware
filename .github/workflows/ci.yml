@@ -252,6 +252,8 @@ jobs:
       s4_line_abandon_b: ${{ needs.s4.outputs.line_abandon_b }}
       s4_line_commit_b: ${{ needs.s4.outputs.line_commit_b }}
       s4_committed_final: ${{ needs.s4.outputs.committed_final }}
+      s4_line_rollback: ${{ needs.s4.outputs.line_rollback }}
+      s4_next_slot_final: ${{ needs.s4.outputs.next_slot_final }}
       s5_line: ${{ needs.s5.outputs.judge_line }}
       s5_upgrade_line: ${{ needs.s5.outputs.upgrade_line }}
       s5_degraded_line: ${{ needs.s5.outputs.degraded_line }}

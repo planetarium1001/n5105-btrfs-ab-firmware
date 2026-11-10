@@ -1,20 +1,30 @@
 name: ci-s4
 
-# Stage S4 - A/B state machine and health check.
+# Stage S4 - A/B state machine and health check, through the real boot path.
 #
-# The image from S2/S3 now boots a real system: the boot initramfs composes the
-# overlay root, `ab-boot` records the boot and marks a candidate, and `ab-commit`
-# runs the three probes from docs/lifecycle.md and either commits or abandons.
+# The image from S2/S3 boots a real system: the firmware runs GRUB from the ESP, GRUB
+# picks the entry /boot/grub/ab-slot.cfg names and passes ab.slot=<a|b> on its own
+# kernel command line, the boot initramfs composes the overlay root, `ab-boot` records
+# the boot and heals that file, and `ab-commit` runs the three probes from
+# docs/lifecycle.md and either commits or abandons.
 #
-# Three boots against the same image file, nothing wiped in between:
+# Nothing is injected into the kernel command line: with CI_QEMU_MODE=uefi-disk QEMU
+# starts no kernel of its own, so a slot is only ever selected by the menu, and a
+# stale or missing ab-slot.cfg shows up as a boot that never reaches the expected
+# line: GRUB falls back to the committed entry the menu set before sourcing it.
 #
-#   boot 1  normal boot of slot a      -> probes pass, commit slot a
+# Four boots against the same image file, nothing wiped in between:
+#
+#   boot 1  fresh image, committed=a   -> probes pass, commit slot a
 #   boot 2  slot b broken, pending=b   -> probes fail, abandon b, reboot to a
 #   boot 3  slot b repaired, pending=b -> probes pass, commit slot b
+#   boot 4  rollback to slot a         -> probes pass, commit slot a
 #
 # The guest is never asked to grade itself: each boot stops when `ab-commit` prints
 # its decision, and scripts/ci/ab-phase.sh then reads the ESP back and prints the
-# frozen judge line for that phase.
+# frozen judge line for that phase. Between the phases scripts/ci/grub-render.sh
+# --verify-esp re-reads the same ESP, so a state file and a runtime slot file that
+# disagree fail the run instead of waiting for a device.
 #
 # The failure injected in boot 2 is a broken `nft` in slot b. Breaking `/sbin/init`
 # instead would stop the system before rcS, so `ab-commit` would never run and the
@@ -54,9 +64,15 @@ on:
       line_commit_b:
         description: "Judge line of the switch boot (commit slot b)"
         value: ${{ jobs.s4.outputs.line_commit_b }}
+      line_rollback:
+        description: "Judge line of the rollback boot (commit slot a again)"
+        value: ${{ jobs.s4.outputs.line_rollback }}
       committed_final:
         description: "Slot committed after the last boot"
         value: ${{ jobs.s4.outputs.committed_final }}
+      next_slot_final:
+        description: "Slot GRUB would boot after the last phase"
+        value: ${{ jobs.s4.outputs.next_slot_final }}
       grub_cfg_sha256:
         description: "sha256 of the rendered GRUB configuration"
         value: ${{ jobs.s4.outputs.grub_cfg_sha256 }}
@@ -72,7 +88,7 @@ jobs:
   s4:
     name: slot state machine
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read
     env:
@@ -85,7 +101,9 @@ jobs:
       line_commit_a: ${{ steps.phase1.outputs.judge_line }}
       line_abandon_b: ${{ steps.phase2.outputs.judge_line }}
       line_commit_b: ${{ steps.phase3.outputs.judge_line }}
-      committed_final: ${{ steps.phase3.outputs.committed }}
+      line_rollback: ${{ steps.phase4.outputs.judge_line }}
+      committed_final: ${{ steps.phase4.outputs.committed }}
+      next_slot_final: ${{ steps.verify4.outputs.esp_next_slot }}
       grub_cfg_sha256: ${{ steps.disk.outputs.grub_cfg_sha256 }}
     steps:
       - name: Check out the repository
@@ -103,13 +121,15 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf
+            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf \
+            grub-common
           if [ ! -x /bin/busybox ]; then
             sudo apt-get install -y --no-install-recommends busybox-static \
               || sudo apt-get install -y --no-install-recommends busybox-initramfs
           fi
           mkfs.btrfs --version
           qemu-system-x86_64 --version | head -n 1
+          grub-script-check --help 2>&1 | head -n 1 || true
 
       - name: Unpack the btrfs and vfat module closure
         id: kmods
@@ -153,6 +173,19 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
 
+      # The boot below hands the machine to the firmware, so the ESP has to be
+      # bootable *before* the first boot runs: the loader, the menu, grub-script-check,
+      # the loader's `source` command, and a runtime slot file that agrees with
+      # ab/state.json. A failure here is a build problem, not a boot flake.
+      - name: "Preflight: the ESP boots through GRUB (gating)"
+        id: verify0
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-preflight.log"
+
       # The wan probe needs a device to look at; the production network config is
       # S5's job, so the harness writes a documented test fixture into the writable
       # layer.
@@ -169,10 +202,10 @@ jobs:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
           CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
           CI_QEMU_CASE: s4-boot1
-          CI_QEMU_APPEND_EXTRA: ab.slot=a
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
@@ -189,6 +222,15 @@ jobs:
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1.log"
 
+      - name: "Verify: the runtime file and the state agree after the commit"
+        id: verify1
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-commit-a.log"
+
       - name: "Fixture: break slot b and mark it pending"
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -197,16 +239,27 @@ jobs:
           bash scripts/ci/ab-fixtures.sh --break-slot b --pending b 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-break.log"
 
+      # Marking a slot pending has to move the file GRUB sources; without this check
+      # the pending boot below could pass for the wrong reason.
+      - name: "Verify: the pending marker reached the runtime slot file"
+        id: verify2
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-pending-b.log"
+
       - name: "Boot 2: health check fails, slot b is abandoned (gating)"
         id: boot2
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
           CI_QEMU_STOP_PATTERN: "^ab-commit: abandoned slot="
           CI_QEMU_CASE: s4-boot2
-          CI_QEMU_APPEND_EXTRA: ab.slot=b
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
@@ -223,6 +276,17 @@ jobs:
             --expect-log 'reason=healthcheck-failed' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase2.log"
 
+      # The abandoned slot must not be tried again: the file has to be back on the
+      # committed slot, which is what makes the next boot return there.
+      - name: "Verify: the abandon moved the next boot back to the committed slot"
+        id: verify3
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-abandon.log"
+
       - name: "Fixture: repair slot b and mark it pending"
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -237,10 +301,10 @@ jobs:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
           CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
           CI_QEMU_CASE: s4-boot3
-          CI_QEMU_APPEND_EXTRA: ab.slot=b
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
@@ -256,6 +320,79 @@ jobs:
             --expect-committed b --expect-pending none \
             --expect-log 'stage=commit slot=b' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase3.log"
+
+      # The shipped ab-slot, not a host copy: rollback is a documented command, and
+      # the point is to see the machine follow the hint it writes.
+      - name: "Fixture: roll back through the shipped ab-slot"
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          work="${RUNNER_TEMP}/ci/rollback"
+          rm -rf "${work}"
+          mkdir -p "${work}/esp" "${work}/slot-a"
+          loop="$(sudo losetup --find --show --partscan "${CI_IMAGE}")"
+          cleanup() {
+            sudo umount "${work}/esp" 2>/dev/null || true
+            sudo umount "${work}/slot-a" 2>/dev/null || true
+            sudo losetup -d "${loop}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          sudo mount "${loop}p2" "${work}/slot-a"
+          sudo cp "${work}/slot-a/@platform/usr/sbin/ab-slot" "${work}/ab-slot"
+          sudo cp "${work}/slot-a/@platform/lib/ab-slot-cfg.sh" "${work}/ab-slot-cfg.sh"
+          sudo umount "${work}/slot-a"
+          sudo mount "${loop}p1" "${work}/esp"
+          sudo env AB_ESP="${work}/esp" AB_CMD=/dev/null AB_SLOT_CFG_LIB="${work}/ab-slot-cfg.sh" \
+            sh "${work}/ab-slot" rollback 2>&1 | sed 's/^/[rollback]   /' \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-rollback.log"
+          sudo sync
+          sudo umount "${work}/esp"
+
+      - name: "Verify: the rollback moved the next boot to the other slot"
+        id: verify4a
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-rollback.log"
+
+      - name: "Boot 4: the rollback is booted and committed (gating)"
+        id: boot4
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_QEMU_MODE: uefi-disk
+          CI_JUDGE_PREFIX: ""
+          CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
+          CI_QEMU_CASE: s4-boot4
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot4.log"
+
+      - name: "Phase 4: verify the rollback boot committed slot a"
+        id: phase4
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/ab-phase.sh --phase rollback --slot a \
+            --expect-committed a --expect-pending none \
+            --expect-log 'stage=commit slot=a' \
+            2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase4.log"
+
+      - name: "Verify: the final runtime file matches the final state"
+        id: verify4
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-final.log"
 
       - name: Collect diagnostics
         if: always()
@@ -276,6 +413,7 @@ jobs:
             ${{ runner.temp }}/ci/qemu/serial-*.log
             ${{ runner.temp }}/ci/ab-phase/evidence
             ${{ runner.temp }}/ci/disk/grub.cfg
+            ${{ runner.temp }}/ci/disk/ab-slot.cfg
             ${{ runner.temp }}/ci/disk/platform.tar
           if-no-files-found: ignore
           retention-days: 7

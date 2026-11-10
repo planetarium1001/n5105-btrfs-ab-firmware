@@ -36,7 +36,7 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `kmods.sh` | s1 | fetch, verify and unpack the btrfs module closure against the lockfile |
 | `apk_extract.py` | s1 | unpack `.ko` files out of apk-tools v3 (ADB) containers |
 | `initramfs.sh` | s1 | build the minimal probe initramfs |
-| `qemu-smoke.sh` | s1 | boot it under QEMU and assert the frozen judge line |
+| `qemu-smoke.sh` | s1, s2, s3, s4, s5 | boot it under QEMU and assert the frozen judge line; `CI_QEMU_MODE=uefi-disk` boots the ESP through OVMF so GRUB, not QEMU, supplies kernel/initrd/cmdline |
 | `apk-crosscheck.sh` | s1 | optional: compare the closure with what upstream `apk` installs |
 | `esp-prepare.sh` | s2 | take the ESP tree (GRUB) from the upstream combined-EFI image |
 | `disk.sh` | s2 | assemble and compress the four-partition image |
@@ -165,12 +165,12 @@ packages and sixteen real modules are visible at a glance.
 `disk.sh` builds a 450 MiB GPT image (1 MiB alignment, 448 MiB of partitions, 1 MiB
 tail for the backup table) with the geometry frozen in `docs/partitions.md`:
 
-| Partition | PARTLABEL | Sectors | Filesystem |
-|---|---|---|---|
-| p1 | `ab-esp` | 262144 (128 MiB) | vfat |
-| p2 | `ab-slot-a` | 262144 (128 MiB) | btrfs `-m dup -d single` |
-| p3 | `ab-slot-b` | 262144 (128 MiB) | btrfs `-m dup -d single` |
-| p4 | `ab-shared` | 131072 (64 MiB) | btrfs `-m single -d single` |
+| Partition | PARTNAME | LABEL | Sectors | Filesystem |
+|---|---|---|---|---|
+| p1 | `ab-esp` | `ESP` | 262144 (128 MiB) | vfat |
+| p2 | `ab-slot-a` | `slot-a` | 262144 (128 MiB) | btrfs `-m dup -d single` |
+| p3 | `ab-slot-b` | `slot-b` | 262144 (128 MiB) | btrfs `-m dup -d single` |
+| p4 | `ab-data` | `data` | 131072 (64 MiB) | btrfs `-m single -d single` |
 
 The image is verified twice:
 

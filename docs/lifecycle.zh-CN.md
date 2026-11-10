@@ -36,6 +36,61 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 }
 ```
 
+## 选槽
+
+`ab/state.json` 是真相。GRUB 读不了它，所以引导器另拿一个派生值：
+
+| 产物 | 谁写 | 谁读 | 角色 |
+|---|---|---|---|
+| `ab/state.json` | `ab-slot`（临时文件、`sync`、rename） | initramfs、`ab-boot`、`ab-commit`、`ab-upgrade`、`ab-slot` | 真相：`committed`、`pending`、各槽可写层 |
+| `boot/grub/ab-slot.cfg` | `ab-slot` 的 `pending`/`commit`/`abandon`/`rollback`、每次启动的 `ab-boot`、以及 boot initramfs 的失败路径 | GRUB，经 `source` | 提示：下一次启动跑哪个菜单项，以及失败的尝试回退到哪 |
+| `boot/grub/grub.cfg` | 镜像构建时一次 | GRUB | 菜单与构建期默认项；运行期永不改写 |
+
+`boot/grub/ab-slot.cfg` 只有两条 GRUB 命令，顺序固定：
+
+```
+set fallback=<已提交槽>
+set default=<pending 槽，没有 pending 时就是已提交槽>
+```
+
+两个值都由同一份实现（`platform/lib/ab-slot-cfg.sh`）从状态文件派生，所以构建期、状态命令、
+启动钩子与启动失败路径不可能各说各话。这里没有环境块：ESP 里那个 GRUB 是模块编进核心里
+的独立 EFI，没有 `env` 模块，`load_env` 与 `save_env` 都不存在。用 `source` 读一个两行文件在这个
+二进制上可用，而且 `scripts/ci/grub-render.sh --verify-esp` 会在镜像启动之前断言加载器里确实有
+`source`、`test` 与 `serial`。
+
+菜单先定义三个菜单项、把构建期的 committed 槽同时设为**默认与回退**，最后才 `source` 提示文件。GRUB
+遇到第一个错误就停止读脚本，所以这个顺序意味着提示文件缺失、被截断或格式错误都不会让机器失去菜单：
+它会启动 committed 槽，也就是构建期那一对值本来就写着的东西。
+
+菜单项下标属于契约：槽 `a` 是第 0 项，槽 `b` 是第 1 项。菜单顺序对不上的配置会被渲染器拒绝，
+因为顺序一换就会静默启动错槽。
+
+### 两次写入之间掉电
+
+状态文件与提示文件先后写入，各自原子。中间掉电会留下"状态已推进、提示还是旧的"，机器会启动提示
+指向的槽。
+
+- `ab-boot` 每次启动都会在被任何人读之前按状态文件重写提示，所以旧提示最多多花一次启动、不会跑错
+  槽：被打断的那次启动之后的那次启动，跑的就是状态文件说的槽。
+- 正因如此，文件先写 fallback 行。只写进第一行的文件等于只写了 `set fallback=<已提交槽>`，与菜单里
+  原有的值相同：默认项仍是 committed 槽，机器启动它。两行都写进时才把默认项切到正在试的槽、fallback
+  留在原地，正好是"试新槽、失败回旧槽"需要的一对。任何截断都不会让 fallback 指向正在试的槽。
+
+### 新槽起不来时
+
+两级兜底，按顺序：
+
+1. pending 槽的内核根本没起来：GRUB 转到 `fallback` 项，也就是 committed 槽，机器启动旧系统；
+2. 内核起来了但健康检查失败：`ab-commit` 放弃 pending 槽，状态文件里清掉 `pending`、提示指回
+   committed 槽，然后重启回到它；
+3. 内核起来了但 boot initramfs 在进入用户态之前失败：`wf_fail` 走同一条 fail-safe abandon（清掉
+   `pending`、把提示指回 committed 槽、日志记 `action=fail-safe-abandon`），然后才关机，下一次启动
+   不会再去试那个刚失败的槽。
+
+`ab-slot rollback` 是手动路径：它提交另一个槽并连带移动提示。`ab-slot status` 把结果报成
+`next=<a|b|unknown>`，`ab-slot next` 单独打印它，是在运行中的系统上最快看清"下次启动会做什么"的办法。
+
 ## 事务时序
 
 | 事件 | p4 | p1 状态 |
@@ -105,8 +160,9 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 | `conflicts.log` | 最近一次冲突报告 | 被下次更新覆盖 |
 
 - 单文件 32 KiB，超出截断并写入 `TRUNCATED=1` 标记
-- 每次启动最多 8 次写入，均为整文件写入：临时文件、`sync`、rename
+- 启动钩子每次启动最多 8 次写入，均为整文件写入：临时文件、`sync`、rename；健康检查随后追加自己的探针行
 - 写入点：`initramfs-enter`、`lower-mounted`、`overlay-mounted`、`switch-root`、
+  `slot-cfg`（GRUB 下次要读的提示）、`grow`（首启扩容结果）、
   `healthcheck-done`、`commit` 或 `abandon`、`done`
 
 记录字段冻结为 `key=value`：
@@ -114,19 +170,21 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 ```
 stage=<阶段> slot=<a|b> upper=<层名> rootfs=<版本> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
-reason=<lower-mount-failed|overlay-failed|healthcheck-failed>
+reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written>
 action=<commit|reboot-to-committed|degraded-boot>
+next=<a|b>
 ```
 
 ## 命令
 
 | 命令 | 用途 |
 |---|---|
-| `ab-slot status` | 槽、代号、剩余空间、最近结果 |
+| `ab-slot status` | 槽、代号、挂载点、下次启动、最近结果 |
 | `ab-slot log [--prev\|--upgrade]` | 日志 |
 | `ab-slot conflicts` | 冲突报告 |
 | `ab-slot gc [--dry-run]` | 回收 |
 | `ab-slot rollback` | 切回另一槽 |
+| `ab-slot next [--write]` | GRUB 下次会启动哪个槽，以及重写它的自愈 |
 
 ## 边界
 

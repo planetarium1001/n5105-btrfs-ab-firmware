@@ -6,7 +6,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [partitions.zh-CN.md](partitions.zh-CN.md) | 分区几何、尺寸依据、`mkfs` 与挂载参数、子卷、首启扩容 |
+| [partitions.zh-CN.md](partitions.zh-CN.md) | 分区几何、GPT PARTNAME 与文件系统 LABEL 命名、尺寸依据、`mkfs` 与挂载参数、子卷、首启扩容 |
 | [boot-overlay.zh-CN.md](boot-overlay.zh-CN.md) | 引导顺序、层职责、挂载合成与顺序、平台层注入、GRUB 断言、降级启动 |
 | [lifecycle.zh-CN.md](lifecycle.zh-CN.md) | 代号模型、状态文件、更新事务、健康检查、回收、日志、命令 |
 | [conflicts-payload.zh-CN.md](conflicts-payload.zh-CN.md) | 三方比对、处置、uci 边界、载荷契约、校验、构建输入 |

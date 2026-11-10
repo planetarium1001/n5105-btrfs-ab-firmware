@@ -29,12 +29,93 @@
 # busybox. Whitespace is stripped first, so pretty-printed and compact files behave
 # identically, and every parser returns non-zero instead of inventing a default.
 
+# Overridable so tests can drive the fail-safe path without a real busybox `mount`.
+WF_ESP_MOUNT="${WF_ESP_MOUNT:-/esp}"
+WF_ESP_DEV="${WF_ESP_DEV:-}"
+WF_SLOT_CFG_LIB="${WF_SLOT_CFG_LIB:-/lib/ab-slot-cfg.sh}"
+WF_MOUNTS="${WF_MOUNTS:-/proc/mounts}"
+WF_MOUNT="${WF_MOUNT:-mount}"
+WF_TMP="${WF_TMP:-/run}"
+
 wf_log() {
     printf '[boot] %s\n' "$*"
 }
 
+# wf_mountpoint_active <mount point>: is it in the mount table right now.
+wf_mountpoint_active() {
+    awk -v mp="$1" '$2 == mp { found = 1 } END { exit !found }' "${WF_MOUNTS}" 2>/dev/null
+}
+
+# wf_failsafe_abandon: point the next boot at the committed slot before this one powers
+# off. A pending slot that cannot even reach initramfs completion would otherwise be
+# selected again by GRUB on every restart, and the machine would loop instead of
+# reporting. platform/lib/ab-slot-cfg.sh does the writing (pending cleared in
+# ab/state.json, ab-slot.cfg set to fallback=default=committed), so the failure path and
+# `ab-slot abandon` move the machine through exactly one implementation.
+#
+# Everything here is best effort and always returns 0: the caller is on its way to
+# poweroff and must not be stopped by a write that cannot happen. Nothing is written when
+# no slot is pending, so a failing committed slot does not touch the FAT.
+wf_failsafe_abandon() {
+    if [ ! -f "${WF_SLOT_CFG_LIB}" ]; then
+        wf_log "fail-safe abandon skipped: ${WF_SLOT_CFG_LIB} is not in this initramfs"
+        return 0
+    fi
+    # shellcheck source=platform/lib/ab-slot-cfg.sh
+    if ! . "${WF_SLOT_CFG_LIB}" 2>/dev/null; then
+        wf_log "fail-safe abandon skipped: cannot read ${WF_SLOT_CFG_LIB}"
+        return 0
+    fi
+    if ! command -v ab_slot_cfg_write_committed >/dev/null 2>&1; then
+        wf_log "fail-safe abandon skipped: ${WF_SLOT_CFG_LIB} has no writer"
+        return 0
+    fi
+    if [ ! -d "${WF_ESP_MOUNT}" ] || [ ! -f "${WF_ESP_MOUNT}/ab/state.json" ]; then
+        if [ -z "${WF_ESP_DEV}" ]; then
+            wf_log "fail-safe abandon skipped: the ESP is not mounted"
+            return 0
+        fi
+        mkdir -p "${WF_ESP_MOUNT}" 2>/dev/null
+        if ! "${WF_MOUNT}" -t vfat -o rw,noatime "${WF_ESP_DEV}" "${WF_ESP_MOUNT}" >/dev/null 2>&1; then
+            wf_log "fail-safe abandon skipped: cannot mount ${WF_ESP_DEV} on ${WF_ESP_MOUNT}"
+            return 0
+        fi
+    fi
+    wf_ab_pending="$(ab_slot_state_pending "${WF_ESP_MOUNT}/ab/state.json" 2>/dev/null)" || wf_ab_pending=""
+    case "${wf_ab_pending}" in
+        a | b) : ;;
+        *)
+            wf_log "fail-safe abandon: no pending slot to clear"
+            return 0
+            ;;
+    esac
+    if wf_mountpoint_active "${WF_ESP_MOUNT}"; then
+        if ! "${WF_MOUNT}" -o remount,rw "${WF_ESP_MOUNT}" >/dev/null 2>&1; then
+            wf_log "fail-safe abandon: cannot remount ${WF_ESP_MOUNT} read-write"
+        fi
+    fi
+    mkdir -p "${WF_TMP}" 2>/dev/null
+    wf_ab_out="${WF_TMP}/wf-abandon.out"
+    ab_slot_cfg_write_committed "${WF_ESP_MOUNT}" >"${wf_ab_out}" 2>/dev/null
+    wf_ab_rc=$?
+    wf_ab_slot="$(cat "${wf_ab_out}" 2>/dev/null)"
+    rm -f "${wf_ab_out}" 2>/dev/null
+    if [ "${wf_ab_rc}" -eq 0 ]; then
+        printf '[boot] action=fail-safe-abandon slot=%s\n' "${wf_ab_slot}"
+        wf_log "fail-safe abandon: the next boot runs the committed slot ${wf_ab_slot}"
+    else
+        printf '[boot] action=fail-safe-abandon result=fail reason=%s\n' "${AB_SLOT_CFG_REASON:-unknown}"
+        wf_log "fail-safe abandon failed: ${AB_SLOT_CFG_REASON:-unknown}"
+    fi
+    return 0
+}
+
 # wf_fail <reason>: single failure exit for the pre-switch phase.
+#
+# The fail-safe abandon runs first, and before the judge line on purpose: a harness that
+# stops the machine as soon as it sees the line would otherwise cut the write in half.
 wf_fail() {
+    wf_failsafe_abandon || :
     printf 'S3-RESULT=fail reason=%s\n' "$1"
     sync
     poweroff -f

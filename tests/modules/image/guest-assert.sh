@@ -4,13 +4,22 @@
 # Runs as the initramfs init (`init=/s2.sh`) with the assembled image attached as
 # /dev/vda, and checks the geometry that docs/partitions.md freezes:
 #
-#   1. four partitions with PARTLABELs ab-esp / ab-slot-a / ab-slot-b / ab-shared
+#   1. four partitions with PARTNAMEs ab-esp / ab-slot-a / ab-slot-b / ab-data and
+#      filesystem LABELs ESP / slot-a / slot-b / data
 #   2. sizes 128 / 128 / 128 / 64 MiB
 #   3. p2 and p3 hold @sys and @platform, p4 holds @overlay-<version>, @docker, @swap and
 #      @data, all top level with nothing nested
 #   4. @sys file count matches the upstream tree, sampled digests match
 #   5. p1 content stays under 64 MiB
-#   6. exactly one frozen judge line is printed, then the machine powers off:
+#   6. p4 ships short of the end of the disk, so the first boot has something to grow:
+#      the growth decision the boot init takes is recomputed here from the real table,
+#      and the already-full state is proven on a table where p4 reaches the tail
+#   7. no .ab/grow is shipped in the image; that file is written on first boot only
+#   8. device identity: the parent disk of every partition is derived from sysfs, the
+#      initramfs copy of lib/disk-identity.sh is byte-identical to the one in
+#      @platform, the platform layer resolves the same disk, and ab/device.json records
+#      the four PARTUUIDs the upgrade path relies on
+#   9. exactly one frozen judge line is printed, then the machine powers off:
 #
 #        S2-RESULT=ok parts=4 images=<bytes>
 #        S2-RESULT=fail reason=<token>
@@ -49,6 +58,13 @@ mkdir -p /mnt
 
 KVER="$(uname -r)"
 echo "[s2] kernel ${KVER}"
+
+# The boot initramfs helper is staged as /lib/grow.sh by scripts/ci/initramfs.sh, so the
+# guest can re-run the very decision the first boot takes instead of asserting a copy of
+# it. Sourcing it only defines functions; nothing is mounted or written.
+if [ -f /lib/grow.sh ]; then
+    . /lib/grow.sh
+fi
 
 # --------------------------------------------------------------------------- #
 # Module load (btrfs arrives as a module on this kernel)
@@ -166,8 +182,32 @@ if [ -z "$(printf '%s' "${labels}" | tr -d ',')" ]; then
     sfdisk -d "${DEV}" 2>&1 | head -n 6 | sed 's/^/[s2]   /'
     report_failure label-unreadable
 fi
-echo "[s2] labels (${label_source}): ${labels}"
-[ "${labels}" = "ab-esp,ab-slot-a,ab-slot-b,ab-shared" ] || report_failure "labels-${labels}"
+echo "[s2] PARTNAMEs (${label_source}): ${labels}"
+[ "${labels}" = "ab-esp,ab-slot-a,ab-slot-b,ab-data" ] || report_failure "labels-${labels}"
+
+# The second name set: the filesystem LABEL a human reads. It lives in the superblock,
+# not in the GPT, so a build that relabels one side only is caught right here.
+probe_fs_label() {
+    _part="$1"
+    _value="$(blkid -p -o value -s LABEL "${DEV}${_part}" 2>/dev/null)"
+    printf '%s' "${_value}"
+}
+part=2
+for want_label in slot-a slot-b data; do
+    have_label="$(probe_fs_label "${part}")"
+    [ "${have_label}" = "${want_label}" ] \
+        || report_failure "fs-label-p${part}-${have_label:-empty}"
+    part=$((part + 1))
+done
+# The FAT label is checked on the host by scripts/ci/image-verify.sh; here it is reported
+# when blkid can read it and skipped explicitly when this initramfs cannot probe vfat.
+p1_label="$(probe_fs_label 1)"
+if [ -z "${p1_label}" ]; then
+    echo "[s2] SKIP p1 FAT label check: blkid could not probe vfat in this guest"
+else
+    [ "${p1_label}" = "ESP" ] || report_failure "fs-label-p1-${p1_label}"
+fi
+echo "[s2] filesystem LABELs slot-a/slot-b/data${p1_label:+/ESP}"
 
 # Sizes come from sysfs, which is the kernel's own view of the GPT.
 want_sizes="262144 262144 262144 131072"
@@ -178,6 +218,85 @@ for want in ${want_sizes}; do
     part=$((part + 1))
 done
 echo "[s2] partition sizes 128/128/128/64 MiB"
+
+# --------------------------------------------------------------------------- #
+# 1b. First-boot growth: the image ships p4 short of the tail, and the decision the
+#     boot init takes is recomputed here from the real table
+# --------------------------------------------------------------------------- #
+
+if command -v wf_grow_decide >/dev/null 2>&1 && sfdisk -d "${DEV}" >/tmp/table.txt 2>/dev/null; then
+    last_lba="$(sed -n 's/^last-lba:[[:space:]]*//p' /tmp/table.txt | head -n 1)"
+    p4_start="$(sed -n "s|^${DEV}4 : start= *\([0-9]*\),.*|\1|p" /tmp/table.txt | head -n 1)"
+    [ -n "${last_lba}" ] || report_failure growth-no-last-lba
+    [ -n "${p4_start}" ] || report_failure growth-no-p4-line
+    decision="$(wf_grow_decide /tmp/table.txt "${DEV}4" "${image_size}")"
+    case "${decision}" in
+        grow\ *) echo "[s2] first-boot growth decision: ${decision}" ;;
+        *) report_failure "growth-decision-${decision}" ;;
+    esac
+    # A table whose p4 already reaches the last usable LBA has to read back as
+    # already-full: that is what makes a second boot a no-op on the same disk.
+    grown=$((last_lba - p4_start + 1))
+    sed "s|^\(${DEV}4 : start= *[0-9]*, size= *\)[0-9]*|\1${grown}|" \
+        /tmp/table.txt >/tmp/table-full.txt
+    full="$(wf_grow_decide /tmp/table-full.txt "${DEV}4" "${image_size}")"
+    [ "${full}" = "already-full ${last_lba}" ] || report_failure "growth-idempotency-${full}"
+    echo "[s2] a second boot on this disk would read: ${full}"
+else
+    echo "[s2] SKIP growth decision: sfdisk or /lib/grow.sh is missing in this initramfs"
+fi
+
+# --------------------------------------------------------------------------- #
+# 1c. Device identity: the boot disk is derived from sysfs, never from its name
+# --------------------------------------------------------------------------- #
+
+if [ -f /lib/disk-identity.sh ]; then
+    . /lib/disk-identity.sh
+    for part in 1 2 3 4; do
+        parent="$(di_parent_disk "${DEV}${part}" 2>/dev/null)"
+        [ "${parent}" = "${DEV}" ] || report_failure "parent-p${part}-${parent:-none}"
+    done
+    echo "[s2] all four partitions report ${DEV} as their parent disk"
+    identity="$(di_resolve 2>/dev/null)"
+    case "${identity}" in
+        "disk=${DEV} method="*) echo "[s2] device identity: ${identity}" ;;
+        *) report_failure "device-identity-${identity:-empty}" ;;
+    esac
+else
+    echo "[s2] SKIP device identity: /lib/disk-identity.sh is not staged in this initramfs"
+fi
+
+# The platform layer ships the same library: the initramfs and the running system must
+# not resolve the boot disk with two different implementations.
+mount -t btrfs -o ro "${DEV}2" /mnt || report_failure p2-mount-failed
+plat_dir=/mnt/@platform
+if [ -f "${plat_dir}/lib/disk-identity.sh" ]; then
+    if [ -f /lib/disk-identity.sh ]; then
+        cmp -s /lib/disk-identity.sh "${plat_dir}/lib/disk-identity.sh" \
+            || report_failure identity-lib-drift
+        echo "[s2] initramfs and @platform carry the same disk-identity.sh"
+    fi
+    AB_DISK_IDENTITY_LIB="${plat_dir}/lib/disk-identity.sh"
+    export AB_DISK_IDENTITY_LIB
+    if [ -f "${plat_dir}/lib/ab-partitions.sh" ]; then
+        . "${plat_dir}/lib/ab-partitions.sh"
+        plat_identity="$(ab_disk_identity 2>/dev/null)"
+        [ "${plat_identity}" = "${identity}" ] \
+            || report_failure "platform-identity-${plat_identity:-empty}"
+        echo "[s2] the platform layer resolves the same disk: ${plat_identity}"
+    fi
+else
+    echo "[s2] SKIP platform identity library: @platform has no lib/disk-identity.sh"
+fi
+# ab-slot reports the same answer through its status line; the contract is the token.
+if [ -f "${plat_dir}/usr/sbin/ab-slot" ]; then
+    if grep -q 'disk=%s method=%s' "${plat_dir}/usr/sbin/ab-slot"; then
+        echo "[s2] ab-slot status reports disk=/method= from the shared resolver"
+    else
+        echo "[s2] SKIP ab-slot status disk= readback: the shipped ab-slot has no contract yet"
+    fi
+fi
+umount /mnt
 
 # --------------------------------------------------------------------------- #
 # 3. Subvolume layout
@@ -214,6 +333,9 @@ mount -t btrfs -o ro "${DEV}4" /mnt || report_failure p4-mount-failed
 for entry in upper work; do
     [ -d "/mnt/${expect_overlay}/${entry}" ] || report_failure "overlay-${entry}-missing"
 done
+# The growth outcome is a runtime fact: the image must not carry one, otherwise a
+# shipped image would claim a growth it never performed.
+[ ! -e /mnt/.ab/grow ] || report_failure grow-record-shipped-in-image
 umount /mnt
 echo "[s2] ${expect_overlay} contains plain upper/ and work/"
 
@@ -260,6 +382,27 @@ if [ "${P1_SKIPPED:-0}" = 0 ]; then
     for required in boot/grub vmlinuz-a vmlinuz-b initrd-a initrd-b ab ab/log; do
         [ -e "/mnt/${required}" ] || report_failure "p1-missing-${required}"
     done
+    # Build-time device identity: the PARTUUIDs the upgrade path follows after a dd copy.
+    # The file belongs at ab/device.json next to ab/state.json; boot/ab/device.json is the
+    # older placement and is still verified, but its path is reported so the drift is not
+    # silently accepted.
+    device_json=/mnt/ab/device.json
+    if [ ! -f "${device_json}" ] && [ -f /mnt/boot/ab/device.json ]; then
+        device_json=/mnt/boot/ab/device.json
+        echo "[s2] WARNING device identity sits at boot/ab/device.json, expected ab/device.json"
+    fi
+    if [ -f "${device_json}" ]; then
+        for part in 1 2 3 4; do
+            want_uuid="$(blkid -p -o value -s PARTUUID "${DEV}${part}" 2>/dev/null)"
+            [ -n "${want_uuid}" ] || report_failure "partuuid-p${part}-unreadable"
+            want_uuid="$(printf '%s' "${want_uuid}" | tr 'A-F' 'a-f')"
+            grep -qi "${want_uuid}" "${device_json}" \
+                || report_failure "device-json-p${part}"
+        done
+        echo "[s2] ${device_json#/mnt} records the four PARTUUIDs of this image"
+    else
+        echo "[s2] SKIP ab/device.json: this image was built without it"
+    fi
     p1_kib="$(du -sk /mnt | cut -f1)"
     umount /mnt
     echo "[s2] p1 uses ${p1_kib} KiB of the ${expect_p1max} KiB budget"

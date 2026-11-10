@@ -3,11 +3,18 @@
 #
 # Runs before the network comes up. It mounts the two ESP-backed surfaces the A/B
 # tooling needs (/boot for the state and the ring log, /mnt/p4 for the writable
-# subvolumes), rotates the boot log, records this boot, and marks a candidate first
-# boot when the pending slot is the slot we just started.
+# subvolumes), rotates the boot log, records this boot, heals the GRUB hint and marks
+# a candidate first boot when the pending slot is the slot we just started.
 #
 # The running slot comes from the kernel command line (`ab.slot=<a|b>`), which is what
-# GRUB sets per menu entry; without it the committed slot is the honest assumption.
+# the GRUB menu entry of that slot sets; without it the committed slot is the honest
+# assumption.
+#
+# The file that tells GRUB which slot to boot (/boot/grub/ab-slot.cfg) is rewritten
+# here from ab/state.json on every boot. That is the self-heal path: the state file is
+# the truth, and a power cut between the state write and the file write, a hand-edited
+# state file, or a file left behind by an older boot all end up consistent again one
+# boot later.
 #
 # Nothing here may block the boot: every failure is logged and reported through the
 # exit status of the helper, not by refusing to continue.
@@ -16,38 +23,73 @@
 # shellcheck disable=SC2034
 START=15
 
-AB_ESP=/boot
-AB_P4=/mnt/p4
+AB_ESP="${AB_ESP:-/boot}"
+AB_P4="${AB_P4:-/mnt/p4}"
+# Mount table the helpers consult; overridable so a test can describe a system.
+AB_MOUNTS="${AB_MOUNTS:-/proc/mounts}"
 LOG_MAX=32768
+export AB_ESP AB_P4 AB_MOUNTS
 
-# find_partition <partlabel> <fallback>: resolve a partition device by GPT name when
-# the kernel exposes PARTNAME, falling back to the documented partition order.
-find_partition() {
-	_want="$1"
-	_fallback="$2"
-	for _event in /sys/class/block/*/uevent; do
-		[ -f "${_event}" ] || continue
-		case "$(sed -n 's/^DEVTYPE=//p' "${_event}")" in
-			partition) : ;;
-			*) continue ;;
-		esac
-		if [ "$(sed -n 's/^PARTNAME=//p' "${_event}")" = "${_want}" ]; then
-			printf '/dev/%s' "$(basename "$(dirname "${_event}")")"
-			return 0
-		fi
-	done
-	printf '%s' "${_fallback}"
+# Partition discovery is shared: platform/lib/disk-identity.sh decides which disk this
+# machine booted from and platform/lib/ab-partitions.sh turns that into device nodes.
+# Neither file is duplicated here, and no device name is hard coded: a machine whose
+# disk cannot be identified logs it and boots with the slots it already has.
+AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
+AB_PARTITIONS_OK=0
+if [ -f "${AB_PARTITIONS_LIB}" ]; then
+	# shellcheck source=platform/lib/ab-partitions.sh
+	. "${AB_PARTITIONS_LIB}"
+	AB_PARTITIONS_OK=1
+fi
+
+# part_device <partname> <number>: the device to mount, or non-zero with a line on the
+# console. The lookup itself belongs to platform/lib/ab-partitions.sh.
+part_device() {
+	if [ "${AB_PARTITIONS_OK}" != "1" ]; then
+		console_say "ab-boot: ${AB_PARTITIONS_LIB} is missing, cannot resolve ${1}"
+		return 1
+	fi
+	_dev="$(ab_find_partition "$1" "$2")" || {
+		console_say "ab-boot: cannot identify the ${1} partition on this machine"
+		return 1
+	}
+	ensure_dev "${_dev}" || {
+		console_say "ab-boot: ${1} resolved to ${_dev}, which is not a block device"
+		return 1
+	}
+	printf '%s' "${_dev}"
+}
+
+# record_disk: the disk this machine booted from, and how it was found, in the ring log
+# and on the console. The build writes the same pair into ab/device.json, so a machine
+# and an image can be compared without guessing.
+record_disk() {
+	if [ "${AB_PARTITIONS_OK}" != "1" ]; then
+		log_append "stage=device slot=${1:-?} disk=unknown method=unavailable"
+		return 1
+	fi
+	_identity="$(ab_disk_identity)" || {
+		log_append "stage=device slot=${1:-?} disk=unknown method=unresolved"
+		console_say "ab-boot: the boot disk could not be identified"
+		return 1
+	}
+	# "disk=<dev> method=<token>" -> the two values the log and the console report
+	_disk="${_identity#disk=}"
+	_disk="${_disk%% *}"
+	_method="${_identity#*method=}"
+	log_append "stage=device slot=${1:-?} disk=${_disk:-unknown} method=${_method:-unknown}"
+	console_say "ab-boot: boot disk ${_disk:-unknown}, found by ${_method:-unknown}"
+	return 0
 }
 
 is_mounted() {
-	awk -v mp="$1" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null
+	awk -v mp="$1" '$2 == mp { found = 1 } END { exit !found }' "${AB_MOUNTS}" 2>/dev/null
 }
 
 mount_esp() {
 	is_mounted "${AB_ESP}" && return 0
 	mkdir -p "${AB_ESP}"
-	_dev="$(find_partition ab-esp /dev/vda1)"
-	ensure_dev "${_dev}"
+	_dev="$(part_device ab-esp 1)" || return 1
 	mount -t vfat -o rw,noatime "${_dev}" "${AB_ESP}" 2>/dev/null || {
 		console_say "ab-boot: could not mount ${_dev} on ${AB_ESP}"
 		return 1
@@ -70,8 +112,7 @@ ensure_dev() {
 mount_p4() {
 	is_mounted "${AB_P4}" && return 0
 	mkdir -p "${AB_P4}"
-	_dev="$(find_partition ab-shared /dev/vda4)"
-	ensure_dev "${_dev}"
+	_dev="$(part_device ab-data 4)" || return 1
 	mount -o rw,noatime "${_dev}" "${AB_P4}" 2>/dev/null || {
 		console_say "ab-boot: could not mount ${_dev} on ${AB_P4}"
 		return 1
@@ -101,6 +142,44 @@ rotate_logs() {
 	rm -f "${AB_ESP}/ab/log/boot-2.log"
 	[ -f "${AB_ESP}/ab/log/boot-1.log" ] && mv "${AB_ESP}/ab/log/boot-1.log" "${AB_ESP}/ab/log/boot-2.log"
 	[ -f "${AB_ESP}/ab/log/boot-0.log" ] && mv "${AB_ESP}/ab/log/boot-0.log" "${AB_ESP}/ab/log/boot-1.log"
+}
+
+# heal_slot_cfg: point GRUB at the slot ab/state.json names, and report which one.
+#
+# The rule and the file writer live in ab-slot (`next --write`), so the boot path and
+# the state commands cannot disagree about either the format or the value.
+heal_slot_cfg() {
+	if _heal="$(ab-slot next --write 2>/dev/null)"; then
+		log_append "stage=slot-cfg slot=${1:-?} result=ok ${_heal}"
+		console_say "ab-boot: next boot runs ${_heal}"
+		return 0
+	fi
+	log_append "stage=slot-cfg slot=${1:-?} result=fail reason=slot-cfg-not-written"
+	console_say "ab-boot: could not rewrite /boot/grub/ab-slot.cfg, the menu keeps its previous entry"
+	return 1
+}
+
+# grow_result: the first-boot growth result that the initramfs recorded on p4.
+#
+# The initramfs writes p4's subvolume root, so `.ab/grow` is either directly on the
+# mount (subvolume mounted at /mnt/p4) or under the running slot's layer (the
+# partition mounted at /mnt/p4). Both places are accepted; a missing file is the
+# documented "not recorded" case and is never an error.
+grow_result() {
+	for _candidate in "${AB_P4}/.ab/grow" "${AB_P4}/$1/.ab/grow"; do
+		case "${_candidate}" in
+			"${AB_P4}//.ab/grow") continue ;;
+		esac
+		if [ -f "${_candidate}" ]; then
+			_line="$(head -n 1 "${_candidate}" 2>/dev/null)"
+			case "${_line}" in
+				result=*) printf '%s' "${_line}" ;;
+				*) printf 'result=unreadable' ;;
+			esac
+			return 0
+		fi
+	done
+	return 1
 }
 
 start() {
@@ -135,6 +214,23 @@ start() {
 
 	log_append "stage=boot slot=${slot:-?} upper=${upper:-?} rootfs=${rootfs:-?} result=ok"
 	console_say "ab-boot: running slot ${slot:-?} (${upper:-?}), generation ${generation:-?}, committed ${committed:-?}, p4=${p4:-?}"
+
+	record_disk "${slot:-?}"
+
+	# The state file is the truth for the menu: rewrite the runtime file before
+	# anything else reads it, so a boot after a power cut starts from a consistent pair.
+	heal_slot_cfg "${slot:-?}"
+
+	# The initramfs records how the first-boot growth ended; it belongs in the ring
+	# log, where the acceptance checklist and CI look for it. Missing means the
+	# initramfs of that slot never ran the growth step.
+	if grow="$(grow_result "${upper}")"; then
+		log_append "stage=grow slot=${slot:-?} ${grow}"
+		console_say "ab-boot: first boot growth ${grow}"
+	else
+		log_append "stage=grow slot=${slot:-?} result=unrecorded"
+		console_say "ab-boot: no first boot growth result on ${AB_P4}, recorded as unrecorded"
+	fi
 
 	if [ "${p4}" = "degraded" ]; then
 		log_append "stage=boot slot=${slot:-?} upper=${upper:-?} rootfs=${rootfs:-?} result=fail reason=p4-degraded action=degraded-boot"

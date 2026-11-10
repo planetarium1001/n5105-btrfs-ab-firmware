@@ -58,10 +58,12 @@ ab-slot status
 健康机器只打印一行：
 
 ```
-slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok
+slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid
 ```
 
-`p4=ok` 表示可写分区已挂载。如果显示 `p4=degraded`，先读下面的降级小节，再做别的事。
+`p4=ok` 表示可写分区已挂载，`data`、`docker`、`swap` 是平台层挂载在它上面的三个子卷。`next=a` 是 GRUB
+下次会启动的槽，从 `boot/grub/ab-slot.cfg` 读回；想知道"重启会发生什么"就看这一个字段。如果 `p4` 显示
+`p4=degraded`，先读下面的降级小节，再做别的事。
 
 ## 验收清单
 
@@ -77,6 +79,7 @@ slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok
 | 网络已就绪 | `ip -brief address` | 存在 `network.wan` 引用的设备 |
 | 回收无事可做 | `ab-slot gc --dry-run` | 没有层被列为待删 |
 | 备槽完好 | `ab-slot pending b` 再 `ab-slot abandon` | 前者成功，后者清空 |
+| 下次启动符合预期 | `ab-slot next` | 上面那次 abandon 之后是 `next=<已提交槽>` |
 
 最后一行的意义：`ab-slot pending` 会拒绝内核或 initramfs 不在 ESP 上的槽，所以这一步失败说明的是备份槽的载荷缺失，
 而不是当前运行的槽有问题。
@@ -92,11 +95,17 @@ ab-slot conflicts
 ```
 
 `ab-upgrade` 在写入之前完成校验：manifest 形状、逐成员摘要、initramfs 里所有模块是否来自同一次内核构建、可写分区余量、
-以及冲突报告。拒绝时退出状态为 74 且什么都不写。成功后状态里另一个槽变成 `pending`，下次启动会试它：
+以及冲突报告。拒绝时退出状态为 74 且什么都不写。成功后状态里另一个槽变成 `pending`，`ab-slot status` 的
+`next=` 也会指向它，下次启动会试它：
 
 * 启动后对新槽跑健康检查；
 * 全部探针通过则提交该槽，机器留在新槽上；
-* 任一探针失败则放弃待验证槽，重启回到已提交槽。
+* 任一探针失败则放弃待验证槽，重启回到已提交槽；
+* 新槽在 boot initramfs 阶段就失败时，失败路径会自己清掉 `pending` 再关机（日志里
+  `action=fail-safe-abandon`），下次启动回到已提交槽，而不是反复重试那个坏槽。
+
+如果槽已经暂存好、但 `boot/grub/ab-slot.cfg` 没指向它，升级会以 `reason=next-boot-not-<槽>` 失败：
+少了这个文件机器会一直启动旧槽，升级永远试不到。
 
 载荷和你都改动过的文件会列在 `ab-slot conflicts` 里。它们从不阻断升级：载荷照样写入新文件，报告告诉你该看哪几个。
 
@@ -145,6 +154,9 @@ ab-slot log --prev
 | `p4=ok` 但没有 `stage=commit` | 健康检查失败 | `ab-slot log` 会指出失败的探针；待验证槽用 `ab-slot abandon` 清掉 |
 | `ab-upgrade` 退出 74 | 载荷或机器状态被拒绝 | 原因既打印也进日志；没有写入任何东西 |
 | 升级后仍重启回原来的槽 | 新槽健康检查没过 | 日志里有 `reason=healthcheck-failed`；修好载荷再装一次 |
+| `next=` 不是预期的槽 | 引导提示没写成功，或被更早的启动留旧了 | `ab-slot next --write` 按 `ab/state.json` 重写它；日志里 `stage=slot-cfg` 记着写入了哪个值 |
+| 升级后总回到已提交槽 | 候选槽在进入用户态前就失败了 | 日志里有 `action=fail-safe-abandon` 与 `reason=`；此时已没有 pending，修好原因后重新安装载荷 |
+| `ab-slot status` 显示 `disk=unknown` | 引导盘无法被识别 | 日志里 `stage=device` 会写明；对照实际写入的盘检查 GPT 名称与 `ab/device.json` |
 | 日志里没有 `btrfs=ok` | 平台层丢了工具 | 重新刷镜像，工具随平台层发布 |
 
 每次失败都会在日志里留一个 `reason=` 记号，和 CI 判据行用的是同一套记号，所以机器上的现象与构建结果可以直接对照，不用猜。

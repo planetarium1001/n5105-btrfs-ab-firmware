@@ -2,13 +2,17 @@ name: ci-s5
 
 # Stage S5 - upgrade payload, reclamation and the degraded boot.
 #
-# Four boots of one image file:
+# Four boots of one image file, all of them through the ESP: QEMU starts no kernel of
+# its own (CI_QEMU_MODE=uefi-disk), the firmware runs GRUB, and GRUB picks the entry
+# that /boot/grub/ab-slot.cfg names. That is the path a real machine takes, and the
+# one that was never exercised while the harness injected ab.slot= on the kernel
+# command line.
 #
 #   1  fresh install, `ab-slot status` healthy, `p4=ok`
 #   2  `ab-upgrade /payload.tar` installs a test payload into the inactive slot and
 #      marks it pending; the conflict report is written first and never blocks
-#   3  the pending slot boots, the health check passes, the slot is committed and the
-#      unreachable layer is reclaimed
+#   3  the pending slot boots through GRUB, the health check passes, the slot is
+#      committed and the unreachable layer is reclaimed
 #   4  the writable partition is destroyed: the boot must degrade to a tmpfs upper and
 #      still reach userspace
 #
@@ -111,7 +115,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf
+            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf \
+            grub-common
           if [ ! -x /bin/busybox ]; then
             sudo apt-get install -y --no-install-recommends busybox-static \
               || sudo apt-get install -y --no-install-recommends busybox-initramfs
@@ -161,6 +166,17 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
 
+      # The boots below hand the machine to the firmware, so prove first that the ESP
+      # is bootable and that its runtime slot file agrees with ab/state.json.
+      - name: "Preflight: the ESP boots through GRUB (gating)"
+        id: verify0
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-preflight.log"
+
       - name: Build the test payload
         id: payload
         env:
@@ -189,9 +205,9 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
+          CI_QEMU_MODE: uefi-disk
           CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
           CI_QEMU_CASE: s5-boot1
-          CI_QEMU_APPEND_EXTRA: ab.slot=a
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
@@ -222,9 +238,9 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
+          CI_QEMU_MODE: uefi-disk
           CI_QEMU_STOP_PATTERN: "^S5-UPGRADE-DONE"
           CI_QEMU_CASE: s5-boot2
-          CI_QEMU_APPEND_EXTRA: ab.slot=a
           CI_QEMU_TIMEOUT: "1200"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
@@ -241,6 +257,17 @@ jobs:
             --layer "${{ steps.payload.outputs.payload_layer }}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase2.log"
 
+      # This is the assertion the old harness replaced with an injected ab.slot=b:
+      # the upgrade marked slot b pending, so the file GRUB sources must name b.
+      - name: "Verify: the upgrade pointed the next boot at slot b"
+        id: verify_upgrade
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-upgrade.log"
+
       - name: "Boot 3: commit the upgraded slot and reclaim (gating)"
         id: boot3
         env:
@@ -248,9 +275,9 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
+          CI_QEMU_MODE: uefi-disk
           CI_QEMU_STOP_PATTERN: "^ab-commit: committed slot="
           CI_QEMU_CASE: s5-boot3
-          CI_QEMU_APPEND_EXTRA: ab.slot=b
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
@@ -264,6 +291,15 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/s5-phase.sh --phase commit --slot b 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase3.log"
+
+      - name: "Verify: the commit left the next boot on slot b"
+        id: verify_commit
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-commit.log"
 
       - name: "Fixture: destroy the writable partition"
         env:
@@ -280,9 +316,9 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
+          CI_QEMU_MODE: uefi-disk
           CI_QEMU_STOP_PATTERN: "^ab-boot: running slot"
           CI_QEMU_CASE: s5-boot4
-          CI_QEMU_APPEND_EXTRA: ab.slot=b
           CI_QEMU_TIMEOUT: "900"
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"

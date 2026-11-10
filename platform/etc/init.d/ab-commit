@@ -27,29 +27,28 @@ console_say() {
 # shellcheck disable=SC2034
 START=99
 
-AB_ESP=/boot
+AB_ESP="${AB_ESP:-/boot}"
+AB_MOUNTS="${AB_MOUNTS:-/proc/mounts}"
 BUDGET=150
+export AB_ESP AB_MOUNTS
 
-# find_partition <partlabel> <fallback>
-find_partition() {
-	for _event in /sys/class/block/*/uevent; do
-		[ -f "${_event}" ] || continue
-		case "$(sed -n 's/^DEVTYPE=//p' "${_event}")" in
-			partition) : ;;
-			*) continue ;;
-		esac
-		if [ "$(sed -n 's/^PARTNAME=//p' "${_event}")" = "$1" ]; then
-			printf '/dev/%s' "$(basename "$(dirname "${_event}")")"
-			return 0
-		fi
-	done
-	printf '%s' "$2"
-}
+# Partition discovery is shared: platform/lib/disk-identity.sh decides which disk this
+# machine booted from and platform/lib/ab-partitions.sh turns that into device nodes.
+# No device name is hard coded, and a machine that cannot be identified logs it.
+AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
+AB_PARTITIONS_OK=0
+if [ -f "${AB_PARTITIONS_LIB}" ]; then
+	# shellcheck source=platform/lib/ab-partitions.sh
+	. "${AB_PARTITIONS_LIB}"
+	AB_PARTITIONS_OK=1
+fi
 
 mount_esp() {
-	awk -v mp="${AB_ESP}" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null && return 0
+	awk -v mp="${AB_ESP}" '$2 == mp { found = 1 } END { exit !found }' "${AB_MOUNTS}" 2>/dev/null && return 0
 	mkdir -p "${AB_ESP}"
-	mount -t vfat -o rw,noatime "$(find_partition ab-esp /dev/vda1)" "${AB_ESP}" 2>/dev/null
+	[ "${AB_PARTITIONS_OK}" = "1" ] || return 1
+	_dev="$(ab_find_partition ab-esp 1)" || return 1
+	mount -t vfat -o rw,noatime "${_dev}" "${AB_ESP}" 2>/dev/null
 }
 
 log_append() {

@@ -12,7 +12,12 @@ name: ci-s3
 # both contribute files, and probe writes land in <upper>/upper. Boot 2 proves
 # the same root comes back with the first boot's writes still present.
 #
-# Both boots must print the frozen line:
+# A third boot hands the machine to the firmware instead: QEMU starts no kernel of its
+# own (CI_QEMU_MODE=uefi-disk), OVMF runs GRUB from the ESP, and GRUB picks the entry
+# that /boot/grub/ab-slot.cfg names. That is the boot path a real machine takes and
+# the one the two kernel boots above cannot prove.
+#
+# The three boots must print the frozen line:
 #
 #     S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=<overlay>
 #
@@ -57,6 +62,9 @@ on:
       upper:
         description: "Writable layer the boot chain mounted, for example @overlay-25.12.2"
         value: ${{ jobs.s3.outputs.upper }}
+      judge_line_grub:
+        description: "Frozen judge line from the firmware/GRUB boot"
+        value: ${{ jobs.s3.outputs.judge_line_grub }}
       module_count:
         description: "Modules unpacked into the boot initramfs"
         value: ${{ jobs.s3.outputs.module_count }}
@@ -87,6 +95,7 @@ jobs:
       slot: ${{ steps.judge.outputs.slot }}
       upper: ${{ steps.judge.outputs.upper }}
       module_count: ${{ steps.kmods.outputs.module_count }}
+      judge_line_grub: ${{ steps.boot3.outputs.judge_line }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -103,7 +112,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf
+            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf \
+            grub-common
           if [ ! -x /bin/busybox ]; then
             sudo apt-get install -y --no-install-recommends busybox-static \
               || sudo apt-get install -y --no-install-recommends busybox-initramfs
@@ -153,6 +163,17 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
 
+      # The firmware boots the ESP in the third boot below, so prove it is bootable
+      # before running any of them.
+      - name: "Preflight: the ESP boots through GRUB (gating)"
+        id: verify0
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-preflight.log"
+
       # Boot 1: compose the root and leave probe files behind.
       - name: Boot 1 - compose the layered root (gating)
         id: boot1
@@ -196,6 +217,48 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot2.log"
 
+      # Boot 3: the firmware runs GRUB, GRUB reads the runtime slot file and boots the
+      # committed entry. Nothing is injected: if the menu ignored the file or the file
+      # were wrong, this boot would not reach the judge line at all.
+      - name: "Boot 3: the ESP boots through GRUB (gating)"
+        id: boot3
+        env:
+          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
+          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
+          CI_QEMU_MODE: uefi-disk
+          CI_JUDGE_PREFIX: S3-RESULT
+          CI_QEMU_CASE: s3-grub
+          CI_QEMU_TIMEOUT: "900"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot3.log"
+
+      # The GRUB boot has to land on the same slot and layer the kernel boots saw, and
+      # on the slot the ESP state names.
+      - name: Read the slot and layer from the GRUB judge line
+        id: judge_grub
+        env:
+          JUDGE_LINE: ${{ steps.boot3.outputs.judge_line }}
+          BOOT1_SLOT: ${{ steps.judge.outputs.slot }}
+          BOOT1_UPPER: ${{ steps.judge.outputs.upper }}
+        run: |
+          slot="$(printf '%s' "${JUDGE_LINE}" | sed -n 's/.*slot=\([ab]\).*/\1/p')"
+          upper="$(printf '%s' "${JUDGE_LINE}" | sed -n 's/.*upper=\([^ ]*\).*/\1/p')"
+          echo "grub boot: slot=${slot:-unknown} upper=${upper:-unknown} (kernel boots: ${BOOT1_SLOT:-unknown}/${BOOT1_UPPER:-unknown})"
+          if [ "${slot}" != "${BOOT1_SLOT}" ]; then
+            echo "::error::GRUB booted slot ${slot:-none}, the committed slot is ${BOOT1_SLOT:-unknown}"
+            exit 1
+          fi
+          if [ "${upper}" != "${BOOT1_UPPER}" ]; then
+            echo "::error::GRUB booted layer ${upper:-none}, the image uses ${BOOT1_UPPER:-unknown}"
+            exit 1
+          fi
+          {
+            printf 'slot=%s\n' "${slot}"
+            printf 'upper=%s\n' "${upper}"
+          } >>"${GITHUB_OUTPUT}"
+
       - name: Collect diagnostics
         if: always()
         continue-on-error: true
@@ -215,6 +278,8 @@ jobs:
             ${{ runner.temp }}/ci/qemu/serial-*.log
             ${{ runner.temp }}/ci/qemu/qemu-*.out
             ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+            ${{ runner.temp }}/ci/disk/grub.cfg
+            ${{ runner.temp }}/ci/disk/ab-slot.cfg
           if-no-files-found: ignore
           retention-days: 7
 

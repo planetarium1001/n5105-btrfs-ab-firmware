@@ -159,6 +159,16 @@ on:
         required: false
         type: string
         default: ""
+      s4_line_rollback:
+        description: "Judge line: rollback back to slot a"
+        required: false
+        type: string
+        default: ""
+      s4_next_slot_final:
+        description: "Slot GRUB would boot after the last S4 phase"
+        required: false
+        type: string
+        default: ""
       s5_result:
         description: "Job result of the S5 upgrade run"
         required: false
@@ -300,6 +310,8 @@ jobs:
       CI_S4_LINE_ABANDON_B: ${{ inputs.s4_line_abandon_b }}
       CI_S4_LINE_COMMIT_B: ${{ inputs.s4_line_commit_b }}
       CI_S4_COMMITTED_FINAL: ${{ inputs.s4_committed_final }}
+      CI_S4_LINE_ROLLBACK: ${{ inputs.s4_line_rollback }}
+      CI_S4_NEXT_SLOT_FINAL: ${{ inputs.s4_next_slot_final }}
       CI_S5_RESULT: ${{ inputs.s5_result }}
       CI_S5_LINE: ${{ inputs.s5_line }}
       CI_S5_UPGRADE_LINE: ${{ inputs.s5_upgrade_line }}

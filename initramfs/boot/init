@@ -3,12 +3,31 @@
 #
 # Order matters and is asserted, not assumed:
 #
+#   0. p4  first-boot growth: the partition table is rewritten so p4 reaches the end of
+#          the disk, the kernel re-reads it, and the outcome lands in
+#          <p4 root subvolume>/.ab/grow as `result=<state> last_lba=<n>`
 #   1. p4  @overlay-<version>  rw,compress=zstd:6,discard=async
 #                              subvol=@overlay-<version>         -> /mnt/p4
+#          then                 btrfs filesystem resize max /mnt/p4
 #   2. p2  @platform           ro,noatime                      -> /mnt/@platform
 #   3. p2  @sys               ro,noatime                       -> /mnt/@sys
 #   4. overlay lowerdir=/mnt/@platform:/mnt/@sys
 #              upperdir=/mnt/p4/upper workdir=/mnt/p4/work   -> /newroot
+#   5. p4  @data               rw,noatime                       -> /newroot/data
+#      p4  @docker             rw,noatime,nodatacow,nodatasum   -> /newroot/opt/docker
+#      p4  @swap               rw,noatime,nodatacow,nodatasum   -> /newroot/swap
+#
+# The growth runs before anything is mounted, so the filesystem is mounted on a
+# partition that already has its final size. It only ever enlarges p4 and it is
+# idempotent: a disk that already reaches the end of the usable area is left alone and
+# reported as already-full. A growth failure never stops the boot; p4 simply stays at
+# its shipped 64 MiB and the state is recorded for ab-boot to pick up.
+#
+# The three user-data subvolumes are mounted under /newroot so that they become /data,
+# /opt/docker and /swap once switch_root has happened. A failure there is logged as
+# p4-partial and the boot continues: a missing /data must not cost a bootable system.
+# Only @overlay carries compress=; a filesystem has exactly one compression level, so
+# the child mounts repeat no compress option at all.
 #
 # The writable layer is mounted first because `compress=` is only applied by the
 # first mount of a filesystem; mounting a read-only layer first would leave the
@@ -22,8 +41,17 @@
 #
 # Kernel command line:
 #   ab.slot=<a|b>     slot GRUB selected for this boot (default: the committed slot)
-#   wf.dev=<disk>     disk holding the four partitions   (default /dev/vda)
+#   ab.disk=<disk>    disk holding the four partitions; only a hint, accepted when the
+#                     reverse lookup agrees that it carries ab-esp
+#   wf.dev=<disk>     test/QEMU alias for the same hint
 #   wf.boot=<n>       test label only, recorded in the probe file (default 1)
+#
+# The boot disk is never assumed: /dev/vda only exists on virtio. platform/lib/
+# disk-identity.sh resolves it through kernel parameter, PARTUUID, PARTNAME, mount
+# reverse lookup and unique candidate, and the partition nodes come from sysfs, so
+# /dev/sda4, /dev/nvme0n1p4 and /dev/mmcblk0p4 are all found without any string surgery.
+# When it cannot decide, the boot continues without growing or mounting p4 and reports
+# the reason instead of powering off.
 #
 # Judge line, frozen:
 #   S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=overlay
@@ -33,25 +61,23 @@ set -u
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
-DEV=/dev/vda
 BOOT=1
 for arg in $(cat /proc/cmdline); do
     case "${arg}" in
-        wf.dev=*) DEV="${arg#wf.dev=}" ;;
         wf.boot=*) BOOT="${arg#wf.boot=}" ;;
     esac
 done
 
 . /lib/wf.sh
+. /lib/grow.sh
+. /lib/disk-identity.sh
 
-wf_log "S3 layered boot, disk ${DEV}, boot ${BOOT}"
+wf_log "S3 layered boot, boot ${BOOT}"
 
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
-if [ ! -b "${DEV}" ]; then
-    mdev -s 2>/dev/null
-fi
+mdev -s 2>/dev/null
 mkdir -p /mnt /newroot
 
 KVER="$(uname -r)"
@@ -82,39 +108,97 @@ done
 wf_log "loaded ${loaded} module(s)"
 [ -d /sys/module/btrfs ] || wf_fail btrfs-not-loaded
 [ -d /sys/module/vfat ] || wf_fail vfat-not-loaded
-[ -b "${DEV}" ] || wf_fail no-block-device
 
 # --------------------------------------------------------------------------- #
-# Partition discovery: PARTNAME when the kernel exposes it, fixed order otherwise
+# 1. Device identity: which disk carries us
 # --------------------------------------------------------------------------- #
+# The result is evidence, not a guess: five resolution levels, and a disk only counts
+# when sysfs reports DEVTYPE=disk with removable=0 and all four ab-* partitions agree on
+# it. Anything else is reported and the boot goes on without touching the disk.
 
-esp="${DEV}1"
-slot_a="${DEV}2"
-slot_b="${DEV}3"
-shared="${DEV}4"
-discovered=""
-for event in /sys/class/block/"$(basename "${DEV}")"*/uevent; do
-    [ -f "${event}" ] || continue
-    part_name="$(sed -n 's/^PARTNAME=//p' "${event}")"
-    part_number="$(sed -n 's/^PARTN=//p' "${event}")"
-    [ -n "${part_number}" ] || continue
-    case "${part_name}" in
-        ab-esp) esp="${DEV}${part_number}" ;;
-        ab-slot-a) slot_a="${DEV}${part_number}" ;;
-        ab-slot-b) slot_b="${DEV}${part_number}" ;;
-        ab-shared) shared="${DEV}${part_number}" ;;
-        *) continue ;;
-    esac
-    discovered="${discovered} ${part_name}=${DEV}${part_number}"
-done
-if [ -n "${discovered}" ]; then
-    wf_log "partitions by PARTNAME:${discovered}"
+dev=""
+dev_method=""
+dev_error=""
+identity="$(di_resolve)"
+identity_rc=$?
+case "${identity}" in
+    disk=*)
+        dev_rest="${identity#disk=}"
+        dev="${dev_rest%% *}"
+        dev_method="${identity##*method=}"
+        ;;
+    *)
+        dev_error="${identity#reason=}"
+        ;;
+esac
+if [ "${identity_rc}" -ne 0 ]; then
+    wf_log "device identity unresolved: ${dev_error:-unknown}"
+    printf '[boot] stage=device disk=unknown method=none reason=%s\n' "${dev_error:-unknown}"
 else
-    wf_log "PARTNAME not exposed, using the documented partition order 1/2/3/4"
+    wf_log "device: disk=${dev} method=${dev_method}"
+    printf '[boot] stage=device disk=%s method=%s\n' "${dev}" "${dev_method}"
 fi
 
 # --------------------------------------------------------------------------- #
-# 1. State from the ESP
+# 2. Partition discovery: on the resolved disk, by name, then by partition number
+# --------------------------------------------------------------------------- #
+# Every lookup is scoped to the disk that was just resolved, so a second disk carrying a
+# copy of this image (or a USB stick) can never supply the writable layer or the slots.
+# di_find_partition tries the partition number on that disk, accepts it only when the
+# kernel confirms the same GPT name there, then falls back to the name on that disk. Only
+# when no disk could be resolved does a bare name lookup answer, and it still refuses
+# partitions whose parent disk is removable.
+# Nothing here glues a digit onto a device name: the partition number is matched through
+# sysfs PARTN, so sda4, nvme0n1p4 and mmcblk0p4 all work.
+
+esp="$(di_find_partition ab-esp 1 "${dev}")" || esp=""
+slot_a="$(di_find_partition ab-slot-a 2 "${dev}")" || slot_a=""
+slot_b="$(di_find_partition ab-slot-b 3 "${dev}")" || slot_b=""
+p4="$(di_find_partition ab-data 4 "${dev}")" || p4=""
+wf_log "partitions on ${dev:-an unresolved disk}: esp=${esp:-none} slot-a=${slot_a:-none} slot-b=${slot_b:-none} data=${p4:-none}"
+[ -n "${esp}" ] || wf_fail no-block-device
+
+# The failure path has to reach the ESP even when it fails before mounting it: a pending
+# slot that cannot finish the initramfs must not be selected again by GRUB, so wf_fail
+# rewrites the slot hint before it powers off.
+WF_ESP_DEV="${esp}"
+
+# --------------------------------------------------------------------------- #
+# 3. First-boot growth of p4, before anything is mounted
+# --------------------------------------------------------------------------- #
+# The image ships p4 with 64 MiB and leaves the tail of the disk unallocated; the
+# table is rewritten here so the filesystem below is mounted on its final geometry.
+# Every outcome is a recorded state, never a boot failure: a 64 MiB p4 still boots, it
+# just cannot hold much. `<state>` is done, already-full, missing-sfdisk or fail:<token>.
+
+if [ -n "${dev}" ] && [ -n "${p4}" ]; then
+    grow_line="$(wf_grow_run "${dev}" "${p4}")" || grow_line="fail:grow-crashed 0"
+elif [ -n "${dev_error}" ]; then
+    # Writing a partition table on a disk nobody could identify is exactly the mistake
+    # that bricks a machine, so the reason is recorded and the disks stay untouched.
+    wf_log "p4 growth skipped: ${dev_error}"
+    grow_line="fail:${dev_error} 0"
+else
+    wf_log "p4 growth skipped: no data partition was found"
+    grow_line="fail:no-data-partition 0"
+fi
+grow_state="${grow_line%% *}"
+grow_last_lba="${grow_line##* }"
+case "${grow_state}" in
+    done | already-full | missing-sfdisk) : ;;
+    fail:?*) : ;;
+    *)
+        wf_log "unexpected growth result '${grow_state}', recording fail:grow-crashed"
+        grow_state="fail:grow-crashed"
+        ;;
+esac
+case "${grow_last_lba}" in
+    '' | *[!0-9]*) grow_last_lba=0 ;;
+esac
+wf_log "p4 growth: ${grow_state} (last usable LBA ${grow_last_lba})"
+
+# --------------------------------------------------------------------------- #
+# 4. State from the ESP
 # --------------------------------------------------------------------------- #
 
 mkdir -p /esp
@@ -154,18 +238,55 @@ generation="$(wf_generation "${STATE}")" || generation=unknown
 wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
 
 # --------------------------------------------------------------------------- #
-# 2. Mount order: writable layer first, then the read-only layers
+# 5. Mount order: writable layer first, then the read-only layers
 # --------------------------------------------------------------------------- #
 
-mkdir -p /mnt/p4 /mnt/@platform /mnt/@sys
+mkdir -p /mnt/p4 /mnt/p4root /mnt/@platform /mnt/@sys
 degraded=0
-if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${shared}" /mnt/p4; then
+if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" /mnt/p4; then
     p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
     case "${p4_line}" in
         *compress=*) : ;;
         *) wf_fail p4-compress-option-missing ;;
     esac
     wf_log "p4 mounted with compress= (${upper})"
+
+    # The partition was already grown before this mount, so the filesystem sees the
+    # larger device and can be extended onto it. This also runs on already-full, where
+    # it is a no-op, so a boot that grew the table but died before resizing the
+    # filesystem is repaired on the next start. A resize failure is recorded, not fatal:
+    # the partition keeps its size and the next boot tries again.
+    case "${grow_state}" in
+        done | already-full)
+            grow_fs="$(wf_grow_fs /mnt/p4)"
+            case "${grow_fs}" in
+                done) wf_log "btrfs filesystem at max size" ;;
+                *)
+                    wf_log "btrfs filesystem resize failed, recording ${grow_fs}"
+                    grow_state="${grow_fs}"
+                    ;;
+            esac
+            ;;
+    esac
+
+    # The outcome goes to the p4 root subvolume, not to the generation's layer: the
+    # root subvolume outlives every @overlay-<version> and ab-boot mounts it at
+    # /mnt/p4 at runtime, which is where it reads this file.
+    if mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root; then
+        # The pre-change table is kept next to the record: if the write turns out to be
+        # half-applied on a power cut, the old geometry is on the same disk.
+        if wf_grow_backup /mnt/p4root; then
+            wf_log "pre-growth partition table kept in .ab/partitions.before"
+        fi
+        if wf_grow_record /mnt/p4root "${grow_state}" "${grow_last_lba}"; then
+            wf_log "p4 growth recorded: result=${grow_state} last_lba=${grow_last_lba}"
+        else
+            wf_log "warning: could not write the growth record on the p4 root subvolume"
+        fi
+        umount /mnt/p4root || wf_log "warning: could not unmount the p4 root subvolume"
+    else
+        wf_log "warning: p4 root subvolume not mountable, growth record skipped"
+    fi
 else
     # A broken writable partition must not stop the boot: the system still works,
     # it just cannot persist anything. The upper moves to tmpfs and the boot is
@@ -174,6 +295,7 @@ else
     wf_log "p4 unavailable, booting degraded with a tmpfs upper"
     printf '[boot] action=degraded-boot p4=degraded\n'
     mount -t tmpfs -o mode=0755 tmpfs /mnt/p4 || wf_fail degraded-tmpfs-failed
+    wf_log "p4 growth result: ${grow_state} (not recorded, p4 is unavailable)"
 fi
 mkdir -p /mnt/p4/upper /mnt/p4/work
 
@@ -185,7 +307,7 @@ mount -o ro,noatime,"subvol=/@sys" "${slot_dev}" /mnt/@sys || wf_fail sys-mount-
 wf_log "read-only layers mounted: @platform, @sys from ${slot_dev}"
 
 # --------------------------------------------------------------------------- #
-# 3. Compose the root
+# 6. Compose the root
 # --------------------------------------------------------------------------- #
 
 mount -t overlay overlay \
@@ -218,7 +340,53 @@ wf_log "overlay composed at /newroot"
 [ -f /newroot/etc/platform-release ] || wf_fail platform-release-not-in-root
 
 # --------------------------------------------------------------------------- #
-# 4. Probe writes: they must land in the generation's upper directory
+# 7. User data subvolumes: created under /newroot so they become /data and friends
+# --------------------------------------------------------------------------- #
+# These are the entry points to the user's data at runtime, so they are mounted here
+# rather than left to a later stage: /data, /opt/docker and /swap exist before the
+# first process of the composed root starts. The mount points are created through the
+# overlay, which records them in the generation's upper directory.
+#
+# No compress= option is repeated: a btrfs filesystem has exactly one compression level
+# and @overlay already set it (zstd:6). nodatacow/nodatasum restate what the build set
+# with chattr +C on @docker and @swap, where COW must stay off for dockerd's layers and
+# for swapfiles. A failure is recorded as p4-partial and the boot continues.
+p4_partial=""
+for spec in \
+    "@data:/newroot/data:rw,noatime" \
+    "@docker:/newroot/opt/docker:rw,noatime,nodatacow,nodatasum" \
+    "@swap:/newroot/swap:rw,noatime,nodatacow,nodatasum"
+do
+    subvol="${spec%%:*}"
+    subvol_spec="${spec#*:}"
+    target="${subvol_spec%%:*}"
+    options="${subvol_spec#*:}"
+    if [ "${degraded}" = "1" ]; then
+        p4_partial="${p4_partial} ${subvol}"
+        continue
+    fi
+    if ! mkdir -p "${target}" 2>/dev/null; then
+        wf_log "cannot create ${target}; ${subvol} stays unmounted"
+        p4_partial="${p4_partial} ${subvol}"
+        continue
+    fi
+    if mount -o "${options},subvol=/${subvol}" "${p4}" "${target}"; then
+        wf_log "mounted ${subvol} on ${target} (${options})"
+    else
+        wf_log "mount of ${subvol} on ${target} failed; continuing"
+        p4_partial="${p4_partial} ${subvol}"
+    fi
+done
+if [ -n "${p4_partial}" ]; then
+    p4_partial="${p4_partial# }"
+    wf_log "p4-partial:${p4_partial} not mounted, the boot continues"
+    printf '[boot] action=p4-partial subvolumes=%s\n' "${p4_partial}"
+else
+    wf_log "p4 user data mounted: @data->/data @docker->/opt/docker @swap->/swap"
+fi
+
+# --------------------------------------------------------------------------- #
+# 8. Probe writes: they must land in the generation's upper directory
 # --------------------------------------------------------------------------- #
 
 probe=/.s3-probe
@@ -248,7 +416,7 @@ fi
 wf_log "probe writes landed in upper, not in the read-only layers"
 
 # --------------------------------------------------------------------------- #
-# 5. Hand over to the composed root
+# 9. Hand over to the composed root
 # --------------------------------------------------------------------------- #
 
 cp /s3-post.sh /newroot/.s3-post || wf_fail post-script-stage-failed

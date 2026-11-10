@@ -1,8 +1,21 @@
 # Rendered by scripts/ci/grub-render.sh from scripts/ci/grub.cfg.in -- do not edit.
 #
-# GRUB picks the committed slot. A menu entry that boots the other slot first marks
-# itself as the one-shot try: it stores ab_try=<slot> and ab-commit clears the slot
-# state after the health check passes.
+# Which slot boots is decided at runtime by /boot/grub/ab-slot.cfg, a two-line file
+# that ab-slot and ab-boot write from ab/state.json. Fallback first, default second:
+#
+#   set fallback=<committed slot>
+#   set default=<pending slot, or the committed slot>
+#
+# The menu below is written once at build time and never rewritten. The runtime
+# override is sourced after every menuentry exists, because GRUB stops reading this
+# file at the first error: if the override is missing, truncated or malformed, the
+# entries and the committed default *and fallback* above it are already in place and
+# the machine still boots.
+#
+# There is no environment block here on purpose. The GRUB in the ESP is a standalone
+# EFI binary with its modules built in and no `env` module, so `load_env` and
+# `save_env` do not exist; a file of GRUB commands that `source` reads is the
+# mechanism that works there.
 #
 # GRUB script is not bash: no && or || chains and no ${var:-default} expansions.
 set timeout=@GRUB_TIMEOUT@
@@ -11,16 +24,12 @@ set fallback=@COMMITTED_INDEX@
 
 menuentry "N5105 AB slot a" --id n5105-a {
 	set ab_slot=a
-	set ab_try=a
-	save_env -f @GRUBENV_PATH@ ab_try
 	linux /vmlinuz-a root=/dev/ram0 console=ttyS0,115200 console=tty0 ab.slot=a
 	initrd /initrd-a
 }
 
 menuentry "N5105 AB slot b" --id n5105-b {
 	set ab_slot=b
-	set ab_try=b
-	save_env -f @GRUBENV_PATH@ ab_try
 	linux /vmlinuz-b root=/dev/ram0 console=ttyS0,115200 console=tty0 ab.slot=b
 	initrd /initrd-b
 }
@@ -30,3 +39,21 @@ menuentry "N5105 AB recovery (committed slot, read-only writable layer)" --id n5
 	linux /vmlinuz-@COMMITTED_SLOT@ root=/dev/ram0 console=ttyS0,115200 console=tty0 ab.slot=@COMMITTED_SLOT@ ab.degraded=1
 	initrd /initrd-@COMMITTED_SLOT@
 }
+
+# The runtime decision: the pending slot, or the committed slot when nothing is
+# pending. The file writes its fallback line first, so a file cut short leaves both
+# entries on the committed slot above; a complete file moves the default to the slot
+# being tried and keeps the fallback where it is. Either way a failed try has somewhere
+# to go.
+if [ -f @AB_SLOT_CFG_PATH@ ]; then
+	source @AB_SLOT_CFG_PATH@
+fi
+
+# GRUB's own output goes to the serial console as well, so a boot that never reaches
+# the kernel still shows which entry it picked. Last in the file: the menu and the
+# override above it are already complete, so a terminal that cannot be set up cannot
+# cost the machine a boot.
+if serial --unit=0 --speed=115200; then
+	terminal_input console serial
+	terminal_output console serial
+fi

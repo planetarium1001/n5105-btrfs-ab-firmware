@@ -11,7 +11,10 @@
 #   CI_KERNEL         upstream kernel image (kernel.bin)
 #   CI_INITRAMFS      initramfs produced by the initramfs stage
 #   CI_QEMU_DIR       scratch directory (default: $CI_TMP_ROOT/qemu)
-#   CI_QEMU_MODE      "kernel" (default) or "uefi" (boots through OVMF)
+#   CI_QEMU_MODE      "kernel" (default), "uefi" (boots through OVMF) or
+#                     "uefi-disk" (OVMF boots the ESP on CI_QEMU_DISK, so GRUB --
+#                     not QEMU -- supplies the kernel, the initrd and the command
+#                     line; that is the only mode that exercises the real boot path)
 #   CI_QEMU_TIMEOUT   wall-clock limit in seconds (default: 900)
 #   CI_QEMU_MEM       guest memory in MiB (default: 1024)
 #   CI_S1_CASE        label recorded in the guest and in the log
@@ -61,8 +64,18 @@ if [ -n "${given_disk}" ]; then
 fi
 case "${mode}" in
     kernel | uefi) : ;;
-    *) ci_die "CI_QEMU_MODE must be kernel or uefi, got ${mode}" ;;
+    uefi-disk) : ;;
+    *) ci_die "CI_QEMU_MODE must be kernel, uefi or uefi-disk, got ${mode}" ;;
 esac
+
+if [ "${mode}" = "uefi-disk" ]; then
+    # The firmware reads the ESP and runs GRUB, which then loads the kernel and the
+    # initrd through its own linux/initrd lines. Passing -kernel/-initrd/-append here
+    # would bypass exactly the path this mode exists to prove.
+    [ -n "${given_disk}" ] || ci_die "uefi-disk needs CI_QEMU_DISK, the firmware has to boot the ESP from the disk"
+    [ -z "${append_extra}" ] ||
+        ci_die "uefi-disk takes the kernel command line from grub.cfg, not from CI_QEMU_APPEND_EXTRA (${append_extra})"
+fi
 
 mkdir -p "${qemu_dir}"
 image="${qemu_dir}/btrfs-${mode}.img"
@@ -128,16 +141,24 @@ qemu_args=(
     -monitor none
     -no-reboot
     -serial "file:${serial}"
-    -kernel "${kernel}"
-    -initrd "${initramfs}"
-    -append "${append}"
+)
+if [ "${mode}" = "uefi-disk" ]; then
+    qemu_args+=(-boot "order=c")
+else
+    qemu_args+=(
+        -kernel "${kernel}"
+        -initrd "${initramfs}"
+        -append "${append}"
+    )
+fi
+qemu_args+=(
     -drive "file=${image},if=virtio,format=raw,cache=unsafe"
     # The health check looks for a wan device; virtio_net is built into this kernel.
     -netdev "user,id=n0"
     -device "virtio-net-pci,netdev=n0"
 )
 
-if [ "${mode}" = "uefi" ]; then
+if [ "${mode}" = "uefi" ] || [ "${mode}" = "uefi-disk" ]; then
     ovmf=""
     for candidate in \
         /usr/share/OVMF/OVMF_CODE.fd \

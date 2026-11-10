@@ -19,7 +19,7 @@
 #   CI_S2_ROOTFS_FILES, CI_S2_HOST_CHECKS
 #   CI_S3_RESULT, CI_S3_LINE, CI_S3_LINE_BOOT2, CI_S3_SLOT, CI_S3_UPPER
 #   CI_S4_RESULT, CI_S4_LINE_COMMIT_A, CI_S4_LINE_ABANDON_B, CI_S4_LINE_COMMIT_B,
-#   CI_S4_COMMITTED_FINAL
+#   CI_S4_LINE_ROLLBACK, CI_S4_COMMITTED_FINAL, CI_S4_NEXT_SLOT_FINAL
 #   CI_S5_RESULT, CI_S5_LINE, CI_S5_UPGRADE_LINE, CI_S5_DEGRADED_LINE,
 #   CI_S5_CONFLICTS, CI_S5_RECLAIMED
 
@@ -130,6 +130,12 @@ fi
     fi
     if [ -n "${CI_S3_LINE_BOOT2:-}" ]; then
         printf 'S3 judge line (boot 2): `%s`\n' "${CI_S3_LINE_BOOT2}"
+    fi
+    if [ -n "${CI_S4_LINE_ROLLBACK:-}" ]; then
+        printf '\nS4 judge line (rollback boot): `%s`\n' "${CI_S4_LINE_ROLLBACK}"
+    fi
+    if [ -n "${CI_S4_NEXT_SLOT_FINAL:-}" ]; then
+        printf '\nGRUB would boot next: slot `%s`\n' "${CI_S4_NEXT_SLOT_FINAL}"
     fi
     if [ -n "${CI_S4_LINE_COMMIT_A:-}" ]; then
         printf '\nS4 judge line (boot 1): `%s`\n' "${CI_S4_LINE_COMMIT_A}"

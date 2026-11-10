@@ -39,6 +39,77 @@ Consequences:
 }
 ```
 
+## Slot selection
+
+`ab/state.json` is the truth. GRUB cannot read it, so the bootloader gets one derived
+value in a file of its own:
+
+| Artefact | Written by | Read by | Role |
+|---|---|---|---|
+| `ab/state.json` | `ab-slot` (temp file, `sync`, rename) | initramfs, `ab-boot`, `ab-commit`, `ab-upgrade`, `ab-slot` | the truth: `committed`, `pending`, layers |
+| `boot/grub/ab-slot.cfg` | `ab-slot` in `pending`/`commit`/`abandon`/`rollback`, `ab-boot` on every boot, and the boot initramfs on its failure path | GRUB, through `source` | the hint: which entry the next boot runs, and where a failed try falls back to |
+| `boot/grub/grub.cfg` | the image build, once | GRUB | the menu and the build-time default; never rewritten at runtime |
+
+`boot/grub/ab-slot.cfg` holds exactly two GRUB commands, in this order:
+
+```
+set fallback=<the committed slot>
+set default=<the pending slot, or the committed slot when nothing is pending>
+```
+
+Every writer derives both values from the state file through one implementation
+(`platform/lib/ab-slot-cfg.sh`), so the build, the state commands, the boot hook and the
+boot failure path cannot disagree. There is no environment block: the GRUB in the ESP is
+a standalone EFI binary with its modules built in and no `env` module, so `load_env` and
+`save_env` do not exist there. A two-line file that `source` reads works on that binary,
+and `scripts/ci/grub-render.sh --verify-esp` asserts that the loader really carries
+`source`, `test` and `serial` before an image is allowed to boot.
+
+The menu defines the three entries, sets the committed slot as the *build-time default
+and fallback*, and only then sources the hint file. GRUB stops reading a script at the
+first error, so ordering it this way means a missing, truncated or malformed hint file
+cannot cost the machine its menu: it boots the committed slot, which is what the
+build-time pair already says.
+
+Entry indices are part of the contract: slot `a` is entry 0, slot `b` is entry 1. The
+renderer refuses a configuration whose menu order does not match, because a swapped
+order would silently boot the wrong slot.
+
+### Power loss between the two writes
+
+The state file and the hint are written one after the other, each atomically. A power
+cut in the gap leaves the state advanced and the hint stale, and the machine boots the
+slot the hint names.
+
+- `ab-boot` rewrites the hint from the state file on every boot, before anything reads
+  it, so the stale hint costs one boot and never a wrong slot: the boot after the
+  interrupted one runs what the state file says.
+- The file writes its fallback line first for that reason. A write cut short after the
+  first line has therefore written only `set fallback=<committed>`, which is the value
+  the menu already had: the default stays on the committed slot and the machine boots
+  it. A complete file moves the default to the slot being tried and leaves the fallback
+  where it is, which is exactly the pair a failed try needs. No truncation can leave the
+  fallback pointing at the slot that is being tried.
+
+### When a new slot does not work
+
+Two fallbacks, in this order:
+
+1. the kernel of the pending slot does not start: GRUB moves to the `fallback` entry,
+   which is the committed slot, and the machine boots the old system;
+2. the kernel starts and the health check fails: `ab-commit` abandons the pending slot,
+   which clears `pending` in the state file and points the hint back at the committed
+   slot, then reboots into it;
+3. the kernel starts but the boot initramfs fails before userspace: `wf_fail` runs the
+   same fail-safe abandon (clear `pending`, point the hint at the committed slot, log
+   `action=fail-safe-abandon`) and only then powers off, so the next boot does not retry
+   the slot that just failed.
+
+`ab-slot rollback` is the manual path: it commits the other slot and moves the hint with
+it. `ab-slot status` reports the resulting hint as `next=<a|b|unknown>`, and
+`ab-slot next` prints it alone, which is the fastest way to see what the next boot will
+do from a running system.
+
 ## Transaction sequence
 
 | Event | p4 | p1 state |
@@ -113,8 +184,10 @@ Directory `/boot/ab/log/`, total budget about 350 KiB.
 | `conflicts.log` | most recent conflict report | overwritten by the next update |
 
 - 32 KiB per file; overflow is truncated with a `TRUNCATED=1` marker
-- at most 8 writes per boot, each a full-file write: temp, `sync`, rename
+- the boot hook makes at most 8 writes per boot, each a full-file write: temp, `sync`,
+  rename; the health check appends its own probe lines afterwards
 - write points: `initramfs-enter`, `lower-mounted`, `overlay-mounted`, `switch-root`,
+  `slot-cfg` (the hint GRUB will read), `grow` (the first-boot growth result),
   `healthcheck-done`, `commit` or `abandon`, `done`
 
 Record fields are frozen as `key=value`:
@@ -122,19 +195,21 @@ Record fields are frozen as `key=value`:
 ```
 stage=<stage> slot=<a|b> upper=<layer> rootfs=<version> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
-reason=<lower-mount-failed|overlay-failed|healthcheck-failed>
+reason=<lower-mount-failed|overlay-failed|healthcheck-failed|slot-cfg-not-written>
 action=<commit|reboot-to-committed|degraded-boot>
+next=<a|b>
 ```
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `ab-slot status` | slot, generation, free space, last result |
+| `ab-slot status` | slot, generation, mount points, next boot, last result |
 | `ab-slot log [--prev\|--upgrade]` | logs |
 | `ab-slot conflicts` | conflict report |
 | `ab-slot gc [--dry-run]` | reclamation |
 | `ab-slot rollback` | switch back to the other slot |
+| `ab-slot next [--write]` | which slot GRUB will boot, and the heal that rewrites it |
 
 ## Boundary
 

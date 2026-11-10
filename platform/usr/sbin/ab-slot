@@ -23,12 +23,28 @@
 # rename over the state file. Concurrent invocations are excluded by an ESP directory
 # lock (mkdir is atomic on vfat).
 #
+# GRUB does not read this file. It reads /boot/grub/ab-slot.cfg, a two-line GRUB
+# script (`set default=<n>`, `set fallback=<m>`) that grub.cfg sources after its menu
+# entries. Its value is the slot to try on the next boot: the pending slot when there
+# is one, the committed slot otherwise. It is written here, through the same helper
+# ab-boot uses to heal it, so the two cannot drift apart:
+#
+#   pending b   -> next=b, the next boot runs the candidate
+#   commit b    -> next=b, the slot is no longer a candidate but it is the one to run
+#   abandon     -> next=<committed>, the candidate is not tried again
+#   rollback    -> next=<the other slot>, the next boot runs it
+#
+# The state file is the truth and the file is a hint: between the two writes the
+# machine can lose power, and `ab-boot` rewrites the hint from the state file on every
+# boot, so a stale file costs one boot, not a wrong slot.
+#
 # Subcommands:
 #   status                 one machine readable line plus a human summary on stderr
 #   commit [slot]          set committed, clear pending (default: the running slot)
 #   pending <slot>         set pending, after checking the slot payload exists
 #   abandon                clear pending, leave committed alone
 #   rollback               commit the other slot
+#   next [--write]         show which slot GRUB will boot, or rewrite it from the state
 #   gc [--dry-run]         reap writable layers that nothing references
 #   rootfs [slot]          print the upstream version that slot carries
 #   layer <slot> <ver> <layer>  record a new version and layer for one slot
@@ -36,9 +52,14 @@
 #   log [--prev|--upgrade] print the ESP ring log
 #
 # Environment:
-#   AB_ESP   ESP mount point            (default /boot)
-#   AB_P4    writable partition mount   (default /mnt/p4)
-#   AB_CMD   /proc/cmdline equivalent   (default /proc/cmdline, for tests)
+#   AB_ESP           ESP mount point            (default /boot)
+#   AB_P4            writable partition mount   (default /mnt/p4)
+#   AB_CMD           /proc/cmdline equivalent   (default /proc/cmdline, for tests)
+#   AB_MOUNTS        mount table                (default /proc/mounts, for tests)
+#   AB_SLOT_CFG      runtime slot file as this system sees it
+#                    (default $AB_ESP/boot/grub/ab-slot.cfg)
+#   AB_SLOT_CFG_LIB  shared writer of that file (default /lib/ab-slot-cfg.sh)
+#   AB_PARTITIONS_LIB  shared partition discovery (default /lib/ab-partitions.sh)
 
 set -u
 # Keep whatever PATH we were given in front: the running system already supplies
@@ -49,9 +70,36 @@ export PATH
 AB_ESP="${AB_ESP:-/boot}"
 AB_P4="${AB_P4:-/mnt/p4}"
 AB_CMD="${AB_CMD:-/proc/cmdline}"
+AB_MOUNTS="${AB_MOUNTS:-/proc/mounts}"
+AB_SLOT_CFG="${AB_SLOT_CFG:-${AB_ESP}/boot/grub/ab-slot.cfg}"
+AB_SLOT_CFG_LIB="${AB_SLOT_CFG_LIB:-/lib/ab-slot-cfg.sh}"
+AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
 STATE="${AB_ESP}/ab/state.json"
 LOGDIR="${AB_ESP}/ab/log"
 LOCKDIR="${AB_ESP}/ab/.lock"
+# Mount points the running system provides next to the overlay root.
+DATA_MOUNT=/data
+DOCKER_MOUNT=/opt/docker
+SWAP_MOUNT=/swap
+
+# The file writer is shared with ab-boot and with the image build. A platform layer
+# without it is a broken installation: the hint would silently stop moving, which is
+# the failure this whole mechanism exists to prevent, so the callers say so.
+SLOT_CFG_LIB_OK=0
+if [ -f "${AB_SLOT_CFG_LIB}" ]; then
+    # shellcheck source=platform/lib/ab-slot-cfg.sh
+    . "${AB_SLOT_CFG_LIB}"
+    SLOT_CFG_LIB_OK=1
+fi
+
+# Partition discovery is shared with ab-boot, ab-commit and the upgrade adapter. status
+# reports what it found; nothing here invents a device name.
+PARTITIONS_LIB_OK=0
+if [ -f "${AB_PARTITIONS_LIB}" ]; then
+    # shellcheck source=platform/lib/ab-partitions.sh
+    . "${AB_PARTITIONS_LIB}"
+    PARTITIONS_LIB_OK=1
+fi
 
 say() {
     printf '%s\n' "$*" >&2
@@ -63,7 +111,7 @@ die() {
 }
 
 usage() {
-    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]"
+    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|next [--write]|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]"
     exit 2
 }
 
@@ -189,6 +237,48 @@ write_state() {
 }
 
 # --------------------------------------------------------------------------- #
+# Next boot
+#
+# One rule, one place: the next boot runs the pending slot when there is one, the
+# committed slot otherwise. Everything that needs to know which slot GRUB should try
+# asks here, so the four state commands and ab-boot's self-heal cannot disagree.
+# --------------------------------------------------------------------------- #
+
+next_slot() {
+    _next_pending="$(state_pending)" || return 1
+    case "${_next_pending}" in
+        a | b) printf '%s' "${_next_pending}" ;;
+        none) state_committed ;;
+        *) return 1 ;;
+    esac
+}
+
+# slot_cfg_sync: rewrite the runtime file from the state file and read it back.
+# Prints the slot it points at. Non-zero means the file and the state may disagree.
+#
+# The committed slot is written as the fallback and the slot to try as the default, so
+# a file cut short after its first line still falls back to the committed slot.
+slot_cfg_sync() {
+    [ "${SLOT_CFG_LIB_OK}" = "1" ] || return 1
+    _sync_committed="$(state_committed)" || return 1
+    _sync_slot="$(next_slot)" || return 1
+    ab_slot_cfg_write "${AB_SLOT_CFG}" "${_sync_committed}" "${_sync_slot}" || return 1
+    _sync_pair="$(ab_slot_cfg_check_pair "${AB_SLOT_CFG}" "${_sync_committed}")" || return 1
+    [ "${_sync_pair%% *}" = "${_sync_slot}" ] || return 1
+    printf '%s' "${_sync_slot}"
+}
+
+# sync_or_die: the state is already written, so a failure here is reported but the
+# state stays authoritative; ab-boot heals the file on the next boot.
+sync_or_die() {
+    if ! _sync_value="$(slot_cfg_sync)"; then
+        say "ab-slot: the state file was updated but ${AB_SLOT_CFG} was not; the next boot keeps the committed entry until ab-boot heals it${AB_SLOT_CFG_REASON:+ (${AB_SLOT_CFG_REASON})}"
+        exit 1
+    fi
+    say "ab-slot: the next boot runs slot ${_sync_value}"
+}
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 
@@ -223,9 +313,20 @@ slot_payload_present() {
     [ -f "${AB_ESP}/vmlinuz-$1" ] && [ -f "${AB_ESP}/initrd-$1" ]
 }
 
+# mount_state <mount point>: ok when that mount point carries a mount, missing when it
+# does not. The running system provides /data, /opt/docker and /swap next to the
+# overlay root; a missing one is reported, never fatal.
+mount_state() {
+    if awk -v mp="$1" '$2 == mp { found = 1 } END { exit !found }' "${AB_MOUNTS}" 2>/dev/null; then
+        printf 'ok'
+    else
+        printf 'missing'
+    fi
+}
+
 # p4_state: ok when the writable partition is mounted, degraded otherwise.
 p4_state() {
-    if awk -v mp="${AB_P4}" '$2 == mp { found = 1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+    if awk -v mp="${AB_P4}" '$2 == mp { found = 1 } END { exit !found }' "${AB_MOUNTS}" 2>/dev/null; then
         printf 'ok'
     else
         printf 'degraded'
@@ -244,11 +345,22 @@ cmd_status() {
     _generation="$(state_generation)" || die "state has no generation"
     _upper="$(state_upper "${_slot}")" || die "state has no layer for slot ${_slot}"
     _p4="$(p4_state)"
+    _data="$(mount_state "${DATA_MOUNT}")"
+    _docker="$(mount_state "${DOCKER_MOUNT}")"
+    _swap="$(mount_state "${SWAP_MOUNT}")"
+    # What GRUB will do next, read back from the file it sources.
+    _next="$(ab_slot_cfg_get "${AB_SLOT_CFG}" 2>/dev/null)" || _next="unknown"
+    # Which disk this machine is, and how that was established: the shared discovery
+    # answer, never a guess made here.
+    _identity="$(ab_disk_identity 2>/dev/null)" || _identity="disk=unknown method=unavailable"
 
-    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s\n' \
-        "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}"
+    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s\n' \
+        "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}" \
+        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}"
     say "ab-slot: running slot ${_slot} (${_upper}), generation ${_generation}"
     say "ab-slot: committed ${_committed}, pending ${_pending}, writable layer ${_p4}"
+    say "ab-slot: mounts data=${_data} docker=${_docker} swap=${_swap}"
+    say "ab-slot: the next boot runs slot ${_next}, ${_identity}"
 }
 
 cmd_commit() {
@@ -269,8 +381,9 @@ cmd_commit() {
     if [ "${_keep_pending}" = "none" ]; then
         say "ab-slot: committed slot ${_slot}, pending cleared"
     else
-        say "ab-slot: committed slot ${_slot}, pending ${_pending} kept"
+        say "ab-slot: committed slot ${_slot}, pending ${_keep_pending} kept"
     fi
+    sync_or_die
 }
 
 cmd_pending() {
@@ -288,6 +401,7 @@ cmd_pending() {
     _committed="$(state_committed)" || die "state has no committed slot"
     write_state "${_generation}" "${_committed}" "${_slot}"
     say "ab-slot: slot ${_slot} is pending, next boot will try it"
+    sync_or_die
 }
 
 cmd_abandon() {
@@ -297,6 +411,7 @@ cmd_abandon() {
     _committed="$(state_committed)" || die "state has no committed slot"
     write_state "${_generation}" "${_committed}" "none"
     say "ab-slot: pending cleared, slot ${_committed} stays committed"
+    sync_or_die
 }
 
 cmd_rollback() {
@@ -305,8 +420,34 @@ cmd_rollback() {
     _generation="$(state_generation)" || die "state has no generation"
     _committed="$(state_committed)" || die "state has no committed slot"
     _target="$(other_slot "${_committed}")"
+    _from="${_committed}"
     write_state "${_generation}" "${_target}" "none"
-    say "ab-slot: rolled back from slot ${_committed} to slot ${_target}"
+    say "ab-slot: rolled back from slot ${_from} to slot ${_target}"
+    sync_or_die
+}
+
+# cmd_next [--write]: show which slot GRUB will boot, or rewrite the runtime file from
+# the state file. ab-boot calls --write on every boot, which is the self-heal path:
+# the state file is the truth, so a file left behind by a power cut is corrected here.
+cmd_next() {
+    require_state
+    _write=0
+    for _arg in "$@"; do
+        case "${_arg}" in
+            --write) _write=1 ;;
+            *) die "unknown argument: ${_arg}" ;;
+        esac
+    done
+    if [ "${_write}" = "1" ]; then
+        if ! _next="$(slot_cfg_sync)"; then
+            die "cannot write ${AB_SLOT_CFG}${AB_SLOT_CFG_REASON:+ (${AB_SLOT_CFG_REASON})}"
+        fi
+        printf 'next=%s\n' "${_next}"
+        return 0
+    fi
+    [ "${SLOT_CFG_LIB_OK}" = "1" ] || die "runtime slot file helper not found: ${AB_SLOT_CFG_LIB}"
+    _now="$(ab_slot_cfg_get "${AB_SLOT_CFG}" 2>/dev/null)" || _now="unknown"
+    printf 'next=%s\n' "${_now}"
 }
 
 # cmd_gc [--dry-run]
@@ -441,6 +582,7 @@ main() {
         pending) cmd_pending "$@" ;;
         abandon) cmd_abandon "$@" ;;
         rollback) cmd_rollback "$@" ;;
+        next) cmd_next "$@" ;;
         gc) cmd_gc "$@" ;;
         rootfs) require_state; cmd_rootfs "$@" ;;
         layer) cmd_layer "$@" ;;

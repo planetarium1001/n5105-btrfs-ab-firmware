@@ -18,13 +18,16 @@ Application-level packaging and configuration are out of scope.
 
 ## Disk layout
 
-| Partition | Size | Filesystem | Contents |
-|---|---|---|---|
-| p1 | 128 MiB | vfat | GRUB, slot state, boot logs |
-| p2 | 128 MiB | btrfs | Slot A: `@sys` + `@platform` |
-| p3 | 128 MiB | btrfs | Slot B: `@sys` + `@platform` |
-| p4 | rest of disk | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
+| Partition | PARTNAME | LABEL | Size | Filesystem | Contents |
+|---|---|---|---|---|---|
+| p1 | `ab-esp` | `ESP` | 128 MiB | vfat | GRUB, slot state, boot logs |
+| p2 | `ab-slot-a` | `slot-a` | 128 MiB | btrfs | Slot A: `@sys` + `@platform` |
+| p3 | `ab-slot-b` | `slot-b` | 128 MiB | btrfs | Slot B: `@sys` + `@platform` |
+| p4 | `ab-data` | `data` | rest of disk | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
 
+- PARTNAME (`ab-…`) is the stable name the boot code matches against the kernel's block
+  devices; LABEL is the short name a human or `blkid` reads. [docs/partitions.md](docs/partitions.md)
+  states both sets as contracts.
 - `@sys` — upstream rootfs, read-only
 - `@platform` — platform tooling, versioned with the slot, read-only
 - `@overlay-<version>` — all writable state, shared by both slots
