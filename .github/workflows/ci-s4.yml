@@ -204,7 +204,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot1
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -260,7 +260,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: abandoned slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: abandoned slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot2
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -305,7 +305,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot3
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -371,7 +371,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_QEMU_MODE: uefi-disk
           CI_JUDGE_PREFIX: ""
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s4-boot4
           CI_QEMU_TIMEOUT: "900"
         run: |

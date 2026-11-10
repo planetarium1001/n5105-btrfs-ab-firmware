@@ -188,10 +188,16 @@ start() {
 
 	if [ -z "${failed}" ]; then
 		log_append "stage=healthcheck-done slot=${slot} upper=${upper} rootfs=${rootfs} result=ok"
-		ab-slot commit "${slot}" || {
+		# The commit is the one step after the probes that can still fail (a full or
+		# read-only ESP, a missing state writer). It has to say so on the console: a
+		# silent exit here is a machine that passes its probes and then never decides,
+		# which on a device and in CI looks identical to a hang.
+		if ! _commit_out="$(ab-slot commit "${slot}" 2>&1)"; then
+			_commit_detail="$(printf '%s\n' "${_commit_out}" | tail -n 1 | tr ' ' '_' | tail -c 160)"
 			log_append "stage=commit slot=${slot} result=fail reason=commit-failed"
+			console_say "ab-commit: stage=commit slot=${slot} result=fail reason=commit-failed detail=${_commit_detail:-none}"
 			exit 0
-		}
+		fi
 		rm -f "${AB_ESP}/ab/candidate"
 		sync
 		log_append "stage=commit slot=${slot} upper=${upper} rootfs=${rootfs} result=ok action=commit"

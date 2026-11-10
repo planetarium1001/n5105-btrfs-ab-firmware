@@ -192,6 +192,16 @@ platform_copy_rootfs() {
         fi
         btrfs subvolume create "${_platform}" >/dev/null || upgrade_fail "platform-create-failed" || return 1
         tar -xf "${_payload}/platform.tar" -C "${_platform}" || upgrade_fail "platform-extract-failed" || return 1
+        # A slot whose platform layer has no btrfs boots and then cannot finish: the boot
+        # hook records btrfs-tool-missing, the health check has no reclamation tool and the
+        # slot never commits, which on a machine is a hang rather than a failure. Refusing
+        # the payload here keeps the committed slot in charge instead.
+        [ -x "${_platform}/usr/sbin/btrfs" ] || {
+            btrfs subvolume delete -C "${_platform}" >/dev/null 2>&1 || true
+            _reap_snapshot "${_new_layer}"
+            upgrade_fail "platform-layer-without-btrfs"
+            return 1
+        }
     fi
 
     # 4. the ESP has to carry the matching kernel and initramfs for that slot

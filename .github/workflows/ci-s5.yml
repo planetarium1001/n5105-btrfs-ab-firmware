@@ -177,10 +177,14 @@ jobs:
           bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-preflight.log"
 
+      # The payload's platform layer has to carry the same btrfs tooling the image ships,
+      # or the upgraded slot comes up and can never commit: this stage is where that
+      # closure goes in.
       - name: Build the test payload
         id: payload
         env:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/payload-build.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/payload.log"
@@ -206,7 +210,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
           CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s5-boot1
           CI_QEMU_TIMEOUT: "900"
         run: |
@@ -276,7 +280,7 @@ jobs:
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: ""
           CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)"
+          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
           CI_QEMU_CASE: s5-boot3
           CI_QEMU_TIMEOUT: "900"
         run: |

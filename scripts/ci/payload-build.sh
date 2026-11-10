@@ -10,11 +10,18 @@
 #   CI_FETCH_DIR        directory holding upstream/rootfs.tar.gz and upstream/kernel.bin
 #   CI_INITRAMFS        boot initramfs to ship as the target slot's initrd
 #   CI_PLATFORM_SRC     platform layer source tree (default: platform/)
+#   CI_PLATFORM_RUNTIME_DIR  btrfs tooling staged by the runtime stage (default:
+#                       $CI_TMP_ROOT/runtime). It is merged into the payload's platform
+#                       layer: an upgraded slot has to run ab-boot, ab-commit and the
+#                       reclamation, and all of them call btrfs. A payload without the
+#                       tooling boots and then cannot commit - which is exactly the
+#                       failure this input exists to prevent.
 #   CI_PLATFORM_VERSION platform version recorded in the rendered release file
 #   CI_PAYLOAD_VERSION  rootfs version the payload claims (default: upstream + test tag)
 #   CI_PAYLOAD_OUT      output tar path (default: $CI_TMP_ROOT/payload/payload.tar)
 #
-# Outputs: payload_path, payload_size, payload_sha256, payload_version, payload_layer
+# Outputs: payload_path, payload_size, payload_sha256, payload_version, payload_layer,
+#          payload_platform_bytes
 
 set -euo pipefail
 
@@ -36,6 +43,7 @@ ci_require_cmd tar gzip python3
 fetch_dir="${CI_FETCH_DIR:-${CI_TMP_ROOT}/fetch}"
 initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required}"
 platform_src="${CI_PLATFORM_SRC:-${CI_REPO_ROOT}/platform}"
+runtime_tree="${CI_PLATFORM_RUNTIME_DIR:-${CI_TMP_ROOT}/runtime}"
 platform_version="${CI_PLATFORM_VERSION:-0.0.3}"
 upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
 payload_version="${CI_PAYLOAD_VERSION:-${upstream_version}-test1}"
@@ -47,6 +55,7 @@ kernel="${fetch_dir}/upstream/kernel.bin"
 [ -f "${kernel}" ] || ci_die "upstream kernel not found: ${kernel}"
 [ -f "${initramfs}" ] || ci_die "initramfs not found: ${initramfs}"
 [ -d "${platform_src}" ] || ci_die "platform tree not found: ${platform_src}"
+[ -d "${runtime_tree}" ] || ci_die "runtime tree not found: ${runtime_tree}; a payload needs the btrfs tooling, see scripts/ci/platform-runtime.sh"
 
 work="${CI_TMP_ROOT}/payload/work"
 rm -rf "${work}"
@@ -77,6 +86,10 @@ cp "${kernel}" "${work}/stage/kernel.bin"
 cp "${initramfs}" "${work}/stage/initramfs.cpio.gz"
 
 cp -a "${platform_src}/." "${work}/content/platform/"
+# The runtime closure is part of the layer, exactly like the one baked into the image:
+# without it the upgraded slot has no btrfs, its boot hook records btrfs-tool-missing,
+# the health check cannot run and the slot never commits (S5 boot3 hung on this).
+cp -a "${runtime_tree}/." "${work}/content/platform/"
 sed -i -e "s|@PLATFORM_VERSION@|${platform_version}|g" \
     -e "s|@UPSTREAM_VERSION@|${payload_version}|g" \
     -e "s|@PLATFORM_STAGE@|upgrade|g" \
@@ -88,6 +101,10 @@ fi
 # including the rcS start links, otherwise an upgraded slot never starts the hooks.
 ci_platform_modes "${work}/content/platform"
 ci_platform_startlinks "${work}/content/platform"
+# The one file that has to be there for an upgraded slot to be usable at all.
+[ -x "${work}/content/platform/usr/sbin/btrfs" ] \
+    || ci_die "the payload platform layer has no executable usr/sbin/btrfs; check CI_PLATFORM_RUNTIME_DIR (${runtime_tree})"
+ci_log "payload platform layer carries usr/sbin/btrfs ($(ci_file_size "${work}/content/platform/usr/sbin/btrfs") bytes)"
 ( cd "${work}/content/platform" && tar --numeric-owner --owner=0 --group=0 -cf "${work}/stage/platform.tar" . )
 
 # --------------------------------------------------------------------------- #
@@ -114,6 +131,7 @@ tar -cf "${payload_out}" -C "${work}/stage" manifest.json rootfs.tar.gz kernel.b
     initramfs.cpio.gz platform.tar
 
 size="$(ci_file_size "${payload_out}")"
+platform_bytes="$(ci_file_size "${work}/stage/platform.tar")"
 sha="$(ci_sha256 "${payload_out}")"
 ci_log "payload: ${payload_out} (${size} bytes, sha256 ${sha})"
 
@@ -122,5 +140,6 @@ ci_emit_output "payload_size" "${size}"
 ci_emit_output "payload_sha256" "${sha}"
 ci_emit_output "payload_version" "${payload_version}"
 ci_emit_output "payload_layer" "@overlay-${payload_version}"
+ci_emit_output "payload_platform_bytes" "${platform_bytes}"
 
 ci_log "stage payload finished"
