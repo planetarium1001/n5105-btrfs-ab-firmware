@@ -40,6 +40,7 @@ p4 出厂只有 64 MiB，盘尾保持未分配，因此同一个镜像能装进�
 
 1. `sfdisk -d` 导出分区表，导出结果就是改动前的备份。
 2. 判定：比较 p4 末尾与最后可用 LBA（`last-lba`）。相等即 `already-full`，不写任何东西；否则新大小为“最后可用 LBA − p4 起始 + 1”，只会比当前大。
+   新尺寸先按文件系统 sectorsize（4096 字节，即 8 个扇区）向下取整：btrfs 不会扩到尺寸不是它整数倍的设备上，所以“最后可用 LBA − p4 起始 + 1”只是上界；取整后若不比当前更大，判 `already-full`。
 3. 在导出的副本里只改 p4 行的 `size=` 字段，用 `sfdisk --no-reread` 写回；备份 GPT 随这次写入一起迁移到新的盘尾。其余各行（含表 UUID 与另外三个分区）原样写回。
 4. `blockdev --rereadpt`（镜像里没有 `blockdev` 时用 `partx -u`）让内核看到新表；挂载前先在 sysfs 校验设备确实变大了。sysfs 的 `size` 以 512 字节为单位，而 `sfdisk` 报的是逻辑扇区，所以每次比较都经 `queue/logical_block_size` 换算：4Kn 盘会被正常扩容，而不是误报 `fail:size-unchanged`。
 5. 挂载 p4 之后执行 `btrfs filesystem resize max`，把文件系统扩到已经变大的分区上。该命令在 `already-full` 时也会跑一次（此时是空操作），因此“表已改写、文件系统没来得及扩”的掉电情况会在下一次启动被修好。

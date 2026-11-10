@@ -180,7 +180,7 @@ assert_contains "$(cat "$serial")" "[grow]" \
 
 reset_fixture
 run_captured wf_grow_decide "$tmp/table/current" /dev/vda4 921600
-assert_eq "${captured_out}" "grow 921566 133087" "ac-2 decide answers one line"
+assert_eq "${captured_out}" "grow 921566 133080" "ac-2 decide answers one line"
 assert_eq "$(printf '%s\n' "${captured_out}" | wc -l | tr -d ' ')" "1" \
   "ac-2 decide never prints a second line"
 

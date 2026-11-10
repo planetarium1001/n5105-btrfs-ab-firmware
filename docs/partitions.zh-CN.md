@@ -112,6 +112,10 @@ p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接�
 3. `partx -u` 重新读取。
 4. `btrfs filesystem resize max` 扩展 p4。
 
+新的 p4 尺寸按文件系统 sectorsize（4096 字节，即 8 个扇区）**向下取整**：设备尺寸不是它的整数倍时
+btrfs 直接返回 `Invalid argument`，而少几个扇区的盘尾没有代价、未对齐则会让整次扩容失败。取整后若不比
+当前更大，判 `already-full` 且不写分区表。
+
 结果写入 p1 日志：`done`、`already-full`、`missing-sfdisk` 或 `fail`。
 
 ## 断言

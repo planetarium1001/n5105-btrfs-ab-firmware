@@ -45,6 +45,11 @@ WF_GROW_TMP="${WF_GROW_TMP:-/run}"
 # logical sectors: on a 4Kn disk those differ by a factor of eight, so every conversion
 # goes through the device's logical block size (see wf_grow_sector_size).
 WF_SECTOR_BYTES="${WF_SECTOR_BYTES:-512}"
+# The filesystem sectorsize the grown partition has to be a multiple of. btrfs uses 4096
+# whatever the disk reports, and `btrfs filesystem resize` answers `Invalid argument` for
+# a device whose size is not a multiple of it; override for tests and for a filesystem
+# created with 512-byte sectors.
+WF_GROW_SECTORSIZE="${WF_GROW_SECTORSIZE:-4096}"
 # The end of a GPT disk is unusable: 32 sectors of backup entry array plus one header
 # sector. The last usable LBA is therefore total_sectors - 34, which is also what
 # sfdisk prints as `last-lba`; the value is only computed when the dump omits it.
@@ -114,6 +119,27 @@ wf_grow_sectors() {
         '' | *[!0-9] | 0) wf_gse_size="${WF_SECTOR_BYTES}" ;;
     esac
     printf '%s' "$((wf_gse_units * WF_SECTOR_BYTES / wf_gse_size))"
+}
+
+# wf_grow_alignment <device>: how many sfdisk sectors the filesystem sectorsize spans.
+#
+# 4096 / 512 = 8 on an ordinary disk, and 1 on a 4Kn disk whose logical sectors already
+# are 4096 bytes — in both cases a partition size that is a multiple of it is a byte size
+# that btrfs will accept.
+wf_grow_alignment() {
+    wf_ga_sectorsize="${WF_GROW_SECTORSIZE:-4096}"
+    case "${wf_ga_sectorsize}" in
+        '' | *[!0-9]* | 0) wf_ga_sectorsize=4096 ;;
+    esac
+    wf_ga_unit="$(wf_grow_sector_size "${1:-}")"
+    case "${wf_ga_unit}" in
+        '' | *[!0-9]* | 0) wf_ga_unit="${WF_SECTOR_BYTES}" ;;
+    esac
+    wf_ga_align=$((wf_ga_sectorsize / wf_ga_unit))
+    if [ "${wf_ga_align}" -lt 1 ]; then
+        wf_ga_align=1
+    fi
+    printf '%s' "${wf_ga_align}"
 }
 
 # wf_grow_disk_sectors <disk>: sysfs first, `blockdev --getsize64` as the fallback for
@@ -223,7 +249,29 @@ wf_grow_decide() {
         printf 'fail:p4-beyond-disk'
         return 0
     fi
-    printf 'grow %s %s' "${wf_gd_last}" "$((wf_gd_last - wf_gd_start + 1))"
+    # The new size is rounded DOWN to a multiple of the filesystem sectorsize: btrfs
+    # answers `Invalid argument` for a device size that is not, and a partition that
+    # ends a few sectors short of the tail costs nothing but is the difference between a
+    # grown filesystem and a 64 MiB one. The last usable LBA is still what gets reported.
+    wf_gd_want=$((wf_gd_last - wf_gd_start + 1))
+    wf_gd_align="$(wf_grow_alignment "${wf_gd_dev}")"
+    case "${wf_gd_align}" in
+        '' | *[!0-9]* | 0) wf_gd_align=1 ;;
+    esac
+    wf_gd_new=$((wf_gd_want / wf_gd_align * wf_gd_align))
+    wf_gd_lbs="$(wf_grow_sector_size "${wf_gd_dev}")"
+    case "${wf_gd_lbs}" in
+        '' | *[!0-9]* | 0) wf_gd_lbs="${WF_SECTOR_BYTES}" ;;
+    esac
+    wf_grow_log "aligned size=${wf_gd_new} bytes=$((wf_gd_new * wf_gd_lbs)) sectorsize=$((wf_gd_align * wf_gd_lbs)) alignment=${wf_gd_align} (unaligned ${wf_gd_want})"
+    if [ "${wf_gd_new}" -le "${wf_gd_size}" ]; then
+        # Rounding took away the whole gain (a few sectors of slack): growing would be a
+        # no-op write of the table, so nothing is written at all.
+        wf_grow_log "aligned size ${wf_gd_new} does not beat the current ${wf_gd_size} sectors"
+        printf 'already-full %s' "${wf_gd_last}"
+        return 0
+    fi
+    printf 'grow %s %s' "${wf_gd_last}" "${wf_gd_new}"
 }
 
 # wf_grow_table <dump in> <dump out> <p4device> <new size>: copy the dump, replacing

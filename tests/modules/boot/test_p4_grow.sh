@@ -43,7 +43,10 @@ disk_sectors=921600
 last_lba=$((disk_sectors - 34))
 p4_start=788480
 p4_shipped_size=131072
-p4_grown_size=$((last_lba - p4_start + 1))
+# 133087 sectors is not a multiple of 8, and btrfs refuses a device size that is not a
+# multiple of its 4096-byte sectorsize, so the grown size rounds DOWN to 133080.
+p4_want_size=$((last_lba - p4_start + 1))
+p4_grown_size=133080
 mkdir -p "$sys/vda/queue"
 printf '512\n' >"$sys/vda/queue/logical_block_size"
 printf '%s\n' "${disk_sectors}" >"$sys/vda/size"
@@ -187,7 +190,13 @@ reset_fixture
 
 decision=$(wf_grow_decide "$tmp/table/current" /dev/vda4 "${disk_sectors}")
 assert_eq "${decision}" "grow ${last_lba} ${p4_grown_size}" \
-  "ac-1 a p4 short of the last usable LBA grows to it"
+  "ac-1 a p4 short of the last usable LBA grows to the aligned size"
+assert_eq "${p4_want_size}" "133087" \
+  "ac-1 the unaligned size the tail would allow is 133087 sectors"
+assert_eq "$((p4_grown_size % 8))" "0" \
+  "ac-1 the grown size is a multiple of the 4096-byte sectorsize in 512-byte sectors"
+assert_eq "$((p4_grown_size * 512 % 4096))" "0" \
+  "ac-1 the grown size in bytes is a multiple of 4096"
 
 table_for "${p4_grown_size}" >"$tmp/table/grown"
 assert_eq "$(wf_grow_decide "$tmp/table/grown" /dev/vda4 "${disk_sectors}")" \
@@ -197,6 +206,37 @@ assert_eq "$(wf_grow_decide "$tmp/table/grown" /dev/vda4 "${disk_sectors}")" \
 table_for "$((p4_grown_size - 1))" >"$tmp/table/short"
 assert_eq "$(wf_grow_decide "$tmp/table/short" /dev/vda4 "${disk_sectors}")" \
   "grow ${last_lba} ${p4_grown_size}" "ac-1 a single sector of tail space still grows"
+# Rounding can take the whole gain away: a few sectors of slack must not turn into a
+# table write that grows nothing. 131075 sectors of tail round down to the current
+# 131072, which is already a multiple of eight.
+cat >"$tmp/table/slack" <<'SLACK'
+label: gpt
+device: /dev/vda
+unit: sectors
+first-lba: 34
+last-lba: 919554
+sector-size: 512
+
+/dev/vda4 : start=      788480, size=      131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
+SLACK
+assert_eq "$(wf_grow_decide "$tmp/table/slack" /dev/vda4 921600)" \
+  "already-full 919554" \
+  "ac-1 slack that rounds back to the current size is already-full"
+
+# A filesystem with 512-byte sectors needs no alignment: the behaviour is unchanged.
+assert_eq "$(WF_GROW_SECTORSIZE=512 wf_grow_decide "$tmp/table/current" /dev/vda4 921600)" \
+  "grow ${last_lba} ${p4_want_size}" \
+  "ac-1 a 512-byte sectorsize grows to the unaligned end"
+
+# Down-rounding is reported, so the geometry can be checked later.
+aligned_log="$(wf_grow_decide "$tmp/table/current" /dev/vda4 921600 2>&1 >/dev/null)"
+assert_contains "${aligned_log}" "aligned size=${p4_grown_size}" \
+  "ac-1 the aligned size is logged"
+assert_contains "${aligned_log}" "sectorsize=4096" \
+  "ac-1 the sectorsize used for the alignment is logged"
+assert_contains "${aligned_log}" "unaligned 133087" \
+  "ac-1 the unaligned request is logged next to it"
+
 table_for "$((p4_grown_size + 4096))" >"$tmp/table/oversized"
 assert_eq "$(wf_grow_decide "$tmp/table/oversized" /dev/vda4 "${disk_sectors}")" \
   "fail:p4-beyond-disk" "ac-1 a p4 past the usable area is refused, never shrunk"
@@ -427,6 +467,8 @@ assert_eq "$(wf_grow_sector_size /dev/vda4)" "4096" \
 assert_eq "$(wf_grow_sectors /dev/vda4)" "16384" \
   "ac-2 a partition size is reported in logical sectors, not in sysfs 512-byte units"
 k4=$(wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
+assert_eq "$(wf_grow_alignment /dev/vda4)" "1" \
+  "ac-2 a 4Kn disk needs no alignment: one logical sector is one sectorsize"
 assert_eq "${k4}" "done 115166" \
   "ac-2 a 4Kn disk grows without a false fail:size-unchanged"
 assert_eq "$(cat "$sys/vda4/size")" "$(( (115166 - 98560 + 1) * 8 ))" \

@@ -120,6 +120,12 @@ subvolumes, and an active swapfile prevents snapshotting.
 3. `partx -u` re-reads it.
 4. `btrfs filesystem resize max` grows p4.
 
+The new p4 size is rounded **down** to a multiple of the filesystem sectorsize (4096 bytes,
+8 sectors): btrfs answers `Invalid argument` for a device whose size is not a multiple of
+it, and one sector of lost tail costs nothing while an unaligned size costs the whole
+growth. If rounding leaves no gain, the state is `already-full` and the table is not
+written.
+
 The outcome is recorded in the p1 log as `done`, `already-full`, `missing-sfdisk`, or `fail`.
 
 ## Assertions

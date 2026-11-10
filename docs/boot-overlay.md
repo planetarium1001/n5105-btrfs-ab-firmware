@@ -62,6 +62,10 @@ mounted:
 2. The decision compares the end of p4 with the last usable LBA (`last-lba`). Equal means
    `already-full` and nothing is written; short means the new size is
    `last usable LBA - p4 start + 1`, which can only ever be larger than the current one.
+   The new size is rounded down to a multiple of the filesystem sectorsize (4096 bytes,
+   8 sectors) first: btrfs refuses to grow onto a device whose size is not a multiple of
+   it, so `last usable LBA - p4 start + 1` is only the upper bound. If rounding leaves no
+   gain the state is `already-full`.
 3. Only the `size=` field of the p4 line changes in a copy of the dump. `sfdisk --no-reread`
    writes that copy back, which relocates the backup GPT to the new end of the disk as
    part of the same write. Every other line, including the table UUID and the other three
