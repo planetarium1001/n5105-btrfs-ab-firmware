@@ -133,10 +133,10 @@ case "${identity}" in
 esac
 if [ "${identity_rc}" -ne 0 ]; then
     wf_log "device identity unresolved: ${dev_error:-unknown}"
-    printf '[boot] stage=device disk=unknown method=none reason=%s\n' "${dev_error:-unknown}"
+    wf_say "[boot] stage=device disk=unknown method=none reason=${dev_error:-unknown}"
 else
     wf_log "device: disk=${dev} method=${dev_method}"
-    printf '[boot] stage=device disk=%s method=%s\n' "${dev}" "${dev_method}"
+    wf_say "[boot] stage=device disk=${dev} method=${dev_method}"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -317,7 +317,7 @@ else
     # reported as degraded.
     degraded=1
     wf_log "p4 unavailable, booting degraded with a tmpfs upper"
-    printf '[boot] action=degraded-boot p4=degraded\n'
+    wf_say "[boot] action=degraded-boot p4=degraded"
     mount -t tmpfs -o mode=0755 tmpfs /mnt/p4 || wf_fail degraded-tmpfs-failed
     wf_log "p4 growth result: ${grow_state} (not recorded, p4 is unavailable)"
 fi
@@ -404,7 +404,7 @@ done
 if [ -n "${p4_partial}" ]; then
     p4_partial="${p4_partial# }"
     wf_log "p4-partial:${p4_partial} not mounted, the boot continues"
-    printf '[boot] action=p4-partial subvolumes=%s\n' "${p4_partial}"
+    wf_say "[boot] action=p4-partial subvolumes=${p4_partial}"
 else
     wf_log "p4 user data mounted: @data->/data @docker->/opt/docker @swap->/swap"
 fi

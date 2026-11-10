@@ -37,8 +37,52 @@ WF_MOUNTS="${WF_MOUNTS:-/proc/mounts}"
 WF_MOUNT="${WF_MOUNT:-mount}"
 WF_TMP="${WF_TMP:-/run}"
 
+# The boot milestones have to be visible on the serial port AND on HDMI. Linux binds
+# /dev/console to the LAST console= parameter, so a command line that ends in
+# `console=tty0` sends PID1's whole stdout to the local screen and leaves an empty
+# serial log — which is a boot nobody can debug. Every milestone therefore goes through
+# wf_say: stdout as before, plus one copy to the serial device when /dev/console is not
+# already bound to it. The duplicate is skipped in that case so the judge line stays a
+# single line for whatever parses it.
+#
+# Overridable for tests: WF_SERIAL (the device node), WF_CONSOLES (the kernel's console
+# table, which marks the write console with a W flag).
+WF_SERIAL="${WF_SERIAL:-/dev/ttyS0}"
+WF_CONSOLES="${WF_CONSOLES:-/proc/consoles}"
+
+# wf_console_is_serial: is /dev/console already bound to the serial device.
+#
+# The kernel lists every registered console in WF_CONSOLES as
+# `<name> <flags> (<state>) <major>:<minor>`, where the flags are R (readable),
+# W (writable) and U (unbound). Exactly one console is bound to /dev/console — the last
+# `console=` on the command line — and it is the one without U. So: ttyS0 listed without
+# U means stdout already reaches the serial port and a second copy would only duplicate
+# the judge line.
+wf_console_is_serial() {
+    [ -r "${WF_CONSOLES}" ] || return 1
+    while read -r wf_cis_name wf_cis_flags wf_cis_rest; do
+        [ "${wf_cis_name}" = "$(basename "${WF_SERIAL}")" ] || continue
+        case "${wf_cis_flags}" in
+            *U*) return 1 ;;
+            *) return 0 ;;
+        esac
+    done <"${WF_CONSOLES}"
+    return 1
+}
+
+# wf_say <line...>: one milestone line on every console that can carry it.
+wf_say() {
+    printf '%s\n' "$*"
+    [ -e "${WF_SERIAL}" ] || return 0
+    wf_console_is_serial && return 0
+    # Append, not overwrite: a character device does not care, but a regular file (a
+    # fixture, or a serial port redirected to a file) must keep every line.
+    printf '%s\n' "$*" >>"${WF_SERIAL}" 2>/dev/null || :
+    return 0
+}
+
 wf_log() {
-    printf '[boot] %s\n' "$*"
+    wf_say "[boot] $*"
 }
 
 # wf_mountpoint_active <mount point>: is it in the mount table right now.
@@ -101,10 +145,10 @@ wf_failsafe_abandon() {
     wf_ab_slot="$(cat "${wf_ab_out}" 2>/dev/null)"
     rm -f "${wf_ab_out}" 2>/dev/null
     if [ "${wf_ab_rc}" -eq 0 ]; then
-        printf '[boot] action=fail-safe-abandon slot=%s\n' "${wf_ab_slot}"
+        wf_say "[boot] action=fail-safe-abandon slot=${wf_ab_slot}"
         wf_log "fail-safe abandon: the next boot runs the committed slot ${wf_ab_slot}"
     else
-        printf '[boot] action=fail-safe-abandon result=fail reason=%s\n' "${AB_SLOT_CFG_REASON:-unknown}"
+        wf_say "[boot] action=fail-safe-abandon result=fail reason=${AB_SLOT_CFG_REASON:-unknown}"
         wf_log "fail-safe abandon failed: ${AB_SLOT_CFG_REASON:-unknown}"
     fi
     return 0
@@ -116,7 +160,7 @@ wf_failsafe_abandon() {
 # stops the machine as soon as it sees the line would otherwise cut the write in half.
 wf_fail() {
     wf_failsafe_abandon || :
-    printf 'S3-RESULT=fail reason=%s\n' "$1"
+    wf_say "S3-RESULT=fail reason=$1"
     sync
     poweroff -f
     exit 1

@@ -5,10 +5,11 @@
 # GRUB configuration is generated, never hand-edited, so this script renders the
 # template and then refuses to produce an image unless all five documented rules hold:
 #
-#   1. `default` and `fallback` both name the committed entry, and the menu order fixes
-#      the entry index of each slot (slot a is entry 0, slot b is entry 1). A truncated
-#      or missing runtime file therefore boots the committed slot with a fallback that
-#      is that same slot, instead of falling back to the slot that just failed
+#   1. `default` and `fallback` both name the committed entry, the menu order fixes the
+#      entry index of each slot (slot a is entry 0, slot b is entry 1), and every kernel
+#      line ends in the serial console, which is the one /dev/console binds to. A
+#      truncated or missing runtime file therefore boots the committed slot with a
+#      fallback that is that same slot, instead of falling back to the slot that failed
 #   2. every menuentry is defined before the runtime override is sourced, and before
 #      the serial console is set up: GRUB stops reading the file at the first error,
 #      so the tail must never be able to cost the machine a boot
@@ -138,6 +139,20 @@ check_grub() {
             problems=$((problems + 1))
         fi
     done
+    # 1c. the serial console has to be the last console= on every kernel line: Linux
+    #     binds /dev/console to the last one, and every milestone our hooks print goes
+    #     there. Ending in console=tty0 sends all of it to the local screen and leaves
+    #     an empty serial log, which is a boot nobody can debug.
+    while IFS= read -r kernel_line; do
+        last_console="$(printf '%s\n' "${kernel_line}" | sed 's/.*console=\([^ ]*\).*/\1/')"
+        case "${last_console}" in
+            ttyS0*) : ;;
+            *)
+                ci_warn "rule 1: the last console= on a kernel line is '${last_console}', not the serial port: $(printf '%s' "${kernel_line}" | cut -c1-80)"
+                problems=$((problems + 1))
+                ;;
+        esac
+    done < <(grep -E '^[[:space:]]*linux ' "${code}" || true)
 
     # 2. everything the machine needs to boot is defined before the parts that can
     #    fail. Line numbers, because the order is the whole point.

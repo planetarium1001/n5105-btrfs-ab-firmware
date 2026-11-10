@@ -17,6 +17,12 @@
 # `save_env` do not exist; a file of GRUB commands that `source` reads is the
 # mechanism that works there.
 #
+# The serial console is the LAST `console=` on purpose: Linux binds /dev/console to the
+# last one, and every milestone our hooks print goes to /dev/console. Ending the line in
+# `console=tty0` sends all of it to the local screen and leaves an empty serial log.
+# tty0 keeps its kernel messages either way, and platform/lib/ab-console.sh mirrors the
+# milestone lines to it so a machine with a monitor shows them too.
+#
 # GRUB script is not bash: no && or || chains and no ${var:-default} expansions.
 set timeout=@GRUB_TIMEOUT@
 set default=@COMMITTED_INDEX@
@@ -24,19 +30,19 @@ set fallback=@COMMITTED_INDEX@
 
 menuentry "N5105 AB slot a" --id n5105-a {
 	set ab_slot=a
-	linux /vmlinuz-a root=/dev/ram0 console=ttyS0,115200 console=tty0 ab.slot=a
+	linux /vmlinuz-a root=/dev/ram0 console=tty0 console=ttyS0,115200 ab.slot=a
 	initrd /initrd-a
 }
 
 menuentry "N5105 AB slot b" --id n5105-b {
 	set ab_slot=b
-	linux /vmlinuz-b root=/dev/ram0 console=ttyS0,115200 console=tty0 ab.slot=b
+	linux /vmlinuz-b root=/dev/ram0 console=tty0 console=ttyS0,115200 ab.slot=b
 	initrd /initrd-b
 }
 
 menuentry "N5105 AB recovery (committed slot, read-only writable layer)" --id n5105-recovery {
 	set ab_slot=@COMMITTED_SLOT@
-	linux /vmlinuz-@COMMITTED_SLOT@ root=/dev/ram0 console=ttyS0,115200 console=tty0 ab.slot=@COMMITTED_SLOT@ ab.degraded=1
+	linux /vmlinuz-@COMMITTED_SLOT@ root=/dev/ram0 console=tty0 console=ttyS0,115200 ab.slot=@COMMITTED_SLOT@ ab.degraded=1
 	initrd /initrd-@COMMITTED_SLOT@
 }
 

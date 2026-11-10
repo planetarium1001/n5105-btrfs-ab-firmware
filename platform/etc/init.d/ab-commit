@@ -1,10 +1,5 @@
 #!/bin/sh /etc/rc.common
 
-# console_say <line...>: procd sends hook stdout to syslog, so milestones are also
-# written to the console where the test harness can see them.
-console_say() {
-	printf '%s\n' "$*" >/dev/console 2>/dev/null || :
-}
 # ab-commit - health check and slot commit, after the system finished booting.
 #
 # Runs after `done`, which is where the boot reaches its last stage. It runs the three
@@ -22,6 +17,23 @@ console_say() {
 #
 # The total budget is 150 seconds. Probe results are logged in the frozen format:
 #   probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail>
+
+# Milestone lines have to reach the serial log and the local screen: the helper lives in
+# the platform layer so every hook and tool writes them the same way (see
+# platform/lib/ab-console.sh).
+AB_CONSOLE_LIB="${AB_CONSOLE_LIB:-/lib/ab-console.sh}"
+if [ ! -f "${AB_CONSOLE_LIB}" ]; then
+	AB_CONSOLE_LIB="$(dirname "$0")/../../lib/ab-console.sh"
+fi
+if [ -f "${AB_CONSOLE_LIB}" ]; then
+	# shellcheck source=platform/lib/ab-console.sh
+	. "${AB_CONSOLE_LIB}"
+else
+	# Degraded: the platform layer is incomplete. Still say something on the console.
+	console_say() {
+		printf '%s\n' "$*" >/dev/console 2>/dev/null || :
+	}
+fi
 
 # START is consumed by /etc/rc.common, not by this file.
 # shellcheck disable=SC2034

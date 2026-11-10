@@ -58,6 +58,16 @@ assert_contains "$body" "source /boot/grub/ab-slot.cfg" "ac-1 the runtime file i
 assert_contains "$body" "ab.slot=a" "ac-1 slot a is passed on the kernel command line"
 assert_contains "$body" "ab.slot=b" "ac-1 slot b is passed on the kernel command line"
 
+# The serial console has to be the last console= on every kernel line: Linux binds
+# /dev/console to the last one, and every milestone our hooks print goes there. With
+# console=tty0 last, the whole userspace side goes to the local screen and the serial log
+# only has kernel messages - a CI run that times out with no evidence, and a machine
+# nobody can debug.
+assert_eq "$(printf '%s\n' "$body" | grep -cE '^[[:space:]]*linux .*console=tty0 console=ttyS0,115200')" "3" \
+  "ac-1 every kernel line ends in the serial console"
+assert_eq "$(printf '%s\n' "$body" | grep -cE '^[[:space:]]*linux .*console=ttyS0,115200 console=tty0')" "0" \
+  "ac-1 no kernel line ends in the local console"
+
 # The index mapping is a contract with platform/lib/ab-slot-cfg.sh: entry 0 is slot a,
 # entry 1 is slot b, and the runtime file writes those numbers.
 ids=$(grep -oE -- '--id [A-Za-z0-9_-]+' "$good" | sed 's/--id //' | tr '\n' ',')
@@ -165,6 +175,15 @@ mutant_modprobe="$tmp/modprobe.cfg"
   >"$mutant_modprobe"
 check_file "$mutant_modprobe"
 assert_eq "$?" "1" "ac-4 probing for a module file is rejected"
+
+# A kernel line that ends in the local console is refused: it would send every line our
+# hooks print to the screen and leave the serial log empty.
+mutant_console="$tmp/console-order.cfg"
+sed 's/console=tty0 console=ttyS0,115200/console=ttyS0,115200 console=tty0/' "$good" >"$mutant_console"
+assert_contains "$(cat "$mutant_console")" "console=ttyS0,115200 console=tty0" \
+  "ac-1 the mutant ends in the local console"
+check_file "$mutant_console"
+assert_eq "$?" "1" "ac-1 a kernel line that ends in the local console is rejected"
 
 # ac-5 GRUB script is not bash, and placeholders must be replaced
 mutant_and="$tmp/and.cfg"

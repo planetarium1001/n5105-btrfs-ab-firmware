@@ -41,13 +41,20 @@ STUB
 chmod +x "$tmp/bin/mount"
 
 export ABANDON_FIXTURE="$tmp"
+# Never touch a real serial port from a test: the console mirroring writes to whatever
+# WF_SERIAL points at.
+: >"$tmp/ttyS0"
+: >"$tmp/consoles"
+WF_SERIAL="$tmp/ttyS0"
+WF_CONSOLES="$tmp/consoles"
 WF_ESP_MOUNT="$esp"
 WF_ESP_DEV=""
 WF_SLOT_CFG_LIB="$root/platform/lib/ab-slot-cfg.sh"
 WF_MOUNTS="$tmp/mounts"
 WF_MOUNT="$tmp/bin/mount"
 WF_TMP="$tmp/run"
-export WF_ESP_MOUNT WF_ESP_DEV WF_SLOT_CFG_LIB WF_MOUNTS WF_MOUNT WF_TMP
+export WF_ESP_MOUNT WF_ESP_DEV WF_SLOT_CFG_LIB WF_MOUNTS WF_MOUNT WF_TMP \
+  WF_SERIAL WF_CONSOLES
 
 source "$root/initramfs/lib/wf.sh"
 
@@ -105,6 +112,8 @@ out="$(wf_failsafe_abandon)"
 assert_eq "$?" "0" "ac-2 the abandon path always succeeds"
 assert_contains "${out}" "[boot] action=fail-safe-abandon slot=a" \
   "ac-2 the abandon reports the slot the machine will boot"
+assert_contains "$(cat "$tmp/ttyS0")" "[boot] action=fail-safe-abandon slot=a" \
+  "ac-2 the abandon marker also reaches the serial port"
 assert_eq "$(source "$WF_SLOT_CFG_LIB"; ab_slot_state_pending "$esp/ab/state.json")" "none" \
   "ac-2 pending is cleared in ab/state.json"
 assert_matches "$(cat "$esp/ab/state.json")" '"generation": 3' \

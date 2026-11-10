@@ -99,11 +99,22 @@ mount_esp() {
 	}
 }
 
-# console_say <line...>: procd sends hook stdout to syslog, so milestones are also
-# written to the console where the test harness can see them.
-console_say() {
-	printf '%s\n' "$*" >/dev/console 2>/dev/null || :
-}
+# Milestone lines have to reach the serial log and the local screen: the helper lives in
+# the platform layer so every hook and tool writes them the same way (see
+# platform/lib/ab-console.sh).
+AB_CONSOLE_LIB="${AB_CONSOLE_LIB:-/lib/ab-console.sh}"
+if [ ! -f "${AB_CONSOLE_LIB}" ]; then
+	AB_CONSOLE_LIB="$(dirname "$0")/../../lib/ab-console.sh"
+fi
+if [ -f "${AB_CONSOLE_LIB}" ]; then
+	# shellcheck source=platform/lib/ab-console.sh
+	. "${AB_CONSOLE_LIB}"
+else
+	# Degraded: the platform layer is incomplete. Still say something on the console.
+	console_say() {
+		printf '%s\n' "$*" >/dev/console 2>/dev/null || :
+	}
+fi
 
 # ensure_dev <path>: procd may start these hooks before devtmpfs carries every node.
 ensure_dev() {

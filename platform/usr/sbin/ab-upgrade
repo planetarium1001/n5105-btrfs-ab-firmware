@@ -42,12 +42,22 @@ say() {
     printf '%s\n' "$*"
 }
 
-console_say() {
-    # procd sends hook stdout to syslog, so milestones go to the console; where the
-    # console is not writable (a build host, a chroot) this stays silent on purpose.
-    [ -w /dev/console ] || return 0
-    printf '%s\n' "$*" >/dev/console 2>/dev/null || :
-}
+# Milestone lines have to reach the serial log and the local screen: the helper lives in
+# the platform layer so every hook and tool writes them the same way (see
+# platform/lib/ab-console.sh).
+AB_CONSOLE_LIB="${AB_CONSOLE_LIB:-/lib/ab-console.sh}"
+if [ ! -f "${AB_CONSOLE_LIB}" ]; then
+    AB_CONSOLE_LIB="$(dirname "$0")/../../lib/ab-console.sh"
+fi
+if [ -f "${AB_CONSOLE_LIB}" ]; then
+    # shellcheck source=platform/lib/ab-console.sh
+    . "${AB_CONSOLE_LIB}"
+else
+    # Degraded: the platform layer is incomplete. Still say something on the console.
+    console_say() {
+        printf '%s\n' "$*" >/dev/console 2>/dev/null || :
+    }
+fi
 
 # refuse <reason>: a pre-write refusal, documented as exit status 74.
 refuse() {
