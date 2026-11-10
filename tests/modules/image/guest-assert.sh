@@ -6,7 +6,7 @@
 #
 #   1. four partitions with PARTNAMEs ab-esp / ab-slot-a / ab-slot-b / ab-data and
 #      filesystem LABELs ESP / slot-a / slot-b / data
-#   2. sizes 128 / 128 / 128 / 64 MiB
+#   2. sizes 128 / 128 / 128 / 128 MiB
 #   3. p2 and p3 hold @sys and @platform, p4 holds @overlay-<version>, @docker, @swap and
 #      @data, all top level with nothing nested
 #   4. @sys file count matches the upstream tree, sampled digests match
@@ -222,14 +222,14 @@ fi
 echo "[s2] filesystem LABELs slot-a/slot-b/data${p1_label:+/ESP}"
 
 # Sizes come from sysfs, which is the kernel's own view of the GPT.
-want_sizes="262144 262144 262144 131072"
+want_sizes="262144 262144 262144 262144"
 part=1
 for want in ${want_sizes}; do
     have="$(cat "/sys/class/block/$(basename "${DEV}${part}")/size" 2>/dev/null || echo 0)"
     [ "${have}" = "${want}" ] || report_failure "size-p${part}-${have}"
     part=$((part + 1))
 done
-echo "[s2] partition sizes 128/128/128/64 MiB"
+echo "[s2] partition sizes 128/128/128/128 MiB"
 
 # --------------------------------------------------------------------------- #
 # 1b. First-boot growth: the image ships p4 short of the tail, and the decision the
@@ -253,8 +253,12 @@ else
         image_sectors="${image_size}"
     fi
     decision="$(wf_grow_decide /tmp/table.txt "${DEV}4" "${image_sectors}")"
+    # Either outcome is fine: an image with a tail still to claim must plan a grow, and a
+    # partition that already reaches the end must read already-full. What must never
+    # happen is the decision failing, because that is the state that leaves p4 small.
     case "${decision}" in
         grow\ *) echo "[s2] first-boot growth decision: ${decision}" ;;
+        already-full\ *) echo "[s2] first-boot growth decision: ${decision}" ;;
         *) report_failure "growth-decision-${decision}" ;;
     esac
     # A table whose p4 already reaches the last usable LBA has to read back as

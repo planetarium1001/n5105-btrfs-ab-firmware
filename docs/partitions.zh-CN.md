@@ -13,7 +13,7 @@
 | p1 | `ab-esp` | `ESP` | 128 MiB | vfat | GRUB、启动菜单、`vmlinuz-a/b`、`initrd-a/b`、`ab/` 状态、`ab/log/`、`ab/device.json` |
 | p2 | `ab-slot-a` | `slot-a` | 128 MiB | btrfs | `@sys`、`@platform` |
 | p3 | `ab-slot-b` | `slot-b` | 128 MiB | btrfs | `@sys`、`@platform` |
-| p4 | `ab-data` | `data` | 至盘尾 | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
+| p4 | `ab-data` | `data` | 128 MiB | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
 
 不使用 p128（EF02），不保留 legacy 引导路径。
 
@@ -70,9 +70,13 @@ p1 只放数据，不放可执行脚本：FAT32 没有权限位与符号链接�
 - 2 的幂对齐，便于核算
 - 运行期只读，仅在升级时写入
 
-**p4 = 至盘尾**
+**p4 = 镜像内 128 MiB，首启后至盘尾**
 
-镜像内预建 64 MiB。首次启动扩展到盘尾并执行 `btrfs filesystem resize max`。
+镜像总计 514 MiB：1 MiB 对齐 + 四个 128 MiB 分区 + 1 MiB 尾部（备份 GPT）。p4 出厂
+128 MiB，首次启动扩展到盘尾并执行 `btrfs filesystem resize max`。
+
+128 MiB 是可写层的下限：升级 fixture 往 `upper` 塞 20 MiB 载荷，64 MiB 时文件系统已是
+`used 63/64 MiB`，overlayfs 建不出 `work/` 目录。
 
 ## 文件系统参数
 

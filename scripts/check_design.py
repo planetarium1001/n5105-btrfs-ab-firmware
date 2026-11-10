@@ -97,7 +97,7 @@ def check_partitions(problems: Problems) -> None:
         "| p1 | `ab-esp` | `ESP` | 128 MiB | vfat |",
         "| p2 | `ab-slot-a` | `slot-a` | 128 MiB | btrfs |",
         "| p3 | `ab-slot-b` | `slot-b` | 128 MiB | btrfs |",
-        "| p4 | `ab-data` | `data` | rest of disk | btrfs |",
+        "| p4 | `ab-data` | `data` | 128 MiB | btrfs |",
         "26.9 MiB",
         "zstd:6",
         "mkfs.btrfs -m dup -d single",

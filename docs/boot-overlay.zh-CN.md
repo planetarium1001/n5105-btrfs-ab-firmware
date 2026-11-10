@@ -36,7 +36,16 @@
 
 ## p4 首启扩容
 
-p4 出厂只有 64 MiB，盘尾保持未分配，因此同一个镜像能装进任意大小的盘。首次启动时由 initramfs 扩容，且发生在任何文件系统挂载之前：
+p4 出厂 128 MiB，盘尾保持未分配，因此同一个镜像能装进任意大小的盘。扩容分两处做，第二处才是保证：
+
+- **initramfs，尽力而为**：合成 overlay 之前改写分区表并 resize 一次文件系统。这样首次启动当场就
+  可用；这一步失败只记录（`fail:<token>`），绝不阻断启动；
+- **运行期 `ab-boot`，权威路径**：它读取 `<p4>/.ab/grow`，在 initramfs 没能扩成时重试
+  `btrfs filesystem resize max /mnt/p4`（p4 只挂一次、btrfs-progs 来自平台层），并把
+  `stage=resize result=<ok|fail:<token>> source=ab-boot` 写进 p1 环形日志。initramfs 那次失败
+  的机器，同一次启动仍能扩到盘尾。
+
+initramfs 这半段的顺序，发生在任何文件系统挂载之前：
 
 1. `sfdisk -d` 导出分区表，导出结果就是改动前的备份。
 2. 判定：比较 p4 末尾与最后可用 LBA（`last-lba`）。相等即 `already-full`，不写任何东西；否则新大小为“最后可用 LBA − p4 起始 + 1”，只会比当前大。
@@ -153,7 +162,8 @@ overlayfs 会合并目录，procd 从合并视图读取 `/etc/init.d/*`，钩子
 | 内核或 initrd 加载失败 | GRUB 内联重试，再 `set fallback` 回到已提交槽 |
 | initramfs 阶段失败 | 在 ESP 上放弃 pending 槽，然后重启进入已提交槽 |
 | 健康检查失败 | 放弃待提交槽，回到已提交槽 |
-| p4 扩容失败 | 在 `.ab/grow` 记录 `fail:<token>`，按原来的 64 MiB 几何启动 |
+| p4 扩容失败 | 在 `.ab/grow` 记录 `fail:<token>`；运行期 `ab-boot` 会再试一次文件系统扩容 |
+| 分区表扩了但 initramfs 的 resize 失败 | 启动继续；由 `ab-boot` 把文件系统扩上去（`stage=resize result=ok source=ab-boot`） |
 | initramfs 缺 `sfdisk` | 记录 `missing-sfdisk`，启动不变 |
 | 认不出引导盘 | 记录 `fail:no-disk` / `fail:ambiguous-disk` / `fail:partitions-split`，绝不写分区表，继续启动 |
 | 用户数据子卷挂载失败 | 记录 `p4-partial` 并继续，挂载点留空 |

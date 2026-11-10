@@ -27,8 +27,29 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 # --------------------------------------------------------------------------- #
-# Fixture disk: the 450 MiB image (921600 sectors) with p4 still at its shipped size
+# Fixture disk: the image from scripts/ci/disk.sh, with p4 still at its shipped size.
+# The geometry is read from disk.sh instead of being written down here: the shipped p4
+# size is a build decision (64 MiB once, 128 MiB later) and a test that pins it turns
+# every layout change into a red module.
 # --------------------------------------------------------------------------- #
+
+disk_script="$root/scripts/ci/disk.sh"
+p4_start="$(sed -n 's/.*start= *\([0-9]*\), size= *\([0-9]*\),.*name="ab-data".*/\1/p' \
+  "${disk_script}" | head -n 1)"
+p4_shipped_size="$(sed -n 's/.*start= *\([0-9]*\), size= *\([0-9]*\),.*name="ab-data".*/\2/p' \
+  "${disk_script}" | head -n 1)"
+case "${p4_start}" in '' | *[!0-9]*) p4_start=788480 ;; esac
+case "${p4_shipped_size}" in '' | *[!0-9]*) p4_shipped_size=262144 ;; esac
+# Tail after the partitions: 2045 sectors, chosen so the available size is NOT a multiple
+# of eight whatever the shipped p4 size is (131072 and 262144 both are), plus the 34
+# sectors the backup GPT reserves.
+disk_sectors=$((p4_start + p4_shipped_size - 1 + 34 + 2045))
+last_lba=$((disk_sectors - 34))
+# The tail the disk offers is the upper bound; the grown size is that, rounded DOWN to a
+# multiple of 8 sectors, because btrfs refuses a device size that is not a multiple of its
+# 4096-byte sectorsize.
+p4_want_size=$((last_lba - p4_start + 1))
+p4_grown_size=$((p4_want_size / 8 * 8))
 
 sys="$tmp/sys/block"
 mkdir -p "$sys/vda" "$tmp/work" "$tmp/bin" "$tmp/table"
@@ -39,14 +60,6 @@ mkdir -p "$sys/vda/vda4"
 printf '4\n' >"$sys/vda/vda4/partition"
 printf 'DEVTYPE=partition\nDEVNAME=vda4\nPARTN=4\nPARTNAME=ab-data\n' >"$sys/vda/vda4/uevent"
 ln -sfn "vda/vda4" "$sys/vda4"
-disk_sectors=921600
-last_lba=$((disk_sectors - 34))
-p4_start=788480
-p4_shipped_size=131072
-# 133087 sectors is not a multiple of 8, and btrfs refuses a device size that is not a
-# multiple of its 4096-byte sectorsize, so the grown size rounds DOWN to 133080.
-p4_want_size=$((last_lba - p4_start + 1))
-p4_grown_size=133080
 mkdir -p "$sys/vda/queue"
 printf '512\n' >"$sys/vda/queue/logical_block_size"
 printf '%s\n' "${disk_sectors}" >"$sys/vda/size"
@@ -66,7 +79,7 @@ sector-size: 512
 /dev/vda1 : start=        2048, size=      262144, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=11111111-2222-3333-4444-555555555555, name="ab-esp"
 /dev/vda2 : start=      264192, size=      262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=66666666-7777-8888-9999-AAAAAAAAAAAA, name="ab-slot-a"
 /dev/vda3 : start=      526336, size=      262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF, name="ab-slot-b"
-/dev/vda4 : start=      788480, size=      $1, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=12121212-3434-5656-7878-909090909090, name="ab-data"
+/dev/vda4 : start=      ${p4_start}, size=      $1, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=12121212-3434-5656-7878-909090909090, name="ab-data"
 TABLE
 }
 
@@ -188,11 +201,27 @@ reset_fixture
 # Decision: the whole idempotency rule, without touching a disk
 # --------------------------------------------------------------------------- #
 
+# The fixture follows disk.sh rather than pinning one layout: prove the parser actually
+# answers with the script's numbers, and that it would follow a 128 MiB p4 too.
+assert_eq "${p4_shipped_size}" \
+  "$(sed -n 's/.*start= *[0-9]*, size= *\([0-9]*\),.*name="ab-data".*/\1/p' "${disk_script}" | head -n 1)" \
+  "ac-1 the fixture uses the p4 size scripts/ci/disk.sh ships"
+assert_eq "${p4_start}" \
+  "$(sed -n 's/.*start= *\([0-9]*\), size= *[0-9]*,.*name="ab-data".*/\1/p' "${disk_script}" | head -n 1)" \
+  "ac-1 the fixture uses the p4 start scripts/ci/disk.sh ships"
+sim_geometry="$(printf '%s\n' \
+  'start= 788480, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-data"' \
+  | sed -n 's/.*start= *\([0-9]*\), size= *\([0-9]*\),.*name="ab-data".*/\1 \2/p')"
+assert_eq "${sim_geometry}" "788480 262144" \
+  "ac-1 the geometry parser follows a 128 MiB p4 instead of today's size"
+
 decision=$(wf_grow_decide "$tmp/table/current" /dev/vda4 "${disk_sectors}")
 assert_eq "${decision}" "grow ${last_lba} ${p4_grown_size}" \
   "ac-1 a p4 short of the last usable LBA grows to the aligned size"
-assert_eq "${p4_want_size}" "133087" \
-  "ac-1 the unaligned size the tail would allow is 133087 sectors"
+assert_eq "$((p4_want_size % 8))" "5" \
+  "ac-1 the fixture tail is deliberately unaligned"
+assert_eq "$((p4_want_size - p4_grown_size))" "5" \
+  "ac-1 rounding down costs only the unaligned remainder"
 assert_eq "$((p4_grown_size % 8))" "0" \
   "ac-1 the grown size is a multiple of the 4096-byte sectorsize in 512-byte sectors"
 assert_eq "$((p4_grown_size * 512 % 4096))" "0" \
@@ -207,34 +236,35 @@ table_for "$((p4_grown_size - 1))" >"$tmp/table/short"
 assert_eq "$(wf_grow_decide "$tmp/table/short" /dev/vda4 "${disk_sectors}")" \
   "grow ${last_lba} ${p4_grown_size}" "ac-1 a single sector of tail space still grows"
 # Rounding can take the whole gain away: a few sectors of slack must not turn into a
-# table write that grows nothing. 131075 sectors of tail round down to the current
-# 131072, which is already a multiple of eight.
-cat >"$tmp/table/slack" <<'SLACK'
+# table write that grows nothing. The shipped size is a multiple of eight, so three
+# sectors of tail round straight back to it.
+slack_last_lba=$((p4_start + p4_shipped_size - 1 + 3))
+cat >"$tmp/table/slack" <<SLACK
 label: gpt
 device: /dev/vda
 unit: sectors
 first-lba: 34
-last-lba: 919554
+last-lba: ${slack_last_lba}
 sector-size: 512
 
-/dev/vda4 : start=      788480, size=      131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
+/dev/vda4 : start=      ${p4_start}, size=      ${p4_shipped_size}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
 SLACK
-assert_eq "$(wf_grow_decide "$tmp/table/slack" /dev/vda4 921600)" \
-  "already-full 919554" \
+assert_eq "$(wf_grow_decide "$tmp/table/slack" /dev/vda4 "${disk_sectors}")" \
+  "already-full ${slack_last_lba}" \
   "ac-1 slack that rounds back to the current size is already-full"
 
 # A filesystem with 512-byte sectors needs no alignment: the behaviour is unchanged.
-assert_eq "$(WF_GROW_SECTORSIZE=512 wf_grow_decide "$tmp/table/current" /dev/vda4 921600)" \
+assert_eq "$(WF_GROW_SECTORSIZE=512 wf_grow_decide "$tmp/table/current" /dev/vda4 "${disk_sectors}")" \
   "grow ${last_lba} ${p4_want_size}" \
   "ac-1 a 512-byte sectorsize grows to the unaligned end"
 
 # Down-rounding is reported, so the geometry can be checked later.
-aligned_log="$(wf_grow_decide "$tmp/table/current" /dev/vda4 921600 2>&1 >/dev/null)"
+aligned_log="$(wf_grow_decide "$tmp/table/current" /dev/vda4 "${disk_sectors}" 2>&1 >/dev/null)"
 assert_contains "${aligned_log}" "aligned size=${p4_grown_size}" \
   "ac-1 the aligned size is logged"
 assert_contains "${aligned_log}" "sectorsize=4096" \
   "ac-1 the sectorsize used for the alignment is logged"
-assert_contains "${aligned_log}" "unaligned 133087" \
+assert_contains "${aligned_log}" "unaligned ${p4_want_size}" \
   "ac-1 the unaligned request is logged next to it"
 
 table_for "$((p4_grown_size + 4096))" >"$tmp/table/oversized"
@@ -447,7 +477,8 @@ assert_eq "$(wf_grow_resize_mounted "" "${resize_mp}")" "fail:resize-target" \
 
 reset_fixture
 printf '4096\n' >"$sys/vda/queue/logical_block_size"
-printf '%s\n' "${p4_shipped_size}" >"$sys/vda4/size"
+# 16384 logical sectors of 4096 bytes are 131072 sysfs units of 512 bytes.
+printf '%s\n' 131072 >"$sys/vda4/size"
 cat >"$tmp/table/current" <<'TABLE4K'
 label: gpt
 label-id: 4F2B1C3D-5E6F-7081-9203-A4B5C6D7E8F0

@@ -162,7 +162,7 @@ packages and sixteen real modules are visible at a glance.
 
 ## S2: the four-partition image
 
-`disk.sh` builds a 450 MiB GPT image (1 MiB alignment, 448 MiB of partitions, 1 MiB
+`disk.sh` builds a 514 MiB GPT image (1 MiB alignment, four 128 MiB partitions, 1 MiB
 tail for the backup table) with the geometry frozen in `docs/partitions.md`:
 
 | Partition | PARTNAME | LABEL | Sectors | Filesystem |
@@ -170,7 +170,7 @@ tail for the backup table) with the geometry frozen in `docs/partitions.md`:
 | p1 | `ab-esp` | `ESP` | 262144 (128 MiB) | vfat |
 | p2 | `ab-slot-a` | `slot-a` | 262144 (128 MiB) | btrfs `-m dup -d single` |
 | p3 | `ab-slot-b` | `slot-b` | 262144 (128 MiB) | btrfs `-m dup -d single` |
-| p4 | `ab-data` | `data` | 131072 (64 MiB) | btrfs `-m single -d single` |
+| p4 | `ab-data` | `data` | 262144 (128 MiB) | btrfs `-m single -d single` |
 
 The image is verified twice:
 

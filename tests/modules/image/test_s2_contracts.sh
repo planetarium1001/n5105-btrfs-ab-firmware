@@ -31,7 +31,7 @@ geometry=$(sed -n '/^label: gpt$/,/^SFDISK$/p' "$disk_script" \
   | sed -E 's/.*start=[[:space:]]*([0-9]+), size=[[:space:]]*([0-9]+).*name="([^"]+)".*/\3 \1 \2/' \
   | paste -sd';' -)
 assert_eq "$geometry" \
-  "ab-esp 2048 262144;ab-slot-a 264192 262144;ab-slot-b 526336 262144;ab-data 788480 131072" \
+  "ab-esp 2048 262144;ab-slot-a 264192 262144;ab-slot-b 526336 262144;ab-data 788480 262144" \
   "ac-1 partition geometry matches the documented layout"
 
 esp_type=$(sed -n '/^label: gpt$/,/^SFDISK$/p' "$disk_script" | grep 'name="ab-esp"' || true)
@@ -55,7 +55,7 @@ assert_contains "$(cat "$disk_script")" '"ab-slot-b" "slot-b"' \
   "ac-1 p3 is ab-slot-b with label slot-b"
 assert_contains "$(cat "$disk_script")" '-L "data" "${dev_p4}"' \
   "ac-1 p4 is ab-data with label data"
-assert_contains "$(cat "$disk_script")" 'ab-data:788480+131072' \
+assert_contains "$(cat "$disk_script")" 'ab-data:788480+262144' \
   "ac-1 the emitted part_layout uses the PARTNAME ab-data"
 
 # The p4 name ab-shared described a partition that is not shared with anything; it is
@@ -74,7 +74,7 @@ assert_contains "$verify_want" '("ab-slot-a","slot-a",262144,' \
   "ac-1 image-verify expects PARTNAME ab-slot-a with label slot-a"
 assert_contains "$verify_want" '("ab-slot-b","slot-b",262144,' \
   "ac-1 image-verify expects PARTNAME ab-slot-b with label slot-b"
-assert_contains "$verify_want" '("ab-data","data",131072,' \
+assert_contains "$verify_want" '("ab-data","data",262144,' \
   "ac-1 image-verify expects PARTNAME ab-data with label data"
 assert_contains "$(cat "$verify_script")" 'blkid -p -o value -s "${field}"' \
   "ac-1 image-verify reads PARTNAME and LABEL back from the image"
@@ -122,7 +122,7 @@ for arg in "$@"; do
   case "$arg" in file:*) log="${arg#file:}" ;; esac
 done
 if [ "${STUB_RESULT:-ok}" = "ok" ]; then
-  printf '[s2] partitions ok\nS2-RESULT=ok parts=4 images=471859200\n' >"$log"
+  printf '[s2] partitions ok\nS2-RESULT=ok parts=4 images=538968064\n' >"$log"
 else
   printf '[s2] subvolume layout wrong\nS2-RESULT=fail reason=p2-subvolumes-@sys\n' >"$log"
 fi
@@ -147,7 +147,7 @@ run_gate() {
 
 ok_output=$(STUB_RESULT=ok run_gate ok)
 assert_eq "$?" "0" "ac-3 an S2 ok line passes the gate"
-assert_contains "$ok_output" "S2-RESULT=ok parts=4 images=471859200" \
+assert_contains "$ok_output" "S2-RESULT=ok parts=4 images=538968064" \
   "ac-3 the judge line is reported verbatim"
 
 fail_output=$(STUB_RESULT=fail run_gate fail)
@@ -161,7 +161,7 @@ assert_contains "$fail_output" "S2-RESULT failed" \
 expect_file="$tmp/expect.txt"
 {
   printf 'files=%s\n' "1483"
-  printf 'images=%s\n' "471859200"
+  printf 'images=%s\n' "538968064"
   printf 'parts=4\n'
   printf 'p1max_kib=65536\n'
   printf 'sample %s %s\n' "/bin/busybox" "5c1b0ac1d4c0c0e0aa1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071"
@@ -188,7 +188,7 @@ printf '%s|%s|%s|%s|%s\n' "$expect_files" "$expect_images" "$expect_parts" "$exp
 READER
 
 parsed=$(sh -c "$reader" sh "$expect_file")
-assert_eq "$parsed" "1483|471859200|4|65536|/bin/busybox=5c1b0ac1d4c0c0e0aa1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071 " \
+assert_eq "$parsed" "1483|538968064|4|65536|/bin/busybox=5c1b0ac1d4c0c0e0aa1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071 " \
   "ac-4 the expectation file round-trips through the guest parser"
 
 # The guest parser and the script must not drift apart: the assertion below fails if

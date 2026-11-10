@@ -39,7 +39,7 @@ gunzip -c n5105-ab-<platform>-<upstream>.img.gz | sudo dd of=/dev/nvme0n1 bs=4M 
 sudo sync
 ```
 
-The result is 450 MiB with four partitions. Nothing else has to be created by hand:
+The result is 514 MiB with four 128 MiB partitions. Nothing else has to be created by hand:
 the ESP carries the kernel and initramfs for both slots, the bootloader configuration
 is already rendered for the committed slot, and both slot filesystems contain the
 same root filesystem.

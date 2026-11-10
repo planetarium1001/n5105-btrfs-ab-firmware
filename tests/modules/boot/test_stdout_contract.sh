@@ -27,7 +27,20 @@ printf '0\n' >"$sys/vda/removable"
 printf '4\n' >"$sys/vda/vda4/partition"
 printf 'DEVTYPE=partition\nDEVNAME=vda4\nPARTN=4\nPARTNAME=ab-data\n' >"$sys/vda/vda4/uevent"
 ln -sfn "vda/vda4" "$sys/vda4"
-printf '131072\n' >"$sys/vda4/size"
+# The shipped p4 size comes from the build script, not from a number written down here.
+disk_script="$root/scripts/ci/disk.sh"
+p4_shipped="$(sed -n 's/.*start= *[0-9]*, size= *\([0-9]*\),.*name="ab-data".*/\1/p' \
+  "${disk_script}" | head -n 1)"
+case "${p4_shipped}" in '' | *[!0-9]*) p4_shipped=262144 ;; esac
+p4_start="$(sed -n 's/.*start= *\([0-9]*\), size= *[0-9]*,.*name="ab-data".*/\1/p' \
+  "${disk_script}" | head -n 1)"
+case "${p4_start}" in '' | *[!0-9]*) p4_start=788480 ;; esac
+# 2045 sectors of tail keeps the available size off a multiple of eight, so the alignment
+# is exercised whatever size disk.sh ships.
+disk_sectors=$((p4_start + p4_shipped - 1 + 34 + 2045))
+last_lba=$((disk_sectors - 34))
+p4_grown=$(((last_lba - p4_start + 1) / 8 * 8))
+printf '%s\n' "${p4_shipped}" >"$sys/vda4/size"
 
 # The serial side channel is a regular file so the test can see what was mirrored.
 serial="$tmp/ttyS0"
@@ -100,19 +113,19 @@ label: gpt
 device: /dev/vda
 unit: sectors
 first-lba: 34
-last-lba: 921566
+last-lba: ${last_lba}
 sector-size: 512
 
 /dev/vda1 : start=        2048, size=      262144, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=11111111-0000-0000-0000-000000000001, name="ab-esp"
 /dev/vda2 : start=      264192, size=      262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000002, name="ab-slot-a"
 /dev/vda3 : start=      526336, size=      262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000003, name="ab-slot-b"
-/dev/vda4 : start=      788480, size=      $1, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
+/dev/vda4 : start=      ${p4_start}, size=      $1, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=11111111-0000-0000-0000-000000000004, name="ab-data"
 TABLE
 }
 
 reset_fixture() {
-  table 131072 >"$tmp/table/current"
-  printf '131072\n' >"$sys/vda4/size"
+  table "${p4_shipped}" >"$tmp/table/current"
+  printf '%s\n' "${p4_shipped}" >"$sys/vda4/size"
   : >"$serial"
   : >"$tmp/sfdisk.calls"
   printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "$tmp/mnt/p4" >"$WF_MOUNTS"
@@ -146,11 +159,11 @@ run_captured wf_grow_run /dev/vda /dev/vda4
 assert_eq "$(printf '%s\n' "${captured_out}" | wc -l | tr -d ' ')" "1" \
   "ac-1 a successful run prints exactly one line"
 assert_matches "${captured_out}" "${RESULT_RE}" "ac-1 the line is <state> <last_lba>"
-assert_eq "${captured_out}" "done 921566" "ac-1 the state is done on a first boot"
+assert_eq "${captured_out}" "done ${last_lba}" "ac-1 the state is done on a first boot"
 assert_contains "${captured_err}" "[grow]" "ac-1 the diagnostics went to stderr"
 
 run_captured wf_grow_run /dev/vda /dev/vda4
-assert_eq "${captured_out}" "already-full 921566" \
+assert_eq "${captured_out}" "already-full ${last_lba}" \
   "ac-1 the second boot is a single already-full line"
 
 reset_fixture
@@ -159,7 +172,7 @@ assert_eq "${captured_out}" "missing-sfdisk 0" "ac-1 missing-sfdisk stays a sing
 
 reset_fixture
 run_captured_env STUB_WRITE_FAIL 1 wf_grow_run /dev/vda /dev/vda4
-assert_eq "${captured_out}" "fail:partition-table-write 921566" \
+assert_eq "${captured_out}" "fail:partition-table-write ${last_lba}" \
   "ac-1 a failed write is one fail:<token> line"
 assert_matches "${captured_out}" "${RESULT_RE}" "ac-1 a failure line matches the frozen shape"
 assert_contains "${captured_err}" "[grow]" "ac-1 failure diagnostics stay on stderr"
@@ -179,14 +192,14 @@ assert_contains "$(cat "$serial")" "[grow]" \
 # --------------------------------------------------------------------------- #
 
 reset_fixture
-run_captured wf_grow_decide "$tmp/table/current" /dev/vda4 921600
-assert_eq "${captured_out}" "grow 921566 133080" "ac-2 decide answers one line"
+run_captured wf_grow_decide "$tmp/table/current" /dev/vda4 "${disk_sectors}"
+assert_eq "${captured_out}" "grow ${last_lba} ${p4_grown}" "ac-2 decide answers one line"
 assert_eq "$(printf '%s\n' "${captured_out}" | wc -l | tr -d ' ')" "1" \
   "ac-2 decide never prints a second line"
 
-table 133087 >"$tmp/table/grown"
-run_captured wf_grow_decide "$tmp/table/grown" /dev/vda4 921600
-assert_eq "${captured_out}" "already-full 921566" "ac-2 decide reports already-full alone"
+table "${p4_grown}" >"$tmp/table/grown"
+run_captured wf_grow_decide "$tmp/table/grown" /dev/vda4 "${disk_sectors}"
+assert_eq "${captured_out}" "already-full ${last_lba}" "ac-2 decide reports already-full alone"
 
 reset_fixture
 run_captured wf_grow_fs "$tmp/mnt/p4"

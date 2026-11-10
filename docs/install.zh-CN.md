@@ -34,7 +34,7 @@ gunzip -c n5105-ab-<platform>-<upstream>.img.gz | sudo dd of=/dev/nvme0n1 bs=4M 
 sudo sync
 ```
 
-结果是 450 MiB、四个分区。其余都不用手工创建：ESP 上带着两个槽各自的内核与 initramfs，引导配置已经按已提交槽渲染好，
+结果是 514 MiB、四个 128 MiB 分区。其余都不用手工创建：ESP 上带着两个槽各自的内核与 initramfs，引导配置已经按已提交槽渲染好，
 两个槽的文件系统也各带一份相同的根文件系统。
 
 想写到文件里做虚拟机测试：

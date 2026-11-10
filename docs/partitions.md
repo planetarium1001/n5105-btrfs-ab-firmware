@@ -14,7 +14,7 @@ shared partition for all writable state.
 | p1 | `ab-esp` | `ESP` | 128 MiB | vfat | GRUB, boot menu, `vmlinuz-a/b`, `initrd-a/b`, `ab/` state, `ab/log/`, `ab/device.json` |
 | p2 | `ab-slot-a` | `slot-a` | 128 MiB | btrfs | `@sys`, `@platform` |
 | p3 | `ab-slot-b` | `slot-b` | 128 MiB | btrfs | `@sys`, `@platform` |
-| p4 | `ab-data` | `data` | rest of disk | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
+| p4 | `ab-data` | `data` | 128 MiB | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
 
 There is no p128 (EF02) and no legacy boot path.
 
@@ -75,10 +75,15 @@ Headroom is about 4×. The build asserts that p1 content stays under 64 MiB and 
 - Power-of-two aligned, so ratios are easy to audit
 - Read-only at runtime; written only during updates
 
-**p4 = rest of disk**
+**p4 = 128 MiB in the image, rest of disk after first boot**
 
-The image ships 64 MiB. First boot grows it to the end of the disk and runs
+The image is 514 MiB: 1 MiB of alignment, four 128 MiB partitions and 1 MiB of tail for
+the backup GPT. p4 ships 128 MiB and first boot grows it to the end of the disk, then runs
 `btrfs filesystem resize max`.
+
+128 MiB is the floor that keeps the writable layer usable: the update fixture pushes a
+20 MiB payload into `upper`, which at 64 MiB left the filesystem at `used 63/64 MiB` and
+overlayfs could not create its `work/` directory.
 
 ## Filesystem parameters
 

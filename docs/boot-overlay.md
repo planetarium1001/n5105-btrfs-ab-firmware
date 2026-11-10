@@ -54,9 +54,19 @@ Resolution order, first answer wins, and a level is only used when it has eviden
 
 ## First-boot growth of p4
 
-p4 ships with 64 MiB and the tail of the disk stays unallocated, so the same image fits
-any disk size. The initramfs expands it on the first boot, before any filesystem is
-mounted:
+p4 ships with 128 MiB and the tail of the disk stays unallocated, so the same image fits
+any disk size. It is grown in two places, and the second is the one that guarantees it:
+
+- **the initramfs, best effort**: the table is rewritten and the filesystem resized once,
+  before the overlay is composed. This is what makes the first boot usable immediately,
+  and a failure here is recorded (`fail:<token>`) and never stops the boot;
+- **`ab-boot` at run time, authoritative**: it reads `<p4>/.ab/grow`, retries
+  `btrfs filesystem resize max /mnt/p4` when the initramfs could not do it (p4 mounted
+  exactly once, btrfs-progs from the platform layer), and records
+  `stage=resize result=<ok|fail:<token>> source=ab-boot` in the p1 ring log. A machine
+  whose initramfs resize failed still reaches the end of the disk on that same boot.
+
+The initramfs half, before any filesystem is mounted:
 
 1. `sfdisk -d` dumps the partition table; the dump is kept as the pre-change copy.
 2. The decision compares the end of p4 with the last usable LBA (`last-lba`). Equal means
@@ -224,7 +234,8 @@ The rendered configuration must satisfy all of the following, otherwise the buil
 | Kernel or initrd fails to load | GRUB retries inline, then `set fallback` returns to the committed slot |
 | initramfs stage fails | Before printing the judge line, a pending slot is abandoned on the ESP (fail-safe abandon); the machine then powers off and the next boot takes the committed slot |
 | Health check fails | Abandon the pending slot and return to the committed slot |
-| p4 growth fails | Record `fail:<token>` in `.ab/grow`, boot on the old 64 MiB geometry |
+| p4 growth fails | Record `fail:<token>` in `.ab/grow`; `ab-boot` retries the filesystem resize at run time |
+| the initramfs resize fails but the table grew | Boot continues on the grown partition; `ab-boot` sizes the filesystem up (`stage=resize result=ok source=ab-boot`) |
 | The boot disk cannot be identified | Record `fail:no-disk`, `fail:ambiguous-disk` or `fail:partitions-split`, never write a table, and continue |
 | `sfdisk` missing from the initramfs | Record `missing-sfdisk`, boot unchanged |
 | A user-data subvolume fails to mount | Report `p4-partial` and continue; the mount point stays empty |

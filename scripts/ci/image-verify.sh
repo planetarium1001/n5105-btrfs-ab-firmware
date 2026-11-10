@@ -8,7 +8,7 @@
 # Checks:
 #   1. four partitions, GPT PARTNAMEs exactly ab-esp / ab-slot-a / ab-slot-b / ab-data
 #      and filesystem LABELs exactly ESP / slot-a / slot-b / data
-#   2. sizes exactly 128/128/128/64 MiB, p1 typed as EFI system partition
+#   2. sizes exactly 128/128/128/128 MiB, p1 typed as EFI system partition
 #   3. p2/p3 hold exactly @sys and @platform; p4 holds @overlay-<version>, @docker, @swap,
 #      @data; every subvolume is top level and nothing is nested
 #   4. @sys matches the upstream rootfs tree file for file (content compare)
@@ -123,7 +123,7 @@ want = [
     ("ab-esp", "ESP", 262144, "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"),
     ("ab-slot-a", "slot-a", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
     ("ab-slot-b", "slot-b", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
-    ("ab-data", "data", 131072, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
+    ("ab-data", "data", 262144, "0FC63DAF-8483-4772-8E79-3D69D8477DE4"),
 ]
 
 readback = {}

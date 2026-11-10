@@ -7,7 +7,7 @@
 #   p1  ab-esp     128 MiB  vfat   ESP      GRUB, ab-slot.cfg, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
 #   p2  ab-slot-a  128 MiB  btrfs  slot-a   @sys, @platform
 #   p3  ab-slot-b  128 MiB  btrfs  slot-b   @sys, @platform
-#   p4  ab-data     64 MiB  btrfs  data     @overlay-<version> (upper/, work/), @docker, @swap, @data
+#   p4  ab-data    128 MiB  btrfs  data     @overlay-<version> (upper/, work/), @docker, @swap, @data
 #
 # PARTNAME keeps the ab- prefix because discovery walks /sys/class/block/*/uevent, where
 # a bare "data" or "esp" would collide with any other disk attached to the same machine.
@@ -15,9 +15,10 @@
 # /etc/platform-release and ab/state.json, and relabelling on every release adds a FAT
 # and btrfs superblock write that power loss can interrupt.
 #
-# The image is 450 MiB: 1 MiB of alignment before p1, 448 MiB of partitions and 1 MiB
-# of tail so the backup GPT has room. p4 only ships 64 MiB by design; first boot grows
-# it to the end of the real disk.
+# The image is 514 MiB: 1 MiB of alignment before p1, 512 MiB of partitions and 1 MiB
+# of tail so the backup GPT has room. p4 ships 128 MiB: a writable layer of 64 MiB could
+# not hold the update fixture (20 MiB into upper left it at 63/64 MiB and overlayfs could
+# not create work/). First boot still grows p4 to the end of the real disk.
 #
 # Filesystem arguments are taken verbatim from docs/partitions.md:
 #   p2/p3  mkfs.btrfs -m dup -d single     (metadata duplication inside a slot)
@@ -84,8 +85,8 @@ mkdir -p "${disk_dir}"
 # 1. Partition table
 # --------------------------------------------------------------------------- #
 
-# 450 MiB in 512-byte sectors: 1 MiB alignment, 448 MiB of partitions, 1 MiB tail.
-image_sectors=921600
+# 514 MiB in 512-byte sectors: 1 MiB alignment, 512 MiB of partitions, 1 MiB tail.
+image_sectors=1052672
 truncate -s $((image_sectors * 512)) "${image}"
 ci_log "blank image: ${image} ($((image_sectors * 512)) bytes)"
 
@@ -114,7 +115,7 @@ unit: sectors
 start=   2048, size=262144, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="ab-esp"
 start= 264192, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-slot-a"
 start= 526336, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-slot-b"
-start= 788480, size=131072, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-data"
+start= 788480, size=262144, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="ab-data"
 SFDISK
 # Re-attach so the kernel scans the table it has just been given; this is more
 # reliable than poking the in-kernel table with partx.
@@ -423,7 +424,7 @@ ci_emit_output "image_gz_bytes" "${gz_bytes}"
 ci_emit_output "rootfs_files" "${rootfs_files}"
 ci_emit_output "rootfs_bytes" "${rootfs_bytes}"
 # part_layout names partitions by GPT PARTNAME, the same key image-verify.sh reads back.
-ci_emit_output "part_layout" "ab-esp:2048+262144,ab-slot-a:264192+262144,ab-slot-b:526336+262144,ab-data:788480+131072"
+ci_emit_output "part_layout" "ab-esp:2048+262144,ab-slot-a:264192+262144,ab-slot-b:526336+262144,ab-data:788480+262144"
 
 ci_log "image bytes: ${image_bytes}, gz bytes: ${gz_bytes}"
 ci_log "stage disk finished"

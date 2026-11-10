@@ -8,7 +8,7 @@ name: ci-s2
 #   p1 ab-esp / ESP     128 MiB vfat   GRUB, grubenv, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
 #   p2 ab-slot-a / slot-a 128 MiB btrfs  @sys, @platform
 #   p3 ab-slot-b / slot-b 128 MiB btrfs  @sys, @platform
-#   p4 ab-data / data     64 MiB btrfs  @overlay-<version> (upper/, work/), @docker, @swap, @data
+#   p4 ab-data / data    128 MiB btrfs  @overlay-<version> (upper/, work/), @docker, @swap, @data
 #
 # The ESP reuses the upstream bootloader (EFI/BOOT/BOOTX64.EFI and boot/grub taken
 # from the upstream combined-EFI image), so this stage adds no build dependency.

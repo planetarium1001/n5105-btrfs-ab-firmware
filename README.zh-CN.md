@@ -23,7 +23,7 @@
 | p1 | `ab-esp` | `ESP` | 128 MiB | vfat | GRUB、槽状态、启动日志 |
 | p2 | `ab-slot-a` | `slot-a` | 128 MiB | btrfs | 槽 A：`@sys` + `@platform` |
 | p3 | `ab-slot-b` | `slot-b` | 128 MiB | btrfs | 槽 B：`@sys` + `@platform` |
-| p4 | `ab-data` | `data` | 至盘尾 | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
+| p4 | `ab-data` | `data` | 128 MiB，首启后扩至盘尾 | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
 
 - PARTNAME（`ab-…`）是引导代码与内核块设备比对时用的稳定名；LABEL 是人或 `blkid`
   读的短名。两套名字都是契约，见 [docs/partitions.zh-CN.md](docs/partitions.zh-CN.md)。
