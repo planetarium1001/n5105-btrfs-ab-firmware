@@ -166,8 +166,8 @@ cat >"${check_dir}/esp/ab/state.json" <<JSON
 }
 JSON
 
-# ab-slot derives p4's health from /proc/mounts, so the scratch partition has to be a
-# real mount. A tmpfs is enough: the check only needs free space and a mount point.
+# ab-slot derives p4's health from /proc/mounts and from asking btrfs about the mount, so
+# the scratch partition has to be a real btrfs, not a tmpfs that merely has free space.
 p4_mounted="false"
 cleanup_p4() {
     if [ "${p4_mounted}" = "true" ]; then
@@ -176,7 +176,11 @@ cleanup_p4() {
 }
 trap cleanup_p4 EXIT
 if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-    sudo mount -t tmpfs -o size=64M tmpfs "${check_dir}/p4" 2>/dev/null && p4_mounted="true"
+    if truncate -s 64M "${check_dir}/p4.img" 2>/dev/null \
+        && sudo mkfs.btrfs -q -f "${check_dir}/p4.img" >/dev/null 2>&1 \
+        && sudo mount -o loop "${check_dir}/p4.img" "${check_dir}/p4" 2>/dev/null; then
+        p4_mounted="true"
+    fi
 fi
 [ "${p4_mounted}" = "true" ] ||
     ci_die "cannot mount a scratch writable partition, the payload check needs one"
