@@ -84,6 +84,8 @@ sed -i -e "s|@PLATFORM_VERSION@|${platform_version}|g" \
 if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${work}/content/platform/etc/platform-release"; then
     ci_die "platform-release still carries unreplaced placeholders"
 fi
+# The layer that ships in a payload must be as runnable as the one baked into the image.
+ci_platform_modes "${work}/content/platform"
 ( cd "${work}/content/platform" && tar --numeric-owner --owner=0 --group=0 -cf "${work}/stage/platform.tar" . )
 
 # --------------------------------------------------------------------------- #

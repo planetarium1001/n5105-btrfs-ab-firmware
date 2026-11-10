@@ -211,6 +211,8 @@ ab-upgrade /payload.tar
 echo "ab-upgrade: exit=$?" >/dev/console
 ab-slot status >/dev/console 2>&1
 echo "S5-UPGRADE-DONE" >/dev/console
+# Run once: the file lives in the writable layer, so removing it keeps later boots clean.
+rm -f /etc/rc.local
 exit 0
 RCLOCAL
     sudo chmod 0755 "${target}/etc/rc.local"

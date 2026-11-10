@@ -248,3 +248,17 @@ ci_lookup_sha256() {
     fi
     printf '%s' "${found}"
 }
+
+# ci_platform_modes <dir>: the platform layer gets its executability from the directory
+# convention rather than from how the files happen to be stored in git or in a tarball,
+# so both the image build and the payload build produce a runnable layer.
+ci_platform_modes() {
+    local dir="$1"
+    [ -d "${dir}" ] || return 0
+    find "${dir}" -type f -exec chmod 0644 {} +
+    local sub
+    for sub in usr/sbin etc/init.d lib/upgrade; do
+        [ -d "${dir}/${sub}" ] || continue
+        find "${dir}/${sub}" -type f -exec chmod 0755 {} +
+    done
+}
