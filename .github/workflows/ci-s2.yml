@@ -109,10 +109,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             btrfs-progs dosfstools gdisk fdisk util-linux e2fsprogs \
             cpio kmod qemu-system-x86 ovmf
-          if [ ! -x /bin/busybox ]; then
-            sudo apt-get install -y --no-install-recommends busybox-static \
-              || sudo apt-get install -y --no-install-recommends busybox-initramfs
-          fi
           mkfs.btrfs --version
           mkfs.vfat --help 2>&1 | head -n 1
           sfdisk --version
@@ -188,18 +184,12 @@ jobs:
           CI_GUEST_SCRIPT: ${{ github.workspace }}/tests/modules/image/guest-assert.sh
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          # Resolve the guest tool paths instead of assuming the distribution layout.
-          tools=""
-          for name in btrfs blkid sfdisk; do
-            path="$(command -v "${name}" || true)"
-            if [ -z "${path}" ]; then
-              echo "::error::${name} is missing; the guest assertion needs it"
-              exit 1
-            fi
-            tools="${tools} ${path}"
-          done
-          # shellcheck disable=SC2086  # the list is intentionally word split
-          CI_TOOL_BINARIES="${tools# }" \
+          # The assertion initramfs carries the same upstream-built tools as the
+          # production one: btrfs, blkid and sfdisk come from the locked packages
+          # (scripts/ci/initramfs-tools.lock.json, toolset "assert"), never from the
+          # runner. Resolving them with `command -v` on the host is what used to put
+          # glibc binaries in an image that has only the musl loader.
+          CI_INITRAMFS_TOOLSET=assert \
             CI_EXTRA_FILES="${CI_GUEST_SCRIPT}:/s2.sh ${CI_EXPECT_FILE}:/s2-expect.txt" \
             bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/assert-initramfs.log"
 

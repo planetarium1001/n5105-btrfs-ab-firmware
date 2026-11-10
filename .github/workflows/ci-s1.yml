@@ -89,22 +89,16 @@ jobs:
           name: upstream-files
           path: ${{ runner.temp }}/ci/fetch
 
-      - name: Install QEMU, btrfs-progs and busybox
+      # No busybox here on purpose: the initramfs takes busybox and the partition
+      # tools from the locked upstream packages (scripts/ci/initramfs-tools.lock.json),
+      # never from the runner. This step only prepares the host side of the probe.
+      - name: Install QEMU and btrfs-progs
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 ovmf btrfs-progs cpio kmod
-          # A static busybox keeps the probe initramfs free of a libc. The dynamic
-          # variant is still acceptable: the initramfs stage copies whatever ldd
-          # reports, so either package produces a bootable image.
-          if [ ! -x /bin/busybox ]; then
-            sudo apt-get install -y --no-install-recommends busybox-static \
-              || sudo apt-get install -y --no-install-recommends busybox-initramfs
-          fi
           qemu-system-x86_64 --version | head -n 1
-          /bin/busybox 2>&1 | head -n 1
           mkfs.btrfs --version
-          (ldd /bin/busybox 2>&1 || true) | head -n 3
 
       - name: Unpack and verify the btrfs module closure
         id: kmods

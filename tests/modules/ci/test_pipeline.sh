@@ -71,11 +71,12 @@ assert_contains "$assemble_script" "initramfs.cpio.gz" "assemble ships the boot 
 assert_eq "$(printf '%s' "${assemble_script}" | grep -c 'missing_members')" "0" \
   "assemble no longer publishes a payload with missing members"
 
-# the initramfs builder must never overwrite the real busybox with an applet symlink
-assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'applet}" = busybox ] && continue' \
-  "applet loop skips the busybox entry itself"
-assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'was replaced by an applet symlink' \
-  "builder asserts busybox is still a regular file"
+# the initramfs builder takes every program from the locked upstream packages, and a
+# glibc interpreter that slips back in is a build failure
+assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'initramfs-tools.sh" --toolset "${toolset}"' \
+  "builder stages the locked toolset instead of copying host binaries"
+assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'glibc artifact in the initramfs' \
+  "builder fails when a glibc artifact reaches the initramfs"
 
 # local static verification
 for script in "$CI_SCRIPTS"/*.sh "$root/tests/run.sh"; do

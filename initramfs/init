@@ -28,15 +28,14 @@ export PATH
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 
-# devtmpfs is the fast path; some kernels ship without it, so fall back to mdev and
-# create the node from /sys when neither worked. Without this the block device the
-# kernel already registered never appears under /dev.
+# devtmpfs is the only device source: the upstream busybox in this initramfs has no
+# mdev applet, and every kernel this image boots carries devtmpfs. The diagnostics stay
+# because a missing block device node is the failure that costs the most time on
+# hardware, and they say which of the two things went wrong.
 ensure_devices() {
     mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
     [ -e "${DEV}" ] && return 0
-    mdev -s 2>/dev/null || true
-    [ -e "${DEV}" ] && return 0
-    echo "[init] device nodes missing, /proc/filesystems: $(tr '\n' ' ' </proc/filesystems)"
+    echo "[init] devtmpfs did not provide ${DEV}, /proc/filesystems: $(tr '\n' ' ' </proc/filesystems)"
     echo "[init] /dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
     return 1
 }
@@ -102,7 +101,9 @@ while [ "${pass}" -le 4 ]; do
         [ -f "${ko}" ] || continue
         name="$(basename "${ko}" .ko | tr '-' '_')"
         [ -d "/sys/module/${name}" ] && continue
-        if insmod "${ko}" 2>/dev/null; then
+        # insmod is the kmod package's applet link (/sbin/insmod -> /sbin/kmod): the
+        # upstream busybox does not carry the insmod applet.
+        if /sbin/insmod "${ko}" 2>/dev/null; then
             LOADED=$((LOADED + 1))
             echo "[init] loaded ${name} (pass ${pass})"
         fi

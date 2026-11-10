@@ -51,13 +51,26 @@ report_failure() {
     exit 1
 }
 
+# `paste` is not in the upstream busybox applet table, so a `... | paste -sd, -` pipeline
+# runs no command at all and hands an empty string back to $( ). Two empty strings are
+# equal, which is how a comparison silently passes; every list built here therefore goes
+# through awk, which is in the locked applet set and joins exactly like `paste -sd,`:
+# comma between records, nothing for an empty input.
+join_comma() {
+    awk 'NR > 1 { printf "," } { printf "%s", $0 }'
+}
+
 echo "[s2] disk image assertion starting"
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
+# The upstream busybox has no mdev applet, so /dev comes from devtmpfs alone: the kernel
+# publishes each node as its driver registers, and virtio_blk only arrives with the
+# modules loaded below. A missing node here is therefore not fatal yet, but it is the
+# state that ends in no-block-device, so report the evidence instead of failing silently.
 if [ ! -b "${DEV}" ]; then
-    # This kernel does not mount devtmpfs itself; mdev creates the device nodes.
-    mdev -s 2>/dev/null
+    echo "[s2] no ${DEV} under /dev yet; /proc/filesystems: $(tr '\n' ' ' </proc/filesystems 2>/dev/null)"
+    echo "[s2] /dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
 fi
 mkdir -p /mnt
 
@@ -89,6 +102,11 @@ fi
 
 MODDIR="/lib/modules/${KVER}"
 [ -d "${MODDIR}" ] || report_failure no-module-directory
+# insmod is the kmod package's applet link (/sbin/insmod -> /sbin/kmod) and the upstream
+# busybox carries no insmod applet, so the locked binary is the working path here. The
+# bare name stays as the fallback for an image built before that package was staged.
+INSMOD=/sbin/insmod
+[ -x "${INSMOD}" ] || INSMOD=insmod
 loaded=0
 pass=1
 while [ "${pass}" -le 4 ]; do
@@ -96,7 +114,7 @@ while [ "${pass}" -le 4 ]; do
         [ -f "${ko}" ] || continue
         name="$(basename "${ko}" .ko | tr '-' '_')"
         [ -d "/sys/module/${name}" ] && continue
-        if insmod "${ko}" 2>/dev/null; then
+        if "${INSMOD}" "${ko}" 2>/dev/null; then
             loaded=$((loaded + 1))
         fi
     done
@@ -158,15 +176,20 @@ while [ -b "${DEV}${part}" ]; do
     found=$((found + 1))
     part=$((part + 1))
 done
-if [ "${found}" != "${expect_parts}" ]; then
-    mdev -s 2>/dev/null
+# The partition nodes are devtmpfs entries the kernel adds once it has read the table,
+# and the upstream busybox has no mdev applet to walk /sys by hand. Give the kernel a
+# moment and count again, so a slow scan is not reported as a wrong partition count.
+tries=0
+while [ "${found}" != "${expect_parts}" ] && [ "${tries}" -lt 5 ]; do
+    sleep 1
+    tries=$((tries + 1))
     found=0
     part=1
     while [ -b "${DEV}${part}" ]; do
         found=$((found + 1))
         part=$((part + 1))
     done
-fi
+done
 [ "${found}" = "${expect_parts}" ] || report_failure "partitions-${found}"
 echo "[s2] found ${found} partitions"
 
@@ -189,7 +212,7 @@ labels="$(probe_labels)"
 label_source=blkid-p
 if [ -z "$(printf '%s' "${labels}" | tr -d ',')" ]; then
     if sfdisk -d "${DEV}" >/tmp/sfdisk.txt 2>/dev/null && grep -q 'name="' /tmp/sfdisk.txt; then
-        labels="$(sed -n 's/.*name="\([^"]*\)".*/\1/p' /tmp/sfdisk.txt | paste -sd, -)"
+        labels="$(sed -n 's/.*name="\([^"]*\)".*/\1/p' /tmp/sfdisk.txt | join_comma)"
         label_source=sfdisk
     fi
 fi
@@ -340,13 +363,17 @@ expect_subvolumes() {
     _have="$(btrfs subvolume list /mnt 2>/dev/null \
         | sed -n 's/.*top level \([0-9]*\) path \(.*\)$/\2|\1/p' \
         | sort)"
-    _paths="$(printf '%s\n' "${_have}" | cut -d'|' -f1 | paste -sd, -)"
+    _paths="$(printf '%s\n' "${_have}" | cut -d'|' -f1 | join_comma)"
     # -o lists subvolumes below a path, and all of them sit below the filesystem
     # root; the per-entry top-level check below is what actually proves flatness.
     _nested=""
     umount /mnt
-    _sorted_paths="$(printf '%s\n' "${_paths}" | tr ',' '\n' | sort | paste -sd, -)"
-    _sorted_want="$(printf '%s\n' "${_want}" | tr ',' '\n' | sort | paste -sd, -)"
+    # An empty read is a failure, not an empty set: joined with a command this image does
+    # not carry, both sides came out empty and compared equal, which is how this check
+    # could pass on a filesystem whose subvolumes were never listed at all.
+    [ -n "${_paths}" ] || report_failure "p${_part}-subvolume-list-empty"
+    _sorted_paths="$(printf '%s\n' "${_paths}" | tr ',' '\n' | sort | join_comma)"
+    _sorted_want="$(printf '%s\n' "${_want}" | tr ',' '\n' | sort | join_comma)"
     [ "${_sorted_paths}" = "${_sorted_want}" ] || report_failure "p${_part}-subvolumes-${_paths}"
     if printf '%s\n' "${_have}" | grep -qv '|5$'; then
         report_failure "p${_part}-not-top-level"

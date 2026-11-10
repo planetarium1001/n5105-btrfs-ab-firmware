@@ -117,10 +117,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf \
             grub-common
-          if [ ! -x /bin/busybox ]; then
-            sudo apt-get install -y --no-install-recommends busybox-static \
-              || sudo apt-get install -y --no-install-recommends busybox-initramfs
-          fi
           mkfs.btrfs --version
           qemu-system-x86_64 --version | head -n 1
 

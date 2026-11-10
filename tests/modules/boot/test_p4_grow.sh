@@ -658,15 +658,14 @@ assert_contains "${builder}" 'lib_dir="${CI_INITRAMFS_LIB_DIR-${CI_REPO_ROOT}/in
   "ac-5 the builder stages initramfs/lib by default"
 assert_contains "${builder}" 'install -m 0644 "${lib}" "${stage}/lib/$(basename "${lib}")"' \
   "ac-5 every helper is installed into /lib of the initramfs"
-assert_contains "${builder}" \
-  '*/initramfs/boot/init) CI_TOOL_BINARIES_OPTIONAL="sfdisk blockdev btrfs blkid"' \
-  "ac-2 the boot initramfs defaults to sfdisk, blockdev, btrfs and blkid"
-assert_contains "${builder}" 'blkid' \
+assert_contains "${builder}" '*initramfs/boot/init) toolset="boot"' \
+  "ac-2 the boot initramfs stages the locked boot toolset (relative paths select it too)"
+assert_contains "$(cat "$root/scripts/ci/initramfs-tools.lock.json")" '"/usr/sbin/blkid"' \
   "ac-2 blkid travels with the boot initramfs, for the label-based identity fallback"
-assert_contains "${builder}" 'ci_warn "optional tool not found in the build host, skipped: ${name}"' \
-  "ac-3 a missing optional tool warns instead of failing the build"
-assert_contains "${builder}" 'copy_tool "${tool_path}"' \
-  "ac-2 the resolved optional tool is copied with its libraries"
+assert_contains "${builder}" 'missing /lib/ld-musl-x86_64.so.1' \
+  "ac-3 a toolset without its loader fails the build instead of booting without /dev"
+assert_contains "${builder}" 'initramfs-tools.sh" --toolset "${toolset}"' \
+  "ac-2 the toolset is staged from the lockfile, not from the build host"
 
 # --------------------------------------------------------------------------- #
 # Device identity wiring (ac-7): no hard-coded boot disk anywhere on the path

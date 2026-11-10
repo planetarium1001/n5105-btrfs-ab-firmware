@@ -35,7 +35,9 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `verify.sh` | verify | `bash -n`/`sh -n`, ShellCheck, `python3 scripts/check_design.py all` |
 | `kmods.sh` | s1 | fetch, verify and unpack the btrfs module closure against the lockfile |
 | `apk_extract.py` | s1 | unpack `.ko` files out of apk-tools v3 (ADB) containers |
-| `initramfs.sh` | s1 | build the minimal probe initramfs |
+| `initramfs.sh` | s1, s2, s3, s4, s5 | build the initramfs for one toolset (`probe`/`boot`/`assert`) |
+| `initramfs-tools.sh` | via `initramfs.sh` | stage the locked upstream programs and libraries into the initramfs |
+| `apk_tools.py` | via `initramfs-tools.sh` | verify `.apk` digests, extract files, write the lockfile (`lock`) |
 | `qemu-smoke.sh` | s1, s2, s3, s4, s5 | boot it under QEMU and assert the frozen judge line; `CI_QEMU_MODE=uefi-disk` boots the ESP through OVMF so GRUB, not QEMU, supplies kernel/initrd/cmdline |
 | `apk-crosscheck.sh` | s1 | optional: compare the closure with what upstream `apk` installs |
 | `esp-prepare.sh` | s2 | take the ESP tree (GRUB) from the upstream combined-EFI image |
@@ -259,6 +261,66 @@ Two consequences worth knowing:
   to a default slot. The writable layer is named after the upstream release
   (`@overlay-25.12.2`, or `@overlay-25.12.2-r2` for a re-release); `generation` stays
   an integer because version strings do not sort correctly.
+
+### The programs in the initramfs
+
+The initramfs runs before the platform layer is mounted, so it carries its own copy of
+busybox, the partition tools and their libraries. Those programs are **not** taken from
+the build host: a `ubuntu-latest` runner supplies glibc binaries whose versions drift
+with the runner image, and a boot path that changes because a runner was upgraded is not
+reproducible. They come from the same ImmortalWrt release as the rest of the image, and
+`scripts/ci/initramfs-tools.lock.json` is the contract.
+
+| Program | Package (feed) | Why it is in the initramfs |
+|---|---|---|
+| `/bin/busybox` + 119 applets | `busybox-1.37.0-r6` (base) | shell, mount, sed/awk/grep, tar, switch_root — the init is a busybox shell script |
+| `/lib/libc.so`, `/lib/ld-musl-x86_64.so.1` | `libc-1.2.5-r5` (target) | the one libc in here; every program below links against it |
+| `/lib/libgcc_s.so.1` | `libgcc1-14.3.0-r5` (target) | busybox's DT_NEEDED |
+| `/sbin/kmod` + `/sbin/insmod` | `kmod-32-r1` (packages) | the upstream busybox has no `insmod` applet; module loading needs it |
+| `/usr/sbin/sfdisk` | `sfdisk-2.41.5-r1` (base) | first-boot growth: dump, rewrite, `--no-reread` |
+| `/usr/sbin/blockdev` | `blockdev-2.41.5-r1` (base) | `--rereadpt` after the table is rewritten |
+| `/usr/sbin/blkid` | `blkid-2.41.5-r1` (base) | label-based identity fallback on kernels without PARTNAME |
+| `/usr/sbin/btrfs` | `btrfs-progs-6.11-r3` (packages) | `btrfs filesystem resize max` for the grown p4 |
+| `libfdisk1`, `libblkid1`, `libuuid1`, `libsmartcols1` | `*-2.41.5-r1` (base) | the closure of the util-linux tools above |
+| `libncursesw.so.6` | `libncurses6-6.4-r3` (base) | sfdisk's DT_NEEDED, measured rather than guessed |
+| `libz.so.1`, `liblzo2.so.2` | `zlib-1.3.1-r1`, `liblzo2-2.10-r5` | btrfs-progs/kmod closure |
+
+Two consequences are worth knowing before touching this:
+
+- **busybox cannot be run on the build host.** It is a musl binary, so `busybox --list`
+  would need `/lib/ld-musl-x86_64.so.1` on the runner. The applet list is therefore read
+  from the applet table inside the package image (`apk_tools.py lock`) and stored in the
+  lockfile; the build links exactly those names and never executes the host busybox.
+- **there is no `mdev`.** The upstream busybox does not compile that applet in, so the
+  initramfs takes `/dev` from devtmpfs alone (every kernel this image ships has it) and
+  prints `/proc/filesystems` plus the `/dev` listing when the block device never appears.
+
+`initramfs.sh` also refuses to finish when a glibc artifact (`ld-linux*`, `libc.so.6`,
+`x86_64-linux-gnu`, `libreadline`, `libtinfo`, `libudev`) is anywhere in the tree, and
+when `/lib/ld-musl-x86_64.so.1` is not the expected symlink to `libc.so`.
+
+#### Bumping the upstream pin
+
+The tool versions follow `CI_UPSTREAM_VERSION_PIN` in `lib.sh`; they never move on their
+own. A pin bump is one deliberate step, and the lockfile diff is the record of it:
+
+```bash
+# 1. bump the pin
+$EDITOR scripts/ci/lib.sh                     # CI_UPSTREAM_VERSION_PIN=25.12.3
+
+# 2. regenerate the lockfile from the new release (network, a few MiB)
+bash scripts/ci/initramfs-tools.sh --write-lock
+
+# 3. review the diff: versions, apk digests, file digests, applet list
+git diff scripts/ci/initramfs-tools.lock.json
+
+# 4. commit both files together - a lockfile that disagrees with the pin fails the build
+```
+
+Every build then downloads exactly the packages the lockfile names, verifies the `.apk`
+sha256 and the sha256 of every extracted file, and installs them at the recorded paths.
+Any mismatch names the offending file and stops the stage; there is no fallback to a host
+program and no "warn and continue".
 
 ## S4: the slot state machine
 

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "generated_by": "tests/fixtures/apk-tools (hand written fixture, not the build lockfile)",
+  "upstream_version": "25.12.2",
+  "feeds": {
+    "base": "packages/x86_64/base",
+    "packages": "packages/x86_64/packages",
+    "target": "targets/x86/64/packages"
+  },
+  "toolsets": {
+    "boot": [
+      "libuuid1"
+    ]
+  },
+  "notes": [
+    "Fixture for tests/modules/ci/test_initramfs_tools.sh only; the build lockfile is scripts/ci/initramfs-tools.lock.json.",
+    "One real upstream package (libuuid1-2.41.5-r1.apk, next to this file) so that the installer's sha256 checks can be exercised without the network."
+  ],
+  "packages": [
+    {
+      "name": "libuuid1",
+      "feed": "base",
+      "file": "libuuid1-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "a96bfcc3b0342770609dbbcb72719a0ccb65eb80490226843f3c9166293ae909",
+      "toolsets": [
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libuuid.so.1",
+          "mode": "0644",
+          "size": 28741,
+          "sha256": "ca40d6c64da199eba93b8f374f876225a0a283d9f94a6c15ddf56ad2354cde05",
+          "toolsets": [
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    }
+  ]
+}

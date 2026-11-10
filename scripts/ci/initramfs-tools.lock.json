@@ -1,0 +1,1125 @@
+{
+  "schema": 1,
+  "generated_by": "scripts/ci/apk_tools.py lock",
+  "upstream_version": "25.12.2",
+  "feeds": {
+    "base": "packages/x86_64/base",
+    "packages": "packages/x86_64/packages",
+    "target": "targets/x86/64/packages"
+  },
+  "toolsets": {
+    "probe": [
+      "busybox",
+      "kmod",
+      "libc"
+    ],
+    "boot": [
+      "blkid",
+      "blockdev",
+      "btrfs-progs",
+      "busybox",
+      "kmod",
+      "libc",
+      "sfdisk"
+    ],
+    "assert": [
+      "blkid",
+      "blockdev",
+      "btrfs-progs",
+      "busybox",
+      "kmod",
+      "libc",
+      "sfdisk"
+    ]
+  },
+  "required_applets": [
+    "[",
+    "ash",
+    "awk",
+    "basename",
+    "cat",
+    "chmod",
+    "cmp",
+    "cp",
+    "cut",
+    "date",
+    "dd",
+    "dirname",
+    "dmesg",
+    "echo",
+    "egrep",
+    "env",
+    "expr",
+    "false",
+    "fgrep",
+    "find",
+    "flock",
+    "free",
+    "grep",
+    "gunzip",
+    "gzip",
+    "head",
+    "hexdump",
+    "id",
+    "kill",
+    "killall",
+    "less",
+    "ln",
+    "ls",
+    "md5sum",
+    "mkdir",
+    "mkfifo",
+    "mknod",
+    "mktemp",
+    "mount",
+    "mv",
+    "pidof",
+    "pivot_root",
+    "poweroff",
+    "printf",
+    "ps",
+    "pwd",
+    "readlink",
+    "reboot",
+    "rm",
+    "rmdir",
+    "sed",
+    "seq",
+    "sh",
+    "sha256sum",
+    "sleep",
+    "sort",
+    "strings",
+    "switch_root",
+    "sync",
+    "sysctl",
+    "tail",
+    "tar",
+    "tee",
+    "test",
+    "top",
+    "touch",
+    "tr",
+    "true",
+    "umount",
+    "uname",
+    "uniq",
+    "uptime",
+    "wc",
+    "which",
+    "xargs",
+    "yes"
+  ],
+  "applets": [
+    "[",
+    "[[",
+    "ash",
+    "awk",
+    "basename",
+    "brctl",
+    "cat",
+    "chgrp",
+    "chmod",
+    "chown",
+    "chroot",
+    "clear",
+    "cmp",
+    "cp",
+    "crond",
+    "crontab",
+    "cut",
+    "date",
+    "dd",
+    "df",
+    "dirname",
+    "dmesg",
+    "du",
+    "echo",
+    "egrep",
+    "env",
+    "expr",
+    "false",
+    "fgrep",
+    "find",
+    "flock",
+    "free",
+    "fsync",
+    "grep",
+    "gunzip",
+    "gzip",
+    "halt",
+    "head",
+    "hexdump",
+    "hwclock",
+    "id",
+    "ifconfig",
+    "ip",
+    "kill",
+    "killall",
+    "less",
+    "ln",
+    "lock",
+    "logger",
+    "login",
+    "ls",
+    "md5sum",
+    "mkdir",
+    "mkfifo",
+    "mknod",
+    "mkswap",
+    "mktemp",
+    "mount",
+    "mv",
+    "nc",
+    "netmsg",
+    "netstat",
+    "nice",
+    "nslookup",
+    "ntpd",
+    "passwd",
+    "pgrep",
+    "pidof",
+    "ping",
+    "ping6",
+    "pivot_root",
+    "poweroff",
+    "printf",
+    "ps",
+    "pwd",
+    "readlink",
+    "reboot",
+    "reset",
+    "resize",
+    "rm",
+    "rmdir",
+    "route",
+    "sed",
+    "seq",
+    "setsid",
+    "sh",
+    "sha256sum",
+    "sleep",
+    "sort",
+    "start-stop-daemon",
+    "strings",
+    "swapoff",
+    "swapon",
+    "switch_root",
+    "sync",
+    "sysctl",
+    "tail",
+    "tar",
+    "taskset",
+    "tee",
+    "test",
+    "time",
+    "top",
+    "touch",
+    "tr",
+    "traceroute",
+    "traceroute6",
+    "true",
+    "udhcpc",
+    "umount",
+    "uname",
+    "uniq",
+    "uptime",
+    "vi",
+    "wc",
+    "which",
+    "xargs",
+    "yes",
+    "zcat"
+  ],
+  "notes": [
+    "Every program and library the initramfs carries comes from this release's feeds.",
+    "Digests are recorded from what the feed publishes; a drift is a build failure.",
+    "The applet table is read from the busybox image, not from the build host."
+  ],
+  "packages": [
+    {
+      "name": "blkid",
+      "feed": "base",
+      "file": "blkid-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "38d6a227bc977311d39ca0477c73b11007eec8edb4c1b31aa474bfe170f8d615",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/usr/sbin/blkid",
+          "mode": "0755",
+          "size": 114732,
+          "sha256": "efd17b0d66bbc2fa298ba1fc4822fd594e0ce7feae8227772abad280746bbbd6",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "blockdev",
+      "feed": "base",
+      "file": "blockdev-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "7d54655a1bb784d2119ae0d330dd05cfa6bf53c28852bee1cf28d7467270923b",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/usr/sbin/blockdev",
+          "mode": "0755",
+          "size": 73737,
+          "sha256": "056b12c1dcfdfe61de7bb7e2beeb6d138fbd14fe0e317df030c6eb480525311f",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "btrfs-progs",
+      "feed": "packages",
+      "file": "btrfs-progs-6.11-r3.apk",
+      "version": "6.11-r3",
+      "apk_sha256": "2989191d0895b24662f504dd0587dbe196355611e5085360b0453974e2133a88",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/usr/sbin/btrfs",
+          "mode": "0755",
+          "size": 1107855,
+          "sha256": "65d60fe2bebf1402435539c4344de9bdd2d368a49bdae701f2b7abb94938396c",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "busybox",
+      "feed": "base",
+      "file": "busybox-1.37.0-r6.apk",
+      "version": "1.37.0-r6",
+      "apk_sha256": "2ba5a49d6d08ecd9c4674efe161ffed21310c400363fb06ecef67348f433bdd0",
+      "toolsets": [
+        "assert",
+        "boot",
+        "probe"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/bin/busybox",
+          "mode": "0755",
+          "size": 405522,
+          "sha256": "216d167391983f5f46acadb552588df7df3ba9bdafbdb27113c45da91a73448a",
+          "toolsets": [
+            "assert",
+            "boot",
+            "probe"
+          ]
+        }
+      ],
+      "links": [
+        {
+          "path": "/bin/[",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/[[",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ash",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/awk",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/basename",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/brctl",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/cat",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/chgrp",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/chmod",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/chown",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/chroot",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/clear",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/cmp",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/cp",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/crond",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/crontab",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/cut",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/date",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/dd",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/df",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/dirname",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/dmesg",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/du",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/echo",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/egrep",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/env",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/expr",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/false",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/fgrep",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/find",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/flock",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/free",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/fsync",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/grep",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/gunzip",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/gzip",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/halt",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/head",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/hexdump",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/hwclock",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/id",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ifconfig",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ip",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/kill",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/killall",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/less",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ln",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/lock",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/logger",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/login",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ls",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/md5sum",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mkdir",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mkfifo",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mknod",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mkswap",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mktemp",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mount",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/mv",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/nc",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/netmsg",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/netstat",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/nice",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/nslookup",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ntpd",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/passwd",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/pgrep",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/pidof",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ping",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ping6",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/pivot_root",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/poweroff",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/printf",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/ps",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/pwd",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/readlink",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/reboot",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/reset",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/resize",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/rm",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/rmdir",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/route",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sed",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/seq",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/setsid",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sh",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sha256sum",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sleep",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sort",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/start-stop-daemon",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/strings",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/swapoff",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/swapon",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/switch_root",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sync",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/sysctl",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/tail",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/tar",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/taskset",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/tee",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/test",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/time",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/top",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/touch",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/tr",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/traceroute",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/traceroute6",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/true",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/udhcpc",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/umount",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/uname",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/uniq",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/uptime",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/vi",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/wc",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/which",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/xargs",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/yes",
+          "target": "/bin/busybox"
+        },
+        {
+          "path": "/bin/zcat",
+          "target": "/bin/busybox"
+        }
+      ]
+    },
+    {
+      "name": "kmod",
+      "feed": "packages",
+      "file": "kmod-32-r1.apk",
+      "version": "32-r1",
+      "apk_sha256": "da2877cd50e91de88e00053ccfefc08c43adb1d430604a29c071b7c249f552a0",
+      "toolsets": [
+        "assert",
+        "boot",
+        "probe"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/sbin/kmod",
+          "mode": "0755",
+          "size": 131093,
+          "sha256": "d13f26d9ee6f95d5dc3fe6d1715572180edd0aa2caa87bb0665ffdc711e52703",
+          "toolsets": [
+            "assert",
+            "boot",
+            "probe"
+          ]
+        }
+      ],
+      "links": [
+        {
+          "path": "/sbin/insmod",
+          "target": "/sbin/kmod"
+        },
+        {
+          "path": "/sbin/lsmod",
+          "target": "/sbin/kmod"
+        },
+        {
+          "path": "/sbin/modprobe",
+          "target": "/sbin/kmod"
+        },
+        {
+          "path": "/sbin/rmmod",
+          "target": "/sbin/kmod"
+        }
+      ]
+    },
+    {
+      "name": "libblkid1",
+      "feed": "base",
+      "file": "libblkid1-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "64e207fedafbd09f347cfecbe7dc6c0cb5f2dcf98c79b1f9f5bbe1f68ff3e9d6",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libblkid.so.1",
+          "mode": "0644",
+          "size": 258961,
+          "sha256": "7abc002276652ab056acb3df3d292d4cf5aeeecf52b5d759ed4ace1c2d07b0ba",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "libc",
+      "feed": "target",
+      "file": "libc-1.2.5-r5.apk",
+      "version": "1.2.5-r5",
+      "apk_sha256": "5c510785d3ac2e540a70d58f628bf70fa6b25732d3169e241b844c041a780197",
+      "toolsets": [
+        "assert",
+        "boot",
+        "probe"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/lib/libc.so",
+          "mode": "0755",
+          "size": 529412,
+          "sha256": "2edc9c0799ce7c84f6df04ea4c4eaa149fab7d107f3333d6c4ba4528e95c1787",
+          "toolsets": [
+            "assert",
+            "boot",
+            "probe"
+          ]
+        }
+      ],
+      "links": [
+        {
+          "path": "/lib/ld-musl-x86_64.so.1",
+          "target": "/lib/libc.so"
+        }
+      ]
+    },
+    {
+      "name": "libfdisk1",
+      "feed": "base",
+      "file": "libfdisk1-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "7ec971718a734f13ca5ddabb762c523b552c062385e6f4d2ed11195a9c010c0a",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libfdisk.so.1",
+          "mode": "0644",
+          "size": 335913,
+          "sha256": "30cb43ce6117c7c332d39040d0666fe81253afad883aeec3c3341f84aa0a3266",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "libgcc1",
+      "feed": "target",
+      "file": "libgcc1-14.3.0-r5.apk",
+      "version": "14.3.0-r5",
+      "apk_sha256": "e3f17588dd89eab3cac20f88ffa8a7acaa4146e6c83e3a1192be6450fd231d01",
+      "toolsets": [
+        "assert",
+        "boot",
+        "probe"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libgcc_s.so.1",
+          "mode": "0644",
+          "size": 114704,
+          "sha256": "ccb765bb595832f7ace16d3c7c45875e5bb60ed94aeda458e275c3fcafe5facc",
+          "toolsets": [
+            "assert",
+            "boot",
+            "probe"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "liblzo2",
+      "feed": "packages",
+      "file": "liblzo2-2.10-r5.apk",
+      "version": "2.10-r5",
+      "apk_sha256": "b32711dcd72af71e401b4e5c90b74804510b852dbbde8bd7b5d81e1ee59ef750",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/liblzo2.so.2",
+          "mode": "0644",
+          "size": 110595,
+          "sha256": "c0aac4e5d3215e86e2bb0770d56df075b92e65af3d88530a45272ba9d020a655",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "libncurses6",
+      "feed": "base",
+      "file": "libncurses6-6.4-r3.apk",
+      "version": "6.4-r3",
+      "apk_sha256": "af3e1e63bcbcf897b147f9f0d2f4cf60b43dc4ed2e871997f5f54fdfbc561dd5",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libncursesw.so.6",
+          "mode": "0644",
+          "size": 291985,
+          "sha256": "6668c1313e31c99aa8644d7b14721ebc4359728547ea6e36370263d6851f588c",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "libsmartcols1",
+      "feed": "base",
+      "file": "libsmartcols1-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "0a6a5e7974cd01edd2260bf237d16f904d9e0685ca2e89dcf8bea8d7048b2e0f",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libsmartcols.so.1",
+          "mode": "0644",
+          "size": 135177,
+          "sha256": "fb2719bdf20e521fac28438f48fc150352dd15c15b2e258dc4a5836a74f5ef8e",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "libuuid1",
+      "feed": "base",
+      "file": "libuuid1-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "a96bfcc3b0342770609dbbcb72719a0ccb65eb80490226843f3c9166293ae909",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libuuid.so.1",
+          "mode": "0644",
+          "size": 28741,
+          "sha256": "ca40d6c64da199eba93b8f374f876225a0a283d9f94a6c15ddf56ad2354cde05",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "sfdisk",
+      "feed": "base",
+      "file": "sfdisk-2.41.5-r1.apk",
+      "version": "2.41.5-r1",
+      "apk_sha256": "f60451a26ae2cd6d0c52905e9dacdd0096ab3d51b047b8e52c051dd9200d7380",
+      "toolsets": [
+        "assert",
+        "boot"
+      ],
+      "files": [
+        {
+          "kind": "exec",
+          "path": "/usr/sbin/sfdisk",
+          "mode": "0755",
+          "size": 135177,
+          "sha256": "c68bd25b06e4f610a38b58508f033635c9aa98ce28a82402d3c331fcb3b6c220",
+          "toolsets": [
+            "assert",
+            "boot"
+          ]
+        }
+      ],
+      "links": []
+    },
+    {
+      "name": "zlib",
+      "feed": "base",
+      "file": "zlib-1.3.1-r1.apk",
+      "version": "1.3.1-r1",
+      "apk_sha256": "2e72549472ec1c1aee38a149f5757aa0a216a6978bf3cd567312538cdee78d5f",
+      "toolsets": [
+        "assert",
+        "boot",
+        "probe"
+      ],
+      "files": [
+        {
+          "kind": "shared",
+          "path": "/lib/libz.so.1",
+          "mode": "0644",
+          "size": 77827,
+          "sha256": "8bee26b23ad58457139c40cbc4403e4a0227da4e273d97a63ca06610e11079e3",
+          "toolsets": [
+            "assert",
+            "boot",
+            "probe"
+          ]
+        }
+      ],
+      "links": []
+    }
+  ]
+}

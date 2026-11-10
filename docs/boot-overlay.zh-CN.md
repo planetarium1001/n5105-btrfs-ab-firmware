@@ -71,7 +71,7 @@ result=<state> last_lba=<n>
 
 记录写在 p4 根子卷上，而不是某个代际层里，因此它能跨 `@overlay-<version>` 存活并在切换根之后仍可读：`ab-boot` 把该子卷挂到 `/mnt/p4` 并把这一行追加进 p1 引导日志。写入走临时文件加 rename；文件缺失对读取方表示“未记录”，永远不是错误；镜像本身不带这个文件。
 
-扩容只扩不缩，并且幂等，因为判定只依赖盘上的分区表：同一块盘第二次启动读到 `already-full`，不会碰分区表。`sfdisk` 与 `btrfs` 是 boot initramfs 的可选成员（`CI_TOOL_BINARIES_OPTIONAL`）；构建机缺它们时镜像照常产出，启动时记为 `missing-sfdisk` 或 `fail:btrfs-resize`，而不是起不来。
+扩容只扩不缩，并且幂等，因为判定只依赖盘上的分区表：同一块盘第二次启动读到 `already-full`，不会碰分区表。`sfdisk`、`blockdev` 与 `btrfs` 属于 boot initramfs 的 `boot` 工具集（`scripts/ci/initramfs-tools.lock.json`），因此一定存在、且与整份 release 的字节一致；工具集若丢了它们，构建直接失败。启动时的 `missing-sfdisk` 与 `fail:btrfs-resize` 仍然保留，但语义变成“分区表/设备有问题”的运行时诊断，而不是“构建机恰好没装”。
 
 ## 层职责
 

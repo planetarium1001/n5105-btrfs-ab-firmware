@@ -113,9 +113,11 @@ an error for the reader, and an image ships without one.
 
 Growth only ever enlarges p4 and is idempotent, because the decision depends on nothing
 but the table on the disk: a second boot on the same disk reads `already-full` and does
-not touch the table. `sfdisk` and `btrfs` are optional members of the boot initramfs
-(`CI_TOOL_BINARIES_OPTIONAL`); when the build host lacks them the image still builds, and
-the boot reports `missing-sfdisk` or `fail:btrfs-resize` instead of failing to start.
+not touch the table. `sfdisk`, `blockdev` and `btrfs` belong to the `boot` toolset of the
+initramfs (`scripts/ci/initramfs-tools.lock.json`), so they are always present and always
+the same bytes as the rest of the release; if the toolset ever lost them the build would
+fail, and the boot-time `missing-sfdisk` / `fail:btrfs-resize` states remain as the
+runtime diagnosis of a damaged table rather than of a missing tool.
 
 ## Layer responsibilities
 
