@@ -86,9 +86,9 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.3` — the image boots through a layered overlay root, commits a slot
-after health checks pass, abandons a failing candidate and rolls back to the committed
-slot. The goal itself is not yet reached.
+Current version: `0.0.4` — a payload can be written into the inactive slot, committed on
+the next healthy boot, and its replaced layer is reclaimed; a broken writable partition
+degrades instead of blocking the boot. The goal itself is not yet reached.
 
 ## License
 
