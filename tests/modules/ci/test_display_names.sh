@@ -171,17 +171,22 @@ for path in workflows:
 for num in range(1, 6):
     text = (root / ".github" / "workflows" / f"ci-s{num}.yml").read_text(encoding="utf-8")
     evidence_blocks = re.findall(r"name: evidence-s%d\n(?:.*\n)*?\s*if-no-files-found" % num, text)
+    if not evidence_blocks:
+        problems.append(f"ci-s{num}.yml: no evidence-s{num} artifact")
     for block in evidence_blocks:
+        # The stage logs - serial copies included - travel with the evidence, once.
+        if "ci/logs" not in block:
+            problems.append(f"ci-s{num}.yml: evidence-s{num} does not carry the stage logs")
         if "serial-" in block:
-            problems.append(f"ci-s{num}.yml: evidence-s{num} still ships a serial copy")
+            problems.append(f"ci-s{num}.yml: evidence-s{num} uploads a second copy of a serial log")
     logs_blocks = re.findall(r"name: logs-s%d\n(?:.*\n)*?\s*if-no-files-found" % num, text)
     if not logs_blocks:
         problems.append(f"ci-s{num}.yml: no logs-s{num} artifact")
     for block in logs_blocks:
         if "diagnostics/summary.txt" not in block:
             problems.append(f"ci-s{num}.yml: logs-s{num} does not carry the diagnostics summary")
-        if "ci/logs" not in block:
-            problems.append(f"ci-s{num}.yml: logs-s{num} does not carry the stage logs")
+        if "ci/logs" in block:
+            problems.append(f"ci-s{num}.yml: logs-s{num} duplicates the stage logs")
 
 release = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 for needle in ("name: image-install", "name: payload-upgrade"):

@@ -36,6 +36,10 @@ sha256sum -c SHA256SUMS
 | Actions 产物（tag 构建） | `image-install` | 与发布版同一份字节，用于发布前测试 |
 | Actions 产物（每次构建） | `image-probe` | **永远不要写它**：它是 S1 模块探针，找 `/dev/vda`，在真机上会直接关机 |
 
+文件名带的是板型、产品线、上游基线与角色，不带我们自己的发版计数器 —— 那个在 GitHub release 上。
+更早的发布把同一份字节叫 `n5105-ab-<platform>-<upstream>.img.gz` 与 `.tar`；如果你的脚本还在用
+那个模式，它就是同一个文件，只是在扩展名前多了 `-install` 或 `-upgrade`。
+
 镜像自己会说明身份：挂上 ESP（`PARTNAME ab-esp`，FAT），读 `ab/image.json` —— `"kind": "boot"`
 才是可写的，`"kind": "probe"` 是 CI 夹具。发布作业会拒绝 `kind` 不是 `boot` 的镜像，并且会把
 镜像里的 `initrd-a` 解出来确认它是生产 init。

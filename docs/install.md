@@ -44,6 +44,12 @@ publishes exactly one of those, under one of two names:
 | Actions artifact (tag builds) | `image-install` | the same bytes, for testing before a release |
 | Actions artifact (every build) | `image-probe` | **never write this**: it is the S1 module probe, it looks for `/dev/vda` and powers off on real hardware |
 
+File names carry the board, the product line, the upstream base and the role - not our own
+release counter, which lives on the GitHub release instead. Earlier releases named the
+same bytes `n5105-ab-<platform>-<upstream>.img.gz` and `.tar`; if a script of yours still
+uses that pattern, it is the same file with `-install` or `-upgrade` in front of the
+extension.
+
 Which one an image carries is recorded inside it: mount the ESP (`PARTNAME ab-esp`, FAT) and
 read `ab/image.json` - `"kind": "boot"` is writable, `"kind": "probe"` is a CI fixture. The
 release job refuses to publish anything whose `kind` is not `boot`, and also reads `initrd-a`

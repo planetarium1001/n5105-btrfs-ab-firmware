@@ -297,6 +297,7 @@ jobs:
         with:
           name: evidence-s3
           path: |
+            ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/qemu/qemu-*.out
             ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
             ${{ runner.temp }}/ci/disk/grub.cfg
@@ -309,9 +310,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: logs-s3
-          path: |
-            ${{ runner.temp }}/ci/logs
-            ${{ runner.temp }}/ci/diagnostics/summary.txt
+          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7
 
@@ -321,7 +320,7 @@ jobs:
         if: always()
         run: |
           mkdir -p "${RUNNER_TEMP}/ci"
-          cat "${CI_LOG_DIR:-${RUNNER_TEMP}}/ci/logs"/*.log >"${RUNNER_TEMP}/ci/s3-judge.log" 2>/dev/null || true
+          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s3-judge.log" 2>/dev/null || true
           bash scripts/ci/stage-summary.sh \
             --stage s3 \
             --result "${{ job.status }}" \

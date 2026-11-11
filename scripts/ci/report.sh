@@ -225,11 +225,7 @@ fi
 {
     printf '## CI summary\n'
     printf '\n'
-    if [ "${overall}" = "success" ]; then
-        printf '**Verdict: %s** - next: `%s`\n' "${headline}" "${next_command}"
-    else
-        printf '**Verdict: %s** - next: `%s`\n' "${headline}" "${next_command}"
-    fi
+    printf '**Verdict: %s** - next: `%s`\n' "${headline}" "${next_command}"
     printf '\n'
     printf '| stage | verdict | duration | artifact |\n'
     printf '| --- | --- | --- | --- |\n'
@@ -240,7 +236,7 @@ fi
     report_row "S2 image" "${CI_S2_RESULT:-}" "${d_s2}" "\`image-probe\` / \`evidence-s2\` / \`logs-s2\`"
     report_row "S3 boot" "${CI_S3_RESULT:-}" "${d_s3}" "\`image-install\` / \`evidence-s3\` / \`logs-s3\`"
     report_row "S4 slots" "${CI_S4_RESULT:-}" "${d_s4}" "\`evidence-s4\` / \`logs-s4\`"
-    report_row "S5 upgrade" "${CI_S5_RESULT:-}" "${d_s5}" "\`evidence-s5\` / \`logs-s5\`"
+    report_row "S5 upgrade" "${CI_S5_RESULT:-}" "${d_s5}" "\`payload-upgrade\` / \`evidence-s5\` / \`logs-s5\`"
     report_row "static checks" "${CI_VERIFY_RESULT:-}" "${d_verify}" "\`logs-verify\`"
     printf '\n'
     printf '| field | value |\n'

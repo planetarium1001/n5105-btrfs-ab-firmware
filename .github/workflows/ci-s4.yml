@@ -432,6 +432,7 @@ jobs:
         with:
           name: evidence-s4
           path: |
+            ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/ab-phase/evidence
             ${{ runner.temp }}/ci/disk/grub.cfg
             ${{ runner.temp }}/ci/disk/ab-slot.cfg
@@ -444,9 +445,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: logs-s4
-          path: |
-            ${{ runner.temp }}/ci/logs
-            ${{ runner.temp }}/ci/diagnostics/summary.txt
+          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7
 
@@ -456,10 +455,10 @@ jobs:
         if: always()
         run: |
           mkdir -p "${RUNNER_TEMP}/ci"
-          cat "${CI_LOG_DIR:-${RUNNER_TEMP}}/ci/logs"/*.log >"${RUNNER_TEMP}/ci/s4-judge.log" 2>/dev/null || true
+          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s4-judge.log" 2>/dev/null || true
           bash scripts/ci/stage-summary.sh \
             --stage s4 \
             --result "${{ job.status }}" \
             --judge-log "${RUNNER_TEMP}/ci/s4-judge.log" \
             --artifact evidence-s4 \
-            --artifact-file "${RUNNER_TEMP}/ci/disk/n5105-ab-image.img"
+            --artifact-file "${RUNNER_TEMP}/ci/disk/platform.tar"

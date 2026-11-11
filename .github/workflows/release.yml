@@ -105,6 +105,7 @@ jobs:
           print(f"upstream_version={doc['rootfs']}")
           print(f"rootfs_sha={members['rootfs.tar.gz']['sha256']}")
           print(f"kernel_sha={members['kernel.bin']['sha256']}")
+          print(f"kernel_package={doc.get('kernel', 'n/a')}")
           PYTHON
           . "${RUNNER_TEMP}/ci/versions.env"
           {
@@ -113,6 +114,7 @@ jobs:
             printf 'upstream_version=%s\n' "${upstream_version}"
             printf 'rootfs_sha=%s\n' "${rootfs_sha}"
             printf 'kernel_sha=%s\n' "${kernel_sha}"
+            printf 'kernel_package=%s\n' "${kernel_package:-n/a}"
             printf 'image_gz=%s\n' "$(ls "${RUNNER_TEMP}/ci/disk"/*.img.gz | head -n 1)"
           } >>"${GITHUB_OUTPUT}"
 
@@ -140,6 +142,7 @@ jobs:
           TAG: ${{ steps.versions.outputs.tag }}
           UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
           PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+          KERNEL_PACKAGE: ${{ steps.versions.outputs.kernel_package }}
         run: |
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/ci/release"
@@ -150,11 +153,8 @@ jobs:
           }
           image="$(awk '$2 ~ /\.img\.gz$/ { print $2; exit }' "${sums}")"
           payload="$(awk '$2 ~ /\.tar$/ { print $2; exit }' "${sums}")"
-          # The versions step resolves the upstream release and the platform version; the
-          # kernel package is not among its outputs and this step does not go looking for it.
-          kernel_package="n/a"
           {
-            printf '## Release %s\n\n' "${TAG}"
+            printf '## Pre-publish check - %s\n\n' "${TAG}"
             printf '| item | value |\n'
             printf '| --- | --- |\n'
             printf '| image kind check | `%s` |\n' "${KIND}"
@@ -166,7 +166,7 @@ jobs:
             fi
             printf '| upstream version | `%s` |\n' "${UPSTREAM_VERSION}"
             printf '| platform version | `%s` |\n' "${PLATFORM_VERSION}"
-            printf '| kernel package | `%s` |\n' "${kernel_package}"
+            printf '| kernel package | `%s` |\n' "${KERNEL_PACKAGE:-n/a}"
           } >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Publish the GitHub Release

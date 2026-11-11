@@ -236,6 +236,7 @@ jobs:
         with:
           name: evidence-s2
           path: |
+            ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/disk/sfdisk-verify.json
             ${{ runner.temp }}/ci/disk/sfdisk.log
             ${{ runner.temp }}/ci/disk/s2-expect.txt
@@ -249,9 +250,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: logs-s2
-          path: |
-            ${{ runner.temp }}/ci/logs
-            ${{ runner.temp }}/ci/diagnostics/summary.txt
+          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7
 
@@ -261,7 +260,7 @@ jobs:
         if: always()
         run: |
           mkdir -p "${RUNNER_TEMP}/ci"
-          cat "${CI_LOG_DIR:-${RUNNER_TEMP}}/ci/logs"/*.log >"${RUNNER_TEMP}/ci/s2-judge.log" 2>/dev/null || true
+          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s2-judge.log" 2>/dev/null || true
           bash scripts/ci/stage-summary.sh \
             --stage s2 \
             --result "${{ job.status }}" \

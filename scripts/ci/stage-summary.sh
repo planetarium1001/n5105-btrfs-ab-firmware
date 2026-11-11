@@ -36,17 +36,29 @@ usage() {
     sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
+# take_value <flag>: the argument after a flag, or a warning when it is missing. A
+# missing value must not leave the loop on the same positional argument: this script runs
+# as the last step of a stage, and a hang there would turn a passing stage red.
+take_value() {
+    if [ "$#" -ge 2 ]; then
+        printf '%s' "$2"
+        return 0
+    fi
+    printf '[summary] WARNING: %s needs a value, ignoring it\n' "$1" >&2
+    return 0
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --stage) stage="${2:-}"; shift 2 ;;
-        --result) result="${2:-}"; shift 2 ;;
-        --judge-line) judge_line="${2:-}"; shift 2 ;;
-        --judge-log) judge_log="${2:-}"; shift 2 ;;
-        --artifact) artifact="${2:-}"; shift 2 ;;
-        --artifact-file) artifact_files+=("${2:-}"); shift 2 ;;
-        --next-ok) next_ok="${2:-}"; shift 2 ;;
-        --next-fail) next_fail="${2:-}"; shift 2 ;;
-        --note) note="${2:-}"; shift 2 ;;
+        --stage) stage="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --result) result="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --judge-line) judge_line="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --judge-log) judge_log="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --artifact) artifact="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --artifact-file) artifact_files+=("$(take_value "$@")"); shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --next-ok) next_ok="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --next-fail) next_fail="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
+        --note) note="$(take_value "$@")"; shift "$(( $# < 2 ? $# : 2 ))" ;;
         -h | --help) usage; exit 0 ;;
         *) printf '[summary] WARNING: ignoring unknown argument %s\n' "$1" >&2; shift ;;
     esac

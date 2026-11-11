@@ -147,6 +147,12 @@ judge_line="${CI_S5_LINE:-not recorded}"
     cat "${sums}"
     printf '```\n'
     printf '\n'
+    printf '## File names\n'
+    printf '\n'
+    printf '`%s.img.gz` / `%s.tar`: board, product line, upstream base, role. Releases\n' "${base}" "${base}"
+    printf 'before this naming carry `n5105-ab-<platform>-<upstream>.<ext>` instead, where the\n'
+    printf 'second field was our own release version.\n'
+    printf '\n'
     printf '## Inputs\n'
     printf '\n'
     printf '| Input | Value |\n'
