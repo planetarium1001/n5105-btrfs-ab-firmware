@@ -40,6 +40,33 @@ The SSH call always uses `ControlMaster=no`, `ControlPath=none` and an ignored
 `known_hosts`: a reflashed machine presents a new host key, and the sandbox that runs the
 driver has no writable `~/.ssh`.
 
+## User scenarios
+
+`scenarios.sh` answers a different question: the user installed packages, wrote files,
+changed settings - does a version jump keep all of that, and does the software still run.
+
+| Case | What it builds | What it judges |
+|---|---|---|
+| S1 preinstall | luci apps, a CLI tool and a kmod from the release's own apk index | the snapshot of installed versions, and which packages the index does not carry |
+| S2 user state | files and a directory tree on `/data`, two fake docker tarballs, an extra `uci` section, hostname, timezone, one firewall rule | every file by sha256, the tree by entry count, each setting by `uci get`, and that ssh still answers after a real `network reload` |
+| S3 / S4 jump | low to high and high to low, with the preinstalled software in place | the same data, config, package, mount and service checks after each hop |
+| S5 ledger | the final kernel | which installed packages are still valid, which kmod has to be reinstalled, and what the platform layer reports |
+| S6 boot tools | nothing; it only reads | that the ESP's `vmlinuz-<slot>`/`initrd-<slot>` are byte-identical to the payload's `kernel.bin`/`initramfs.cpio.gz`, and that the platform layer's tools match `platform.tar` |
+
+Two rules make those cases honest:
+
+- **Nothing is judged by an old format.** Package names come from the release's own apk
+  index and the configuration is written as a minimal change on the shipped files, because
+  the 23/24-era snippets in circulation describe opkg and a different firewall model.
+- **The machine keeps a way back.** S2 schedules its own revert before it reloads, with
+  `setsid` (or `start-stop-daemon -b` on an image without it), confirmed by
+  `/tmp/ab-scen-net.ok`; a machine that can schedule neither does not reload at all and the
+  skipped half is recorded as a FINDING rather than a pass that did not look.
+
+ABI is reported, not judged: a kmod built against another kernel is normal in the apk
+world, so a mismatch is recorded as `FINDING:` with the reinstall list, and never changes
+a verdict on its own.
+
 ## The red line
 
 An install writes the slot the machine is **not** running. The driver refuses to install

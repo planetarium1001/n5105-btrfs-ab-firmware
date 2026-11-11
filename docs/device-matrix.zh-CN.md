@@ -35,6 +35,30 @@ scripts/device/matrix.sh --payload-dir <dir> --resume  # 跳过已 PASS 的用�
 `ControlMaster=no`、`ControlPath=none` 与忽略 `known_hosts`：重刷过的机器会换主机密钥，
 而跑驱动的沙箱没有可写的 `~/.ssh`。
 
+## 用户场景
+
+`scenarios.sh` 回答的是另一个问题：用户装过软件、写过数据、改过设置之后，跨版本跳变还能不能保住这些，
+装过的软件还能不能用。
+
+| 用例 | 造什么 | 判什么 |
+|---|---|---|
+| S1 预装 | 从该版本自己的 apk 索引里装 luci 应用、一个 CLI 工具、一个 kmod | 已装版本快照，以及索引里没有的包 |
+| S2 用户态 | `/data` 下的文件与目录树、两个假 docker tar、自定义 `uci` 段、hostname、时区、一条防火墙规则 | 每个文件的 sha256、目录条目数、每项设置的 `uci get`，以及真实 `network reload` 之后 ssh 仍应答 |
+| S3 / S4 跳变 | 低→高、高→低，带着预装软件 | 每跳之后同一组数据/配置/软件/挂载/服务判定 |
+| S5 账本 | 最终内核 | 哪些包仍有效、哪个 kmod 需重装、平台层自报什么 |
+| S6 引导工具 | 不造，只读 | ESP 上 `vmlinuz-<slot>`/`initrd-<slot>` 与 payload 的 `kernel.bin`/`initramfs.cpio.gz` 逐字节一致；平台层工具与 `platform.tar` 一致 |
+
+两条让这些用例可信的规则：
+
+- **不用旧格式判定**：包名取自该版本自己的 apk 索引，配置只在出厂文件上做最小追加——市面上流传的
+  23/24 时代片段描述的是 opkg 与另一套防火墙模型。
+- **机器自己留退路**：S2 在 reload 之前用 `setsid`（镜像没有时用 `start-stop-daemon -b`）排好自还原，
+  以 `/tmp/ab-scen-net.ok` 取消；两者都排不上的机器根本不 reload，被跳过的那半段记 FINDING，
+  而不是记一条"没看就通过"。
+
+ABI 只报告不判定：换了内核后 kmod 不匹配在 apk 世界是正常行为，因此记成 `FINDING:` 并附重装清单，
+不单独改变任何 verdict。
+
 ## 红线
 
 安装写的是机器**没有在跑**的那个槽。驱动只在「运行槽 = committed 槽且没有排队候选」时
