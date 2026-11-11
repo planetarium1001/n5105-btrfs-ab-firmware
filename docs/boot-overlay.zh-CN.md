@@ -14,6 +14,8 @@
 4. overlayfs 合成根。
 5. `switch_root` 进入系统，p1 挂载到 `/boot`。
 
+CI 自检件不属于这条链。`/s3-post.sh` 在合成根里复查环境、把探针文件写进可写层、并打印固定的 `S3-RESULT` 行；它是测试件，因此只有当构建设了 `AB_CI_HOOKS=1` 时才会被注入 initramfs。未设该标志时归档里没有这个成员，boot init 交给 `/sbin/init` 而不是交给探针：刷好的机器不能把 CI 记账当 PID 1 跑——探针写会落进用户可写层，失败分支还会关机。S3 阶段的断言照旧：它为两次内核启动用该标志另建一个 initramfs，而它发布的镜像由不带该成员的归档装配。`scripts/ci/image-verify.sh` 会回读两个 initrd 的成员表（`cpio -t`，不得出现 `s3-` 条目）并与 `ab/image.json` 记录的 kind 比对，因此这条规则由构建把关，而不是靠评审。
+
 ## 设备身份
 
 引导路径上任何地方都不得假设 `/dev/vda`：这个名字只在 virtio 上存在，而目标板呈现的是 `/dev/sda`、`/dev/nvme0n1` 或 `/dev/mmcblk0`。“这块盘是不是我们的”只有一处实现：`platform/lib/disk-identity.sh`，它同时以相同字节装进 boot initramfs 与平台层。
@@ -44,6 +46,12 @@ p4 出厂 128 MiB，盘尾保持未分配，因此同一个镜像能装进任意
   `btrfs filesystem resize max /mnt/p4`（p4 只挂一次、btrfs-progs 来自平台层），并把
   `stage=resize result=<ok|fail:<token>> source=ab-boot` 写进 p1 环形日志。initramfs 那次失败
   的机器，同一次启动仍能扩到盘尾。
+
+一次"死掉"的启动，它的证据落在哪：`ab-boot` 把本次启动的环形日志写到
+`ab/log/boot-0.log`，而下一次启动的第一件事就是把它轮转成 `boot-1.log`。所以一次
+**没能走到 `ab-boot`** 的启动，它的 breadcrumb 会在下一次上电之后出现在 `boot-1.log` 里——
+事后取证读 `ab-slot log --prev`（即 `ab/log/boot-1.log`），`boot-0.log` 只代表"正在运行的这一次"。
+
 
 initramfs 这半段的顺序，发生在任何文件系统挂载之前：
 

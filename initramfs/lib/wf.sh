@@ -37,6 +37,25 @@ WF_MOUNTS="${WF_MOUNTS:-/proc/mounts}"
 WF_MOUNT="${WF_MOUNT:-mount}"
 WF_TMP="${WF_TMP:-/run}"
 
+# The breadcrumb log, and the two landing zones it can live in.
+#
+# A machine that powers itself off hands a serial log to nobody, so "how far did this boot
+# get" has to be a line on a disk. WF_MARK_LOG is the file wf_mark appends to; it stays
+# empty during the early boot, when neither the ESP nor p4 is mounted yet and there is
+# simply nowhere to write - wf_mark then writes no file at all and only reaches the
+# console. wf_mark_zone answers "where would a breadcrumb go right now", in the order the
+# boot makes the zones available: the ESP once it is mounted, then the p4 side, then the
+# serial port alone.
+WF_MARK_LOG="${WF_MARK_LOG:-}"
+# 32 KiB is the same cap the runtime ring log uses (platform/etc/init.d/ab-boot), so the
+# two halves of one boot's timeline cannot grow beyond a readable size.
+WF_MARK_MAX="${WF_MARK_MAX:-32768}"
+# The sequence survives inside one boot even when there is no file to read it back from.
+WF_MARK_SEQ="${WF_MARK_SEQ:-0}"
+# p4 is the second landing zone: when the ESP is the thing that broke, the evidence still
+# has to land on this disk. /mnt/p4root is where the initramfs mounts p4 before the overlay.
+WF_P4_MOUNT="${WF_P4_MOUNT:-/mnt/p4root}"
+
 # The boot milestones have to be visible on the serial port AND on HDMI. Linux binds
 # /dev/console to the LAST console= parameter, so a command line that ends in
 # `console=tty0` sends PID1's whole stdout to the local screen and leaves an empty
@@ -129,6 +148,164 @@ wf_mountpoint_active() {
     awk -v mp="$1" '$2 == mp { found = 1 } END { exit !found }' "${WF_MOUNTS}" 2>/dev/null
 }
 
+# wf_mark_zone_esp: the ring log on the ESP, but only once the ESP is really mounted.
+#
+# The mount table, not `[ -d ]`, is the test on purpose: a directory on the initramfs
+# tmpfs is not the ESP, and writing there loses the line when the real mount covers it and
+# the initramfs is thrown away (that is how a whole boot's growth diagnostics disappeared
+# once already).
+wf_mark_zone_esp() {
+    [ -n "${WF_ESP_MOUNT}" ] || return 0
+    wf_mountpoint_active "${WF_ESP_MOUNT}" || return 0
+    printf '%s' "${WF_ESP_MOUNT}/ab/log/boot-0.log"
+    return 0
+}
+
+# wf_mark_zone_p4: the p4 side, which needs no mount table entry to be believable - it is
+# a btrfs subvolume, and the test is that the directory is there and writable.
+wf_mark_zone_p4() {
+    [ -n "${WF_P4_MOUNT}" ] || return 0
+    [ -d "${WF_P4_MOUNT}" ] || return 0
+    [ -w "${WF_P4_MOUNT}" ] || return 0
+    printf '%s' "${WF_P4_MOUNT}/.ab/init-fail.log"
+    return 0
+}
+
+# wf_mark_zone: the file a breadcrumb would go to right now. Empty output means "no
+# landing zone yet, serial only" and is never an error.
+wf_mark_zone() {
+    wf_mz_zone="$(wf_mark_zone_esp)"
+    if [ -z "${wf_mz_zone}" ]; then
+        wf_mz_zone="$(wf_mark_zone_p4)"
+    fi
+    printf '%s' "${wf_mz_zone}"
+    return 0
+}
+
+# wf_mark_last_seq <file>: the highest seq the log already holds, 0 when there is none.
+#
+# Read back from the file rather than counted in memory, so a breadcrumb written by an
+# earlier process (or an earlier initramfs) is never numbered from 1 again.
+wf_mark_last_seq() {
+    wf_ml_seq="$(sed -n 's/.*stage=mark seq=\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null \
+        | sort -n | tail -n 1)"
+    case "${wf_ml_seq}" in
+        '' | *[!0-9]*) wf_ml_seq=0 ;;
+    esac
+    printf '%s' "${wf_ml_seq}"
+    return 0
+}
+
+# wf_mark_append <file> <line>: append one line and keep the log under WF_MARK_MAX.
+#
+# The write goes through `<file>.tmp.$$` and a rename, the same shape log_append uses in
+# platform/etc/init.d/ab-boot: the log is never truncated in place, so a power cut can
+# lose the newest line but can never leave a half-written or empty log where the previous
+# boot's breadcrumbs used to be. Over the cap the tail is kept (the newest lines are the
+# ones worth reading) and one TRUNCATED=1 line records that lines were dropped.
+wf_mark_append() {
+    wf_ma_file="$1"
+    wf_ma_line="$2"
+    wf_ma_dir="${wf_ma_file%/*}"
+    [ "${wf_ma_dir}" = "${wf_ma_file}" ] && wf_ma_dir="."
+    mkdir -p "${wf_ma_dir}" 2>/dev/null || return 1
+    wf_ma_tmp="${wf_ma_file}.tmp.$$"
+    : >"${wf_ma_tmp}" 2>/dev/null || return 1
+    if [ -f "${wf_ma_file}" ]; then
+        cat "${wf_ma_file}" >"${wf_ma_tmp}" 2>/dev/null || :
+    fi
+    printf '%s\n' "${wf_ma_line}" >>"${wf_ma_tmp}" 2>/dev/null || return 1
+    # BSD wc pads its count with spaces, busybox does not: strip whatever comes first.
+    wf_ma_size="$(wc -c <"${wf_ma_tmp}" 2>/dev/null | tr -d ' \t')"
+    case "${wf_ma_size}" in
+        '' | *[!0-9]*) wf_ma_size=0 ;;
+    esac
+    if [ "${wf_ma_size}" -gt "${WF_MARK_MAX}" ]; then
+        wf_ma_tail="${wf_ma_tmp}.tail"
+        tail -c $((WF_MARK_MAX - 512)) "${wf_ma_tmp}" 2>/dev/null \
+            | sed '/^TRUNCATED=1$/d' >"${wf_ma_tail}" 2>/dev/null || :
+        # Only replace the log when the tail really was produced: a failed tail/sed must
+        # not turn a housekeeping step into an empty log.
+        if [ -s "${wf_ma_tail}" ]; then
+            mv "${wf_ma_tail}" "${wf_ma_tmp}" 2>/dev/null || :
+        else
+            rm -f "${wf_ma_tail}" 2>/dev/null || :
+        fi
+        printf 'TRUNCATED=1\n' >>"${wf_ma_tmp}" 2>/dev/null || :
+    fi
+    sync
+    mv "${wf_ma_tmp}" "${wf_ma_file}" 2>/dev/null || return 1
+    sync
+    return 0
+}
+
+# wf_mark <step> [key=value ...]: one breadcrumb line, "this boot got this far".
+#
+# Never changes a boot decision and always returns 0: a breadcrumb that cannot be written
+# is a missing diagnostic, not a reason to stop the machine. With WF_MARK_LOG empty there
+# is no landing zone yet (early boot), so nothing is written and the line goes to the
+# console only, where the sequence still counts up inside this process.
+wf_mark() {
+    wf_mk_step="${1:-}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
+    wf_mk_extra=""
+    for wf_mk_arg in "$@"; do
+        wf_mk_extra="${wf_mk_extra} ${wf_mk_arg}"
+    done
+    if [ -z "${WF_MARK_LOG}" ]; then
+        WF_MARK_SEQ=$((WF_MARK_SEQ + 1))
+        wf_log "stage=mark seq=${WF_MARK_SEQ} step=${wf_mk_step}${wf_mk_extra}"
+        return 0
+    fi
+    wf_mk_seq="$(wf_mark_last_seq "${WF_MARK_LOG}")"
+    case "${wf_mk_seq}" in
+        '' | *[!0-9]*) wf_mk_seq=0 ;;
+    esac
+    wf_mk_seq=$((wf_mk_seq + 1))
+    wf_mk_line="stage=mark seq=${wf_mk_seq} step=${wf_mk_step}${wf_mk_extra}"
+    # A landing zone that refuses the write (read-only ESP, full disk, no directory) must
+    # not swallow the line: it falls back to the console, where the operator still sees it.
+    wf_mark_append "${WF_MARK_LOG}" "${wf_mk_line}" || wf_log "${wf_mk_line}"
+    WF_MARK_SEQ="${wf_mk_seq}"
+    return 0
+}
+
+# wf_abandon_evidence <result> <reason> [slot] [zone]: what the fail-safe abandon did.
+#
+# One line per branch, on disk, in a shape that greps: `action=fail-safe-abandon
+# result=<ok|fail|skip> reason=<token>`. <zone> overrides the landing zone (the branch that
+# could not write the ESP sends its line to p4 instead); empty means "resolve it now".
+# The console copy is a convenience - the file is the evidence.
+wf_abandon_evidence() {
+    wf_ae_result="$1"
+    wf_ae_reason="$2"
+    wf_ae_slot="${3:-}"
+    wf_ae_zone="${4:-}"
+    if [ -z "${wf_ae_zone}" ]; then
+        wf_ae_zone="$(wf_mark_zone)"
+    fi
+    if [ -n "${wf_ae_zone}" ]; then
+        wf_ae_saved="${WF_MARK_LOG}"
+        WF_MARK_LOG="${wf_ae_zone}"
+        if [ -n "${wf_ae_slot}" ]; then
+            wf_mark abandon "action=fail-safe-abandon" "result=${wf_ae_result}" \
+                "reason=${wf_ae_reason}" "slot=${wf_ae_slot}"
+        else
+            wf_mark abandon "action=fail-safe-abandon" "result=${wf_ae_result}" \
+                "reason=${wf_ae_reason}"
+        fi
+        WF_MARK_LOG="${wf_ae_saved}"
+    fi
+    if [ -n "${wf_ae_slot}" ]; then
+        wf_say "[boot] action=fail-safe-abandon result=${wf_ae_result} reason=${wf_ae_reason} slot=${wf_ae_slot}"
+    else
+        wf_say "[boot] action=fail-safe-abandon result=${wf_ae_result} reason=${wf_ae_reason}"
+    fi
+    return 0
+}
+
 # wf_failsafe_abandon: point the next boot at the committed slot before this one powers
 # off. A pending slot that cannot even reach initramfs completion would otherwise be
 # selected again by GRUB on every restart, and the machine would loop instead of
@@ -138,29 +315,49 @@ wf_mountpoint_active() {
 #
 # Everything here is best effort and always returns 0: the caller is on its way to
 # poweroff and must not be stopped by a write that cannot happen. Nothing is written when
-# no slot is pending, so a failing committed slot does not touch the FAT.
+# no slot is pending, so a failing committed slot does not rewrite the FAT - but every
+# branch now leaves one `action=fail-safe-abandon result=... reason=...` line behind, on
+# the ESP when it is writable and on the p4 side when it is not. Without that line the
+# failure was observable on the serial port only, which is exactly the port a machine
+# that powered itself off does not bring to the person holding the disk.
 wf_failsafe_abandon() {
     if [ ! -f "${WF_SLOT_CFG_LIB}" ]; then
         wf_log "fail-safe abandon skipped: ${WF_SLOT_CFG_LIB} is not in this initramfs"
+        wf_abandon_evidence skip lib-missing
         return 0
     fi
     # shellcheck source=platform/lib/ab-slot-cfg.sh
     if ! . "${WF_SLOT_CFG_LIB}" 2>/dev/null; then
         wf_log "fail-safe abandon skipped: cannot read ${WF_SLOT_CFG_LIB}"
+        wf_abandon_evidence skip lib-unreadable
         return 0
     fi
     if ! command -v ab_slot_cfg_write_committed >/dev/null 2>&1; then
         wf_log "fail-safe abandon skipped: ${WF_SLOT_CFG_LIB} has no writer"
+        wf_abandon_evidence skip lib-no-writer
         return 0
     fi
-    if [ ! -d "${WF_ESP_MOUNT}" ] || [ ! -f "${WF_ESP_MOUNT}/ab/state.json" ]; then
+    wf_ab_state="${WF_ESP_MOUNT}/ab/state.json"
+    if [ ! -f "${wf_ab_state}" ]; then
+        if wf_mountpoint_active "${WF_ESP_MOUNT}"; then
+            # The ESP is there and still has no readable state file. Mounting the same
+            # device on the same mount point a second time cannot work (util-linux:
+            # "already mounted or mount point busy"), so the old code always failed here
+            # and only said so on the serial port. Record the reason, land the evidence on
+            # p4, and let the caller power off.
+            wf_log "fail-safe abandon skipped: ${wf_ab_state} is unreadable, the ESP is already mounted (reason=state-unreadable)"
+            wf_abandon_evidence skip state-unreadable "" "$(wf_mark_zone_p4)"
+            return 0
+        fi
         if [ -z "${WF_ESP_DEV}" ]; then
             wf_log "fail-safe abandon skipped: the ESP is not mounted"
+            wf_abandon_evidence skip esp-not-mounted
             return 0
         fi
         mkdir -p "${WF_ESP_MOUNT}" 2>/dev/null
         if ! "${WF_MOUNT}" -t vfat -o rw,noatime "${WF_ESP_DEV}" "${WF_ESP_MOUNT}" >/dev/null 2>&1; then
             wf_log "fail-safe abandon skipped: cannot mount ${WF_ESP_DEV} on ${WF_ESP_MOUNT}"
+            wf_abandon_evidence skip esp-not-writable "" "$(wf_mark_zone_p4)"
             return 0
         fi
     fi
@@ -169,6 +366,7 @@ wf_failsafe_abandon() {
         a | b) : ;;
         *)
             wf_log "fail-safe abandon: no pending slot to clear"
+            wf_abandon_evidence skip no-pending
             return 0
             ;;
     esac
@@ -184,9 +382,12 @@ wf_failsafe_abandon() {
     wf_ab_slot="$(cat "${wf_ab_out}" 2>/dev/null)"
     rm -f "${wf_ab_out}" 2>/dev/null
     if [ "${wf_ab_rc}" -eq 0 ]; then
+        wf_abandon_evidence ok none "${wf_ab_slot}" "$(wf_mark_zone_esp)"
         wf_say "[boot] action=fail-safe-abandon slot=${wf_ab_slot}"
         wf_log "fail-safe abandon: the next boot runs the committed slot ${wf_ab_slot}"
     else
+        # The write to the ESP is what failed, so the evidence goes to the other side.
+        wf_abandon_evidence fail "${AB_SLOT_CFG_REASON:-unknown}" "" "$(wf_mark_zone_p4)"
         wf_say "[boot] action=fail-safe-abandon result=fail reason=${AB_SLOT_CFG_REASON:-unknown}"
         wf_log "fail-safe abandon failed: ${AB_SLOT_CFG_REASON:-unknown}"
     fi
@@ -195,9 +396,12 @@ wf_failsafe_abandon() {
 
 # wf_fail <reason>: single failure exit for the pre-switch phase.
 #
-# The fail-safe abandon runs first, and before the judge line on purpose: a harness that
-# stops the machine as soon as it sees the line would otherwise cut the write in half.
+# The breadcrumb goes first, then the fail-safe abandon, then the judge line - in that
+# order, and `poweroff -f` last. After the poweroff there is no serial log and no shell, so
+# the line on the disk is the only record that survives; a harness that stops the machine
+# as soon as it sees the judge line would otherwise cut the write in half.
 wf_fail() {
+    wf_mark fail "reason=${1:-unknown}"
     wf_failsafe_abandon || :
     wf_say "S3-RESULT=fail reason=$1"
     sync

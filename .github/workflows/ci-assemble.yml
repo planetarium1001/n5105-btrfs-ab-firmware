@@ -62,6 +62,11 @@ jobs:
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
       CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
       CI_KMODS_DIR: ${{ inputs.kmods_dir }}
+      # The CI guest assertion (/s3-post.sh) is injected only when this is 1, read from the
+      # repository variable of the same name. The initramfs this stage publishes is the one
+      # machines install, so a build without the flag ships without the CI hook; see
+      # docs/boot-overlay.md, "Boot sequence".
+      AB_CI_HOOKS: ${{ vars.AB_CI_HOOKS }}
     outputs:
       payload_manifest_sha256: ${{ steps.assemble.outputs.payload_manifest_sha256 }}
       payload_total_bytes: ${{ steps.assemble.outputs.payload_total_bytes }}
@@ -106,10 +111,17 @@ jobs:
           CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
           CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
           CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
-          CI_EXTRA_FILES: ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+          # wf.sh always travels with the boot init; the S3 guest assertion travels only
+          # when AB_CI_HOOKS=1 says this build is a CI build. Unset is the production
+          # answer, so the payload cannot pick the hook up by accident.
+          extra="${GITHUB_WORKSPACE}/initramfs/lib/wf.sh:/lib/wf.sh"
+          if [ "${AB_CI_HOOKS:-0}" = "1" ]; then
+            extra="${extra} ${GITHUB_WORKSPACE}/initramfs/boot/post.sh:/s3-post.sh"
+          fi
+          CI_EXTRA_FILES="${extra}" bash scripts/ci/initramfs.sh 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
 
       - name: Assemble payload
         id: assemble

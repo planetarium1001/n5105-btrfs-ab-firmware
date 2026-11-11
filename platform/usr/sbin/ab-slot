@@ -55,6 +55,9 @@
 #
 # Subcommands:
 #   status                 one machine readable line plus a human summary on stderr
+#                          (boot= and esp= are the two facts a machine cannot claim without
+#                          evidence: how this boot started, and what the initramfs thought
+#                          of the ESP it started from)
 #   commit [slot]          set committed, clear pending (default: the running slot)
 #   pending <slot>         set pending, after checking the slot payload exists
 #   abandon                clear pending, leave committed alone
@@ -458,6 +461,37 @@ boot_state() {
     printf 'ok'
 }
 
+# esp_health_state: the initramfs' read-only verdict on the ESP, as this boot recorded it.
+#
+# The initramfs judges the volume before mounting it and leaves one line on p4; ab-boot
+# republishes it as `stage=esp-health ... esp=<token>` in the ring log. This boot's ring log
+# is the only file that can answer for *this* boot, so it is read the same way boot_state
+# reads it, and the value is restricted to the three tokens the probe produces: a line that
+# says `esp=unrecorded`, or a log written by an older image, is reported as `unknown` rather
+# than passed on as if it were a verdict. A missing log is `unknown`, never `ok`.
+esp_health_state() {
+	_esp_log="${LOGDIR}/boot-0.log"
+	[ -r "${_esp_log}" ] || {
+		printf 'unknown'
+		return 0
+	}
+	while IFS= read -r _esp_line; do
+		case "${_esp_line}" in
+			*stage=esp-health*) ;;
+			*) continue ;;
+		esac
+		for _esp_kv in ${_esp_line}; do
+			case "${_esp_kv}" in
+				esp=ok | esp=dirty | esp=unreadable)
+					printf '%s' "${_esp_kv#esp=}"
+					return 0
+					;;
+			esac
+		done
+	done <"${_esp_log}"
+	printf 'unknown'
+}
+
 # --------------------------------------------------------------------------- #
 # Subcommands
 # --------------------------------------------------------------------------- #
@@ -471,6 +505,7 @@ cmd_status() {
     _upper="$(state_upper "${_slot}")" || die "state has no layer for slot ${_slot}"
     _p4="$(p4_state)"
     _boot="$(boot_state)"
+    _esp="$(esp_health_state)"
     # boot= is one token; the human line says what the token means, so nobody has to
     # look up that a degraded boot is a tmpfs upper.
     _boot_hint=""
@@ -490,13 +525,17 @@ cmd_status() {
         _identity="disk=unknown method=unavailable"
     fi
 
-    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s\n' \
+    # esp= is appended after boot=, never inserted: the fields before it are parsed by
+    # pattern elsewhere (platform/lib/upgrade/platform.sh takes upper= by regex) and the
+    # human line below reads as one sentence about this boot.
+    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s esp=%s\n' \
         "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}" \
-        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}" "${_boot}"
+        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}" "${_boot}" "${_esp}"
     say "ab-slot: running slot ${_slot} (${_upper}), generation ${_generation}"
     say "ab-slot: committed ${_committed}, pending ${_pending}, writable layer ${_p4}"
     say "ab-slot: mounts data=${_data} docker=${_docker} swap=${_swap}"
     say "ab-slot: this boot is ${_boot}${_boot_hint}"
+    say "ab-slot: the ESP was ${_esp} when the initramfs mounted it"
     say "ab-slot: the next boot runs slot ${_next}, ${_identity}"
 }
 

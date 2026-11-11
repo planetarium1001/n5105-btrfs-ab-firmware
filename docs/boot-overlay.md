@@ -20,6 +20,18 @@ directories.
 4. overlayfs composes the root.
 5. `switch_root` enters the system; p1 is mounted at `/boot`.
 
+The CI guest assertion is not part of that chain. `/s3-post.sh` re-checks the composed
+root, writes probe files into the writable layer and prints the frozen `S3-RESULT` line;
+it is a test artefact, so it is injected into an initramfs only when the build sets
+`AB_CI_HOOKS=1`. Without the flag the archives carry no such member, and the boot init
+hands over to `/sbin/init` instead of to a probe: a flashed machine must not run CI
+bookkeeping as PID 1, where a probe write ends up in the user's writable layer and a
+failure branch powers the machine off. The S3 stage still asserts: it builds a second
+initramfs with the flag for its two kernel boots, while the image it publishes is
+assembled from the archive without it. `scripts/ci/image-verify.sh` reads the member
+table of both initrds back (`cpio -t`, no `s3-` entry) and compares it with the kind
+`ab/image.json` records, so the rule is enforced by the build rather than by review.
+
 ## Device identity
 
 Nothing on the boot path may assume `/dev/vda`: that name only exists on virtio, while
@@ -65,6 +77,14 @@ any disk size. It is grown in two places, and the second is the one that guarant
   exactly once, btrfs-progs from the platform layer), and records
   `stage=resize result=<ok|fail:<token>> source=ab-boot` in the p1 ring log. A machine
   whose initramfs resize failed still reaches the end of the disk on that same boot.
+
+Where the evidence of a boot that died ends up: `ab-boot` writes this boot's ring log to
+`ab/log/boot-0.log`, and its first act on the next boot is to rotate that file to
+`boot-1.log`. A boot that never reached `ab-boot` therefore leaves its breadcrumbs in
+`boot-1.log` after the following power-on - read `ab-slot log --prev` (or
+`ab/log/boot-1.log`) for a post-mortem, and `boot-0.log` only for the boot that is running
+now.
+
 
 The initramfs half, before any filesystem is mounted:
 

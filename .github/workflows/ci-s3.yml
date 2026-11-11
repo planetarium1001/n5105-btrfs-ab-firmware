@@ -129,16 +129,52 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/esp.log"
 
+      # The initramfs the image carries: production, so AB_CI_HOOKS stays unset and
+      # /s3-post.sh is not injected (this job deliberately does not read the repository
+      # variable - the published image is always built without CI hooks). This is the
+      # archive disk.sh installs as initrd-a/b and the one the published image boots;
+      # scripts/ci/image-verify.sh refuses an initrd that carries an s3- member.
       - name: Build the boot initramfs
         id: initramfs
         env:
           CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
           CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
           CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
-          CI_EXTRA_FILES: ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+          extra="${GITHUB_WORKSPACE}/initramfs/lib/wf.sh:/lib/wf.sh"
+          if [ "${AB_CI_HOOKS:-0}" = "1" ]; then
+            extra="${extra} ${GITHUB_WORKSPACE}/initramfs/boot/post.sh:/s3-post.sh"
+          fi
+          CI_EXTRA_FILES="${extra}" bash scripts/ci/initramfs.sh 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+
+      # The two kernel boots need the guest assertion, and the image must not have it: so
+      # the assertion gets an initramfs of its own, built with AB_CI_HOOKS=1. Same /init
+      # and same /lib as the production archive, the only difference is /s3-post.sh, and
+      # it never leaves this job - the firmware boot below uses the image's own initrd.
+      - name: Build the CI assertion initramfs
+        id: initramfs_ci
+        env:
+          CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
+          CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/ci-hooks.cpio.gz
+          CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
+          AB_CI_HOOKS: "1"
+        run: |
+          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+          extra="${GITHUB_WORKSPACE}/initramfs/lib/wf.sh:/lib/wf.sh"
+          if [ "${AB_CI_HOOKS:-0}" = "1" ]; then
+            extra="${extra} ${GITHUB_WORKSPACE}/initramfs/boot/post.sh:/s3-post.sh"
+          fi
+          CI_EXTRA_FILES="${extra}" bash scripts/ci/initramfs.sh 2>&1 \
+            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs-ci-hooks.log"
+          case "${extra}" in
+            *:/s3-post.sh) ;;
+            *)
+              echo "::error::the assertion initramfs was built without /s3-post.sh, the kernel boots below could not assert anything"
+              exit 1
+              ;;
+          esac
 
       # The platform layer carries btrfs-progs: the upstream rootfs has no btrfs tool,
       # and reclamation, snapshots and the degraded boot need one inside the guest.
@@ -175,7 +211,7 @@ jobs:
         id: boot1
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_INITRAMFS: ${{ steps.initramfs_ci.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: S3-RESULT
           CI_QEMU_CASE: s3-boot1
@@ -203,7 +239,7 @@ jobs:
         id: boot2
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_INITRAMFS: ${{ steps.initramfs_ci.outputs.initramfs_path }}
           CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
           CI_JUDGE_PREFIX: S3-RESULT
           CI_QEMU_CASE: s3-boot2
@@ -300,6 +336,7 @@ jobs:
             ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/qemu/qemu-*.out
             ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+            ${{ runner.temp }}/ci/initramfs/ci-hooks.cpio.gz
             ${{ runner.temp }}/ci/disk/grub.cfg
             ${{ runner.temp }}/ci/disk/ab-slot.cfg
           if-no-files-found: ignore

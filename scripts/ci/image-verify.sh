@@ -18,6 +18,9 @@
 #      the committed slot, and no environment-block calls this GRUB cannot run
 #   8. p1 carries ab/device.json: four distinct PARTUUIDs that match the partition
 #      table, a disk GUID that matches the table, and the labels the filesystems carry
+#   9. neither initrd carries a CI test member (`s3-` prefix): the CI guest assertion is
+#      injected only when the build sets AB_CI_HOOKS=1, and an image that ships it would
+#      put CI bookkeeping on the boot path of a flashed machine
 #
 # Inputs (environment):
 #   CI_IMAGE          raw image produced by the disk stage
@@ -25,6 +28,10 @@
 #   CI_EXPECT_OUT     where to write the guest expectation file
 #   CI_SAMPLES        how many @sys files to sample for the guest (default: 12)
 #   CI_OVERLAY_NAME   writable layer name (default: @overlay-${CI_UPSTREAM_VERSION})
+#
+# Usage:
+#   image-verify.sh                                   the whole image (CI)
+#   image-verify.sh --check-initrd <initrd> [kind]    only check 9, on a file
 #
 # Outputs: image_bytes, rootfs_files, esp_bytes, expect_file, part_names_file,
 #          device_json, verified_checks
@@ -42,9 +49,63 @@ on_error() {
 }
 trap on_error ERR
 
+# --------------------------------------------------------------------------- #
+# CI members: what an initrd may not carry
+# --------------------------------------------------------------------------- #
+# The CI guest assertions are named s3-*: /s3-post.sh (the S3 post-switch assertion) and
+# the probe markers initramfs/boot/init writes next to it. scripts/ci/initramfs.sh packs
+# them from `find .`, so they appear as members like ./s3-post.sh. They are injected only
+# when the build sets AB_CI_HOOKS=1; the image a machine is flashed with must not carry
+# them, because that would put CI bookkeeping - probe files in the writable layer, a
+# poweroff in a failure branch - on the boot path of a real system.
+CI_MEMBER_PREFIX="s3-"
+
+# ci_hook_members <initrd>: print the CI members of one initrd, one per line, sorted.
+# Non-zero means the archive itself could not be read, which is a different failure than
+# "it carries a hook" and is reported as such.
+ci_hook_members() {
+    local initrd="$1" listing
+    listing="$(gzip -dc "${initrd}" 2>/dev/null | cpio -t 2>/dev/null)" || return 1
+    printf '%s\n' "${listing}" | grep -E "(^|/)${CI_MEMBER_PREFIX}" | LC_ALL=C sort || true
+}
+
+# assert_no_ci_hooks <initrd> <kind>: check 9. <kind> is what ab/image.json says the
+# image is, so the member table is judged against the image's own record: only a probe
+# image may carry a CI hook, and the release refuses to publish one of those.
+assert_no_ci_hooks() {
+    local initrd="$1" kind="$2" hooks
+    [ -f "${initrd}" ] || ci_die "initrd not found: ${initrd}"
+    if [ "${kind}" != "boot" ]; then
+        ci_log "kind=${kind}: CI members allowed in ${initrd##*/} (this image cannot be flashed)"
+        return 0
+    fi
+    hooks="$(ci_hook_members "${initrd}")" \
+        || ci_die "${initrd} is not a readable gzip cpio archive, so it cannot be proven free of CI members"
+    [ -z "${hooks}" ] || ci_die "${initrd} carries CI test members in a kind=boot image: $(printf '%s' "${hooks}" | paste -sd' ' -) - the CI assertion enters an initramfs only when the build sets AB_CI_HOOKS=1, a production initrd ships without it"
+}
+
+# Host-only mode: the rest of this stage needs a loop device and sudo, the member rule
+# needs one file (read with the runner's gzip and cpio, which never enter the image).
+# tests/modules/ci/test_no_ci_hooks_in_image.sh runs this mode against fixture initrds
+# built in both modes (with and without AB_CI_HOOKS).
+if [ "${1:-}" = "--check-initrd" ]; then
+    CI_STAGE="${CI_STAGE:-image-verify}"
+    ci_require_cmd gzip cpio
+    check_initrd="${2:-}"
+    check_kind="${3:-boot}"
+    [ -n "${check_initrd}" ] || ci_die "--check-initrd needs the path of an initrd"
+    assert_no_ci_hooks "${check_initrd}" "${check_kind}"
+    ci_log "--check-initrd: ${check_initrd} accepted (kind=${check_kind})"
+    exit 0
+fi
+
 ci_stage_init image-verify
 
-ci_require_cmd sudo losetup sfdisk blkid lsblk python3 diff sha256sum
+# gzip and cpio are host-side only: they run on the runner to read an archive back, they
+# are never baked into the image and never become a boot dependency. Everything that ends
+# up inside the initramfs comes from the locked upstream apk set in
+# scripts/ci/initramfs-tools.lock.json, not from the runner's own binaries.
+ci_require_cmd sudo losetup sfdisk blkid lsblk python3 diff sha256sum gzip cpio
 
 image="${CI_IMAGE:?CI_IMAGE is required}"
 disk_dir="${CI_DISK_DIR:-${CI_TMP_ROOT}/disk}"
@@ -312,6 +373,14 @@ image_kind="$(sudo sed -n 's/.*"kind": *"\([a-z]*\)".*/\1/p' "${image_json}" | h
 [ "${image_kind}" = "${CI_INITRAMFS_KIND:-boot}" ] \
     || ci_die "ab/image.json says kind=${image_kind}, the build installed ${CI_INITRAMFS_KIND:-boot}"
 note "ab/image.json records the ${image_kind} initramfs"
+
+# ...and the record has to agree with the bytes. ab/image.json is a label the build
+# writes; the archive is what the kernel unpacks, so the member table is read back from
+# both initrds and judged against the recorded kind (check 9).
+for initrd in initrd-a initrd-b; do
+    assert_no_ci_hooks "${p1}/${initrd}" "${image_kind}"
+done
+note "neither initrd carries an s3- member, so the CI assertion is not on this image's boot path"
 for required in \
     boot/grub \
     vmlinuz-a vmlinuz-b \

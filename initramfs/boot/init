@@ -8,7 +8,7 @@
 #          <p4 root subvolume>/.ab/grow as `result=<state> last_lba=<n>`
 #   1. p4  unmounted device    btrfs filesystem resize max <device>   (no mount yet)
 #          then                 root subvolume rw,compress=zstd:6    -> /mnt/p4root
-#          then                 .ab/partitions.before, .ab/grow, umount
+#          then                 .ab/partitions.before, .ab/grow, .ab/esp-health, umount
 #   2. p4  @overlay-<version>  rw,compress=zstd:6,discard=async
 #                              subvol=@overlay-<version>         -> /mnt/p4
 #   3. p2  @platform           ro,noatime                      -> /mnt/@platform
@@ -18,6 +18,19 @@
 #   6. p4  @data               rw,noatime                       -> /newroot/data
 #      p4  @docker             rw,noatime,nodatacow,nodatasum   -> /newroot/opt/docker
 #      p4  @swap               rw,noatime,nodatacow,nodatasum   -> /newroot/swap
+#
+# The ESP (p1) is probed read-only before any of that - boot signature, the FAT's
+# clean-shutdown bit, the FSInfo sector - and mounted read-write immediately after the
+# growth, because everything from the state file onwards is read from it and the failure
+# path has to be able to rewrite the GRUB hint on the same mount (initramfs/lib/esp-health.sh
+# holds the probe; a mount before the growth would break the partition-table reread).
+#
+# One breadcrumb per milestone goes to the first surface that can hold it, in the order this
+# boot makes them available: the serial port only while nothing is mounted, the ESP ring log
+# once it is mounted, and the p4 side after it is given back. `wf_mark` never changes a boot
+# decision - a line that cannot be written is a missing diagnostic, not a reason to stop:
+#
+#   device  grow-done  esp-mounted  state  p4-record  overlay  esp-unmounted  switching-root
 #
 # The growth runs before anything is mounted, so the filesystem is mounted on a
 # partition that already has its final size. It only ever enlarges p4 and it is
@@ -41,8 +54,10 @@
 # from the state file (@overlay-<upstream version>), never from the generation counter:
 # the counter orders generations, the name identifies them.
 #
-# Everything asserted here is re-checked from inside the composed root by
-# /s3-post.sh, which switch_root hands control to as the new /init.
+# In a CI build everything asserted here is re-checked from inside the composed root by
+# /s3-post.sh, which switch_root hands control to as the new /init. A production initramfs
+# carries no such file, and there the composed root's own /sbin/init is PID 1: the hook is
+# a build-time injection (AB_CI_HOOKS=1), so its absence is not a boot failure.
 #
 # Kernel command line:
 #   ab.slot=<a|b>     slot GRUB selected for this boot (default: the committed slot)
@@ -70,6 +85,10 @@ BOOT=1
 # Two distinct mount points for the two p4 passes, so a leftover mount is easy to spot in
 # the log: the resize pass uses P4_RESIZE_MOUNT and is unmounted before the record pass.
 P4_RESIZE_MOUNT=/mnt/p4resize
+# The CI assertion, injected by the build only when AB_CI_HOOKS=1 (see
+# scripts/ci/initramfs.sh). Named once here so the handover below asks a single question -
+# "is it in this initramfs" - and so a test can point it somewhere else.
+WF_POST_HOOK="${WF_POST_HOOK:-/s3-post.sh}"
 for arg in $(cat /proc/cmdline); do
     case "${arg}" in
         wf.boot=*) BOOT="${arg#wf.boot=}" ;;
@@ -79,6 +98,7 @@ done
 . /lib/wf.sh
 . /lib/grow.sh
 . /lib/disk-identity.sh
+. /lib/esp-health.sh
 
 wf_log "S3 layered boot, boot ${BOOT}"
 
@@ -157,6 +177,10 @@ else
     wf_log "device: disk=${dev} method=${dev_method}"
     wf_say "[boot] stage=device disk=${dev} method=${dev_method}"
 fi
+# Milestone 1. Nothing is mounted yet, so this is a serial line and no file at all - which
+# is exactly the point: a boot that dies in the growth window has to be readable on the
+# port it was started from, because there is nowhere else yet.
+wf_mark device "disk=${dev:-unknown}" "method=${dev_method:-none}"
 
 # --------------------------------------------------------------------------- #
 # 2. Partition discovery: on the resolved disk, by name, then by partition number
@@ -185,6 +209,20 @@ WF_ESP_DEV="${esp}"
 export WF_ESP_DEV
 
 # --------------------------------------------------------------------------- #
+# 2b. ESP health: a read-only verdict on p1, taken before anything is mounted
+# --------------------------------------------------------------------------- #
+# The 05:36 poweroff left no evidence and the leading candidate is the ESP itself, which is
+# also the one surface that cannot be repaired from the running system. So the volume is
+# read - boot signature, the FAT's clean-shutdown bit, the FSInfo sector - and nothing else:
+# no write, no repair, no partition change, not here and not behind a flag.
+#
+# It runs now because the device node exists and the disk is still idle; the verdict is
+# finalised after the mount below, and recorded on the p4 side, which is the surface a
+# pulled disk still explains the boot from. A dirty or unreadable answer changes nothing:
+# it is written down and the boot continues.
+esp_probe="$(wf_esp_health_probe "${esp}")"
+
+# --------------------------------------------------------------------------- #
 # 3. First-boot growth of p4, before anything is mounted
 # --------------------------------------------------------------------------- #
 # The image ships p4 with 64 MiB and leaves the tail of the disk unallocated; the
@@ -194,9 +232,10 @@ export WF_ESP_DEV
 
 if [ -n "${dev}" ] && [ -n "${p4}" ]; then
     # Diagnose from a pulled disk, not from a serial console. The buffer lives on the
-    # initramfs tmpfs here: the ESP is only mounted later, and read-only, so writing
-    # "straight to /esp" (as an earlier version did) silently lost every line. The buffer
-    # is copied onto p4 once that is mounted, and ab-boot carries it to the ESP.
+    # initramfs tmpfs here because the ESP is not mounted yet, so writing "straight to /esp"
+    # (as an earlier version did) would land in a tmpfs directory that the real mount covers
+    # and the initramfs takes with it - which silently lost every line of one boot already.
+    # The buffer is copied onto p4 once that is mounted, and ab-boot carries it to the ESP.
     # /tmp does not exist in this initramfs (only bin proc sys dev mnt lib/modules are
     # created), so the buffer lives in /run/grow - the same directory wf_grow_run keeps
     # its table dumps in, which this line creates first because wf_grow_log appends to it
@@ -258,12 +297,91 @@ case "${grow_state}" in
         ;;
 esac
 
+# Milestone 2. The growth and the resize are finished and their outcome is a token, so the
+# last state of it is what the breadcrumb carries - not the pre-resize one.
+wf_mark grow-done "result=${grow_state}"
+
+# --------------------------------------------------------------------------- #
+# 3c. p4 root subvolume: the second landing zone, and the growth record's home
+# --------------------------------------------------------------------------- #
+# This mount happens *here*, before the ESP is touched, and not in section 5a where the
+# record is written. The reason is the failure path: `esp-mount-failed` and `state-missing`
+# - the two candidates the 05:36 poweroff is blamed on - are the exact cases in which the
+# ESP cannot hold the evidence, and until this mount existed the p4 fallback had nowhere to
+# go either (`/mnt/p4root` was only created at 5a), so those failures were serial-only,
+# which is the defect this whole unit exists to fix. It cannot move earlier than this: the
+# growth and the resize both rewrite/rename partition state and need the disk with nothing
+# mounted on it (see `blockdev --rereadpt` in grow.sh).
+#
+# The root subvolume outlives every generation layer and ab-boot mounts it at /mnt/p4 at
+# runtime, so `.ab/grow` and `.ab/esp-health` written here survive the boot.
+#
+# It carries compress= and discard= because it is the first option-carrying mount of the
+# filesystem; the generation mount below repeats the level (a filesystem has one), and the
+# root subvolume is given back before that second mount so btrfs-progs and the overlay never
+# see the filesystem mounted twice.
+mkdir -p /mnt/p4root 2>/dev/null || :
+WF_P4_MOUNT="/mnt/p4root"
+export WF_P4_MOUNT
+p4root_state="unavailable"
+if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root; then
+    p4root_state="mounted"
+    # The first durable landing zone of this boot. It is armed here and not only after the
+    # ESP mount, because the two failures this unit exists for (`esp-mount-failed` and
+    # `state-missing`) happen while the ESP has no zone at all - with WF_MARK_LOG empty they
+    # would be serial-only, and a machine that powers itself off hands its serial log to
+    # nobody. Armed before the assertion below on purpose: that one can already fail the
+    # boot, and its breadcrumb has to land on a disk that is really there.
+    WF_MARK_LOG="$(wf_mark_zone)"
+    export WF_MARK_LOG
+    p4root_line="$(awk '$2 == "/mnt/p4root" { print }' /proc/mounts)"
+    case "${p4root_line}" in
+        *compress=*) : ;;
+        *) wf_fail p4-compress-option-missing ;;
+    esac
+    wf_log "p4 root subvolume mounted at /mnt/p4root (the p4 side of the breadcrumb log)"
+else
+    # The root subvolume is not mountable. The generation mount below still gets its chance:
+    # only the root subvolume may be broken, and a boot with a degraded p4 is better than no
+    # boot. With no mount there is no p4 landing zone either, so the zone is cleared rather
+    # than left pointing at a bare directory that no disk backs.
+    wf_log "warning: p4 root subvolume not mountable; the grow record and the p4 fallback are unavailable"
+    WF_P4_MOUNT=""
+    export WF_P4_MOUNT
+fi
+
 # --------------------------------------------------------------------------- #
 # 4. State from the ESP
 # --------------------------------------------------------------------------- #
+# Mounted read-write, because the failure path needs to rewrite ab-slot.cfg and a second
+# mount of an already mounted point can only fail ("already mounted or mount point busy") -
+# that is how a boot that powered off left no evidence at all. One mount, once.
+#
+# This is the first moment of the boot at which anything durable can be written, so it is
+# where the breadcrumb log starts. WF_MARK_LOG comes from wf_mark_zone, which asks the mount
+# table rather than the file system: a line therefore cannot land in a tmpfs directory that
+# a later mount covers up and the initramfs takes with it.
 
 mkdir -p /esp
-mount -t vfat -o ro "${esp}" /esp || wf_fail esp-mount-failed
+if mount -t vfat -o rw,noatime "${esp}" /esp; then
+    esp_mount="rw"
+else
+    esp_mount="fail"
+fi
+# The fourth reading is the mount itself, and it is also what makes the kernel inspect the
+# volume and log its own opinion of it - so the verdict can only be finished here.
+esp_health="$(wf_esp_health_finish "${esp_probe}" "${BOOT}" "${esp_mount}")"
+esp_state="$(wf_esp_health_state "${esp_health}")"
+wf_log "esp health: ${esp_health}"
+wf_say "[boot] stage=esp-health ${esp_health}"
+if [ "${esp_mount}" = "rw" ]; then
+    WF_MARK_LOG="$(wf_mark_zone)"
+    export WF_MARK_LOG
+fi
+# Milestone 3. With the mount refused no landing zone exists yet (p4 comes later), so this
+# one is a serial line and the boot then takes its failure path.
+wf_mark esp-mounted "mount=${esp_mount}" "esp=${esp_state}"
+[ "${esp_mount}" = "rw" ] || wf_fail esp-mount-failed
 STATE=/esp/ab/state.json
 [ -f "${STATE}" ] || wf_fail state-missing
 
@@ -297,33 +415,26 @@ upper="$(wf_upper "${STATE}" "${slot}")"
 [ -n "${upper}" ] || wf_fail state-upper-invalid
 generation="$(wf_generation "${STATE}")" || generation=unknown
 wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
+# Milestone 4. The slot decision is the last thing read from the ESP before the layers are
+# mounted, so a boot that dies in the mount window says which layer it died on.
+wf_mark state "committed=${committed_slot}" "slot=${slot}" "upper=${upper}"
 
 # --------------------------------------------------------------------------- #
 # 5. Mount order: p4 root subvolume (resize, record), then the generation layer,
 #    then the read-only layers
 # --------------------------------------------------------------------------- #
 
-mkdir -p /mnt/p4 /mnt/p4root "${P4_RESIZE_MOUNT}" /mnt/@platform /mnt/@sys
+mkdir -p /mnt/p4 /mnt/@platform /mnt/@sys
 degraded=0
 
 # --------------------------------------------------------------------------- #
-# 5a. p4, first pass: mount the filesystem root once to keep the growth record
+# 5a. p4: the growth record and the ESP verdict, on the root subvolume mounted at 3c
 # --------------------------------------------------------------------------- #
-# The resize already happened in section 3b, on the unmounted device. This mount only
-# exists to write `.ab/grow` and `.ab/partitions.before` on the root subvolume: it
-# outlives every generation layer, and ab-boot mounts it at /mnt/p4 at runtime.
-#
-# This is also the first mount of the filesystem, so it carries compress= and discard=:
-# `compress=` is only applied by the first mount, and the generation mount below repeats
-# the same level. The mount is given back before that second mount, so btrfs-progs and
-# the overlay never see the filesystem mounted twice.
-if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root; then
-    p4root_line="$(awk '$2 == "/mnt/p4root" { print }' /proc/mounts)"
-    case "${p4root_line}" in
-        *compress=*) : ;;
-        *) wf_fail p4-compress-option-missing ;;
-    esac
-
+# This is the surface that survives a boot which never reaches userspace, so both the growth
+# result and the read-only ESP verdict go here, and it is given back before the generation
+# mount below so the filesystem is never mounted twice while btrfs-progs or the overlay is
+# working on it.
+if [ "${p4root_state}" = "mounted" ]; then
     wf_log "p4 step=record start device=${p4} state=${grow_state}"
     # The pre-change table is kept next to the record: if the write turns out to be
     # half-applied on a power cut, the old geometry is on the same disk.
@@ -332,6 +443,7 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4r
     fi
     if wf_grow_record /mnt/p4root "${grow_state}" "${grow_last_lba}"; then
         wf_log "p4 growth recorded: result=${grow_state} last_lba=${grow_last_lba}"
+        p4root_state="recorded"
         # Carry the buffered log next to the record: p4 survives the boot and ab-boot
         # copies it to the ESP, so a failure has a reason on the disk either way.
         if [ -s "${WF_GROW_LOG_FILE}" ]; then
@@ -340,6 +452,14 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4r
         fi
     else
         wf_log "warning: could not write the growth record on the p4 root subvolume"
+    fi
+    # The ESP verdict goes next to the growth record: this is the only place in the boot
+    # where both the conclusion and a writable disk exist. The ESP is deliberately not the
+    # place for it - a broken ESP is the case it has to describe.
+    if wf_esp_health_record /mnt/p4root "${esp_health}"; then
+        wf_log "esp health recorded in .ab/esp-health"
+    else
+        wf_log "warning: could not write the ESP health record on the p4 root subvolume"
     fi
     # The mount is given back before the generation mount, so the filesystem is never
     # mounted twice while btrfs-progs or the overlay is working on it.
@@ -355,16 +475,27 @@ if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4r
         wf_log "p4 step=record done, the filesystem has no mount again"
     fi
 else
-    # The root subvolume is not mountable, so the resize and the record cannot happen.
-    # The generation mount below still gets its chance: only the root subvolume may be
-    # broken, and a boot with a degraded p4 is better than no boot.
-    wf_log "warning: p4 root subvolume not mountable; resize and growth record skipped"
+    wf_log "warning: p4 root subvolume not mountable; growth record and ESP verdict not kept"
 fi
+# The root subvolume is given back: from here the p4 landing zone is the generation's
+# writable layer (5b) or nothing at all. Leaving WF_P4_MOUNT on /mnt/p4root now would point
+# it at a bare directory on the initramfs tmpfs, and a breadcrumb written there would be
+# gone with the initramfs - the exact silent loss this file was fixed for.
+WF_P4_MOUNT=""
+export WF_P4_MOUNT
+# Milestone 5. Whatever happened above, the boot now says what it managed to keep: the
+# growth result, the ESP verdict and whether the p4 record could be written at all.
+wf_mark p4-record "grow=${grow_state}" "esp=${esp_state}" "p4=${p4root_state}"
 
 # --------------------------------------------------------------------------- #
 # 5b. p4, second pass: the generation's writable layer, mounted for the overlay
 # --------------------------------------------------------------------------- #
 if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/${upper}" "${p4}" /mnt/p4; then
+    # This layer stays mounted until switch_root, so from this line on it is the p4 landing
+    # zone. It is set before the compress check below on purpose: that check can fail the
+    # boot, and its breadcrumb has to land on a disk that is really there.
+    WF_P4_MOUNT="/mnt/p4"
+    export WF_P4_MOUNT
     p4_line="$(awk '$2 == "/mnt/p4" { print }' /proc/mounts)"
     case "${p4_line}" in
         *compress=*) : ;;
@@ -376,6 +507,10 @@ else
     # it just cannot persist anything. The upper moves to tmpfs and the boot is
     # reported as degraded.
     degraded=1
+    # No writable partition: /mnt/p4 is a tmpfs the initramfs takes with it, so it is not a
+    # landing zone and no line is written into it (it would be a line no disk ever held).
+    WF_P4_MOUNT=""
+    export WF_P4_MOUNT
     wf_log "p4 unavailable, booting degraded with a tmpfs upper"
     wf_say "[boot] action=degraded-boot p4=degraded"
     mount -t tmpfs -o mode=0755 tmpfs /mnt/p4 || wf_fail degraded-tmpfs-failed
@@ -419,6 +554,9 @@ case "${overlay_line}" in
     *) : ;;
 esac
 wf_log "overlay composed at /newroot"
+# Milestone 6. The three layers are one root now; a boot that dies between here and the
+# switch has its root already composed, which is the state the probe writes below need.
+wf_mark overlay "upper=${upper}"
 
 # The platform layer must be visible through the merged view.
 [ -f /newroot/etc/platform-release ] || wf_fail platform-release-not-in-root
@@ -502,10 +640,54 @@ wf_log "probe writes landed in upper, not in the read-only layers"
 # --------------------------------------------------------------------------- #
 # 9. Hand over to the composed root
 # --------------------------------------------------------------------------- #
+# Which program becomes PID 1 depends on the build, not on the machine:
+#
+#   CI build      scripts/ci/initramfs.sh packs post.sh as /s3-post.sh when the build sets
+#                 AB_CI_HOOKS=1; it becomes /.s3-post in the composed root and asserts the
+#                 switch from inside it
+#   production    nothing is injected, and the composed root's own /sbin/init is PID 1,
+#                 exactly as on any other boot
+#
+# A missing hook is therefore not a failure, it is the production build. The previous
+# `cp /s3-post.sh ... || wf_fail` turned every flashed machine into a poweroff at this line.
+# The decision is one function so that the copy, its mode and the command line cannot drift
+# apart, and so that a test can run it.
 
-cp /s3-post.sh /newroot/.s3-post || wf_fail post-script-stage-failed
-chmod 0755 /newroot/.s3-post
+# handover_cmd <newroot> <slot> <upper> <boot>: stage the hook if it is there and print the
+# command line switch_root should run. Non-zero only means the staging itself failed.
+handover_cmd() {
+    wf_hc_newroot="$1"
+    if [ -f "${WF_POST_HOOK}" ]; then
+        cp "${WF_POST_HOOK}" "${wf_hc_newroot}/.s3-post" || return 1
+        chmod 0755 "${wf_hc_newroot}/.s3-post" || return 1
+        printf 'switch_root %s /bin/sh /.s3-post %s %s %s' \
+            "${wf_hc_newroot}" "$2" "$3" "$4"
+        return 0
+    fi
+    printf 'switch_root %s /sbin/init' "${wf_hc_newroot}"
+    return 0
+}
+
+handover="$(handover_cmd /newroot "${slot}" "${upper}" "${BOOT}")" || handover=""
+if [ -z "${handover}" ]; then
+    # The hook is there but could not be staged. That is still not a reason to power the
+    # machine off: the composed root is complete, so it starts as it would without the hook.
+    wf_log "warning: could not stage ${WF_POST_HOOK}; the composed root starts with /sbin/init"
+    handover="switch_root /newroot /sbin/init"
+fi
+# What the breadcrumb reports is read back from the command that will run, so the line on the
+# disk and the handover itself cannot name different programs.
+handover_init="/.s3-post"
+case "${handover}" in
+    *" /sbin/init") handover_init="/sbin/init" ;;
+esac
 umount /esp || wf_log "warning: could not unmount the ESP"
+# The ESP left the mount table. wf_mark_zone cannot resolve to it again, and the p4 zone is
+# the generation's writable layer (or nothing at all in a degraded boot), so the last two
+# milestones land on a disk that outlives the initramfs whenever there is one.
+WF_MARK_LOG="$(wf_mark_zone)"
+export WF_MARK_LOG
+wf_mark esp-unmounted
 
 for fs in proc sys dev; do
     mkdir -p "/newroot/${fs}"
@@ -519,11 +701,15 @@ for fs in proc sys dev; do
     fi
 done
 
-wf_log "switching root to the overlay"
+# Milestone 8. The last line a boot can leave before PID 1 changes: whatever happens in the
+# handover, the disk already says how far this boot got and which program was next.
+wf_mark switching-root "init=${handover_init}"
+wf_log "switching root to the overlay (${handover_init})"
 # switch_root must be PID 1, and this script is a child of the shell that the kernel
 # started as init, so exec replaces the shell instead of forking a helper.
+# shellcheck disable=SC2086  # the words of the command line are the argument list
 # shellcheck disable=SC2093  # exec only returns when it fails; the line below handles that
-exec switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}"
+exec ${handover}
 
 # exec only returns when it fails.
 wf_fail switch-root-failed

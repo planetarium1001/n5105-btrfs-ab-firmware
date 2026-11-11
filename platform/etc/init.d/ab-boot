@@ -265,6 +265,31 @@ grow_result() {
 	return 1
 }
 
+# esp_health_result: the read-only ESP verdict the initramfs recorded on p4.
+#
+# The initramfs judges the volume before it mounts it - boot signature, the FAT's
+# clean-shutdown bit, the FSInfo sector, then the mount result - and writes one line to
+# `.ab/esp-health`. It lands on p4 rather than on the ESP on purpose: the verdict has to
+# describe a partition that may well be the broken one. Like grow_result, both places are
+# accepted (the root subvolume mounted at /mnt/p4, or the running slot's layer), and a
+# missing file is the documented "not recorded" case, never an error.
+esp_health_result() {
+	for _candidate in "${AB_P4}/.ab/esp-health" "${AB_P4}/$1/.ab/esp-health"; do
+		case "${_candidate}" in
+			"${AB_P4}//.ab/esp-health") continue ;;
+		esac
+		if [ -f "${_candidate}" ]; then
+			_line="$(head -n 1 "${_candidate}" 2>/dev/null)"
+			case "${_line}" in
+				esp=*) printf '%s' "${_line}" ;;
+				*) printf 'esp=unrecorded' ;;
+			esac
+			return 0
+		fi
+	done
+	return 1
+}
+
 start() {
 	mount_esp || {
 		# Both channels: syslog for the running system, the console for the serial log,
@@ -325,6 +350,17 @@ start() {
 	else
 		log_append "stage=grow slot=${slot:-?} result=unrecorded"
 		console_say "ab-boot: no first boot growth result on ${AB_P4}, recorded as unrecorded"
+	fi
+
+	# The ESP was judged before the initramfs mounted it; that verdict belongs in the ring
+	# log next to the growth result, where the acceptance checklist and `ab-slot status`
+	# look for it. A boot that has no line reports unknown, never ok.
+	if esp_health="$(esp_health_result "${upper}")"; then
+		log_append "stage=esp-health slot=${slot:-?} ${esp_health}"
+		console_say "ab-boot: ESP health at boot ${esp_health}"
+	else
+		log_append "stage=esp-health slot=${slot:-?} esp=unrecorded"
+		console_say "ab-boot: no ESP health record on ${AB_P4}, recorded as unrecorded"
 	fi
 
 	if [ "${p4}" = "degraded" ]; then

@@ -14,6 +14,8 @@
 #   ac-7 the four commands keep the runtime slot file in step with the state file, and
 #        a refused command leaves that file untouched
 #   ac-8 `next` reads the file back and `--write` heals it from the state file
+#   ac-9 status appends the initramfs' ESP verdict as `esp=`, read from this boot's ring log
+#        (boot= and esp= are the two fields a machine cannot claim without evidence)
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -124,12 +126,12 @@ write_state a none 1
 slot_cmd next --write >/dev/null 2>&1
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown" \
+  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown" \
   "ac-1 status line reports the documented fields"
 
 status="$(slot_cmd_full status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=partuuid boot=unknown" \
+  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown" \
   "ac-1 status reports the three mount points of the writable partition"
 
 # Without the identity library the status line says so instead of inventing a device.
@@ -144,9 +146,41 @@ write_state a a 2
 slot_cmd next --write >/dev/null 2>&1
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=b upper=@overlay-25.12.2 generation=2 committed=a pending=a p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown" \
+  "slot=b upper=@overlay-25.12.2 generation=2 committed=a pending=a p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown" \
   "ac-1 status follows ab.slot= on the kernel command line"
 printf 'console=ttyS0 ab.slot=a\n' >"$cmdline"
+
+# --- ac-9 the ESP verdict the initramfs left for the running system ----------
+# The initramfs judges the ESP before it mounts it and records the verdict on p4; ab-boot
+# republishes it as one `stage=esp-health` line in the ring log, and this field is that
+# line. It is appended after boot= on purpose: platform/lib/upgrade/platform.sh and every
+# other reader pick their fields out by pattern, and the human summary stays where it was.
+esp_field() { printf '%s' "$1" | sed -n 's/.* esp=\([a-z]*\).*/\1/p'; }
+
+rm -f "$esp/ab/log/boot-0.log"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(esp_field "$status")" "unknown" \
+  "ac-9 without a ring log the ESP verdict is unknown, never ok"
+assert_matches "$status" 'boot=unknown esp=unknown$' \
+  "ac-9 the esp= field is appended at the end of the status line"
+
+cat >"$esp/ab/log/boot-0.log" <<'LOG'
+stage=boot slot=a upper=@overlay-25.12.3 rootfs=25.12.3 result=ok
+stage=esp-health slot=a esp=dirty boot=1 sig=ok dirty_bit=1 fsinfo=ok mount=rw
+LOG
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(esp_field "$status")" "dirty" \
+  "ac-9 the verdict ab-boot republished is what status reports"
+assert_contains "$status" "boot=ok esp=dirty" \
+  "ac-9 both fields are read from this boot's ring log"
+
+# Only the documented tokens are sent on: a boot that could not judge the ESP recorded that
+# it could not, and a report that turned that into an "ok" would be the silent healthy
+# machine this field exists to catch.
+printf 'stage=esp-health slot=a esp=unrecorded\n' >"$esp/ab/log/boot-0.log"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(esp_field "$status")" "unknown" \
+  "ac-9 an unrecognised token is reported as unknown"
 
 # --- ac-2 commit and abandon ------------------------------------------------
 write_state a a 2

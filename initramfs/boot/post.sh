@@ -1,6 +1,14 @@
 #!/bin/sh
 # Post-switch assertion for S3. Runs as the new /init, inside the composed root.
 #
+# This is a CI assertion, not part of the product. It enters an initramfs only when the
+# build asked for CI hooks (AB_CI_HOOKS=1), and the production image ships without it,
+# so a boot of a flashed machine never reaches this file. The entry point below keeps
+# that promise for the other direction as well: a copy that is called without the three
+# arguments the initramfs passes is not the probe entry, and this script then leaves the
+# running system completely alone - no probe file, no marker in the writable layer, no
+# poweroff, and no judge line that a harness could read as a verdict on this boot.
+#
 # switch_root has already moved /proc /sys /dev and thrown the initramfs away, so
 # this script is self-contained: it cannot source the initramfs helpers. It proves
 # the things that can only be true after the switch:
@@ -36,6 +44,42 @@ fail() {
 log() {
     printf '[post] %s\n' "$*"
 }
+
+# --------------------------------------------------------------------------- #
+# Am I the probe entry? Anything else is left alone.
+# --------------------------------------------------------------------------- #
+# The initramfs calls this script through
+#   exec switch_root /newroot /bin/sh /.s3-post "${slot}" "${upper}" "${BOOT}"
+# so all three arguments are always present on the assertion path. A caller without
+# them - a leftover copy that a person or an init runs, a production system that found
+# the file - gets nothing: writing a probe file there would put CI bookkeeping into a
+# user's writable layer, and a judge line or a poweroff would change the outcome of a
+# boot that is not being asserted. Exit 0, so the boot continues exactly as it would
+# have without this file.
+if [ -z "${slot}" ] || [ -z "${upper}" ]; then
+    log "not the CI probe entry (slot='${slot}' upper='${upper}'); nothing to assert, leaving the boot alone"
+    exit 0
+fi
+case "${slot}" in
+    a | b) : ;;
+    *)
+        log "not the CI probe entry (slot='${slot}' is not a slot name); leaving the boot alone"
+        exit 0
+        ;;
+esac
+case "${upper}" in
+    @*) : ;;
+    *)
+        log "not the CI probe entry (upper='${upper}' is not a layer name); leaving the boot alone"
+        exit 0
+        ;;
+esac
+case "${boot}" in
+    *[!0-9]*)
+        log "not the CI probe entry (boot='${boot}' is not a boot counter); leaving the boot alone"
+        exit 0
+        ;;
+esac
 
 log "inside the composed root, slot=${slot} upper=${upper} boot=${boot}"
 # /proc was moved into the new root by the init; only mount it if that did not happen.

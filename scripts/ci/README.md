@@ -256,14 +256,27 @@ probe written by the previous boot is still there. It ends by executing `/sbin/i
 so the boot proves the root is a working system; the harness stops the machine as soon
 as the judge line appears.
 
+`/s3-post.sh` is a CI artefact, not part of the product: it enters an initramfs only when
+the build sets `AB_CI_HOOKS=1` (`vars.AB_CI_HOOKS` in `ci-assemble.yml`, and set by
+`ci-s3.yml` on its assertion build alone). A production build - `kind=boot`, the flag
+unset - carries an `initrd-a`/`initrd-b` without it, and `scripts/ci/image-verify.sh`
+asserts that mechanically: `assert_no_ci_hooks` reads the member table of both initrds
+back with `cpio -t` and fails the build on any `s3-` entry. The test and debug pipelines
+(`ci-debug.yml`, `ci-s4.yml`, `ci-s5.yml`) keep injecting it unconditionally on purpose:
+their images are supposed to carry the probe, and none of them publishes an install image.
+
 ```
 S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=<overlay>
 S3-RESULT=fail reason=<token>
 ```
 
-The stage boots the same image twice (`wf.boot=1`, then `wf.boot=2`) and both boots
-must pass. Probe markers (`.s3-probe`, `.s3-new-<n>`, `.s3-post`) stay in the
-generation's upper directory, which is what makes the second boot meaningful.
+The stage boots the same disk image twice (`wf.boot=1`, then `wf.boot=2`) and both
+boots must pass. Those two boots load a second initramfs built with `AB_CI_HOOKS=1`
+(`ci-hooks.cpio.gz`), because the image's own `initrd-a`/`initrd-b` are the production
+archive and stay free of CI members; the firmware boot (the third one) runs the image's
+own initrd, so the production archive is still exercised end to end. Probe markers
+(`.s3-probe`, `.s3-new-<n>`, `.s3-post`) stay in the generation's upper directory, which
+is what makes the second boot meaningful.
 
 Two consequences worth knowing:
 
