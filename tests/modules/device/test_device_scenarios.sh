@@ -112,6 +112,9 @@ case "${last}" in
         cat "$dev/$(basename "$f")" 2>/dev/null || exit 1
         ;;
     "sh "*ab-scen-helper.sh*)
+        # A reboot on an image whose helper lives on tmpfs leaves nothing to run: the shell
+        # exits non-zero with no output, which is the answer this stub reproduces.
+        if [ "${FAKE_HELPER_MISSING:-0}" = "1" ]; then exit 127; fi
         # sh <helper> <sub> <args...>: dispatch the same subcommands the real helper has.
         rest=$(printf '%s' "$last" | sed -e 's|^sh [^ ]* ||')
         sub=${rest%% *}
@@ -413,6 +416,21 @@ assert_contains "$netlog" "how=setsid" "the revert is scheduled with a tool this
 assert_contains "$netlog" "the watchdog restores" "when the host cannot reach the machine, the machine is what restores it"
 assert_eq "$(test -f "$FAKE_DEV/config.tsv" && echo yes || echo no)" "no" \
     "no inventory was written after the failed change, so a jump case cannot judge a state the machine does not have"
+
+# The helper is a driver artifact, not a fact about the machine. When it does not come
+# back after a reboot, the case must say so instead of reporting that the user's data,
+# packages and services are gone.
+setup_fake_world 25.12.2
+setup_inventories
+export FAKE_HELPER_MISSING=1
+out=$(run_scen "$tmp/r-s3-nh" --case S3)
+rc=$?
+unset FAKE_HELPER_MISSING
+assert_eq "$rc" "1" "a helper that did not survive the reboot stops the case"
+assert_eq "$(verdict_of "$tmp/r-s3-nh")" "FAIL" "the case is not recorded as a pass"
+assert_contains "$(note_of "$tmp/r-s3-nh")" "driver error" "the note blames the driver, not the machine"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s3-nh" s3)")" "helper-unavailable" \
+    "the evidence records the helper path that did not answer"
 
 # A scenario has to survive being run twice: the second run finds the section and the rule
 # it created the first time, and the reuse path has to answer with the same keys.

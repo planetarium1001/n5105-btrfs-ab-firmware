@@ -120,7 +120,10 @@ SCEN_EVIDENCE=${SCEN_DATA_DIR}/evidence
 SCEN_BACKUP=${AB_SCEN_BACKUP:-${SCEN_DATA_DIR}/backup}
 SCEN_SEED_DIR=${SCEN_DATA_DIR}/data
 SCEN_SEED_TAR=${AB_REMOTE_TMP}/ab-scen-seed.tar
-SCEN_HELPER=${AB_SCEN_HELPER:-${AB_REMOTE_TMP}/ab-scen-helper.sh}
+# The helper is pushed to the data partition, not to /tmp: every scenario that jumps a
+# version reboots the machine at least once, and a tmpfs helper disappears with the
+# reboot. A helper that is gone is not "the data is gone" - see scen() below.
+SCEN_HELPER=${AB_SCEN_HELPER:-/data/scen/bin/ab-scen-helper.sh}
 # The files the seed tree carries. Kept as a list because the post-jump judgement names
 # them one by one when they go missing.
 SCEN_DOCKER_TARS=${AB_SCEN_DOCKER_TARS:-"docker-image-alpine.tar docker-image-nginx.tar"}
@@ -882,12 +885,36 @@ AB_SCEN_HELPER_EOF
 # scen <helper args...>: run one helper subcommand on the machine.
 # Arguments are joined with spaces, so a caller with a command to run passes it unquoted
 # (`scen exec ${_cmd}`) exactly the way it wants it split.
+# The flag is a file, not a variable: scen() is almost always called inside $(...), and a
+# variable set in that subshell never reaches the code that decides the verdict.
+SCEN_DRIVER_ERROR_FILE=""
+
+driver_error_mark() {
+    [ -n "${SCEN_DRIVER_ERROR_FILE}" ] || return 0
+    : >"${SCEN_DRIVER_ERROR_FILE}"
+}
+
+driver_error_seen() {
+    [ -n "${SCEN_DRIVER_ERROR_FILE}" ] && [ -f "${SCEN_DRIVER_ERROR_FILE}" ]
+}
+
 scen() {
     _line="sh ${SCEN_HELPER}"
     for _a in "$@"; do
         _line="${_line} ${_a}"
     done
-    dev_ssh "${_line}"
+    _out=$(dev_ssh "${_line}")
+    _rc=$?
+    # An empty answer means the helper is not on the machine, not that the machine has
+    # nothing to say. Judging the second as if it were the first is how a driver bug gets
+    # written down as a device defect, so it is recorded as a driver error and the case
+    # stops judging.
+    if [ "${_rc}" -ne 0 ] || [ -z "${_out}" ]; then
+        driver_error_mark
+        ev "driver-error=helper-unavailable rc=${_rc} helper=${SCEN_HELPER} args=$*"
+        return 1
+    fi
+    printf '%s\n' "${_out}"
 }
 
 # pull <remote path>: read a file off the machine into RDATA; 0 when it exists and is not
@@ -912,9 +939,16 @@ kv() {
 
 push_helper() {
     scen_helper_render "${_tmp}/ab-scen-helper.sh" || return 1
+    dev_ssh "mkdir -p $(dirname "${SCEN_HELPER}")" >/dev/null 2>&1
+    if dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_tmp}/ab-scen-helper.sh" "${SCEN_HELPER}" >/dev/null; then
+        ev "helper pushed: ${SCEN_HELPER}"
+        return 0
+    fi
+    # Losing the persistent path costs a re-push per reboot, not the run.
+    SCEN_HELPER="${AB_REMOTE_TMP}/ab-scen-helper.sh"
     dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_tmp}/ab-scen-helper.sh" "${SCEN_HELPER}" >/dev/null \
         || { ev "helper push failed: ${SCEN_HELPER}"; return 1; }
-    ev "helper pushed: ${SCEN_HELPER}"
+    ev "helper pushed to the scratch path instead: ${SCEN_HELPER}"
     return 0
 }
 
@@ -1629,6 +1663,9 @@ scen_hop() {
         ev "wait_up: no answer within ${AB_WAIT_UP_FIRST}s after reboot (hard cap ${AB_WAIT_UP_HARD}s)"
         return 1
     fi
+    # The machine just rebooted; whatever lives on tmpfs is gone. The helper is re-pushed
+    # before the first judgement so a missing helper can never read as missing data.
+    push_helper || { CASE_NOTE="helper could not be pushed again after the reboot"; return 1; }
     if ! _booted=$(dev_wait_settled "${AB_WAIT_SETTLE}"); then
         ev "settle: no status line within ${AB_WAIT_SETTLE}s after the machine answered ssh"
         return 1
@@ -1705,6 +1742,10 @@ run_jump() {
 
     # The judgement: every check runs, so one broken thing does not hide the next.
     CASE_FAILED=0
+    if driver_error_seen; then
+        CASE_NOTE="driver error: the scenario helper did not answer after the reboot; the machine was not judged"
+        return 1
+    fi
     v_data "${_case}"
     v_config "${_case}"
     v_software "${_case}"
@@ -1730,6 +1771,10 @@ run_s5() {
     probe_machine || { CASE_NOTE="the machine did not answer the helper's probe"; return 1; }
 
     CASE_FAILED=0
+    if driver_error_seen; then
+        CASE_NOTE="driver error: the scenario helper did not answer; the ledger was not read"
+        return 1
+    fi
     v_abi "${_case}"
     v_software "${_case}"
     v_platform "${_case}"
@@ -2173,8 +2218,24 @@ for _case in ${WANT_CASES}; do
         continue
     fi
     printf '== %s %s' "${_case}" "$(case_label "${_case}")"
+    SCEN_DRIVER_ERROR_FILE="${EVIDENCE_DIR}/driver-error.flag"
+    rm -f "${SCEN_DRIVER_ERROR_FILE}"
     scen_case "${_case}"
     _rc=$?
+    # A case that never reached the machine is a driver failure, whatever the case itself
+    # was about to say. Keeping the case's own wording here is how "the helper was not
+    # there" gets filed as "the user's data is gone".
+    # Only the notes that mean "nothing was judged" are rewritten: a machine that really did
+    # stop answering after the reload has already said so in its own words, and replacing
+    # that with a driver error would hide the one fact the case exists to report.
+    case "${CASE_NOTE}" in
+        ""|*"did not answer the helper's probe"*|*"helper could not be pushed again"*)
+            if driver_error_seen && [ "${_rc}" -ne 0 ]; then
+                CASE_NOTE="driver error: the scenario helper did not answer (helper-unavailable); the machine was not judged"
+                _rc=1
+            fi
+            ;;
+    esac
     # The finding prefix is part of the note, not a verdict: a row can be PASS and still
     # carry what the user has to do about their kernel modules.
     _note=${CASE_NOTE}
