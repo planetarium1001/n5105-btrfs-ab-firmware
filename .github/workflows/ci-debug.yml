@@ -383,7 +383,12 @@ jobs:
             # a live log. The token is not a bearer credential: limit-access-to-actor makes
             # the relay accept only the dispatcher's own keys, which is why this file holds
             # nothing else and never the web shell link.
-            printf '%s\n' "${ssh_cmd}" >"${CI_TMP_ROOT:?}/session-ssh.txt"
+            # The directory is not guaranteed to exist: `stage=none` never builds a disk,
+            # so nothing has created ${CI_TMP_ROOT} yet, and writing the file used to fail
+            # the step - which failed the whole job and left the artifact missing, even
+            # though the session itself was healthy.
+            mkdir -p "${CI_TMP_ROOT:?}"
+            printf '%s\n' "${ssh_cmd}" >"${CI_TMP_ROOT}/session-ssh.txt"
           else
             printf 'CI_DEBUG_SSH_READY=0\n' >>"${GITHUB_ENV}"
             # A relay client that came up but never got a session can outlive the step.
