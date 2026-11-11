@@ -148,7 +148,7 @@ rsync -aHAX /mnt/img/@data/ /srv/rescue/
 | | `--dry-run` | 只打印清单与归档名，不写任何文件 |
 | | `--plain` | 不压缩，出 `.tar` |
 | `ab-restore` | `<archive>` | 要恢复的包 |
-| | `--data-only` | 只解 `data/`，`etc/config/` 与 `meta/` 不动 |
+| | `--data-only` | 只解 `data/`：`docker/`、`etc/config/` 与 `meta/` 都不动 |
 | | `--force` | 允许恢复进非空的 `@data` |
 
 两个工具都在 stdout 给机器可读的行（`backup=`、`entries`、`consistency=`、`restored=`），

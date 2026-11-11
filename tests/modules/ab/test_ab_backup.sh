@@ -125,6 +125,15 @@ assert_contains "$listing" "meta/manifest.txt" "ac-6 the manifest is exported as
 assert_eq "$(printf '%s\n' "$listing" | cut -d/ -f1 | sort -u | tr '\n' ' ')" \
   "data etc meta " "ac-6 no category beyond data, etc/config and meta is exported by default"
 
+# The archive is assembled in a staging root and tarred from there with one -C, so the
+# staging root must not appear in the package, and no member may be an absolute path.
+assert_eq "$(printf '%s\n' "$listing" | awk '/^@backup/ || /^\.ab-backup/ { n++ } END { print n + 0 }')" \
+  "0" "ac-6 the archive carries no staging root of its own"
+assert_eq "$(printf '%s\n' "$listing" | awk '/\.ab-backup/ { n++ } END { print n + 0 }')" \
+  "0" "ac-6 no member was taken from a staging root inside the output directory"
+assert_eq "$(printf '%s\n' "$listing" | awk '/^\// { n++ } END { print n + 0 }')" \
+  "0" "ac-6 every member is named relative to the archive root"
+
 assert_file_exists "${archive}.sha256" "ac-6 the archive carries a .sha256"
 assert_eq "$(cut -d' ' -f1 "${archive}.sha256")" "$(sha256_of "$archive")" \
   "ac-6 the .sha256 is the digest of the archive"
@@ -143,6 +152,8 @@ stdout=$(run_backup "$btrfs_ok" --out "$out_docker" --with-docker 2>/dev/null)
 archive_docker=$(printf '%s\n' "$stdout" | sed -n 's/^backup=//p')
 listing=$(tar -tzf "$archive_docker" 2>/dev/null)
 assert_contains "$listing" "docker/img/x" "ac-6 --with-docker appends @docker"
+assert_eq "$(printf '%s\n' "$listing" | cut -d/ -f1 | sort -u | tr '\n' ' ')" \
+  "data docker etc meta " "ac-6 --with-docker exports exactly four categories"
 assert_contains "$stdout" "entries data=2 etc=2 docker=1 meta=7" \
   "ac-6 --with-docker counts the docker entries"
 
@@ -156,6 +167,8 @@ assert_eq "$([ -e "$out_dry" ] && echo present || echo absent)" "absent" \
 assert_contains "$stdout" "plan=data" "ac-6 --dry-run prints the @data entry"
 assert_contains "$stdout" "plan=etc/config" "ac-6 --dry-run prints the etc/config entry"
 assert_contains "$stdout" "would-write=" "ac-6 --dry-run names the archive it would write"
+assert_eq "$(find "$p4" "$tmp" -maxdepth 2 \( -name '@backup-*' -o -name '.ab-backup.*' \) 2>/dev/null)" "" \
+  "ac-6 --dry-run creates no staging root"
 
 # --- --plain ---------------------------------------------------------------
 out_plain="$tmp/out-plain"
@@ -175,6 +188,24 @@ assert_eq "$rc" "0" "ac-6 a missing btrfs tool does not fail the backup"
 assert_contains "$stdout" "consistency=live" "ac-6 the export falls back to the live tree"
 assert_contains "$(cat "$tmp/err-live")" "warn:" \
   "ac-6 the fallback is announced, not silent: it is not a point-in-time copy"
+assert_eq "$(find "$p4" -maxdepth 1 -name '@backup-*' 2>/dev/null)" "" \
+  "ac-6 the copied staging root is removed afterwards too"
+
+# --- a tar that fails: no half package, and nothing left in the staging root ------
+out_broken="$tmp/out-broken"
+mkdir -p "$out_broken"
+fakebin="$tmp/fakebin"
+mkdir -p "$fakebin"
+printf '#!/bin/sh\nexit 1\n' >"$fakebin/tar"
+chmod +x "$fakebin/tar"
+PATH="$fakebin:$PATH" AB_ESP="$esp" AB_P4="$p4" AB_DATA="$data" AB_DOCKER="$docker" \
+  AB_CMD="$cmdline" AB_BTRFS="$btrfs_ok" AB_SLOT_BIN="$ab_slot" \
+  sh "$ab_backup" --out "$out_broken" >/dev/null 2>"$tmp/err-tar"
+rc=$?
+assert_eq "$rc" "1" "ac-6 a failing tar fails the export"
+assert_eq "$(ls -A "$out_broken")" "" "ac-6 a failing tar leaves no half written package"
+assert_eq "$(find "$p4" -maxdepth 1 -name '@backup-*' 2>/dev/null)" "" \
+  "ac-6 a failing tar still takes its staging root back"
 
 # --- refusals: no half written package ------------------------------------
 out_full="$tmp/out-full"

@@ -21,14 +21,42 @@
 # docker/.... etc/config keeps the path it has on disk. Nothing is renamed at restore
 # time; ab-restore reads the same three names.
 #
-# Consistency: @data is snapshotted read-only first (btrfs), so the archive is a point
-# in time. When the snapshot cannot be taken - no btrfs tool, no space, a filesystem
-# that is not btrfs - the export falls back to tarring the live tree and says so with a
-# `warn:` on stderr, because that copy is not point-in-time and a caller has to know.
+# How the archive is built. The target's tar is BusyBox v1.37.0, which is a smaller tar
+# than GNU's: no second -C, no --exclude, no --strip-components (measured on the
+# device). A symlink farm built with `cp -al` is not an option either - @data, @docker
+# and the writable partition are separate btrfs subvolumes and hard links do not cross
+# subvolumes. So the member names are produced by assembling one staging root first:
+#
+#   STAGE/data          read-only snapshot of @data       (btrfs subvolume snapshot -r)
+#   STAGE/docker        read-only snapshot of @docker     (with --with-docker)
+#   STAGE/etc/config    real copy of the slot's copy-up config
+#   STAGE/meta          real copies of the bookkeeping files
+#
+# then one tar runs over it:
+#
+#   tar -czf ARCHIVE -C STAGE data docker etc meta
+#
+# One -C, one tar, and no -h: -h would dereference symlinks and recurse into directory
+# symlinks across the whole tree, which changes what the data means. The package is
+# supposed to carry the tree as it is. Staging also means the archive can be written
+# into the output directory without tar reading its own output back.
+#
+# Consistency: a category is staged from a read-only snapshot when btrfs can take one,
+# so the archive is a point in time. When the snapshot cannot be taken - no btrfs tool,
+# a filesystem that is not btrfs, no space - the category is copied for real with
+# `cp -a` into the same staging root, the run warns on stderr and reports
+# consistency=live, because that copy is not point-in-time. The copy costs a second copy
+# of the data while it runs; that is the price of not dereferencing anything and not
+# rewriting the tree, and it is paid only on the degraded path.
 #
 # Space: the size is estimated and compared with the free space of the output directory
 # before anything is written. A package that cannot fit is refused, not half written: a
-# truncated archive that looks complete is worse than no archive.
+# truncated archive that looks complete is worse than no archive. The copy fallback
+# checks the staging filesystem the same way before it starts copying.
+#
+# The output directory must exist; ab-backup never creates it. `refuse:` means nothing
+# was written, and guessing a directory on the caller's behalf is not what a refusal is
+# for - `mkdir -p` first, then point --out at it.
 #
 # Output (stdout, one machine readable line each):
 #   backup=<absolute path of the archive>
@@ -45,7 +73,7 @@
 #   AB_DOCKER     @docker mount point        (default /opt/docker)
 #   AB_CMD        /proc/cmdline equivalent   (default /proc/cmdline, for tests)
 #   AB_BTRFS      the btrfs binary           (default btrfs; point it at a missing path
-#                                            to exercise the live-tree fallback)
+#                                            to exercise the copy fallback)
 #   AB_SLOT_BIN   ab-slot to ask for the running slot and its layer
 #   AB_AVAIL_KB   free space to assume, instead of asking df (for tests)
 
@@ -74,14 +102,10 @@ DRY_RUN=0
 PLAIN=0
 OUT_DIR=""
 
-# Paths the run creates and must take back, whatever happens next.
-WORK=""
-SNAP_DIR=""
-# Set by tar_target: where to tar from, which member name to store, and whether the
-# source is a read-only snapshot or the live tree.
-TAR_ROOT=""
-TAR_MEMBER=""
-CONSISTENCY="live"
+# The staging root the archive is assembled in, and the consistency of what went into it.
+# Both are globals because the exit trap has to take the staging root back.
+STAGE=""
+CONSISTENCY="snapshot"
 
 say() {
     printf '%s\n' "$*" >&2
@@ -163,6 +187,17 @@ meta_source() {
     return 1
 }
 
+# host_name: the machine's name, for the archive name and the manifest. `hostname` is not
+# in the image the target boots (measured), so the kernel's own answer is asked for next
+# and the name is reduced to characters a file name can carry.
+host_name() {
+    _name="$(hostname 2>/dev/null)" || _name=""
+    [ -n "${_name}" ] || _name="$(uname -n 2>/dev/null)"
+    [ -n "${_name}" ] || _name="$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+    [ -n "${_name}" ] || _name="unknown"
+    printf '%s' "${_name}" | tr -c 'A-Za-z0-9._-' '-'
+}
+
 # --------------------------------------------------------------------------- #
 # Sizes
 # --------------------------------------------------------------------------- #
@@ -177,13 +212,27 @@ size_kb() { # path...
     printf '%s' "${_total}"
 }
 
+# avail_kb <dir>: free space of the filesystem <dir> lives on. BusyBox df answers for a
+# directory inside a mount, but not for a btrfs subvolume directory that is not itself a
+# mount point ("can't find mount point", measured), so the nearest ancestor it does
+# answer for is asked instead: that ancestor is on the same filesystem.
 avail_kb() { # dir
     if [ -n "${AB_AVAIL_KB}" ]; then
         printf '%s' "${AB_AVAIL_KB}"
         return 0
     fi
-    _kb="$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }')"
-    printf '%s' "${_kb:-}"
+    _path="$1"
+    while [ -n "${_path}" ]; do
+        _kb="$(df -Pk "${_path}" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+        if [ -n "${_kb}" ]; then
+            printf '%s' "${_kb}"
+            return 0
+        fi
+        _up="$(dirname "${_path}")"
+        [ "${_up}" = "${_path}" ] && break
+        _path="${_up}"
+    done
+    printf ''
 }
 
 count_entries() { # dir: top level entries, 0 when it is not there
@@ -194,64 +243,94 @@ count_entries() { # dir: top level entries, 0 when it is not there
     fi
 }
 
+# under <path> <root>: the path is the root or inside it.
+under() {
+    case "$1" in
+        "$2" | "$2"/*) return 0 ;;
+    esac
+    return 1
+}
+
 # --------------------------------------------------------------------------- #
 # Staging
 # --------------------------------------------------------------------------- #
 
 cleanup() {
-    if [ -n "${SNAP_DIR}" ]; then
-        for _snap in "${SNAP_DIR}/${DATA_PREFIX}" "${SNAP_DIR}/${DOCKER_PREFIX}"; do
-            [ -d "${_snap}" ] || continue
-            "${AB_BTRFS}" subvolume delete "${_snap}" >/dev/null 2>&1 || :
-            rm -rf "${_snap}" 2>/dev/null || :
-        done
-        rmdir "${SNAP_DIR}" 2>/dev/null || :
-        SNAP_DIR=""
-    fi
-    if [ -n "${WORK}" ]; then
-        rm -rf "${WORK}" 2>/dev/null || :
-        WORK=""
-    fi
+    [ -n "${STAGE}" ] || return 0
+    # The snapshots go first: rm cannot remove a subvolume in one step, and a snapshot
+    # left behind on the writable partition would hold its extents forever. A category
+    # that was copied rather than snapshotted makes the delete fail silently, and the
+    # rm below is what removes it.
+    for _prefix in "${DATA_PREFIX}" "${DOCKER_PREFIX}"; do
+        [ -d "${STAGE}/${_prefix}" ] || continue
+        "${AB_BTRFS}" subvolume delete "${STAGE}/${_prefix}" >/dev/null 2>&1 || :
+    done
+    rm -rf "${STAGE}" 2>/dev/null || :
+    rmdir "${STAGE}" 2>/dev/null || :
+    STAGE=""
 }
 
-# snapshot <source> <name>: a read-only copy of a subvolume, in a parent directory whose
-# child carries the name the archive needs. Failure is not fatal: the caller falls back
-# to the live tree.
-snapshot() {
-    _source="$1"
+# make_stage: create the staging root the archive is assembled in. The writable
+# partition is preferred - it has room and it is not inside the tree being read - then
+# the output directory, then /tmp. A candidate inside @data or @docker is skipped: the
+# copy of a tree cannot be built inside the tree it copies, so the copy fallback would
+# recurse into itself.
+make_stage() {
+    _stamp="$(date -u +%Y%m%dT%H%M%S)"
+    for _cand in \
+        "${AB_P4}/@backup-${_stamp}-$$" \
+        "${OUT_ABS}/.ab-backup.$$" \
+        "${TMPDIR:-/tmp}/.ab-backup.$$"; do
+        if under "${_cand}" "${AB_DATA}" || under "${_cand}" "${AB_DOCKER}"; then
+            continue
+        fi
+        _parent="$(dirname "${_cand}")"
+        [ -d "${_parent}" ] || continue
+        [ -w "${_parent}" ] || continue
+        [ -e "${_cand}" ] && continue
+        if mkdir "${_cand}" 2>/dev/null; then
+            STAGE="${_cand}"
+            return 0
+        fi
+    done
+    die "no usable staging directory: ${AB_P4} and ${OUT_ABS} are not writable"
+}
+
+# stage_tree <source> <name>: put one category into the staging root under the name it
+# must have inside the archive. Returns 0 when it is a read-only snapshot (a point in
+# time) and 1 when it had to be copied (not a point in time, reported as live).
+stage_tree() {
+    _src="$1"
     _name="$2"
-    [ -d "${AB_P4}" ] || return 1
-    if [ -z "${SNAP_DIR}" ]; then
-        _candidate="${AB_P4}/@backup-$(date -u +%Y%m%dT%H%M%S)-$$"
-        mkdir -p "${_candidate}" 2>/dev/null || return 1
-        SNAP_DIR="${_candidate}"
-    fi
-    "${AB_BTRFS}" subvolume snapshot -r "${_source}" "${SNAP_DIR}/${_name}" >/dev/null 2>&1 || {
-        say "ab-backup: warn: cannot snapshot ${_source}, archiving the live tree"
-        return 1
-    }
-    return 0
-}
-
-# tar_target <source> <name>: set TAR_ROOT and TAR_MEMBER so the archive gets the member
-# names it needs. A snapshot gives both; the live tree gives the mount's parent and its
-# basename, which on a running system are / and data (or /opt and docker).
-#
-# It sets globals rather than printing: the snapshot directory has to be remembered by
-# the caller that cleans it up, and a command substitution would hide it in a subshell.
-tar_target() {
-    if snapshot "$1" "$2"; then
-        CONSISTENCY=snapshot
-        TAR_ROOT="${SNAP_DIR}"
-        TAR_MEMBER="$2"
+    if "${AB_BTRFS}" subvolume snapshot -r "${_src}" "${STAGE}/${_name}" >/dev/null 2>&1; then
         return 0
     fi
-    TAR_MEMBER="$(basename "$1")"
-    [ "${TAR_MEMBER}" = "$2" ] \
-        || refuse "cannot name ${TAR_MEMBER} as $2/ in the archive: the mount point must be named $2"
-    TAR_ROOT="$(dirname "$1")"
-    CONSISTENCY=live
-    return 0
+    say "ab-backup: warn: cannot snapshot ${_src}, copying it instead (the archive is not a point in time)"
+    _need_copy="$(size_kb "${_src}")"
+    _free="$(avail_kb "${STAGE}")"
+    case "${_free}" in
+        '' | *[!0-9]*)
+            say "ab-backup: warn: free space of ${STAGE} is unknown, the copy is neither checked nor guaranteed"
+            ;;
+        *)
+            [ "${_free}" -ge "${_need_copy}" ] \
+                || refuse "not enough space in ${STAGE} to copy ${_src}: about ${_need_copy} KiB are needed, ${_free} KiB are free"
+            ;;
+    esac
+    mkdir "${STAGE}/${_name}" || die "cannot create ${STAGE}/${_name}"
+    cp -a "${_src}/." "${STAGE}/${_name}/" || die "cannot copy ${_src} into ${STAGE}/${_name}"
+    return 1
+}
+
+# stage_copy <source dir> <relative destination>: a real copy of a directory the archive
+# carries as it is on disk (the slot's etc/config, the bookkeeping files). No snapshot:
+# these are a handful of small files, they are not a subvolume, and what they have to
+# agree with is the slot the manifest names, which is read from the same machine.
+stage_copy() {
+    _src="$1"
+    _dst="${STAGE}/$2"
+    mkdir -p "${_dst}" || die "cannot create ${_dst}"
+    cp -a "${_src}/." "${_dst}/" || die "cannot copy ${_src} into ${_dst}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -277,6 +356,8 @@ done
 
 read_slot
 
+HOST="$(host_name)"
+
 # The output goes next to the data by default: @data is the filesystem that has room,
 # and the archive is part of what a rebuild needs.
 [ -n "${OUT_DIR}" ] || OUT_DIR="${AB_DATA}"
@@ -284,22 +365,12 @@ OUT_ABS="$(cd "${OUT_DIR}" 2>/dev/null && pwd)" || OUT_ABS="${OUT_DIR}"
 
 SUFFIX=.tar.gz
 [ "${PLAIN}" = "1" ] && SUFFIX=.tar
-NAME="data-$(hostname 2>/dev/null || printf 'unknown')-$(date -u +%Y%m%dT%H%M)${SUFFIX}"
+NAME="data-${HOST}-$(date -u +%Y%m%dT%H%M)${SUFFIX}"
 ARCHIVE="${OUT_ABS}/${NAME}"
 
 UPPER_DIR="${AB_P4}/${UPPER}/upper"
 ETC_OK=0
 [ -d "${UPPER_DIR}/${ETC_REL}" ] && ETC_OK=1
-
-# Where the archive is written inside @data, its own members would otherwise be read
-# back while it is being written: tar is told to skip it.
-EXCLUDE=""
-case "${ARCHIVE}" in
-    "${AB_DATA}"/*)
-        _rel="${ARCHIVE#"${AB_DATA}"}"
-        EXCLUDE="${DATA_PREFIX}${_rel}"
-        ;;
-esac
 
 if [ "${DRY_RUN}" = "1" ]; then
     printf 'plan=%s <- %s (%s entries)\n' "${DATA_PREFIX}" "${AB_DATA}" "$(count_entries "${AB_DATA}")"
@@ -337,57 +408,57 @@ case "${_avail}" in
         ;;
 esac
 
-WORK="${OUT_ABS}/.ab-backup.$$"
-mkdir -p "${WORK}/${META_PREFIX}" || die "cannot create ${WORK}"
-
-trap 'cleanup' EXIT INT TERM HUP
-
-# --- the read-only copies ---------------------------------------------------
-tar_target "${AB_DATA}" "${DATA_PREFIX}"
-DATA_ROOT="${TAR_ROOT}"
-DATA_MEMBER="${TAR_MEMBER}"
-# A mixed export - one category snapshotted, one read live - is reported as live: the
-# weaker claim is the true one.
-_consistency="${CONSISTENCY}"
-
-DOCKER_ROOT=""
-DOCKER_MEMBER=""
 if [ "${WITH_DOCKER}" = "1" ]; then
     [ -d "${AB_DOCKER}" ] || refuse "@docker is not mounted at ${AB_DOCKER}, cannot honour --with-docker"
-    tar_target "${AB_DOCKER}" "${DOCKER_PREFIX}"
-    DOCKER_ROOT="${TAR_ROOT}"
-    DOCKER_MEMBER="${TAR_MEMBER}"
-    [ "${CONSISTENCY}" = "live" ] && _consistency=live
 fi
 
-# --- meta/ ------------------------------------------------------------------
-_meta_etc="$(count_entries "${UPPER_DIR}/${ETC_REL}")"
+make_stage
+trap 'cleanup' EXIT
+trap 'exit 130' INT TERM HUP
+
+# --- the categories ---------------------------------------------------------
+# The counts are taken from the live machine, before staging: they describe what is
+# being exported, and a staging root inside the output directory must not be counted.
 _meta_data="$(count_entries "${AB_DATA}")"
+_meta_etc="$(count_entries "${UPPER_DIR}/${ETC_REL}")"
 _meta_docker="$(count_entries "${AB_DOCKER}")"
 [ "${WITH_DOCKER}" = "1" ] || _meta_docker=0
+
+# A mixed export - one category snapshotted, one copied live - is reported as live: the
+# weaker claim is the true one.
+if stage_tree "${AB_DATA}" "${DATA_PREFIX}"; then :; else CONSISTENCY=live; fi
+if [ "${WITH_DOCKER}" = "1" ]; then
+    if stage_tree "${AB_DOCKER}" "${DOCKER_PREFIX}"; then :; else CONSISTENCY=live; fi
+fi
+
+if [ "${ETC_OK}" = "1" ]; then
+    stage_copy "${UPPER_DIR}/${ETC_REL}" "${ETC_REL}"
+fi
+
+mkdir -p "${STAGE}/${META_PREFIX}" || die "cannot create ${STAGE}/${META_PREFIX}"
 
 for _pair in "state.json:ab/state.json" "device.json:ab/device.json" "image.json:ab/image.json"; do
     _dst="${_pair%%:*}"
     _src_rel="${_pair#*:}"
     [ -f "${AB_ESP}/${_src_rel}" ] || continue
-    cp "${AB_ESP}/${_src_rel}" "${WORK}/${META_PREFIX}/${_dst}" \
+    cp "${AB_ESP}/${_src_rel}" "${STAGE}/${META_PREFIX}/${_dst}" \
         || die "cannot copy ${AB_ESP}/${_src_rel}"
 done
 for _rel in .ab/grow .ab/grow.log; do
     _dst="$(basename "${_rel}")"
     if _src="$(meta_source "${_rel}")"; then
-        cp "${_src}" "${WORK}/${META_PREFIX}/${_dst}" || die "cannot copy ${_src}"
+        cp "${_src}" "${STAGE}/${META_PREFIX}/${_dst}" || die "cannot copy ${_src}"
     fi
 done
 
 {
     printf 'archive=%s\n' "${NAME}"
     printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf 'hostname=%s\n' "$(hostname 2>/dev/null || printf 'unknown')"
+    printf 'hostname=%s\n' "${HOST}"
     printf 'slot=%s upper=%s\n' "${SLOT}" "${UPPER}"
-    printf 'with_docker=%s plain=%s consistency=%s\n' "${WITH_DOCKER}" "${PLAIN}" "${_consistency}"
+    printf 'with_docker=%s plain=%s consistency=%s\n' "${WITH_DOCKER}" "${PLAIN}" "${CONSISTENCY}"
     printf 'entries data=%s etc=%s docker=%s\n' "${_meta_data}" "${_meta_etc}" "${_meta_docker}"
-} >"${WORK}/${META_PREFIX}/manifest.txt"
+} >"${STAGE}/${META_PREFIX}/manifest.txt"
 
 {
     printf '{\n'
@@ -396,28 +467,35 @@ done
     printf '  "slot": "%s",\n' "${SLOT}"
     printf '  "upper": "%s",\n' "${UPPER}"
     printf '  "with_docker": %s,\n' "$([ "${WITH_DOCKER}" = "1" ] && printf 'true' || printf 'false')"
-    printf '  "consistency": "%s",\n' "${_consistency}"
+    printf '  "consistency": "%s",\n' "${CONSISTENCY}"
     printf '  "entries": { "data": %s, "etc": %s, "docker": %s }\n' \
         "${_meta_data}" "${_meta_etc}" "${_meta_docker}"
     printf '}\n'
-} >"${WORK}/${META_PREFIX}/ab-backup.json"
+} >"${STAGE}/${META_PREFIX}/ab-backup.json"
 
 # Counted last: the manifest and the summary above are meta entries too.
-_meta_count="$(count_entries "${WORK}/${META_PREFIX}")"
+_meta_count="$(count_entries "${STAGE}/${META_PREFIX}")"
 
 # --- the archive ------------------------------------------------------------
-set -- --create --file "${ARCHIVE}"
-[ "${PLAIN}" = "1" ] || set -- "$@" --gzip
-[ -z "${EXCLUDE}" ] || set -- "$@" --exclude "${EXCLUDE}"
-set -- "$@" -C "${DATA_ROOT}" "${DATA_MEMBER}"
-[ -z "${DOCKER_ROOT}" ] || set -- "$@" -C "${DOCKER_ROOT}" "${DOCKER_MEMBER}"
-[ "${ETC_OK}" = "1" ] && set -- "$@" -C "${UPPER_DIR}" "${ETC_REL}"
-set -- "$@" -C "${WORK}" "${META_PREFIX}"
+# One tar, one -C, the categories named as they must appear in the package. The staging
+# root is complete before tar starts, so the archive does not contain or read itself,
+# and nothing is dereferenced.
+set -- "${DATA_PREFIX}"
+[ "${WITH_DOCKER}" = "1" ] && set -- "$@" "${DOCKER_PREFIX}"
+[ "${ETC_OK}" = "1" ] && set -- "$@" etc
+set -- "$@" "${META_PREFIX}"
 
-tar "$@" || {
-    rm -f "${ARCHIVE}" 2>/dev/null || :
-    die "tar failed, no package was written"
-}
+if [ "${PLAIN}" = "1" ]; then
+    tar -cf "${ARCHIVE}" -C "${STAGE}" "$@" || {
+        rm -f "${ARCHIVE}" 2>/dev/null || :
+        die "tar failed, no package was written"
+    }
+else
+    tar -czf "${ARCHIVE}" -C "${STAGE}" "$@" || {
+        rm -f "${ARCHIVE}" 2>/dev/null || :
+        die "tar failed, no package was written"
+    }
+fi
 
 if command -v sha256sum >/dev/null 2>&1; then
     _digest="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
@@ -432,11 +510,12 @@ fi
 printf '%s  %s\n' "${_digest}" "${ARCHIVE}" >"${ARCHIVE}.sha256" \
     || die "cannot write ${ARCHIVE}.sha256"
 
+cleanup
 sync 2>/dev/null || :
 
 printf 'backup=%s\n' "${ARCHIVE}"
 printf 'sha256=%s\n' "${ARCHIVE}.sha256"
 printf 'entries data=%s etc=%s docker=%s meta=%s\n' \
     "${_meta_data}" "${_meta_etc}" "${_meta_docker}" "${_meta_count}"
-printf 'consistency=%s\n' "${_consistency}"
-say "ab-backup: ${ARCHIVE} (${_meta_data} data, ${_meta_etc} config, ${_meta_docker} docker entries, ${_consistency})"
+printf 'consistency=%s\n' "${CONSISTENCY}"
+say "ab-backup: ${ARCHIVE} (${_meta_data} data, ${_meta_etc} config, ${_meta_docker} docker entries, ${CONSISTENCY})"

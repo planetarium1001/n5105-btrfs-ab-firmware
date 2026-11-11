@@ -1,9 +1,11 @@
 #!/bin/sh
 # ab-restore - put a package from ab-backup back on a machine.
 #
-# The archive is read as three fixed categories and nothing else:
+# The archive is read as four fixed categories and nothing else:
 #
 #   data/        -> the @data mount (/data)
+#   docker/      -> the @docker mount (/opt/docker), when the package was taken with
+#                   ab-backup --with-docker; data and docker are put back the same way
 #   etc/config/  -> the running slot's overlay upper etc/config
 #   meta/        -> @data/.ab-restore-meta/ - never the ESP
 #
@@ -13,26 +15,47 @@
 # system, which is harder to diagnose than a missing meta file. It is dropped next to
 # the data so a human can read it.
 #
+# How the archive is unpacked. The target's tar is BusyBox v1.37.0, which has no
+# --strip-components and does not take a gz archive unless -z is given (measured). So
+# each category is unpacked into a staging directory *on the same filesystem as its
+# target* - `"$AB_DATA/.ab-restore-stage"` for data/ and `"$AB_DOCKER/.ab-restore-stage"`
+# for docker/ - and its entries are then moved into place with `mv`: a rename inside one
+# filesystem, so nothing is copied a second time. Only the categories that belong to a
+# target are unpacked there, so the staging directory stays as small as the package.
+# Where a name already exists in the target (`--force`), the entry is merged with
+# `cp -a` and the stage's copy is removed; where the two are different kinds (a file in
+# the package, a directory on disk), the package's entry replaces it, because the package
+# is what is being restored. The staging directories are removed whatever happens, so a
+# failed restore leaves the targets as they were plus, at most, a partly merged tree.
+#
+# --data-only restores data/ and nothing else: docker/, etc/config/ and meta/ are left
+# exactly as they are, and each says so in its own output line.
+#
 # Refusals - all of them before anything is written - print `refuse: <reason>` on stderr
-# and exit 3:
+# and exit 3, in this order:
 #   * the package is not there, or cannot be read
 #   * its .sha256 does not match it
-#   * a member is not one of the three categories, or would escape its target
-#   * @data is not empty and --force was not given
+#   * a member is not one of the four categories, or would escape its target
 #   * a target would be on the ESP
+#   * a category is in the package but its target is not mounted (@docker, @p4)
+#   * @data is not empty and --force was not given
+#   * a target does not have room for what the package unpacks to
 #
 # Output (stdout, one machine readable line each):
 #   restored=data path=<abs> entries=<n>
+#   restored=docker path=<abs> entries=<n> | restored=docker none | restored=docker skipped
 #   restored=etc/config path=<abs> entries=<n> | restored=etc/config none
-#   restored=meta path=<abs> entries=<n> | restored=meta skipped
+#   restored=meta path=<abs> entries=<n> | restored=meta none | restored=meta skipped
 #
 # Environment:
 #   AB_ESP        ESP mount point            (default /boot)
 #   AB_P4         writable partition mount   (default /mnt/p4)
 #   AB_DATA       @data mount point          (default /data)
+#   AB_DOCKER     @docker mount point        (default /opt/docker)
 #   AB_CMD        /proc/cmdline equivalent   (default /proc/cmdline, for tests)
 #   AB_SLOT_BIN   ab-slot, for the running slot and its layer
 #   AB_TAR        the tar binary             (default tar, for tests)
+#   AB_AVAIL_KB   free space to assume, instead of asking df (for tests)
 
 set -u
 PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
@@ -41,19 +64,30 @@ export PATH
 AB_ESP="${AB_ESP:-/boot}"
 AB_P4="${AB_P4:-/mnt/p4}"
 AB_DATA="${AB_DATA:-/data}"
+AB_DOCKER="${AB_DOCKER:-/opt/docker}"
 AB_CMD="${AB_CMD:-/proc/cmdline}"
 AB_SLOT_BIN="${AB_SLOT_BIN:-}"
 AB_TAR="${AB_TAR:-tar}"
+AB_AVAIL_KB="${AB_AVAIL_KB:-}"
 
 DATA_PREFIX=data
 DOCKER_PREFIX=docker
 ETC_REL=etc/config
 META_PREFIX=meta
 META_DEST=.ab-restore-meta
+# The staging directory's name inside a target. It is reserved: an entry of that name in
+# a package is dropped rather than restored, because it is this tool's own scratch space.
+STAGE_NAME=.ab-restore-stage
 
 FORCE=0
 DATA_ONLY=0
 ARCHIVE=""
+
+# The staging directories, once they exist: the exit trap takes them back.
+STAGE=""
+DOCKER_STAGE=""
+_docker_note=""
+LIST=""
 
 say() {
     printf '%s\n' "$*" >&2
@@ -131,12 +165,110 @@ count_entries() { # dir
     fi
 }
 
+# avail_kb <dir>: free space of the filesystem <dir> lives on. BusyBox df answers for a
+# directory inside a mount, but not for a btrfs subvolume directory that is not itself a
+# mount point ("can't find mount point", measured), so the nearest ancestor it does
+# answer for is asked instead: that ancestor is on the same filesystem.
+avail_kb() { # dir
+    if [ -n "${AB_AVAIL_KB}" ]; then
+        printf '%s' "${AB_AVAIL_KB}"
+        return 0
+    fi
+    _path="$1"
+    while [ -n "${_path}" ]; do
+        _kb="$(df -Pk "${_path}" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+        if [ -n "${_kb}" ]; then
+            printf '%s' "${_kb}"
+            return 0
+        fi
+        _up="$(dirname "${_path}")"
+        [ "${_up}" = "${_path}" ] && break
+        _path="${_up}"
+    done
+    printf ''
+}
+
+# unpack_kb: what the package will take on disk, printed as two numbers on one line:
+# `<data> <docker>` - the members that go to @data (data/, etc/config/, meta/) and the
+# ones that go to @docker. Each target is checked against its own filesystem, so one
+# number for the whole package would refuse a restore that fits.
+#
+# The column the size is in depends on the tar: BusyBox and GNU print `perm owner/group
+# size 2026-11-11 16:53 name`, bsdtar prints `perm uid user group size Nov 11 16:53
+# name`, and both change again when ownership is numeric. So the line is not split by
+# position: the last number before the date is the size, and the member name starts after
+# the date in every one of those layouts. Each member is rounded up to a block, so this
+# is the space the tree needs, not the sum of its file sizes.
+unpack_kb() {
+    "${AB_TAR}" "${TAR_VERBOSE}" "${ARCHIVE}" 2>/dev/null | awk -v docker="${DOCKER_PREFIX}" '
+        {
+            size = ""
+            name_at = 0
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) { name_at = i + 2; break }
+                if ($i ~ /^[A-Z][a-z][a-z]$/) { name_at = i + 3; break }
+                if ($i ~ /^[0-9][0-9]:[0-9][0-9]$/) { name_at = i + 1; break }
+                if ($i ~ /^[0-9]+$/) size = $i
+            }
+            if (size == "" || name_at == 0 || name_at > NF) next
+            blocks = int((size + 4095) / 4096) * 4
+            if ($name_at == docker || index($name_at, docker "/") == 1) { dock += blocks }
+            else { total += blocks }
+        }
+        END { printf "%d %d", total, dock }
+    '
+}
+
 # under <path> <root>: the path is the root or inside it.
 under() {
     case "$1" in
         "$2" | "$2"/*) return 0 ;;
     esac
     return 1
+}
+
+cleanup() {
+    for _stage in "${STAGE}" "${DOCKER_STAGE}"; do
+        [ -n "${_stage}" ] || continue
+        rm -rf "${_stage}" 2>/dev/null || :
+    done
+    STAGE=""
+    DOCKER_STAGE=""
+    if [ -n "${LIST}" ]; then
+        rm -f "${LIST}" 2>/dev/null || :
+        LIST=""
+    fi
+}
+
+# merge_into <stage dir> <target dir>: move every entry of the stage directory into the
+# target, merging where the name is already there. A single mv is a rename, which is the
+# whole point of staging on the target's own filesystem; only a name that already exists
+# is copied over, and then the stage's copy is dropped.
+merge_into() {
+    _src="$1"
+    _dst_root="$2"
+    for _entry in "${_src}"/* "${_src}"/.[!.]* "${_src}"/..?*; do
+        [ -e "${_entry}" ] || [ -L "${_entry}" ] || continue
+        _base="${_entry##*/}"
+        if [ "${_base}" = "${STAGE_NAME}" ]; then
+            say "ab-restore: warn: dropping ${_base}, that name is this tool's staging directory"
+            rm -rf "${_entry}" 2>/dev/null || :
+            continue
+        fi
+        _dst="${_dst_root}/${_base}"
+        if [ ! -e "${_dst}" ] && [ ! -L "${_dst}" ]; then
+            mv "${_entry}" "${_dst}" && continue
+        fi
+        if [ -d "${_entry}" ] && [ ! -L "${_entry}" ] && [ -d "${_dst}" ] && [ ! -L "${_dst}" ]; then
+            cp -a "${_entry}/." "${_dst}/" || return 1
+            rm -rf "${_entry}" || return 1
+        else
+            # Different kinds, or not a directory: the package's entry wins.
+            rm -rf "${_dst}" || return 1
+            mv "${_entry}" "${_dst}" || return 1
+        fi
+    done
+    return 0
 }
 
 # --------------------------------------------------------------------------- #
@@ -167,6 +299,21 @@ done
 [ -f "${ARCHIVE}" ] || refuse "package not found: ${ARCHIVE}"
 [ -r "${ARCHIVE}" ] || refuse "package is not readable: ${ARCHIVE}"
 
+# A compressed package needs -z on this tar, and only the suffix says whether it is
+# compressed: BusyBox does not sniff the file.
+case "${ARCHIVE}" in
+    *.gz | *.tgz)
+        TAR_LIST="-tzf"
+        TAR_VERBOSE="-tvzf"
+        TAR_UNPACK="-xzf"
+        ;;
+    *)
+        TAR_LIST="-tf"
+        TAR_VERBOSE="-tvf"
+        TAR_UNPACK="-xf"
+        ;;
+esac
+
 # A digest next to the package is used when it is there: a package that was truncated
 # in transfer would otherwise be unpacked halfway and called restored.
 if [ -f "${ARCHIVE}.sha256" ]; then
@@ -185,10 +332,12 @@ fi
 # The member list goes through a file rather than a command substitution: a member name
 # may contain spaces, and the counts below have to survive the loop.
 LIST="$(mktemp "${TMPDIR:-/tmp}/ab-restore.XXXXXX")" || die "cannot create a temporary file"
-trap 'rm -f "${LIST}"' EXIT INT TERM HUP
-"${AB_TAR}" -tf "${ARCHIVE}" >"${LIST}" 2>/dev/null \
+trap 'cleanup' EXIT
+trap 'exit 130' INT TERM HUP
+"${AB_TAR}" "${TAR_LIST}" "${ARCHIVE}" >"${LIST}" 2>/dev/null \
     || refuse "cannot read the package: ${ARCHIVE}"
 _have_data=0
+_have_docker=0
 _have_etc=0
 _have_meta=0
 while IFS= read -r _member; do
@@ -198,9 +347,13 @@ while IFS= read -r _member; do
     esac
     case "${_member}" in
         "${DATA_PREFIX}" | "${DATA_PREFIX}"/*) _have_data=1 ;;
-        "${ETC_REL}" | "${ETC_REL}"/*) _have_etc=1 ;;
+        "${DOCKER_PREFIX}" | "${DOCKER_PREFIX}"/*) _have_docker=1 ;;
+        # The category is etc/config; a plain etc/ is the directory tar writes around it.
+        etc | etc/ | "${ETC_REL}" | "${ETC_REL}"/*) _have_etc=1 ;;
         "${META_PREFIX}" | "${META_PREFIX}"/*) _have_meta=1 ;;
-        *) refuse "unexpected member ${_member}: not a data/, ${ETC_REL}/ or ${META_PREFIX}/ package" ;;
+        *)
+            refuse "unexpected member ${_member}: not a ${DATA_PREFIX}/, ${DOCKER_PREFIX}/, ${ETC_REL}/ or ${META_PREFIX}/ package"
+            ;;
     esac
 done <"${LIST}"
 [ "${_have_data}" = "1" ] || refuse "the package carries no ${DATA_PREFIX}/, there is nothing to restore"
@@ -220,6 +373,17 @@ if under "${META_ABS}" "${AB_ESP}"; then
     refuse "${META_ABS} is on the ESP (${AB_ESP}), refusing to write meta there"
 fi
 
+# A category that is in the package has to have somewhere to go. Skipping it silently
+# would report a restore that did not restore what the package carried.
+DOCKER_ABS="$(cd "${AB_DOCKER}" 2>/dev/null && pwd)" || DOCKER_ABS="${AB_DOCKER}"
+if [ "${DATA_ONLY}" = "0" ] && [ "${_have_docker}" = "1" ]; then
+    [ -d "${AB_DOCKER}" ] \
+        || refuse "@docker is not mounted at ${AB_DOCKER}, but the package carries ${DOCKER_PREFIX}/, refusing to drop it"
+    if under "${DOCKER_ABS}" "${AB_ESP}"; then
+        refuse "@docker (${DOCKER_ABS}) is on the ESP (${AB_ESP}), refusing to write ${DOCKER_PREFIX}/ there"
+    fi
+fi
+
 ETC_TARGET="${AB_P4}/${UPPER}/upper/${ETC_REL}"
 if [ "${DATA_ONLY}" = "0" ] && [ "${_have_etc}" = "1" ]; then
     [ -d "${AB_P4}" ] || refuse "the writable partition is not mounted at ${AB_P4}, cannot restore ${ETC_REL}"
@@ -236,36 +400,109 @@ if [ "${FORCE}" = "0" ]; then
         || refuse "@data (${AB_DATA}) is not empty (${_existing} entries); run with --force if the overwrite is intended"
 fi
 
+# The package is unpacked onto a target before it is moved into it, so each target has to
+# hold its categories and what is already there at the same time. Refused here, before
+# the first byte is written, rather than halfway through an unpack.
+_sizes="$(unpack_kb)"
+_needed="${_sizes% *}"
+_need_docker="${_sizes#* }"
+_avail="$(avail_kb "${DATA_ABS}")"
+case "${_avail}" in
+    '' | *[!0-9]*)
+        say "ab-restore: warn: free space of ${DATA_ABS} is unknown, neither checked nor guaranteed"
+        ;;
+    *)
+        [ "${_needed}" -le "${_avail}" ] \
+            || refuse "@data (${DATA_ABS}) has no room for the package: it unpacks to about ${_needed} KiB, ${_avail} KiB are free"
+        ;;
+esac
+if [ "${DATA_ONLY}" = "0" ] && [ "${_have_docker}" = "1" ]; then
+    _avail_docker="$(avail_kb "${DOCKER_ABS}")"
+    case "${_avail_docker}" in
+        '' | *[!0-9]*)
+            say "ab-restore: warn: free space of ${DOCKER_ABS} is unknown, neither checked nor guaranteed"
+            ;;
+        *)
+            [ "${_need_docker}" -le "${_avail_docker}" ] \
+                || refuse "@docker (${DOCKER_ABS}) has no room for the package: ${DOCKER_PREFIX}/ unpacks to about ${_need_docker} KiB, ${_avail_docker} KiB are free"
+            ;;
+    esac
+fi
+
+STAGE="${DATA_ABS}/${STAGE_NAME}"
+[ -e "${STAGE}" ] \
+    && refuse "${STAGE} is already there: a previous restore did not finish, move it away or remove it first"
+DOCKER_STAGE="${DOCKER_ABS}/${STAGE_NAME}"
+if [ "${DATA_ONLY}" = "0" ] && [ "${_have_docker}" = "1" ]; then
+    if [ -e "${DOCKER_STAGE}" ]; then
+        refuse "${DOCKER_STAGE} is already there: a previous restore did not finish, move it away or remove it first"
+    fi
+fi
+
 # --- the restore ------------------------------------------------------------
-${AB_TAR} -xf "${ARCHIVE}" -C "${AB_DATA}" --strip-components=1 "${DATA_PREFIX}/*" \
-    || die "cannot extract ${DATA_PREFIX}/ into ${AB_DATA}"
-printf 'restored=%s path=%s entries=%s\n' "${DATA_PREFIX}" "${DATA_ABS}" "$(count_entries "${AB_DATA}")"
+# Only the categories that go to @data are unpacked here; docker/ is unpacked into its
+# own staging directory below, on @docker's filesystem.
+set -- "${DATA_PREFIX}"
+[ "${_have_etc}" = "1" ] && set -- "$@" etc
+[ "${_have_meta}" = "1" ] && set -- "$@" "${META_PREFIX}"
+
+mkdir "${STAGE}" || die "cannot create ${STAGE}"
+"${AB_TAR}" "${TAR_UNPACK}" "${ARCHIVE}" -C "${STAGE}" "$@" \
+    || die "cannot unpack ${ARCHIVE} into ${STAGE}"
+
+_data_entries="$(count_entries "${STAGE}/${DATA_PREFIX}")"
+_etc_entries="$(count_entries "${STAGE}/${ETC_REL}")"
+_meta_entries="$(count_entries "${STAGE}/${META_PREFIX}")"
+
+merge_into "${STAGE}/${DATA_PREFIX}" "${DATA_ABS}" || die "cannot move ${DATA_PREFIX}/ into ${DATA_ABS}"
+printf 'restored=%s path=%s entries=%s\n' "${DATA_PREFIX}" "${DATA_ABS}" "${_data_entries}"
 
 if [ "${DATA_ONLY}" = "1" ]; then
+    cleanup
+    printf 'restored=%s skipped\n' "${DOCKER_PREFIX}"
     printf 'restored=%s skipped\n' "${ETC_REL}"
     printf 'restored=%s skipped\n' "${META_PREFIX}"
-    say "ab-restore: restored @data only, ${ETC_REL} and ${META_PREFIX} were left alone"
+    say "ab-restore: restored @data only, ${DOCKER_PREFIX}, ${ETC_REL} and ${META_PREFIX} were left alone"
     exit 0
 fi
 
-if [ "${_have_etc}" = "1" ]; then
+if [ "${_have_docker}" = "1" ]; then
+    # A second unpack, into @docker's own filesystem: the entries can then be renamed into
+    # place instead of copied across filesystems, and @data never holds the docker tree for
+    # a moment. Only docker/ is unpacked here.
+    mkdir "${DOCKER_STAGE}" || die "cannot create ${DOCKER_STAGE}"
+    "${AB_TAR}" "${TAR_UNPACK}" "${ARCHIVE}" -C "${DOCKER_STAGE}" "${DOCKER_PREFIX}" \
+        || die "cannot unpack ${ARCHIVE} into ${DOCKER_STAGE}"
+    _docker_entries="$(count_entries "${DOCKER_STAGE}/${DOCKER_PREFIX}")"
+    merge_into "${DOCKER_STAGE}/${DOCKER_PREFIX}" "${DOCKER_ABS}" \
+        || die "cannot move ${DOCKER_PREFIX}/ into ${DOCKER_ABS}"
+    rm -rf "${DOCKER_STAGE}" 2>/dev/null || :
+    DOCKER_STAGE=""
+    _docker_note=" and ${DOCKER_ABS}"
+    printf 'restored=%s path=%s entries=%s\n' "${DOCKER_PREFIX}" "${DOCKER_ABS}" "${_docker_entries}"
+else
+    printf 'restored=%s none\n' "${DOCKER_PREFIX}"
+fi
+
+if [ "${_have_etc}" = "1" ] && [ -d "${STAGE}/${ETC_REL}" ]; then
     mkdir -p "${ETC_TARGET}" || die "cannot create ${ETC_TARGET}"
-    ${AB_TAR} -xf "${ARCHIVE}" -C "${ETC_TARGET}" --strip-components=2 "${ETC_REL}/*" \
-        || die "cannot extract ${ETC_REL}/ into ${ETC_TARGET}"
-    printf 'restored=%s path=%s entries=%s\n' "${ETC_REL}" "${ETC_TARGET}" "$(count_entries "${ETC_TARGET}")"
+    merge_into "${STAGE}/${ETC_REL}" "${ETC_TARGET}" || die "cannot move ${ETC_REL}/ into ${ETC_TARGET}"
+    printf 'restored=%s path=%s entries=%s\n' "${ETC_REL}" "${ETC_TARGET}" "${_etc_entries}"
 else
     printf 'restored=%s none\n' "${ETC_REL}"
 fi
 
-if [ "${_have_meta}" = "1" ]; then
+if [ "${_have_meta}" = "1" ] && [ -d "${STAGE}/${META_PREFIX}" ]; then
     mkdir -p "${META_ABS}" || die "cannot create ${META_ABS}"
-    ${AB_TAR} -xf "${ARCHIVE}" -C "${META_ABS}" --strip-components=1 "${META_PREFIX}/*" \
-        || die "cannot extract ${META_PREFIX}/ into ${META_ABS}"
-    printf 'restored=%s path=%s entries=%s\n' "${META_PREFIX}" "${META_ABS}" "$(count_entries "${META_ABS}")"
+    merge_into "${STAGE}/${META_PREFIX}" "${META_ABS}" || die "cannot move ${META_PREFIX}/ into ${META_ABS}"
+    printf 'restored=%s path=%s entries=%s\n' "${META_PREFIX}" "${META_ABS}" "${_meta_entries}"
 else
     printf 'restored=%s none\n' "${META_PREFIX}"
 fi
 
+# The staging directories live inside their targets, and a leftover in either of them
+# would be exported by the next ab-backup: they are gone before this returns.
+cleanup
 sync 2>/dev/null || :
 
-say "ab-restore: ${ARCHIVE} restored into ${DATA_ABS} (slot ${SLOT}, layer ${UPPER})"
+say "ab-restore: ${ARCHIVE} restored into ${DATA_ABS}${_docker_note} (slot ${SLOT}, layer ${UPPER})"

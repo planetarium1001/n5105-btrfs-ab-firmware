@@ -164,7 +164,7 @@ to read and never applied.
 | | `--dry-run` | print the list and the archive name, write nothing |
 | | `--plain` | uncompressed `.tar` instead of `.tar.gz` |
 | `ab-restore` | `<archive>` | the package to restore |
-| | `--data-only` | restore `data/` only, leave `etc/config/` and `meta/` alone |
+| | `--data-only` | restore `data/` only: `docker/`, `etc/config/` and `meta/` are left alone |
 | | `--force` | allow the restore into a non-empty `@data` |
 
 Both tools answer on stdout with machine readable lines (`backup=`, `entries`,
