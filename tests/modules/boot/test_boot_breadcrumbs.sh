@@ -64,15 +64,15 @@ done
 # --------------------------------------------------------------------------- #
 # ac-2 the ESP is mounted after the growth, and the gate is mechanical
 # --------------------------------------------------------------------------- #
-# `blockdev --rereadpt` / `partx -u` need the disk to carry no mounted partition, so the
-# first landing zone cannot exist before the table has been rewritten. This assertion is
-# what a later change that "optimises" the order has to fail.
-grow_line="$(first_line 'wf_grow_run')"
+# Stage 1 of the growth writes the partition table and reboots; nothing may be mounted on
+# that disk while the table is written, so the first landing zone cannot exist before the
+# plan has been decided. "The mount line comes later" is the mechanical gate that keeps so.
+grow_line="$(first_line 'wf_grow_plan')"
 mount_line="$(first_line 'mount -t vfat')"
 assert_eq "$((grow_line > 0))" "1" "ac-2 the growth has a call site in the boot path"
 assert_eq "$((mount_line > 0))" "1" "ac-2 the ESP mount has a call site in the boot path"
 assert_eq "$((mount_line > grow_line))" "1" \
-  "ac-2 the ESP mount (line ${mount_line}) comes after wf_grow_run (line ${grow_line})"
+  "ac-2 the ESP mount (line ${mount_line}) comes after the growth plan (line ${grow_line})"
 assert_eq "$(count_of 'mount -t vfat')" "1" \
   "ac-2 there is exactly one ESP mount, so the order above cannot be dodged by a second one"
 
@@ -88,62 +88,56 @@ assert_eq "${early_esp}" "0" \
   "ac-3 no code line touches a path under /esp before the mount (line ${mount_line})"
 
 # The landing zone is resolved from the mount table, never spelled out: wf_mark_zone is what
-# makes "this is mounted" and "this is writable" the same question. It is re-resolved once per
-# zone, so the log always follows the disk that exists at that moment:
-#
-#   1. the p4 root subvolume (3c)  - the arm that makes `esp-mount-failed` land on a disk
-#   2. the ESP, once it is mounted - the primary zone for the rest of the boot
-#   3. the p4 generation layer     - after the ESP has been given back
-p4root_mount_line="$(first_line 'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/"')"
+# makes "this is mounted" and "this is writable" the same question. Every arm - and every
+# disarm, which is the same call answering "nothing is left" - goes through it.
 mark_logs="$(lines_of '^[[:space:]]*WF_MARK_LOG=')"
-first_log="$(printf '%s\n' "${mark_logs}" | sed -n 1p)"
-second_log="$(printf '%s\n' "${mark_logs}" | sed -n 2p)"
-third_log="$(printf '%s\n' "${mark_logs}" | sed -n 3p)"
-assert_eq "$(printf '%s\n' "${mark_logs}" | wc -l | tr -d ' ')" "4" \
-  "ac-3 the breadcrumb log is armed per landing zone and disarmed once at the end"
-assert_eq "$(count_of '^[[:space:]]*WF_MARK_LOG="[$][(]wf_mark_zone[)]["]$')" "3" \
-  "ac-3 three arms, every one of them by wf_mark_zone, never by a path spelled out here"
-assert_eq "$(count_of '^[[:space:]]*WF_MARK_LOG=""$')" "1" \
-  "ac-3 the log is disarmed once, when the last write mount is given back"
-assert_eq "$((first_log > p4root_mount_line))" "1" \
-  "ac-3 the log is armed right after the p4 root subvolume is mounted"
-assert_eq "$((first_log < mount_line))" "1" \
-  "ac-3 ... before the ESP mount, so a failure there already has a disk to write to"
-assert_eq "$((second_log > mount_line))" "1" \
-  "ac-3 the log moves to the ESP once it is mounted"
-assert_eq "$((second_log < $(first_line 'wf_mark esp-mounted')))" "1" \
-  "ac-3 ... before the first milestone that uses it"
-assert_eq "$((third_log > $(first_line 'umount /esp')))" "1" \
-  "ac-3 the log moves to the p4 layer after the ESP is given back"
-assert_eq "$((third_log < $(first_line 'wf_mark esp-unmounted')))" "1" \
-  "ac-3 ... before the milestone that reports it"
+assert_eq "$(printf '%s\n' "${mark_logs}" | wc -l | tr -d ' ')" \
+  "$(count_of '^[[:space:]]*WF_MARK_LOG="[$][(]wf_mark_zone[)]["]$')" \
+  "ac-3 every breadcrumb zone is resolved by wf_mark_zone, none is spelled out"
 
-# The p4 root subvolume is mounted *before* the ESP, so the p4 landing zone already exists on
-# the two failure paths the 05:36 poweroff is blamed on (`esp-mount-failed`, `state-missing`):
-# until it did, those failures were serial-only, which is the defect this unit fixes.
+# The p4 root subvolume is the zone the growth needs: stage 1 mounts it before writing the
+# table (the write-ahead breadcrumb), stage 2 again for the growth record and the ESP
+# verdict, and section 9a once more for the last two milestones. All of them go through one
+# helper, so the subvolume is named in exactly one mount option string and "what is mounted
+# on p4 right now" has exactly one answer.
 p4root_zone_line="$(first_line '^[[:space:]]*WF_P4_MOUNT="/mnt/p4root"$')"
+mount_helper_line="$(first_line '^wf_p4root_mount[(][)]')"
+release_helper_line="$(first_line '^wf_p4root_release[(][)]')"
 assert_eq "$(count_of '^[[:space:]]*WF_P4_MOUNT="/mnt/p4root"$')" "1" \
   "ac-3 the p4 root subvolume is named as a landing zone exactly once"
-assert_eq "$((p4root_mount_line > grow_line))" "1" \
-  "ac-3 the p4 root mount stays after the growth (a mount would break the table reread)"
-assert_eq "$((p4root_mount_line < mount_line))" "1" \
-  "ac-3 ... and before the ESP mount, so the p4 side exists when the ESP is already broken"
-assert_eq "$((p4root_zone_line <= p4root_mount_line + 3))" "1" \
-  "ac-3 the zone is armed together with that mount, not somewhere else in the file"
+assert_eq "$(count_of 'subvol=/"')" "1" \
+  "ac-3 and its subvolume name appears in exactly one mount option string"
+assert_eq "$((p4root_zone_line > mount_helper_line))" "1" \
+  "ac-3 the zone is armed inside the mount helper"
+assert_eq "$((p4root_zone_line < release_helper_line))" "1" \
+  "ac-3 ... and the helper is defined before the release that disarms it"
+p4_mount_clear_line="$(first_line '^[[:space:]]*WF_P4_MOUNT=""$')"
+assert_eq "$((p4_mount_clear_line > release_helper_line))" "1" \
+  "ac-3 the disarm belongs to the release helper"
 
-# Once the root subvolume is given back, nothing may point at /mnt/p4root any more: from then
-# on it is a bare tmpfs directory and a line written there disappears with the initramfs.
-clear_line="$(first_line '^WF_P4_MOUNT=""$')"
-umount_p4root_line="$(first_line 'umount /mnt/p4root')"
-gen_mount_line="$(first_line '/mnt/p4; then')"
-assert_eq "$((clear_line > umount_p4root_line))" "1" \
-  "ac-3 the p4 zone is cleared as soon as the root subvolume is given back"
-assert_eq "$((clear_line < gen_mount_line))" "1" \
-  "ac-3 ... before the generation mount takes over the zone"
+# The record mount exists before the ESP is mounted: `esp-mount-failed` and `state-missing`
+# are the two failures the 05:36 poweroff is blamed on. Until the p4 side existed before the
+# ESP, those two were serial-only, which is the defect this unit fixes.
+first_root_mount="$(lines_of 'wf_p4root_mount ' | head -n1 | tr -d ' ')"
+assert_eq "$((first_root_mount > grow_line))" "1" \
+  "ac-3 the first p4 root mount comes after the growth plan"
+assert_eq "$((first_root_mount < mount_line))" "1" \
+  "ac-3 ... so the p4 side exists before the ESP is even mounted"
+assert_eq "$(lines_of 'wf_p4root_mount ' | wc -l | tr -d ' ')" "4" \
+  "ac-3 every p4 root mount of the boot goes through the one helper"
+
+# …and the last one is the one section 9a takes for the two milestones the ESP can no longer
+# hold: it comes after the ESP is given back and before the milestone that needs it.
+last_root_mount="$(lines_of 'wf_p4root_mount ' | tail -n1 | tr -d ' ')"
+assert_eq "$((last_root_mount > $(first_line 'umount /esp')))" "1" \
+  "ac-3 the last breadcrumbs land on the root subvolume after the ESP is given back"
+assert_eq "$((last_root_mount < $(first_line 'wf_mark esp-unmounted')))" "1" \
+  "ac-3 ... and before the milestone that reports it"
 
 # The generation's writable layer is the zone from the moment it is mounted - armed before
 # the compress assertion that can already fail the boot, so that breadcrumb lands on a disk.
 unmount_esp_step="$(first_line 'wf_mark esp-unmounted')"
+gen_mount_line="$(first_line '/mnt/p4; then')"
 p4_zone_line="$(first_line '^[[:space:]]*WF_P4_MOUNT="/mnt/p4"$')"
 assert_eq "$((p4_zone_line > gen_mount_line))" "1" \
   "ac-3 the generation layer becomes the zone after it is mounted"
@@ -158,7 +152,11 @@ assert_eq "$((p4_zone_line < unmount_esp_step))" "1" \
 # not mount, the moment it is given back in 5a, a degraded boot whose /mnt/p4 is a tmpfs, and
 # the write mount that section 9a releases before switch_root. Each one clears the zone
 # instead of letting a breadcrumb land in a file no disk ever held.
-assert_eq "$(count_of '^[[:space:]]*WF_P4_MOUNT=""$')" "4" \
+# Three branches leave the p4 side without a disk behind it: the release helper itself (which
+# is now the only place a mount is given back, so the growth stages no longer clear it by
+# hand), the root subvolume that will not mount in 3c, and a degraded boot whose /mnt/p4 is a
+# tmpfs. Each clears the zone instead of letting a breadcrumb land in a file no disk ever held.
+assert_eq "$(count_of '^[[:space:]]*WF_P4_MOUNT=""$')" "3" \
   "ac-3 every branch that leaves the p4 side unwritable clears the zone"
 
 # --------------------------------------------------------------------------- #
@@ -240,7 +238,8 @@ assert_eq "$(find "$p4" "$p4root" -name 'init-fail.log' 2>/dev/null | wc -l | tr
 umount_esp_line="$(first_line 'umount /esp')"
 esp_unmounted_line="$(first_line 'wf_mark esp-unmounted')"
 switching_root_line="$(first_line 'wf_mark switching-root')"
-remote_p4_line="$(first_line 'mount -o rw,noatime,"subvol=/"')"
+# …through the one helper, which is also what the last milestone block asserts above.
+remote_p4_line="$(lines_of 'wf_p4root_mount ' | tail -n1 | tr -d ' ')"
 
 assert_eq "$((esp_unmounted_line > umount_esp_line))" "1" \
   "ac-2 esp-unmounted is written after the ESP is actually given back"
@@ -256,7 +255,7 @@ assert_eq "$((remote_p4_line < esp_unmounted_line))" "1" \
   "ac-3 ... before the first line that needs it"
 assert_eq "$(( $(first_line 'umount /mnt/p4root$') > 0 ))" "1" \
   "ac-3 ... and given back again before switch_root"
-p4_last_umount="$(lines_of 'umount /mnt/p4root' | tail -n1)"
+p4_last_umount="$(lines_of 'wf_p4root_release' | tail -n1)"
 assert_eq "$((p4_last_umount > switching_root_line))" "1" \
   "ac-3 the write mount is released only after the last milestone is on it"
 assert_eq "$(( $(first_line 'exec ') > p4_last_umount ))" "1" \

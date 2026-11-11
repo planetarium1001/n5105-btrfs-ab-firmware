@@ -2,19 +2,26 @@
 # Module: boot
 # Drives the first-boot growth of p4 from fixture partition tables, so the whole state
 # machine is verified on a machine with no loop device, no btrfs and no root:
-#   ac-1 the decision only depends on the table: p4 short of the last usable LBA grows,
-#        p4 already at it is already-full, and the arithmetic fallback agrees with the
-#        `last-lba` sfdisk prints
-#   ac-2 a run writes the table back with --no-reread, changes nothing but the p4 size,
-#        re-reads the kernel table, verifies the device grew, and a second run on the
-#        same disk is already-full without writing again (idempotent)
-#   ac-3 every failure is a recorded token, never a boot failure: missing-sfdisk when the
-#        tool is absent, fail:<token> for a dump, write, re-read or size-check problem,
-#        and fail:btrfs-resize when the filesystem cannot be extended
-#   ac-4 the recorded file is <p4 root subvolume>/.ab/grow with `result=<state>
-#        last_lba=<n>`, written through a rename and readable after a failure
-#   ac-5 the boot init grows p4 before the overlay is mounted, discovers ab-data, mounts
-#        @data/@docker/@swap with the documented options, and never aborts on a failure
+#   ac-1 the growth never re-reads the partition table: no --rereadpt, no partx, and no
+#        blockdev call at all while sysfs answers the size; the decision only depends on
+#        the table (p4 short of the last usable LBA grows, p4 at it is already-full)
+#   ac-2 the first boot writes the table with --no-reread, changes nothing but the p4
+#        size, re-dumps the table to prove the write landed, records `table-written` and
+#        asks for exactly one controlled reboot - after the record is on disk
+#   ac-3 the boot after the reboot only runs `btrfs filesystem resize max` (no table
+#        write at all) and records `done`; the kernel sees the new size because the
+#        reboot made it re-read the table
+#   ac-4 the third boot is the steady state: `already-full`, no write, no reboot; a record
+#        written by the one-phase firmware is still understood, and a `table-written`
+#        record with a table that is still short (the write was lost) refuses to loop
+#   ac-5 every stage leaves its own evidence on p4: `table-write-pending` before the
+#        write, `table-written` after it, `done`/`already-full` later, an append-only
+#        grow.log line per record, and no temporary file left behind
+#   ac-6 every failure is a recorded token and never a boot failure: a refused write, a
+#        write the re-dump cannot see, an unsupported or failing verify, a reboot that
+#        returns, and a failed filesystem resize
+#   ac-7 the pre-change table is kept at <p4 root subvolume>/.ab/partitions.before, only
+#        the p4 size may differ in the written table, and the backup is byte-identical
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -85,13 +92,17 @@ TABLE
 
 reset_fixture() {
   table_for "${p4_shipped_size}" >"$tmp/table/current"
-  rm -f "$tmp/table/written" "$tmp/sfdisk.calls" "$tmp/blockdev.calls" "$tmp/btrfs.calls" \
-    "$tmp/mount.calls" "$tmp/umount.calls"
+  rm -f "$tmp/table/written" "$tmp/sfdisk.calls" "$tmp/blockdev.calls" \
+    "$tmp/btrfs.calls" "$tmp/mount.calls" "$tmp/umount.calls" "$tmp/reboot.calls" \
+    "$tmp/sync.calls"
   printf '%s\n' "${p4_shipped_size}" >"$sys/vda4/size"
 }
 
 # --------------------------------------------------------------------------- #
-# Command fixtures: sfdisk, blockdev, partx, btrfs and sleep, all recorded
+# Command fixtures: sfdisk, blockdev, btrfs, mount, umount, reboot and sync,
+# all recorded. None of them is a real tool: the state machine is driven from the fixture
+# table, and every call a stage makes is counted - "the table write never asks the kernel
+# to re-read" is only believable if the counters say so.
 # --------------------------------------------------------------------------- #
 
 cat >"$tmp/bin/sfdisk" <<'STUB'
@@ -105,15 +116,19 @@ case "$1" in
   --no-reread)
     [ "${STUB_WRITE_FAIL:-0}" = "1" ] && exit 1
     cat >"${GROW_FIXTURE}/table/written"
-    cp "${GROW_FIXTURE}/table/written" "${GROW_FIXTURE}/table/current"
+    # STUB_NO_SIZE_CHANGE models a write that never reaches the medium: the command
+    # succeeds, the dump afterwards still shows the old table.
     if [ "${STUB_NO_SIZE_CHANGE:-0}" != "1" ]; then
-      size="$(sed -n 's|^/dev/vda4 : start= *[0-9]*, size= *\([0-9]*\).*|\1|p' \
-        "${GROW_FIXTURE}/table/written")"
-      # sysfs `size` is always in 512-byte units; the table is in logical sectors.
-      lbs="$(cat "${GROW_FIXTURE}/sys/block/vda/queue/logical_block_size" 2>/dev/null)"
-      case "${lbs}" in '' | *[!0-9]*) lbs=512 ;; esac
-      printf '%s\n' "$(( size * lbs / 512 ))" >"${GROW_FIXTURE}/sys/block/vda4/size"
+      cp "${GROW_FIXTURE}/table/written" "${GROW_FIXTURE}/table/current"
     fi
+    ;;
+  --verify)
+    [ "${STUB_VERIFY_FAIL:-0}" = "1" ] && { echo "The backup GPT table is corrupt." >&2; exit 1; }
+    if [ "${STUB_VERIFY_UNSUPPORTED:-0}" = "1" ]; then
+      echo "sfdisk: unrecognized option '--verify'" >&2
+      exit 1
+    fi
+    exit 0
     ;;
   *)
     exit 2
@@ -126,7 +141,7 @@ cat >"$tmp/bin/blockdev" <<'STUB'
 printf '%s\n' "$*" >>"${GROW_FIXTURE}/blockdev.calls"
 case "$1" in
   --rereadpt)
-    [ "${STUB_REREAD_FAIL:-0}" = "1" ] && exit 1
+    # Recorded so the test can prove it is never called: the re-read is the reboot's job.
     exit 0
     ;;
   --getsize64)
@@ -138,13 +153,6 @@ case "$1" in
 esac
 STUB
 
-cat >"$tmp/bin/partx" <<'STUB'
-#!/bin/sh
-printf '%s\n' "$*" >>"${GROW_FIXTURE}/partx.calls"
-[ "${STUB_PARTX_FAIL:-0}" = "1" ] && exit 1
-exit 0
-STUB
-
 cat >"$tmp/bin/btrfs" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >>"${GROW_FIXTURE}/btrfs.calls"
@@ -154,22 +162,50 @@ STUB
 
 cat >"$tmp/bin/mount" <<'STUB'
 #!/bin/sh
-printf '%s
-' "$*" >>"${GROW_FIXTURE}/mount.calls"
+printf '%s\n' "$*" >>"${GROW_FIXTURE}/mount.calls"
 [ "${STUB_MOUNT_FAIL:-0}" = "1" ] && exit 1
 # The only form the boot path uses: -t btrfs -o <opts> <device> <mount point>
 printf '%s %s btrfs rw,noatime 0 0\n' "$5" "$6" >>"${WF_MOUNTS}"
 STUB
 cat >"$tmp/bin/umount" <<'STUB'
 #!/bin/sh
-printf '%s
-' "$*" >>"${GROW_FIXTURE}/umount.calls"
+printf '%s\n' "$*" >>"${GROW_FIXTURE}/umount.calls"
 mp="$1"
 { grep -v " ${mp} " "${WF_MOUNTS}" 2>/dev/null || :; } >"${WF_MOUNTS}.new"
 mv "${WF_MOUNTS}.new" "${WF_MOUNTS}"
 exit 0
 STUB
+
+# probe: what the kernel does before any of our code runs - read the GPT and create the p4
+# node with the size the table names. Called between boots, which is how the second boot
+# sees the grown device without a single reread ioctl.
+cat >"$tmp/bin/probe" <<'STUB'
+#!/bin/sh
+size="$(sed -n 's|^/dev/vda4 : start= *[0-9]*, size= *\([0-9]*\).*|\1|p' "${GROW_FIXTURE}/table/current")"
+case "${size}" in '' | *[!0-9]*) exit 1 ;; esac
+lbs="$(cat "${GROW_FIXTURE}/sys/block/vda/queue/logical_block_size" 2>/dev/null)"
+case "${lbs}" in '' | *[!0-9]*) lbs=512 ;; esac
+printf '%s\n' "$(( size * lbs / 512 ))" >"${GROW_FIXTURE}/sys/block/vda4/size"
+exit 0
+STUB
+
+# reboot: counted with the record it was asked for (so "after the record was on disk" is
+# measurable), and it makes the kernel read the table again - what the second boot sees.
+cat >"$tmp/bin/reboot" <<'STUB'
+#!/bin/sh
+printf 'reboot %s\n' "$*" >>"${GROW_FIXTURE}/reboot.calls"
+cat "${GROW_FIXTURE}/p4root/.ab/grow" >>"${GROW_FIXTURE}/reboot.calls" 2>/dev/null || :
+if [ "${STUB_REBOOT_FAIL:-0}" = "1" ]; then exit 1; fi
+"${GROW_FIXTURE}/bin/probe" || exit 1
+exit 0
+STUB
+
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/sleep"
+cat >"$tmp/bin/sync" <<'STUB'
+#!/bin/sh
+printf 'sync\n' >>"${GROW_FIXTURE}/sync.calls"
+exit 0
+STUB
 chmod +x "$tmp/bin"/*
 
 export GROW_FIXTURE="$tmp"
@@ -181,19 +217,27 @@ DI_BLKID="$tmp/bin/blkid-grow"
 export DI_SYS_BLOCK DI_DEV_DIR DI_CMDLINE DI_MOUNTS DI_BLKID
 WF_SFDISK="$tmp/bin/sfdisk"
 WF_BLOCKDEV="$tmp/bin/blockdev"
-WF_PARTX="$tmp/bin/partx"
 WF_BTRFS="$tmp/bin/btrfs"
 WF_SLEEP="$tmp/bin/sleep"
 WF_MOUNT="$tmp/bin/mount"
 WF_UMOUNT="$tmp/bin/umount"
+WF_REBOOT="$tmp/bin/reboot"
+WF_SYNC_CMD="$tmp/bin/sync"
 WF_SYS_BLOCK="$sys"
 WF_GROW_TMP="$tmp/work"
-WF_GROW_VERIFY_TRIES=2
 WF_MOUNTS="$tmp/mounts"
-export WF_SFDISK WF_BLOCKDEV WF_PARTX WF_BTRFS WF_SLEEP WF_SYS_BLOCK WF_GROW_TMP \
-  WF_GROW_VERIFY_TRIES WF_MOUNTS WF_MOUNT WF_UMOUNT
+export WF_SFDISK WF_BLOCKDEV WF_BTRFS WF_SLEEP WF_SYS_BLOCK WF_GROW_TMP \
+  WF_MOUNTS WF_MOUNT WF_UMOUNT WF_REBOOT WF_SYNC_CMD
 mkdir -p "$tmp/mnt/p4"
 printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "$tmp/mnt/p4" >"$WF_MOUNTS"
+
+# calls <tool>: what that stub was asked to do, in order.
+calls() { cat "$tmp/$1.calls" 2>/dev/null || :; }
+# count_lines <tool>: how many lines the stub recorded (0 when it was never called).
+count_lines() { cat "$tmp/$1.calls" 2>/dev/null | grep -c . || :; }
+# count_calls <tool> <pattern>: how many of those lines match.
+count_calls() { printf '%s\n' "$(calls "$1")" | grep -c -- "$2" 2>/dev/null || :; }
+
 
 reset_fixture
 
@@ -308,269 +352,348 @@ assert_eq "$(wf_grow_decide "$tmp/table/no-last-lba" /dev/vda4 "")" \
   "fail:disk-size-unknown" "ac-3 no table end and no disk size is a failure token"
 
 # --------------------------------------------------------------------------- #
-# Run: one boot, then a second boot on the same disk
+# Two boots: boot 1 writes the table and reboots, boot 2 grows the filesystem,
+# boot 3 is the steady state
 # --------------------------------------------------------------------------- #
+# init's own sequence is: plan (no mount) -> mount the root subvolume and write the
+# write-ahead breadcrumb -> give it back -> write the table -> mount again, record the
+# outcome and reboot. Each step is a function below, so the test drives exactly the calls
+# a real boot makes - including the one thing a unit test cannot do, the reboot, which the
+# stub turns into "the kernel reads the table again".
 
-first=$(wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${first}" "done ${last_lba}" "ac-2 a first boot grows p4 and reports done"
-assert_eq "$(printf '%s\n' "${first}" | wc -l | tr -d ' ')" "1" \
-  "ac-2 the run prints exactly one result line"
+record="$tmp/p4root"
+rm -rf "${record}"
+mkdir -p "${record}"
+WF_GROW_LOG_FILE="$tmp/work/grow.log"
+export WF_GROW_LOG_FILE
+: >"${WF_GROW_LOG_FILE}"
 
+reset_fixture
+plan="$(wf_grow_plan /dev/vda /dev/vda4 2>/dev/null)"
+assert_eq "${plan}" "grow ${last_lba} ${p4_grown_size}" \
+  "ac-2 the first boot plans the growth"
+assert_eq "$(printf '%s\n' "${plan}" | wc -l | tr -d ' ')" "1" \
+  "ac-2 the plan is exactly one line"
+assert_file_exists "$tmp/work/grow/partitions.before" \
+  "ac-7 the pre-change table is dumped before anything is written"
+assert_eq "$(cat "$sys/vda4/size")" "${p4_shipped_size}" \
+  "ac-1 planning the growth does not touch the device"
+
+# Stage 1a: the write-ahead breadcrumb. It is the only durable fact a panic in the write
+# window can leave, which is the evidence the first-boot incident had none of.
+assert_command_ok "ac-5 the write-ahead breadcrumb can be written" \
+  wf_grow_stage1_prepare "${record}" "${last_lba}"
+assert_eq "$(cat "${record}/.ab/grow")" "result=table-write-pending last_lba=${last_lba}" \
+  "ac-5 the stage-1 breadcrumb says a table write is in flight"
+assert_eq "$(cat "${record}/.ab/partitions.before")" "$(table_for "${p4_shipped_size}")" \
+  "ac-7 the kept table is the geometry from before the write"
+assert_eq "$(cat "${WF_GROW_LOG_FILE}")" "" \
+  "ac-5 the buffer is emptied once its lines are on p4"
+assert_contains "$(cat "${record}/.ab/grow.log" 2>/dev/null)" "record result=table-write-pending" \
+  "ac-5 the record itself is logged on the p4 side"
+
+# Stage 1b: the table itself. No mount is live here and nothing asks the kernel to re-read.
+written="$(wf_grow_write_table /dev/vda /dev/vda4 "${p4_grown_size}" \
+  "$tmp/work/grow/partitions.before" "${last_lba}" 2>/dev/null)"
+assert_eq "${written}" "written" "ac-2 the table write reports written"
 assert_contains "$(cat "$tmp/sfdisk.calls")" "--no-reread /dev/vda" \
   "ac-2 the table is written back with --no-reread"
-assert_contains "$(cat "$tmp/blockdev.calls")" "--rereadpt /dev/vda" \
-  "ac-2 the kernel is asked to re-read the table"
-assert_eq "$(cat "$sys/vda4/size")" "${p4_grown_size}" \
-  "ac-2 the p4 device really became the grown size"
-
-# Only the p4 size may differ from the pre-growth table: the other three partitions keep
-# their start, size, type and UUID, so the ESP and both slots stay addressable.
-grep -v '^/dev/vda4 :' "$tmp/table/current" >"$tmp/table/other.expected"
-table_for "${p4_shipped_size}" | grep -v '^/dev/vda4 :' >"$tmp/table/other.before"
-assert_eq "$(diff -u "$tmp/table/other.before" "$tmp/table/other.expected" >/dev/null 2>&1; echo $?)" \
-  "0" "ac-2 every non-p4 table line is written back unchanged"
-assert_eq "$(sed -n 's|^/dev/vda4 : start= *\([0-9]*\), size= *\([0-9]*\),.*|\1 \2|p' "$tmp/table/current")" \
-  "${p4_start} ${p4_grown_size}" "ac-2 p4 keeps its start and only its size changed"
-assert_eq "$(sed -n 's|^/dev/vda4 :.*name="\([^"]*\)".*|\1|p' "$tmp/table/current")" \
-  "ab-data" "ac-2 the p4 partition name survives the rewrite"
-
-writes_before=$(grep -c '^--no-reread' "$tmp/sfdisk.calls" || true)
-second=$(wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${second}" "already-full ${last_lba}" \
-  "ac-2 a second boot on the same disk is already-full (idempotent)"
-writes_after=$(grep -c '^--no-reread' "$tmp/sfdisk.calls" || true)
-assert_eq "${writes_after}" "${writes_before}" \
-  "ac-2 the idempotent boot does not write the partition table again"
-assert_eq "$(cat "$sys/vda4/size")" "${p4_grown_size}" \
-  "ac-2 the idempotent boot leaves the device size alone"
-
-# --------------------------------------------------------------------------- #
-# Failures: every one of them is a token, and the disk is left as it was
-# --------------------------------------------------------------------------- #
-
-reset_fixture
-missing=$(WF_SFDISK="$tmp/bin/absent-sfdisk" wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${missing}" "missing-sfdisk 0" \
-  "ac-3 a boot initramfs without sfdisk reports missing-sfdisk"
-assert_eq "$(cat "$tmp/table/current")" "$(table_for "${p4_shipped_size}")" \
-  "ac-3 missing-sfdisk leaves the partition table untouched"
-
-dump_fail=$(STUB_DUMP_FAIL=1 wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${dump_fail}" "fail:partition-table-read 0" \
-  "ac-3 an unreadable table is recorded as fail:partition-table-read"
-
-write_fail=$(STUB_WRITE_FAIL=1 wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${write_fail}" "fail:partition-table-write ${last_lba}" \
-  "ac-3 a refused write is recorded as fail:partition-table-write"
 assert_eq "$(cat "$sys/vda4/size")" "${p4_shipped_size}" \
-  "ac-3 a refused write leaves the device size alone"
+  "ac-1 the kernel keeps the old size: the re-read is the reboot, not this boot"
+assert_eq "$(count_lines blockdev)" "0" \
+  "ac-1 no blockdev call at all while sysfs answers the device size"
+# Comments may name the retired ioctl - that is how the removal stays explained - so the
+# check is on the code lines only: there is no partx call site left to count.
+grow_code="$(sed -n '/^[[:space:]]*#/!p' "$root/initramfs/lib/grow.sh")"
+assert_eq "$(printf '%s\n' "${grow_code}" | grep -c -- 'rereadpt' || :)" "0" \
+  "ac-1 the helper contains no table re-read at all"
+assert_eq "$(printf '%s\n' "${grow_code}" | grep -c -- 'partx' || :)" "0" \
+  "ac-1 the partx fallback is gone, not merely unused"
+assert_contains "$(cat "$tmp/sfdisk.calls")" "--verify /dev/vda" \
+  "ac-7 the written table is verified before the reboot"
 
-reread_fail=$(STUB_REREAD_FAIL=1 STUB_PARTX_FAIL=1 wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${reread_fail}" "fail:partition-table-reread ${last_lba}" \
-  "ac-3 a failed re-read is recorded as fail:partition-table-reread"
+# Only the p4 size may differ from the pre-write table.
+grep -v '^/dev/vda4 :' "$tmp/table/current" >"$tmp/table/others.after"
+table_for "${p4_shipped_size}" | grep -v '^/dev/vda4 :' >"$tmp/table/others.before"
+assert_eq "$(diff -u "$tmp/table/others.before" "$tmp/table/others.after" >/dev/null 2>&1; echo $?)" \
+  "0" "ac-7 every non-p4 table line is written back unchanged"
+assert_eq "$(sed -n 's|^/dev/vda4 : start= *\([0-9]*\), size= *\([0-9]*\).*|\1 \2|p' "$tmp/table/current")" \
+  "${p4_start} ${p4_grown_size}" "ac-7 p4 keeps its start and only its size changed"
+assert_eq "$(sed -n 's|^/dev/vda4 :.*name="\([^"]*\)".*|\1|p' "$tmp/table/current")" \
+  "ab-data" "ac-7 the p4 partition name survives the rewrite"
 
-# blockdev missing from the initramfs is not fatal: partx does the same job.
-reset_fixture
-partx_only=$(WF_BLOCKDEV="$tmp/bin/absent-blockdev" wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${partx_only}" "done ${last_lba}" \
-  "ac-3 partx -u replaces a missing blockdev"
-assert_contains "$(cat "$tmp/partx.calls")" "-u /dev/vda" \
-  "ac-3 partx is called with -u"
+# Stage 1c, in the three steps init takes: record the outcome, give the mount back through
+# the one release path, and only then reboot. Splitting them is what keeps the release the
+# only way a mount is ever given back.
+staged="$(wf_grow_record_stage1 "${record}" "${last_lba}" "${written}" 2>/dev/null)"
+assert_eq "${staged}" "table-written" \
+  "ac-2 the outcome of a verified write is recorded as table-written"
+assert_eq "$(cat "${record}/.ab/grow")" "result=table-written last_lba=${last_lba}" \
+  "ac-2 the record says the table was written"
+assert_eq "$(count_calls reboot '-f')" "0" \
+  "ac-2 recording the outcome does not reboot by itself"
+assert_command_ok "ac-2 a verified table is the state that reboots" \
+  wf_grow_should_reboot "${staged}"
+assert_eq "$( ( wf_grow_should_reboot fail:partition-table-write ); echo $? )" "1" \
+  "ac-6 a failure token never reboots"
+"$WF_UMOUNT" "${record}" >/dev/null 2>&1 || :
+wf_grow_reboot 2>/dev/null || :
+assert_eq "$(count_calls reboot '-f')" "1" "ac-2 exactly one reboot request"
+assert_contains "$(calls reboot)" "result=table-written" \
+  "ac-2 the reboot was issued after the record was on disk"
+assert_contains "$(calls umount)" "${record}" \
+  "ac-2 the root subvolume is given back before the reboot"
+assert_eq "$(count_lines sync)" "2" "ac-2 the writes are flushed before the reset"
+assert_eq "$(cat "$sys/vda4/size")" "${p4_grown_size}" \
+  "ac-3 after the reboot the kernel reports the grown p4"
+assert_contains "$(cat "${record}/.ab/grow.log")" "record result=table-written" \
+  "ac-5 the stage-1 outcome is in the append-only log"
 
-reset_fixture
-unchanged=$(STUB_NO_SIZE_CHANGE=1 wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "${unchanged}" "fail:size-unchanged ${last_lba}" \
-  "ac-3 a kernel that never shows the new size is recorded as fail:size-unchanged"
-
-# wf_grow_fs takes the DEVICE while nothing of the filesystem is mounted (the boot
-# order), or a mount point when it is already mounted. Everything else is refused.
-reset_fixture
-p4_mount="$tmp/mnt/p4"
+# Boot 2: the kernel read the table, so nothing of this boot may write it again.
+writes_before="$(count_calls sfdisk '--no-reread')"
+plan2="$(wf_grow_plan /dev/vda /dev/vda4 2>/dev/null)"
+assert_eq "${plan2}" "already-full ${last_lba}" \
+  "ac-3 the boot after the reboot has nothing left to write"
+assert_eq "$(count_calls sfdisk '--no-reread')" "${writes_before}" \
+  "ac-3 the second boot does not write the table again"
+prev="$(wf_grow_record_state "${record}/.ab/grow")"
+assert_eq "${prev}" "table-written ${last_lba}" \
+  "ac-4 the record is parsed back into state and last_lba"
 : >"$WF_MOUNTS"
-assert_eq "$(wf_grow_fs /dev/vda4 /dev/vda)" "done" \
-  "ac-3 the unmounted device is a valid resize target"
-assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max /dev/vda4" \
-  "ac-3 the resize ran against the device, before any mount"
+resize="$(wf_grow_resize_mounted /dev/vda4 "$tmp/mnt/p4resize" /dev/vda 2>/dev/null)"
+assert_eq "${resize}" "done" "ac-3 the second boot resizes the filesystem"
+assert_contains "$(calls btrfs)" "filesystem resize max $tmp/mnt/p4resize" \
+  "ac-3 the resize runs on the clean mount"
+token="$(wf_grow_finalize already-full "${last_lba}" "${resize}" "${prev%% *}" "${prev##* }")"
+assert_eq "${token}" "done" "ac-3 the boot that resized the filesystem records done"
+assert_command_ok "ac-3 the outcome is recorded on p4" \
+  wf_grow_record "${record}" "${token}" "${last_lba}"
+assert_eq "$(cat "${record}/.ab/grow")" "result=done last_lba=${last_lba}" \
+  "ac-4 the record keeps the single-line result=<state> last_lba=<n> shape"
+wf_grow_flush_log "${record}" || true
+assert_eq "$(cat "${WF_GROW_LOG_FILE}")" "" "ac-5 the second boot's lines are on p4 too"
+assert_contains "$(cat "${record}/.ab/grow.log")" "record result=done" \
+  "ac-5 the second boot's record joined the append-only log"
 
-# Once the device is mounted, the device path is the race that produced EBUSY/EINVAL.
-printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "${p4_mount}" >"$WF_MOUNTS"
-rm -f "$tmp/btrfs.calls"
-assert_eq "$(wf_grow_fs /dev/vda4 /dev/vda)" "fail:resize-target" \
-  "ac-3 a mounted device is refused as a resize target"
-assert_eq "$(cat "$tmp/btrfs.calls" 2>/dev/null | wc -l | tr -d ' ')" "0" \
-  "ac-3 the refused mounted device never reaches btrfs-progs"
-assert_eq "$(wf_grow_fs "${p4_mount}")" "done" \
-  "ac-3 a mount point is accepted when the filesystem is mounted"
-assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max ${p4_mount}" \
-  "ac-3 the resize is run against the mount point"
-
-assert_eq "$(STUB_BTRFS_FAIL=1 wf_grow_fs "${p4_mount}")" "fail:btrfs-resize" \
-  "ac-3 a failed filesystem resize is recorded as fail:btrfs-resize"
-rm -f "$tmp/btrfs.calls"
-assert_eq "$(wf_grow_fs /mnt/never-mounted)" "fail:resize-target" \
-  "ac-3 an unmounted directory is refused as a resize target"
-assert_eq "$(wf_grow_fs "")" "fail:resize-target" "ac-3 an empty target is refused"
-assert_eq "$(cat "$tmp/btrfs.calls" 2>/dev/null | wc -l | tr -d ' ')" "0" \
-  "ac-3 no refused target ever reaches btrfs-progs"
-
-# btrfs-progs output is the only evidence for why a resize failed, so it is kept in the
-# [grow] log instead of being thrown away.
-cat >"$tmp/bin/btrfs-noisy" <<'STUB'
-#!/bin/sh
-echo "ERROR: cannot resize /mnt/p4root: device is busy" >&2
-exit 1
-STUB
-chmod +x "$tmp/bin/btrfs-noisy"
-# The boot path resizes the unmounted device, so that is the shape the diagnostics take.
-: >"$WF_MOUNTS"
-reset_fixture
-: >"$WF_MOUNTS"
-noisy_out="$(WF_BTRFS="$tmp/bin/btrfs-noisy" wf_grow_fs /dev/vda4 /dev/vda 2>&1)"
-assert_contains "${noisy_out}" "fail:btrfs-resize" \
-  "ac-3 a failed resize still returns its token"
-assert_contains "${noisy_out}" "device is busy" \
-  "ac-3 the btrfs-progs error is kept in the grow log"
-assert_contains "${noisy_out}" "[grow] btrfs filesystem resize max /dev/vda4 failed" \
-  "ac-3 the failing command and its target are logged"
-assert_contains "${noisy_out}" "[grow] diag btrfs:" \
-  "ac-3 the failure dumps what btrfs-progs thinks the filesystem is"
-assert_contains "${noisy_out}" "[grow] diag device /dev/vda4:" \
-  "ac-3 the failure dumps the kernel's device size"
-assert_contains "${noisy_out}" "[grow] diag table: /dev/vda4 : start=" \
-  "ac-3 the failure dumps the partition table line"
+# Boot 3: the steady state. The table is full and the record already says so.
+prev2="$(wf_grow_record_state "${record}/.ab/grow")"
+token3="$(wf_grow_finalize already-full "${last_lba}" done "${prev2%% *}" "${prev2##* }")"
+assert_eq "${token3}" "already-full" "ac-4 the third boot is the steady state"
+assert_eq "$(count_calls reboot '-f')" "1" "ac-4 the steady state asks for no reboot"
+assert_eq "$(count_calls sfdisk '--no-reread')" "${writes_before}" \
+  "ac-4 the steady state writes the table a total of once"
 
 # --------------------------------------------------------------------------- #
-# The boot path's resize: a clean mount, the resize, the mount given back
+# Records written by other builds, and the write that was lost
 # --------------------------------------------------------------------------- #
-# The btrfs-progs in the image answers `ERROR: not a directory: /dev/vda4` for an
-# unmounted device, so the resize needs a mount — one without compress=, discard= or
-# subvol=, so a failing resize cannot be confused with an option interaction.
 
-reset_fixture
+mkdir -p "$tmp/legacy/.ab"
+legacy="$tmp/legacy/.ab/grow"
+printf 'result=done last_lba=%s\n' "${last_lba}" >"${legacy}"
+assert_eq "$(wf_grow_record_state "${legacy}")" "done ${last_lba}" \
+  "ac-4 a done record of the one-phase firmware is understood"
+assert_eq "$(wf_grow_finalize already-full "${last_lba}" done done "${last_lba}")" \
+  "already-full" "ac-4 a machine the old firmware grew is already-full on the first new boot"
+printf 'result=already-full last_lba=%s\n' "${last_lba}" >"${legacy}"
+assert_eq "$(wf_grow_record_state "${legacy}")" "already-full ${last_lba}" \
+  "ac-4 an already-full record is understood"
+printf 'result=fail:partition-table-reread last_lba=%s\n' "${last_lba}" >"${legacy}"
+assert_eq "$(wf_grow_record_state "${legacy}")" "fail:partition-table-reread ${last_lba}" \
+  "ac-4 a retired failure token is still readable"
+printf 'result=done\n' >"${legacy}"
+assert_eq "$(wf_grow_record_state "${legacy}")" "done 0" \
+  "ac-4 a record without last_lba is readable instead of fatal"
+rm -f "${legacy}"
+assert_eq "$(wf_grow_record_state "${legacy}")" "missing 0" \
+  "ac-4 a missing record is a state of its own, not an error"
+assert_eq "$(wf_grow_finalize already-full "${last_lba}" done missing 0)" "done" \
+  "ac-4 without a record the resize result is what gets recorded"
+
+assert_eq "$( ( wf_grow_steady done "${last_lba}" "${last_lba}" ); echo $? )" "0" \
+  "ac-4 a done record at the same disk end is the steady state"
+assert_eq "$( ( wf_grow_steady done 100 "${last_lba}" ); echo $? )" "1" \
+  "ac-4 a disk that grew since is grown again"
+assert_eq "$( ( wf_grow_steady done 0 "${last_lba}" ); echo $? )" "1" \
+  "ac-4 a record without a disk end proves nothing"
+assert_eq "$( ( wf_grow_steady fail:table-verify "${last_lba}" "${last_lba}" ); echo $? )" "1" \
+  "ac-4 a failure token is never the steady state"
+
+assert_eq "$(wf_grow_guard table-written "${last_lba}" "${last_lba}")" "refuse" \
+  "ac-4 a verified write that is not on the disk refuses to write again"
+assert_eq "$(wf_grow_guard fail:table-write-lost "${last_lba}" "${last_lba}")" "refuse" \
+  "ac-4 the refusal survives the record that boot writes itself"
+assert_eq "$(wf_grow_guard fail:table-write-lost 100 "${last_lba}")" "write" \
+  "ac-4 ... but not on another disk end"
+assert_eq "$(wf_grow_guard table-write-pending "${last_lba}" "${last_lba}")" "write" \
+  "ac-4 an in-flight write is what a retry is for"
+assert_eq "$(wf_grow_guard done "${last_lba}" "${last_lba}")" "write" \
+  "ac-4 a done record proves nothing about the table"
+assert_eq "$(wf_grow_guard missing 0 "${last_lba}")" "write" \
+  "ac-4 no record at all is the normal first boot"
+assert_eq "$(wf_grow_guard table-written 100 "${last_lba}")" "write" \
+  "ac-4 a record about another disk end does not block this one"
+# A steady record must not launder an unrelated plan into `already-full`: only the
+# already-full plan has a done/already-full label to decide.
+assert_eq "$(wf_grow_finalize missing-sfdisk "${last_lba}" done done "${last_lba}")" \
+  "missing-sfdisk" "ac-4 a steady record does not turn missing-sfdisk into already-full"
+assert_eq "$(wf_grow_finalize fail:table-write-lost "${last_lba}" done done "${last_lba}")" \
+  "fail:table-write-lost" "ac-4 ... nor a lost write into already-full"
+assert_eq "$(wf_grow_finalize already-full "${last_lba}" "" done "${last_lba}")" "already-full" \
+  "ac-4 and the already-full plan does get the steady label"
+
+# The soft loop the refusal exists for, boot by boot: the refusal overwrites the record with
+# a token that the next boot must still refuse, or every second boot writes and reboots.
+sim="$tmp/loop"
+mkdir -p "${sim}/.ab"
+printf 'result=table-written last_lba=%s\n' "${last_lba}" >"${sim}/.ab/grow"
+sim_state="$(wf_grow_record_state "${sim}/.ab/grow")"
+assert_eq "$(wf_grow_guard "${sim_state%% *}" "${sim_state##* }" "${last_lba}")" "refuse" \
+  "ac-4 the boot after a verified-but-lost write refuses to write"
+wf_grow_record "${sim}" fail:table-write-lost "${last_lba}" >/dev/null 2>&1
+sim_state="$(wf_grow_record_state "${sim}/.ab/grow")"
+assert_eq "${sim_state}" "fail:table-write-lost ${last_lba}" \
+  "ac-4 the refusing boot overwrites the record with its own token"
+assert_eq "$(wf_grow_guard "${sim_state%% *}" "${sim_state##* }" "${last_lba}")" "refuse" \
+  "ac-4 ... and the boot after that refuses again: no write/reboot loop"
+
+# --------------------------------------------------------------------------- #
+# Failures: every one of them is a token, and none of them reboots
+# --------------------------------------------------------------------------- #
+
+fail_record="$tmp/fail-record"
+
+# <state>: a fresh fixture whose dump and write-ahead breadcrumb exist, so each failure
+# below starts from the same place a real boot does.
+fail_setup() {
+  reset_fixture
+  rm -rf "${fail_record}"
+  mkdir -p "${fail_record}"
+  wf_grow_plan /dev/vda /dev/vda4 >/dev/null 2>&1
+  wf_grow_stage1_prepare "${fail_record}" "${last_lba}" >/dev/null 2>&1
+}
+fail_write() {
+  wf_grow_write_table /dev/vda /dev/vda4 "${p4_grown_size}" \
+    "$tmp/work/grow/partitions.before" "${last_lba}"
+}
+
+fail_setup
+write_fail="$(STUB_WRITE_FAIL=1 fail_write 2>/dev/null)"
+assert_eq "${write_fail}" "fail:partition-table-write" \
+  "ac-6 a refused table write is a token"
+assert_eq "$(cat "$sys/vda4/size")" "${p4_shipped_size}" \
+  "ac-6 a refused write leaves the device size alone"
+out_fail="$(wf_grow_record_stage1 "${fail_record}" "${last_lba}" "${write_fail}" 2>/dev/null)"
+assert_eq "${out_fail}" "${write_fail}" \
+  "ac-6 the failure is recorded, under its own token"
+assert_eq "$( ( wf_grow_should_reboot "${out_fail}" ); echo $? )" "1" \
+  "ac-6 ... and a failure token asks for no reboot"
+assert_eq "$(cat "${fail_record}/.ab/grow")" \
+  "result=${write_fail} last_lba=${last_lba}" "ac-6 the failure is on the p4 side"
+assert_eq "$(count_calls reboot '-f')" "0" "ac-6 a failed write never reboots"
+
+# The other half of what killed the machine: writing the table while the root subvolume is
+# still mounted. init checks the release's return code and the helper refuses as well, so a
+# failed umount can never be followed by `sfdisk`.
+fail_setup
+printf '/dev/vda4 %s btrfs rw,noatime 0 0\n' "${fail_record}" >"$WF_MOUNTS"
+: >"$tmp/sfdisk.calls"
+mounted_write="$(wf_grow_write_table /dev/vda /dev/vda4 "${p4_grown_size}" \
+  "$tmp/work/grow/partitions.before" "${last_lba}" "${fail_record}" 2>/dev/null)"
+assert_eq "${mounted_write}" "fail:p4-still-mounted" \
+  "ac-6 a root subvolume that is still mounted blocks the table write"
+assert_eq "$(count_calls sfdisk '--no-reread')" "0" \
+  "ac-6 ... so sfdisk is never called with p4 still mounted"
 : >"$WF_MOUNTS"
-resize_mp="$tmp/mnt/p4resize"
-resize_out="$(wf_grow_resize_mounted /dev/vda4 "${resize_mp}" /dev/vda 2>"$tmp/stderr.txt")"
-assert_eq "${resize_out}" "done" "ac-3 the clean-mount resize reports done"
-assert_contains "$(cat "$tmp/mount.calls")" "-t btrfs -o rw,noatime /dev/vda4 ${resize_mp}" \
-  "ac-3 the resize pass mounts with no compress/discard/subvol options"
-assert_eq "$(printf '%s' "$(cat "$tmp/mount.calls")" | grep -c 'compress=\|discard=\|subvol=')" "0" \
-  "ac-3 the clean mount carries none of the option-carrying mount's flags"
-assert_contains "$(cat "$tmp/btrfs.calls")" "filesystem resize max ${resize_mp}" \
-  "ac-3 the resize runs against the clean mount point"
-assert_contains "$(cat "$tmp/umount.calls")" "${resize_mp}" \
-  "ac-3 the clean mount is given back"
-assert_eq "$(awk -v mp="${resize_mp}" '$2 == mp { found = 1 } END { exit !found }' "$WF_MOUNTS"; echo $?)" \
-  "1" "ac-3 nothing is left mounted after the resize pass"
 
-# A clean mount that fails is a token, not a crash.
-reset_fixture
-: >"$WF_MOUNTS"
-mount_fail="$(STUB_MOUNT_FAIL=1 wf_grow_resize_mounted /dev/vda4 "${resize_mp}" /dev/vda 2>&1)"
-assert_contains "${mount_fail}" "fail:resize-mount" \
-  "ac-3 a failed clean mount is recorded as fail:resize-mount"
-assert_eq "$(printf '%s' "${mount_fail}" | grep -c 'filesystem resize')" "0" \
-  "ac-3 no resize is attempted when the clean mount failed"
+fail_setup
+not_written="$(STUB_NO_SIZE_CHANGE=1 fail_write 2>/dev/null)"
+assert_eq "${not_written}" "fail:table-write-not-verified" \
+  "ac-6 a write the re-dump cannot see is not believed"
 
-# A failing resize still gives the mount back and leaves the diagnostics behind.
-reset_fixture
-: >"$WF_MOUNTS"
-resize_fail="$(WF_BTRFS="$tmp/bin/btrfs-noisy" wf_grow_resize_mounted \
-  /dev/vda4 "${resize_mp}" /dev/vda 2>&1)"
-assert_contains "${resize_fail}" "fail:btrfs-resize" "ac-3 a failed resize is recorded"
-assert_contains "${resize_fail}" "[grow] diag btrfs --version:" \
-  "ac-3 the btrfs version is logged with the failure"
-assert_contains "${resize_fail}" "filesystem resize 1:max ${resize_mp}" \
-  "ac-3 the explicit-devid retry is attempted"
-assert_contains "${resize_fail}" "[grow] diag usage:" \
-  "ac-3 the usage table is logged with the failure"
-assert_contains "$(cat "$tmp/umount.calls")" "${resize_mp}" \
-  "ac-3 the mount is given back even when the resize failed"
+fail_setup
+verify_fail="$(STUB_VERIFY_FAIL=1 fail_write 2>/dev/null)"
+assert_eq "${verify_fail}" "fail:table-verify" \
+  "ac-6 a table that does not verify is a token"
 
-assert_eq "$(wf_grow_resize_mounted "" "${resize_mp}")" "fail:resize-target" \
-  "ac-3 a resize pass without a device is refused"
+fail_setup
+unsupported="$(STUB_VERIFY_UNSUPPORTED=1 fail_write 2>"$tmp/stderr.txt")"
+assert_eq "${unsupported}" "written" \
+  "ac-7 an sfdisk without --verify does not stop the growth"
+assert_contains "$(cat "$tmp/stderr.txt")" "verify=unsupported" \
+  "ac-7 the missing verify option is recorded instead of guessed"
 
-# --------------------------------------------------------------------------- #
-# 4Kn disks: sysfs counts 512-byte units, sfdisk counts logical sectors
-# --------------------------------------------------------------------------- #
-# A 4096-byte-sector disk reports `size` in 512-byte units and partition sizes in
-# logical sectors, so a comparison that mixes the two is off by a factor of eight and
-# reports fail:size-unchanged on a disk that grew perfectly.
+fail_setup
+dump_fail="$(STUB_DUMP_FAIL=1 wf_grow_plan /dev/vda /dev/vda4 2>/dev/null)"
+assert_eq "${dump_fail}" "fail:partition-table-read 0" \
+  "ac-6 an unreadable table is recorded as fail:partition-table-read"
 
 reset_fixture
-printf '4096\n' >"$sys/vda/queue/logical_block_size"
-# 16384 logical sectors of 4096 bytes are 131072 sysfs units of 512 bytes.
-printf '%s\n' 131072 >"$sys/vda4/size"
-# The disk ends where this table's last usable LBA is, so the growth target comes from
-# the table above and the case stays about the 512/4096 unit conversion.
-# 115166 + 34 = 115200 logical sectors of 4096 bytes = 921600 sysfs units.
-printf '%s\n' 921600 >"$sys/vda/size"
-cat >"$tmp/table/current" <<'TABLE4K'
-label: gpt
-label-id: 4F2B1C3D-5E6F-7081-9203-A4B5C6D7E8F0
-device: /dev/vda
-unit: sectors
-first-lba: 6
-last-lba: 115166
-sector-size: 4096
+missing="$(WF_SFDISK="$tmp/bin/absent-sfdisk" wf_grow_plan /dev/vda /dev/vda4 2>/dev/null)"
+assert_eq "${missing}" "missing-sfdisk 0" \
+  "ac-6 a boot initramfs without sfdisk reports missing-sfdisk"
+assert_eq "$(cat "$tmp/table/current")" "$(table_for "${p4_shipped_size}")" \
+  "ac-6 missing-sfdisk leaves the partition table untouched"
 
-/dev/vda1 : start=         256, size=       32768, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, uuid=11111111-2222-3333-4444-555555555555, name="ab-esp"
-/dev/vda2 : start=       33024, size=       32768, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=66666666-7777-8888-9999-AAAAAAAAAAAA, name="ab-slot-a"
-/dev/vda3 : start=       65792, size=       32768, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF, name="ab-slot-b"
-/dev/vda4 : start=       98560, size=       16384, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, uuid=12121212-3434-5656-7878-909090909090, name="ab-data"
-TABLE4K
-assert_eq "$(wf_grow_sector_size /dev/vda4)" "4096" \
-  "ac-2 the logical block size of a 4Kn disk is the conversion unit"
-assert_eq "$(wf_grow_sectors /dev/vda4)" "16384" \
-  "ac-2 a partition size is reported in logical sectors, not in sysfs 512-byte units"
-k4=$(wf_grow_run /dev/vda /dev/vda4 2>/dev/null)
-assert_eq "$(wf_grow_alignment /dev/vda4)" "1" \
-  "ac-2 a 4Kn disk needs no alignment: one logical sector is one sectorsize"
-assert_eq "${k4}" "done 115166" \
-  "ac-2 a 4Kn disk grows without a false fail:size-unchanged"
-assert_eq "$(cat "$sys/vda4/size")" "$(( (115166 - 98560 + 1) * 8 ))" \
-  "ac-2 the 4Kn partition really became the larger size"
+assert_eq "$(count_calls reboot '-f')" "0" "ac-6 no failure above asked for a reboot"
 
-# --------------------------------------------------------------------------- #
-# The pre-growth partition table has to reach the disk, not just the initramfs
-# --------------------------------------------------------------------------- #
+# A reboot that comes back: the record stays (it is true), and the boot continues on the
+# old geometry instead of pretending the kernel saw the new table.
+fail_setup
+written_ok="$(fail_write 2>/dev/null)"
+assert_eq "${written_ok}" "written" "ac-6 the write itself succeeded"
+recorded_ok="$(wf_grow_record_stage1 "${fail_record}" "${last_lba}" "${written_ok}" 2>/dev/null)"
+assert_eq "${recorded_ok}" "table-written" "ac-6 the verified write is recorded first"
+"$WF_UMOUNT" "${fail_record}" >/dev/null 2>&1 || :
+reboot_back="$(STUB_REBOOT_FAIL=1 wf_grow_reboot 2>"$tmp/stderr.txt"; echo "rc=$?")"
+assert_contains "${reboot_back}" "rc=1" "ac-6 a reboot that fails reports its status"
+assert_eq "$(cat "${fail_record}/.ab/grow")" "result=table-written last_lba=${last_lba}" \
+  "ac-6 the record stays truthful when the reboot returns"
+assert_contains "$(cat "$tmp/stderr.txt")" "continues on the old geometry" \
+  "ac-6 a reboot that returned is logged as such"
 
-reset_fixture
-wf_grow_run /dev/vda /dev/vda4 >/dev/null 2>&1
-backup_dir="$tmp/p4root-backup"
-assert_command_ok "ac-2 the pre-growth table can be kept" wf_grow_backup "$backup_dir"
-assert_file_exists "$backup_dir/.ab/partitions.before" \
-  "ac-2 the table is kept at .ab/partitions.before"
-assert_eq "$(cat "$backup_dir/.ab/partitions.before")" "$(table_for "${p4_shipped_size}")" \
-  "ac-2 the kept table is the geometry from before the write, not the grown one"
-assert_eq "$(ls -A "$backup_dir/.ab" | paste -sd, -)" "partitions.before" \
-  "ac-2 no temporary file is left behind next to the backup"
-assert_eq "$(cd "$tmp/work/grow" && wf_grow_backup "" >/dev/null 2>&1; echo $?)" "1" \
-  "ac-2 a backup without a destination is refused"
+# The resize failures carry their own tokens, and neither turns into a reboot.
+assert_eq "$(wf_grow_finalize already-full "${last_lba}" fail:btrfs-resize done "${last_lba}")" \
+  "fail:btrfs-resize" "ac-6 a failed filesystem resize is recorded"
+assert_eq "$(wf_grow_finalize already-full "${last_lba}" fail:resize-mount missing 0)" \
+  "fail:resize-mount" "ac-6 a failed clean mount is recorded"
+assert_eq "$(count_calls reboot '-f')" "1" \
+  "ac-6 only the reboot-that-returned case ever asked for one"
+
+# Nothing in the helper may end a boot: it records and returns.
+grow_lib="$(cat "$root/initramfs/lib/grow.sh")"
+assert_eq "$(printf '%s' "${grow_lib}" | grep -c 'wf_fail')" "0" \
+  "ac-6 the growth helper cannot abort a boot"
+assert_eq "$(printf '%s' "${grow_lib}" | grep -c 'poweroff')" "0" \
+  "ac-6 the growth helper cannot power the machine off"
 
 # --------------------------------------------------------------------------- #
 # The record: <p4 root subvolume>/.ab/grow, `result=<state> last_lba=<n>`
 # --------------------------------------------------------------------------- #
 
-record_dir="$tmp/p4root"
-assert_command_ok "ac-4 the growth record can be written" wf_grow_record "$record_dir" done "${last_lba}"
-assert_file_exists "$record_dir/.ab/grow" "ac-4 the record lives at .ab/grow"
-assert_eq "$(cat "$record_dir/.ab/grow")" "result=done last_lba=${last_lba}" \
-  "ac-4 the record is result=<state> last_lba=<n> on one line"
-assert_matches "$(cat "$record_dir/.ab/grow")" '^result=[a-z:-]+ last_lba=[0-9]+$' \
-  "ac-4 the record matches the documented shape"
-assert_eq "$(ls -A "$record_dir/.ab" | paste -sd, -)" "grow" \
-  "ac-4 no temporary file is left behind"
+record_dir="$tmp/p4root-record"
+assert_command_ok "ac-5 the growth record can be written" wf_grow_record "${record_dir}" done "${last_lba}"
+assert_file_exists "${record_dir}/.ab/grow" "ac-5 the record lives at .ab/grow"
+assert_eq "$(cat "${record_dir}/.ab/grow")" "result=done last_lba=${last_lba}" \
+  "ac-5 the record is result=<state> last_lba=<n> on one line"
+assert_matches "$(cat "${record_dir}/.ab/grow")" '^result=[a-z:-]+ last_lba=[0-9]+$' \
+  "ac-5 the record matches the documented shape"
+assert_eq "$(ls -A "${record_dir}/.ab" | paste -sd, -)" "grow" \
+  "ac-5 no temporary file is left behind"
 
-wf_grow_record "$record_dir" already-full "${last_lba}" >/dev/null 2>&1
-assert_eq "$(cat "$record_dir/.ab/grow")" "result=already-full last_lba=${last_lba}" \
-  "ac-4 a later boot overwrites the record instead of appending"
-wf_grow_record "$record_dir" "fail:partition-table-write" "${last_lba}" >/dev/null 2>&1
-assert_eq "$(cat "$record_dir/.ab/grow")" \
-  "result=fail:partition-table-write last_lba=${last_lba}" \
-  "ac-4 a failure token is recorded verbatim"
+for shape in table-write-pending table-written already-full fail:table-write-not-verified; do
+  wf_grow_record "${record_dir}" "${shape}" "${last_lba}" >/dev/null 2>&1
+  assert_matches "$(cat "${record_dir}/.ab/grow")" '^result=[a-z:-]+ last_lba=[0-9]+$' \
+    "ac-5 the ${shape} token fits the one-line record shape"
+done
+
+wf_grow_record "${record_dir}" already-full "${last_lba}" >/dev/null 2>&1
+assert_eq "$(cat "${record_dir}/.ab/grow")" "result=already-full last_lba=${last_lba}" \
+  "ac-5 a later boot overwrites the record instead of appending"
 record_status=0
-wf_grow_record "$record_dir" "" 0 >/dev/null 2>&1 || record_status=$?
-assert_eq "${record_status}" "1" "ac-4 an empty state is refused instead of recorded"
+wf_grow_record "${record_dir}" "" 0 >/dev/null 2>&1 || record_status=$?
+assert_eq "${record_status}" "1" "ac-5 an empty state is refused instead of recorded"
+assert_eq "$( ( wf_grow_stage1_prepare "" "${last_lba}" ) >/dev/null 2>&1; echo $? )" "1" \
+  "ac-5 a write-ahead breadcrumb without a mount point is refused"
 
 # --------------------------------------------------------------------------- #
 # Static contract of the boot init and the helper
@@ -579,195 +702,127 @@ assert_eq "${record_status}" "1" "ac-4 an empty state is refused instead of reco
 boot_init="$(cat "$root/initramfs/boot/init")"
 grow_lib="$(cat "$root/initramfs/lib/grow.sh")"
 
-assert_contains "$boot_init" ". /lib/grow.sh" "ac-5 the init sources the growth helper"
-assert_contains "$boot_init" 'grow_line="$(wf_grow_run "${dev}" "${p4}")"' \
-  "ac-5 growth runs against the resolved disk and p4"
-assert_contains "$boot_init" "done | already-full | missing-sfdisk" \
-  "ac-5 the init knows the four documented states"
-assert_contains "$boot_init" "fail:?*" "ac-5 fail:<token> states are accepted as they are"
-assert_contains "$boot_init" 'slot_a="$(di_find_partition ab-slot-a 2 "${dev}")" || slot_a=""' \
-  "ac-5 the slot partitions are discovered on the resolved disk too"
-assert_contains "$boot_init" '. /lib/disk-identity.sh' \
-  "ac-5 the init loads the single device identity implementation"
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'ab-shared')" "0" \
-  "ac-5 the retired ab-shared PARTNAME is gone from the boot path"
-assert_contains "$boot_init" \
-  'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root' \
-  "ac-4 the record is written on the p4 root subvolume, not in a generation layer"
-assert_contains "$boot_init" "p4-partial" "ac-5 a failed subvolume mount is reported as p4-partial"
+assert_contains "${boot_init}" ". /lib/grow.sh" "ac-2 the init sources the growth helper"
+assert_contains "${boot_init}" 'grow_plan="$(wf_grow_plan "${dev}" "${p4}")"' \
+  "ac-2 growth is planned against the resolved disk and p4"
+assert_contains "${boot_init}" "already-full | missing-sfdisk)" \
+  "ac-2 the init knows the planned states"
+# `grow <lba> <size>` has three fields: taking the last one as the disk end would record the
+# new size as a LBA, so the middle field is read explicitly and the test pins that.
+assert_contains "${boot_init}" 'grow_last_lba="${grow_plan_rest%% *}"' \
+  "ac-2 the disk end is the middle field of a growth plan, not the last"
+assert_contains "${boot_init}" "fail:?*" "ac-2 fail:<token> plans are accepted as they are"
+assert_contains "${boot_init}" 'wf_grow_stage1_prepare /mnt/p4root' \
+  "ac-5 the write-ahead breadcrumb goes to the p4 root subvolume"
+assert_contains "${boot_init}" 'wf_grow_record_stage1 /mnt/p4root' \
+  "ac-2 the outcome is recorded there"
+assert_contains "${boot_init}" 'wf_grow_write_table "${dev}" "${p4}"' \
+  "ac-2 the table is written by the helper, with no mount live"
+assert_contains "${boot_init}" '"${grow_last_lba}" "/mnt/p4root")' \
+  "ac-6 the table write is told which mount point has to be free"
+assert_contains "${boot_init}" 'if ! wf_p4root_release; then' \
+  "ac-6 a release that fails stops the write window instead of being ignored"
+assert_eq "$(printf '%s\n' "${boot_init}" | grep -c 'wf_grow_reboot')" "1" \
+  "ac-2 the reboot has exactly one call site"
+assert_contains "${boot_init}" "wf_grow_guard" \
+  "ac-4 the init asks whether the last write is on the disk before writing again"
+assert_contains "${boot_init}" "wf_p4root_mount()" \
+  "ac-8 the root subvolume has one mount helper"
+assert_contains "${boot_init}" "wf_p4root_release()" \
+  "ac-8 and one release helper"
+assert_eq "$(printf '%s\n' "${boot_init}" | grep -c 'subvol=/"')" "1" \
+  "ac-8 the root subvolume is named in exactly one place"
+boot_code="$(printf '%s\n' "${boot_init}" | sed -n '/^[[:space:]]*#/!p')"
+assert_eq "$(printf '%s\n' "${boot_code}" | grep -c -- '--rereadpt' || :)" "0" \
+  "ac-1 the init never asks the kernel to re-read the table"
+assert_eq "$(printf '%s\n' "${boot_code}" | grep -c -- 'partx' || :)" "0" \
+  "ac-1 and never reaches for partx either"
 
+# The order the two stages need: breadcrumb -> write -> record+reboot, and the reboot
+# before anything mounts a generation layer.
+code_line_of() {
+  printf '%s\n' "${boot_init}" \
+    | awk -v pat="$1" '!/^[[:space:]]*#/ && index($0, pat) { print NR; exit }'
+}
+prepare_no=$(code_line_of 'wf_grow_stage1_prepare')
+write_no=$(code_line_of 'wf_grow_write_table')
+finish_no=$(code_line_of 'wf_grow_record_stage1')
+resize_no=$(code_line_of 'wf_grow_resize_mounted')
+generation_no=$(code_line_of 'subvol=/${upper}')
+overlay_no=$(code_line_of 'lowerdir=/mnt/@platform:/mnt/@sys')
+assert_eq "$((prepare_no < write_no))" "1" \
+  "ac-5 the write-ahead breadcrumb is written before the table"
+assert_eq "$((write_no < finish_no))" "1" \
+  "ac-2 the record comes after the write"
+# record -> release -> reboot, in that order, and the release in between is the one the init
+# runs after the record (the write window has one before it, which is a different release).
+first_after() {
+  printf '%s\n' "${boot_init}" \
+    | awk -v pat="$1" -v from="$2" '!/^[[:space:]]*#/ && index($0, pat) && NR > from { print NR; exit }'
+}
+release_after_record="$(first_after 'wf_p4root_release' "${finish_no}")"
+reboot_no=$(code_line_of 'wf_grow_reboot')
+assert_eq "$((release_after_record > finish_no))" "1" \
+  "ac-2 the mount is given back after the outcome is recorded"
+assert_eq "$((reboot_no > release_after_record))" "1" \
+  "ac-2 ... and only then is the reboot issued"
+assert_eq "$((finish_no < generation_no))" "1" \
+  "ac-2 a boot that writes the table ends before the generation layer is mounted"
+assert_eq "$((resize_no < generation_no))" "1" \
+  "ac-3 the resize happens before the writable layer is mounted"
+assert_eq "$((generation_no < overlay_no))" "1" \
+  "ac-8 the writable layer is mounted before the overlay is composed"
+
+# The resize belongs to the already-full branch only: a boot that wrote the table must not
+# resize a filesystem whose device the kernel has not re-read yet.
+resize_block="$(printf '%s\n' "${boot_init}" | sed -n '/^case "${grow_plan_state}" in$/,/^esac$/p' \
+  | sed -n '/already-full)/,/;;/p')"
+assert_contains "${resize_block}" "already-full" \
+  "ac-3 the resize branch is the already-full one"
+assert_eq "$(printf '%s\n' "${boot_code}" | grep -c 'wf_grow_resize_mounted')" "1" \
+  "ac-3 there is exactly one resize call in the init"
+assert_contains "${resize_block}" "wf_grow_resize_mounted" \
+  "ac-3 and it sits inside that branch"
+
+# The growth block still never fails the boot.
+stage1_block="$(printf '%s\n' "${boot_init}" | sed -n '/# 3a. Stage 1: rewrite the table/,/# 3b. Stage 2/p')"
+assert_eq "$(printf '%s\n' "${stage1_block}" | grep -c 'wf_fail')" "0" \
+  "ac-6 the table-writing stage records instead of failing the boot"
+assert_eq "$(printf '%s\n' "${boot_code}" | grep -c 'reboot -f')" "0" \
+  "ac-2 the reboot is issued by the helper, not spelled out in the init"
+
+assert_contains "$grow_lib" '"${wf_grecord_dir}/.ab/grow"' \
+  "ac-5 the helper owns the .ab/grow path"
+assert_eq "$(printf '%s' "${grow_lib}" | grep -c 'wf_coldplug_dev')" "0" \
+  "ac-1 no partition node is rebuilt, because no table is re-read"
+
+# --------------------------------------------------------------------------- #
+# Device identity wiring: no hard-coded boot disk anywhere on the path
+# --------------------------------------------------------------------------- #
+
+assert_contains "${boot_init}" 'identity="$(di_resolve)"' "ac-8 the disk is resolved, not assumed"
+assert_contains "${boot_init}" 'p4="$(di_find_partition ab-data 4 "${dev}")" || p4=""' \
+  "ac-8 p4 comes from the resolved disk, not from a bare name match"
+assert_contains "${boot_init}" 'grow_plan="fail:${dev_error} 0"' \
+  "ac-8 an unresolved disk is recorded as fail:<reason> and the table is left alone"
+assert_contains "${boot_init}" 'if [ -n "${dev}" ] && [ -n "${p4}" ]; then' \
+  "ac-8 growth only runs on a resolved disk with a data partition"
+assert_eq "$(printf '%s' "${boot_init}" | grep -c 'DEV=/dev/vda')" "0" \
+  "ac-8 the boot init no longer hard-codes /dev/vda"
+
+# The mount table of the user data subvolumes is unchanged by this task.
 for spec in \
   '@data:/newroot/data:rw,noatime' \
   '@docker:/newroot/opt/docker:rw,noatime,nodatacow,nodatasum' \
   '@swap:/newroot/swap:rw,noatime,nodatacow,nodatasum'
 do
-  assert_contains "${boot_init}" "\"${spec}\"" "ac-5 the mount table carries ${spec}"
+  assert_contains "${boot_init}" "\"${spec}\"" "ac-8 the mount table carries ${spec}"
 done
-assert_eq "$(printf '%s' "${boot_init}" | sed -n 's/^ *"\(@[a-z]*:.*\)".*/\1/p' \
-  | grep -c 'compress=')" "0" \
-  "ac-5 no subvolume mount repeats a compress= level"
-assert_contains "$boot_init" 'mkdir -p "${target}"' \
-  "ac-5 the mount point is created before it is mounted"
 
-# The mount table is written as "<subvolume>:<mount point>:<options>" and split by the
-# init with the same parameter expansions; replaying them here proves the strings in the
-# script really decode to the documented contract.
-mount_plan=$(sed -n 's/^    "\(@[a-z]*:[^"]*\)".*/\1/p' "$root/initramfs/boot/init" | while read -r spec; do
-  subvol="${spec%%:*}"
-  rest="${spec#*:}"
-  target="${rest%%:*}"
-  options="${rest#*:}"
-  printf '%s|%s|%s;' "${subvol}" "${target}" "${options}"
-done)
-assert_eq "${mount_plan}" \
-  "@data|/newroot/data|rw,noatime;@docker|/newroot/opt/docker|rw,noatime,nodatacow,nodatasum;@swap|/newroot/swap|rw,noatime,nodatacow,nodatasum;" \
-  "ac-5 the mount table decodes to the documented subvolume, mount point and options"
-assert_contains "$boot_init" 'subvol=/${subvol}' "ac-5 each subvolume is mounted by name"
-
-# Ordering: growth before the first p4 mount, and the overlay last. Comment lines are
-# skipped so the header that describes the order cannot satisfy the check itself.
-code_line_of() {
-  printf '%s\n' "${boot_init}" \
-    | awk -v pat="$1" '!/^[[:space:]]*#/ && index($0, pat) { print NR; exit }'
-}
-grow_line_no=$(code_line_of 'grow_line="$(wf_grow_run')
-p4_mount_no=$(code_line_of 'subvol=/${upper}')
-overlay_no=$(code_line_of 'lowerdir=/mnt/@platform:/mnt/@sys')
-assert_eq "$((grow_line_no < p4_mount_no))" "1" \
-  "ac-5 growth happens before the first p4 mount"
-assert_eq "$((p4_mount_no < overlay_no))" "1" \
-  "ac-5 the writable layer is mounted before the overlay is composed"
-subvol_mount_no=$(code_line_of 'subvol=/${subvol}')
-assert_eq "$((subvol_mount_no > overlay_no))" "1" \
-  "ac-5 the user data subvolumes are mounted through the composed root"
-
-# Growth must never be able to abort a boot: no failure exit in the helper, and the
-# init's growth block does not call one either.
-assert_eq "$(printf '%s' "${grow_lib}" | grep -c 'wf_fail')" "0" \
-  "ac-3 the growth helper cannot abort a boot"
-growth_block=$(printf '%s' "${boot_init}" | sed -n '/# 1. First-boot growth/,/# 2. State from the ESP/p')
-assert_eq "$(printf '%s' "${growth_block}" | grep -c 'wf_fail')" "0" \
-  "ac-3 the growth step in the init records instead of failing"
-assert_contains "${grow_lib}" '"${wf_grecord_dir}/.ab/grow"' \
-  "ac-4 the helper owns the .ab/grow path"
-
-# The kernel ships without devtmpfs and the upstream busybox has no mdev applet, so the
-# device nodes are built from sysfs and the new partition node has to be created after
-# the table rewrite - otherwise the grow step reads a p4 node that does not exist.
-wf_lib="$(cat "$root/initramfs/lib/wf.sh")"
-assert_contains "${wf_lib}" 'wf_coldplug_dev()' \
-  "ac-5 the device nodes come from the sysfs coldplug helper"
-assert_contains "${wf_lib}" 'mknod "${wf_cd_dir}/${wf_cd_name}" b' \
-  "ac-5 the coldplug creates block nodes with the major:minor sysfs reports"
-assert_contains "${grow_lib}" 'wf_coldplug_dev /dev' \
-  "ac-5 the grow step recreates the partition nodes after the reread"
-
-# The builder has to carry the helper and the tools into the boot initramfs; without it
-# the growth step would report missing-sfdisk on every real disk.
 builder="$(cat "$root/scripts/ci/initramfs.sh")"
 assert_contains "${builder}" 'lib_dir="${CI_INITRAMFS_LIB_DIR-${CI_REPO_ROOT}/initramfs/lib}"' \
-  "ac-5 the builder stages initramfs/lib by default"
-assert_contains "${builder}" 'install -m 0644 "${lib}" "${stage}/lib/$(basename "${lib}")"' \
-  "ac-5 every helper is installed into /lib of the initramfs"
-assert_contains "${builder}" '*initramfs/boot/init) toolset="boot"' \
-  "ac-2 the boot initramfs stages the locked boot toolset (relative paths select it too)"
+  "ac-2 the builder stages initramfs/lib by default"
 assert_contains "$(cat "$root/scripts/ci/initramfs-tools.lock.json")" '"/usr/sbin/blkid"' \
-  "ac-2 blkid travels with the boot initramfs, for the label-based identity fallback"
-assert_contains "${builder}" 'missing /lib/ld-musl-x86_64.so.1' \
-  "ac-3 a toolset without its loader fails the build instead of booting without /dev"
-assert_contains "${builder}" 'initramfs-tools.sh" --toolset "${toolset}"' \
-  "ac-2 the toolset is staged from the lockfile, not from the build host"
-
-# --------------------------------------------------------------------------- #
-# Device identity wiring (ac-7): no hard-coded boot disk anywhere on the path
-# --------------------------------------------------------------------------- #
-
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'DEV=/dev/vda')" "0" \
-  "ac-7 the boot init no longer hard-codes /dev/vda"
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'shared="${DEV}')" "0" \
-  "ac-7 no partition node is built by gluing a digit onto a device name"
-assert_contains "${boot_init}" 'identity="$(di_resolve)"' \
-  "ac-7 the disk is resolved, not assumed"
-assert_contains "${boot_init}" "stage=device disk=" \
-  "ac-7 the resolution is reported with its method"
-assert_contains "${boot_init}" 'grow_line="fail:${dev_error} 0"' \
-  "ac-7 an unresolved disk is recorded as fail:<reason> and the table is left alone"
-assert_contains "${boot_init}" 'if [ -n "${dev}" ] && [ -n "${p4}" ]; then' \
-  "ac-7 growth only runs on a resolved disk with a data partition"
-assert_contains "${boot_init}" 'esp="$(di_find_partition ab-esp 1 "${dev}")" || esp=""' \
-  "ac-7 every partition lookup is scoped to the resolved disk"
-assert_contains "${boot_init}" 'p4="$(di_find_partition ab-data 4 "${dev}")" || p4=""' \
-  "ac-7 p4 comes from the resolved disk, not from a bare name match"
-
-builder="$(cat "$root/scripts/ci/initramfs.sh")"
-assert_contains "${builder}" 'platform/lib/disk-identity.sh' \
-  "ac-7 the boot initramfs stages the shared identity library"
-assert_contains "${builder}" 'cmp -s "${shared}" "${stage}/lib/$(basename "${shared}")"' \
-  "ac-7 the staged library is compared with the source"
-assert_contains "${builder}" '|| ci_die "staged $(basename "${shared}") differs' \
-  "ac-7 a rewritten copy is a build failure"
-assert_contains "$boot_init" 'wf_grow_backup /mnt/p4root' \
-  "ac-2 the init keeps the pre-growth table on the p4 root subvolume"
-
-# The p4 mount sequence: one mount for the resize and the upper, one short-lived mount
-# for the growth record, and no leftover mount when the root is composed.
-assert_contains "$boot_init" \
-  'grow_fs="$(wf_grow_resize_mounted "${p4}" "${P4_RESIZE_MOUNT}" "${dev}")"' \
-  "ac-3 the resize runs on a clean mount of p4"
-assert_eq "$(printf '%s' "${boot_init}" | grep -c 'wf_grow_fs "${p4}"')" "0" \
-  "ac-3 the device is never handed to btrfs-progs as a resize target"
-assert_contains "$boot_init" 'P4_RESIZE_MOUNT=/mnt/p4resize' \
-  "ac-3 the resize pass has its own mount point"
-assert_contains "$boot_init" \
-  'mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root' \
-  "ac-3 the record mount is the p4 root subvolume"
-
-# The order is the fix for the EBUSY: exactly one mount while btrfs-progs resizes.
-root_mount_line=$(code_line_of 'subvol=/" "${p4}" /mnt/p4root')
-resize_line=$(code_line_of 'wf_grow_resize_mounted "${p4}"')
-record_line=$(code_line_of 'wf_grow_record /mnt/p4root')
-record_umount_line=$(code_line_of 'umount /mnt/p4root')
-generation_mount_line=$(code_line_of 'subvol=/${upper}" "${p4}" /mnt/p4')
-overlay_compose_line=$(code_line_of 'mount -t overlay overlay')
-assert_eq "$((resize_line < root_mount_line))" "1" \
-  "ac-3 the resize runs before the first mount of the filesystem"
-assert_eq "$((resize_line < record_line))" "1" \
-  "ac-3 the resize happens before the growth record is written"
-assert_eq "$((record_line < record_umount_line))" "1" \
-  "ac-3 the record is written before the mount is given back"
-assert_eq "$((record_umount_line < generation_mount_line))" "1" \
-  "ac-3 the generation mount happens only after the root subvolume is unmounted"
-assert_eq "$((generation_mount_line < overlay_compose_line))" "1" \
-  "ac-3 the generation layer is mounted before the overlay is composed"
-assert_contains "$boot_init" 'umount /mnt/p4root failed, retrying once' \
-  "ac-3 a busy record mount is retried instead of being ignored"
-assert_contains "$boot_init" 'p4 root subvolume is still mounted at /mnt/p4root' \
-  "ac-3 a leftover record mount is reported"
-assert_contains "$boot_init" 'p4 step=resize target=${p4} state=' \
-  "ac-3 the resize step names the device and says it is unmounted"
-assert_contains "$boot_init" 'if [ "${degraded}" = "1" ]; then' \
-  "ac-3 no p4 subvolume is mounted when p4 itself is degraded"
-
-# --------------------------------------------------------------------------- #
-# The guest assertion runs the same decision, so it must load the helper first and
-# own a scratch directory: the initramfs has no /tmp, and a missing one silently
-# skipped the whole check in CI.
-# --------------------------------------------------------------------------- #
-
-guest_assert="$(cat "$root/tests/modules/image/guest-assert.sh")"
-assert_contains "${guest_assert}" 'mkdir -p /tmp' \
-  "ac-2 the guest creates its scratch directory before writing a table"
-assert_contains "${guest_assert}" '. /lib/grow.sh' \
-  "ac-2 the guest sources the growth helper it calls"
-assert_contains "${guest_assert}" 'GROW_LIB=loaded' \
-  "ac-2 the guest records that the helper really loaded"
-assert_contains "${guest_assert}" 'SKIP growth decision: /lib/grow.sh is missing or defines nothing' \
-  "ac-2 a missing helper is reported as such, not blamed on sfdisk"
-assert_contains "${guest_assert}" 'PARTUUID' \
-  "ac-2 the guest cross-checks PARTUUIDs against ab/device.json"
-assert_contains "${guest_assert}" 's#^${DEV}${part}[[:space:]]*:.*uuid=' \
-  "ac-2 PARTUUID readback uses the sfdisk table, not only a blkid probe"
-assert_contains "${guest_assert}" 'WARNING no PARTUUID for ${DEV}${part}' \
-  "ac-2 an unreadable PARTUUID is a warning, not a red stage"
+  "ac-1 blkid travels with the boot initramfs, for the label-based identity fallback"
 
 finish

@@ -95,7 +95,7 @@ def problem(category, text):
 # --------------------------------------------------------------------------- #
 MANDATED = """
 mount umount mkdir sync poweroff reboot switch_root pivot_root sed awk grep cat
-printf tr ls head tail cut wc sort uname sleep insmod sfdisk blockdev partx blkid
+printf tr ls head tail cut wc sort uname sleep insmod sfdisk blockdev blkid
 btrfs dmesg test command which cp mv rm chmod ln find expr cmp id
 """.split()
 
@@ -107,13 +107,10 @@ btrfs dmesg test command which cp mv rm chmod ln find expr cmp id
 # command becomes available (added to the lockfile, published as an applet) or stops being
 # called at all, the entry is stale and the test fails until it is deleted - a reviewer
 # must never read a reason that the code has already outgrown.
-EXCEPTIONS = {
-    "partx": (
-        "initramfs/lib/grow.sh uses it only in the branch that runs when "
-        "`blockdev --rereadpt` is unavailable (WF_PARTX defaults to it); the lockfile "
-        "always ships blockdev, so the image never needs partx"
-    ),
-}
+# Empty on purpose: the last entry was `partx`, which the two-stage growth removed together
+# with `blockdev --rereadpt` - the reboot now does the re-read, so nothing in the boot path
+# calls a partition-table re-read tool at all.
+EXCEPTIONS = {}
 
 # Shell builtins. They need no file in the image because the shell that runs the scripts
 # is /bin/busybox (ash), whose builtins are part of the binary already counted there.
@@ -335,7 +332,7 @@ KEYWORDS = {
 }
 REDIR_RE = re.compile(r"\d*(?:>>|>\||>&|>|<<<|<<|<)\s*(?:Q|\S+)")
 ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
-# A variable that supplies a command name by default (`WF_PARTX="${WF_PARTX:-partx}"`)
+# A variable that supplies a command name by default (`WF_BTRFS="${WF_BTRFS:-btrfs}"`)
 # selects a program without ever writing it as a simple command.
 DEFAULT_CMD_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)=\"?\$\{\1:-([A-Za-z][A-Za-z0-9_.+-]*)\}\"?")
 
@@ -448,7 +445,7 @@ def commands(text):
         masked = mask(blob, subs)
         pending.extend(subs)
         # A default that names a program is read from the unmasked text: masking drops
-        # quoted content, and `WF_PARTX="${WF_PARTX:-partx}"` lives inside quotes.
+        # quoted content, and `WF_BTRFS="${WF_BTRFS:-btrfs}"` lives inside quotes.
         for match in DEFAULT_CMD_RE.finditer(strip_comments(blob)):
             if NAME_RE.match(match.group(2)):
                 defaults.add(match.group(2))
@@ -634,10 +631,11 @@ while IFS='=' read -r name provider; do
   [ -n "${name}" ] || continue
   printf '# provided: %-10s <- %s\n' "${name}" "${provider}"
 done <<<"$(field mandated)"
-# An exception is only acceptable while it is documented and still true; partx is the
-# fallback for a blockdev that is not shipped.
-assert_contains "$(field documented)" "partx=" \
-  "ac-1 the partx fallback is a documented exception, not an unexplained gap"
+# The exception list is empty and has to stay honest: the two-stage growth deleted the only
+# entry there was (`partx`), so nothing here may be "documented" any more. A new entry has to
+# come with its reason and with the coverage check above passing for it.
+assert_eq "$(field documented)" "" \
+  "ac-1 there is no documented exception left: no re-read tool is called at all"
 while IFS='=' read -r name reason; do
   [ -n "${name}" ] || continue
   if printf '%s\n' "$report" | grep -qx "live:${name}"; then

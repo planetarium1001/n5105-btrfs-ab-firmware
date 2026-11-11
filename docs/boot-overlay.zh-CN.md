@@ -4,13 +4,13 @@
 
 ## 概述
 
-运行期根由 overlayfs 合成：活动槽的两个只读层，加上数据分区上的一个可写层。合成之前，initramfs 先确定四个分区在哪块盘上，把 p4 扩到盘尾，再挂载三个用户数据子卷，因此合成根的第一个进程看到的就已经是最终几何与自己的数据目录。
+运行期根由 overlayfs 合成：活动槽的两个只读层，加上数据分区上的一个可写层。合成之前，initramfs 先确定四个分区在哪块盘上，把 p4 扩到盘尾——分**两次**启动完成，见 [p4 首启扩容](#p4-首启扩容)——再挂载三个用户数据子卷，因此合成根的第一个进程看到的就已经是最终几何与自己的数据目录。
 
 ## 引导顺序
 
 1. GRUB 从 p1 读取槽状态与 `ab-slot.cfg`，选择内核与 initrd。
-2. initramfs 先解析出承载四个分区的盘，再在其上定位 p1..p4，并在挂载任何文件系统之前把 p4 扩到盘尾。
-3. initramfs 先挂载 p4 可写层并扩容文件系统，再挂载槽内只读层与 p4 的三个用户数据子卷。
+2. initramfs 先解析出承载四个分区的盘，再在其上定位 p1..p4，并判定 p4 是否需要扩容。需要的话，这一次启动只改写分区表、记录结果，然后重启；下一次启动看到的分区表已经在盘尾。
+3. initramfs 先在 p4 的干净挂载点上扩容文件系统，再挂载 p4 可写层、槽内只读层与 p4 的三个用户数据子卷。
 4. overlayfs 合成根。
 5. `switch_root` 进入系统，p1 挂载到 `/boot`。
 
@@ -38,48 +38,78 @@ CI 自检件不属于这条链。`/s3-post.sh` 在合成根里复查环境、把
 
 ## p4 首启扩容
 
-p4 出厂 128 MiB，盘尾保持未分配，因此同一个镜像能装进任意大小的盘。扩容分两处做，第二处才是保证：
+p4 出厂 128 MiB，盘尾保持未分配，因此同一个镜像能装进任意大小的盘。扩它需要**两次启动**，这是设计选择，不是实现凑出来的：
 
-- **initramfs，尽力而为**：合成 overlay 之前改写分区表并 resize 一次文件系统。这样首次启动当场就
-  可用；这一步失败只记录（`fail:<token>`），绝不阻断启动；
-- **运行期 `ab-boot`，权威路径**：它读取 `<p4>/.ab/grow`，在 initramfs 没能扩成时重试
-  `btrfs filesystem resize max /mnt/p4`（p4 只挂一次、btrfs-progs 来自平台层），并把
-  `stage=resize result=<ok|fail:<token>> source=ab-boot` 写进 p1 环形日志。initramfs 那次失败
-  的机器，同一次启动仍能扩到盘尾。
+1. **写表的那一次启动**：判定 p4 是否短于最后可用 LBA，用 `sfdisk --no-reread` 改写 GPT，
+   记下 `result=table-written`，然后重启。这一次启动**不**扩文件系统；
+2. **它之后的那一次启动**：分区表已经在盘尾，剩下的唯一一步就是 `btrfs filesystem resize max`，
+   记下 `result=done`；
+3. **再往后的每次启动**：记下 `result=already-full`，这就是稳态。
 
-一次"死掉"的启动，它的证据落在哪：`ab-boot` 把本次启动的环形日志写到
-`ab/log/boot-0.log`，而下一次启动的第一件事就是把它轮转成 `boot-1.log`。所以一次
-**没能走到 `ab-boot`** 的启动，它的 breadcrumb 会在下一次上电之后出现在 `boot-1.log` 里——
-事后取证读 `ab-slot log --prev`（即 `ab/log/boot-1.log`），`boot-0.log` 只代表"正在运行的这一次"。
+**因此首启会自己多重启一次，GRUB 会出现两次。** 这是设计在正常工作，不是故障：第一次启动只能把分区表
+做完，第二次才把文件系统做完；之后每次启动都是普通启动。
 
+为什么要两次启动：原来这一步紧接着写表就去调 `blockdev --rereadpt`（或 `partx -u`），而用的是
+这次启动自己还在使用的那块盘——真机首次刷机就是在这个窗口里 panic 的，盘上一条证据都没留下。
+现在引导路径里**没有任何**让内核重读分区表的调用：**重启就是重读**，因为下一次启动的内核在探测
+设备时会自己解析 GPT，此时没有任何东西被挂载。同一个窗口也是为什么重启必须**受控**（先归还根子卷、
+刷写完成，再 `reboot -f`）：那里 panic 会一条证据都不留，而重启会留下"哪一阶段做完了"的记录。
 
-initramfs 这半段的顺序，发生在任何文件系统挂载之前：
+initramfs 这半段，按发生顺序：
 
 1. `sfdisk -d` 导出分区表，导出结果就是改动前的备份。
 2. 判定：比较 p4 末尾与最后可用 LBA（`last-lba`）。相等即 `already-full`，不写任何东西；否则新大小为“最后可用 LBA − p4 起始 + 1”，只会比当前大。
    新尺寸先按文件系统 sectorsize（4096 字节，即 8 个扇区）向下取整：btrfs 不会扩到尺寸不是它整数倍的设备上，所以“最后可用 LBA − p4 起始 + 1”只是上界；取整后若不比当前更大，判 `already-full`。
-3. 在导出的副本里只改 p4 行的 `size=` 字段，用 `sfdisk --no-reread` 写回；备份 GPT 随这次写入一起迁移到新的盘尾。其余各行（含表 UUID 与另外三个分区）原样写回。
-4. `blockdev --rereadpt`（镜像里没有 `blockdev` 时用 `partx -u`）让内核看到新表；挂载前先在 sysfs 校验设备确实变大了。sysfs 的 `size` 以 512 字节为单位，而 `sfdisk` 报的是逻辑扇区，所以每次比较都经 `queue/logical_block_size` 换算：4Kn 盘会被正常扩容，而不是误报 `fail:size-unchanged`。
-5. 挂载 p4 之后执行 `btrfs filesystem resize max`，把文件系统扩到已经变大的分区上。该命令在 `already-full` 时也会跑一次（此时是空操作），因此“表已改写、文件系统没来得及扩”的掉电情况会在下一次启动被修好。
+3. **在碰分区表之前**，先按旧几何挂载 p4 根子卷，把两样东西写在扩容记录旁边：`.ab/partitions.before`
+   与 `result=table-write-pending`，然后立刻归还挂载。这是"写前面包屑"：写表过程中死掉的启动，
+   仍会在盘上留下"有一次写在进行中"以及改动前的几何。如果这次挂载归还不了，就干脆不写表，
+   记录为 `fail:p4-still-mounted`：在文件系统仍挂载时写分区表正是那次事故的另一半。
+4. 在导出的副本里只改 p4 行的 `size=` 字段，用 `sfdisk --no-reread` 写回；备份 GPT 随这次写入一起迁移到新的盘尾。其余各行（含表 UUID 与另外三个分区）原样写回。
+5. 回读分区表比对，并用 `sfdisk --verify` 校验主/备 GPT：没落盘的写判 `fail:table-write-not-verified`，
+   校验不过判 `fail:table-verify`，两者都不重启。`sfdisk` 没有 `--verify` 选项时记 `verify=unsupported`
+   并继续扩容。
+6. 再次挂载根子卷，记下 `result=table-written`（先把缓冲的 `grow.log` 追加进 `.ab/grow.log`），
+   归还挂载，刷写完成，然后重启。
+7. 下一次启动在 p4 的干净挂载点上扩容（不带 `compress=`、不带 `discard=`、不带 `subvol=`），
+   记下 `result=done`。
 
 结果写在 `<p4 根子卷>/.ab/grow`，固定一行：
 
 ```
-result=<state> last_lba=<n>
+result=<token> last_lba=<n>
 ```
 
 | 状态 | 含义 |
 |---|---|
-| `done` | 分区表与文件系统都扩到了盘尾 |
-| `already-full` | p4 已达盘尾，什么都没写 |
+| `table-write-pending` | 有一次写表在进行中；写表窗口里死掉的启动会留下它 |
+| `table-written` | 分区表已写入并已校验，下一步是重启 |
+| `done` | 这次启动把文件系统扩到了新几何上 |
+| `already-full` | 上一次启动已在这个盘尾记过 `done`/`already-full`，本次什么都没写 |
 | `missing-sfdisk` | 这个 initramfs 里没有 `sfdisk`，什么都没写 |
-| `fail:<token>` | 某一步失败：`partition-table-read`、`partition-table-write`、`partition-table-reread`、`size-unchanged`、`size-not-increased`、`btrfs-resize`，以及认不出盘时的 `no-disk` / `ambiguous-disk` / `partitions-split` |
+| `fail:<token>` | 某一步失败：`partition-table-read`、`partition-table-write`、`p4-still-mounted`、`table-write-not-verified`、`table-verify`、`table-write-lost`、`resize-mount`、`btrfs-resize` |
 
-改动前的分区表在 p4 挂载后落到 `<p4 根子卷>/.ab/partitions.before`：只留在 initramfs 里的副本会随它一起消失，那不算留存。
+单阶段固件写下的记录仍然读得懂：`done` 与 `already-full` 语义不变，已退役的
+`partition-table-reread` 之类 `fail:` token 读作“未被证明”。因此一台早已扩完的机器换上这套固件后，
+第一次启动就报 `already-full`。
+
+**运行期 `ab-boot`，权威路径**：它读取 `<p4>/.ab/grow`，在 initramfs 没能扩成时重试
+`btrfs filesystem resize max /mnt/p4`（p4 只挂一次、btrfs-progs 来自平台层），并把
+`stage=resize result=<ok|fail:<token>> source=ab-boot` 写进 p1 环形日志。initramfs 那次失败
+的机器，同一次启动仍能扩到盘尾。
+
+一次"死掉"的启动，它的证据落在哪：`ab-boot` 把本次启动的环形日志写到
+`ab/log/boot-0.log`，而下一次启动的第一件事就是把它轮转成 `boot-1.log`。所以一次
+**没能走到 `ab-boot`** 的启动——写表的那一次正是如此，而且是设计如此——它的证据在 `.ab/grow`、
+只追加的 `.ab/grow.log`，以及下一次上电之后的 `ab/log/boot-1.log` 里；事后取证读
+`ab-slot log --prev`（即 `ab/log/boot-1.log`），`boot-0.log` 只代表"正在运行的这一次"。
+
+改动前的分区表在写表**之前**就落到 `<p4 根子卷>/.ab/partitions.before`：只留在 initramfs 里的副本会随它一起消失，那不算留存。
 
 记录写在 p4 根子卷上，而不是某个代际层里，因此它能跨 `@overlay-<version>` 存活并在切换根之后仍可读：`ab-boot` 把该子卷挂到 `/mnt/p4` 并把这一行追加进 p1 引导日志。写入走临时文件加 rename；文件缺失对读取方表示“未记录”，永远不是错误；镜像本身不带这个文件。
 
-扩容只扩不缩，并且幂等，因为判定只依赖盘上的分区表：同一块盘第二次启动读到 `already-full`，不会碰分区表。`sfdisk`、`blockdev` 与 `btrfs` 属于 boot initramfs 的 `boot` 工具集（`scripts/ci/initramfs-tools.lock.json`），因此一定存在、且与整份 release 的字节一致；工具集若丢了它们，构建直接失败。启动时的 `missing-sfdisk` 与 `fail:btrfs-resize` 仍然保留，但语义变成“分区表/设备有问题”的运行时诊断，而不是“构建机恰好没装”。
+扩容只扩不缩，并且幂等，因为判定只依赖盘上的分区表：同一块盘第二次启动读到 `already-full`，不会碰分区表。记录唯一参与决策的地方是防重启循环：如果记录说 `table-written`、盘尾正好是本次要写的那个值，
+而盘上的表仍然更短，说明这次写在文件系统之下丢了——这样的启动改记 `fail:table-write-lost`，
+不再写也不重启，所以丢一次写不会变成重启循环。`sfdisk`、`blockdev` 与 `btrfs` 属于 boot initramfs 的 `boot` 工具集（`scripts/ci/initramfs-tools.lock.json`），因此一定存在、且与整份 release 的字节一致；工具集若丢了它们，构建直接失败。启动时的 `missing-sfdisk` 与 `fail:btrfs-resize` 仍然保留，但语义变成“分区表/设备有问题”的运行时诊断，而不是“构建机恰好没装”。
 
 ## 层职责
 

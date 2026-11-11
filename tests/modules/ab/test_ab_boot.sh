@@ -183,6 +183,18 @@ run_boot
 assert_contains "$(boot_log)" "stage=grow slot=a result=done" \
   "ac-3 the growth result at the subvolume root is recorded"
 
+# The two-stage growth writes two tokens the one-phase firmware never did. `table-written`
+# only reaches the runtime when the controlled reboot came back - and then the machine runs
+# on the old geometry with the record on disk, which is exactly what the ring log has to say.
+printf 'result=table-written last_lba=921566\n' >"$p4/.ab/grow"
+run_boot
+assert_contains "$(boot_log)" "stage=grow slot=a result=table-written last_lba=921566" \
+  "ac-3 the stage-1 token is recorded verbatim, last_lba and all"
+printf 'result=table-write-pending last_lba=921566\n' >"$p4/.ab/grow"
+run_boot
+assert_contains "$(boot_log)" "stage=grow slot=a result=table-write-pending last_lba=921566" \
+  "ac-3 the write-ahead breadcrumb a panic left behind is recorded too"
+
 # The platform layer mounts the partition itself, so the same file can sit under the
 # running slot's layer instead.
 rm -f "$p4/.ab/grow"

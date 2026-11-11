@@ -6,17 +6,20 @@
 
 The running root is an overlayfs composition of two read-only layers from the active slot
 and one writable layer on the data partition. Before that composition is built, the
-initramfs grows p4 to the end of the disk and mounts the three user-data subvolumes, so
-the first process of the composed root already sees the final geometry and its data
-directories.
+initramfs grows p4 to the end of the disk - in two boots, see
+[First-boot growth of p4](#first-boot-growth-of-p4) - and mounts the three user-data
+subvolumes, so the first process of the composed root already sees the final geometry and
+its data directories.
 
 ## Boot sequence
 
 1. GRUB reads slot state and `ab-slot.cfg` from p1, then selects a kernel and initrd.
 2. The initramfs resolves which disk carries the four partitions, then locates p1 to p4
-   on it and grows p4 to the end of the disk before anything is mounted.
-3. The initramfs mounts the p4 writable layer first, resizes the filesystem, then mounts
-   the read-only slot layers and the p4 user-data subvolumes.
+   on it and decides whether p4 has to grow. If it does, this boot rewrites the partition
+   table, records that, and reboots; the next boot finds the table already at the end of
+   the disk.
+3. The initramfs resizes the filesystem on a clean mount of p4, then mounts the p4
+   writable layer, the read-only slot layers and the p4 user-data subvolumes.
 4. overlayfs composes the root.
 5. `switch_root` enters the system; p1 is mounted at `/boot`.
 
@@ -66,27 +69,31 @@ Resolution order, first answer wins, and a level is only used when it has eviden
 
 ## First-boot growth of p4
 
-p4 ships with 128 MiB and the tail of the disk stays unallocated, so the same image fits
-any disk size. It is grown in two places, and the second is the one that guarantees it:
+p4 ships with 128 MiB and the tail of the disk stays unallocated, so the same image fits any
+disk size. Growing it takes **two boots**, and that is a design decision rather than an
+accident of the code:
 
-- **the initramfs, best effort**: the table is rewritten and the filesystem resized once,
-  before the overlay is composed. This is what makes the first boot usable immediately,
-  and a failure here is recorded (`fail:<token>`) and never stops the boot;
-- **`ab-boot` at run time, authoritative**: it reads `<p4>/.ab/grow`, retries
-  `btrfs filesystem resize max /mnt/p4` when the initramfs could not do it (p4 mounted
-  exactly once, btrfs-progs from the platform layer), and records
-  `stage=resize result=<ok|fail:<token>> source=ab-boot` in the p1 ring log. A machine
-  whose initramfs resize failed still reaches the end of the disk on that same boot.
+1. **the boot that writes the table** decides whether p4 is short of the last usable LBA,
+   rewrites the GPT with `sfdisk --no-reread`, records `result=table-written`, and then
+   reboots. It never resizes the filesystem;
+2. **the boot after it** finds the table already at the end of the disk, so the only step
+   left is `btrfs filesystem resize max`, and it records `result=done`;
+3. **every boot after that** records `result=already-full`, which is the steady state.
 
-Where the evidence of a boot that died ends up: `ab-boot` writes this boot's ring log to
-`ab/log/boot-0.log`, and its first act on the next boot is to rotate that file to
-`boot-1.log`. A boot that never reached `ab-boot` therefore leaves its breadcrumbs in
-`boot-1.log` after the following power-on - read `ab-slot log --prev` (or
-`ab/log/boot-1.log`) for a post-mortem, and `boot-0.log` only for the boot that is running
-now.
+**A first boot therefore reboots once by itself, and GRUB will be seen twice.** That is the
+design working, not a failure: the first boot can only finish the partition table, and the
+second one finishes the filesystem. Every boot after that is a normal boot.
 
+Why two boots: the step that used to run here was `blockdev --rereadpt` (or `partx -u`)
+straight after the table write, on the very disk the boot was still using - and a real
+machine panicked inside that window on its first flash, leaving nothing on disk to explain
+it. Nothing in the boot path asks the kernel to re-read a partition table any more: **the
+reboot is the re-read**, because the next boot's kernel parses the GPT at device probe time
+with nothing mounted. The same window is why the reboot is *controlled* (`reboot -f` after
+the root subvolume is given back and the writes are flushed): a panic there leaves no
+evidence at all, while a reboot leaves the record of the stage that finished.
 
-The initramfs half, before any filesystem is mounted:
+The initramfs half, in the order it happens:
 
 1. `sfdisk -d` dumps the partition table; the dump is kept as the pre-change copy.
 2. The decision compares the end of p4 with the last usable LBA (`last-lba`). Equal means
@@ -96,34 +103,63 @@ The initramfs half, before any filesystem is mounted:
    8 sectors) first: btrfs refuses to grow onto a device whose size is not a multiple of
    it, so `last usable LBA - p4 start + 1` is only the upper bound. If rounding leaves no
    gain the state is `already-full`.
-3. Only the `size=` field of the p4 line changes in a copy of the dump. `sfdisk --no-reread`
-   writes that copy back, which relocates the backup GPT to the new end of the disk as
-   part of the same write. Every other line, including the table UUID and the other three
+3. **Before the table is touched**, the p4 root subvolume is mounted at its old geometry and
+   two things are written next to the growth record: `.ab/partitions.before` and
+   `result=table-write-pending`. The mount is given back immediately. This is the write-ahead
+   breadcrumb: a boot that dies while the table is being written still leaves, on the disk,
+   the fact that a write was in flight and what the geometry was. If that mount cannot be
+   given back the table is not written at all and the record says `fail:p4-still-mounted`:
+   writing a table under a mounted filesystem is the other half of the incident.
+4. Only the `size=` field of the p4 line changes in a copy of the dump. `sfdisk --no-reread`
+   writes that copy back, which relocates the backup GPT to the new end of the disk as part
+   of the same write. Every other line, including the table UUID and the other three
    partitions, is written back unchanged.
-4. `blockdev --rereadpt` (or `partx -u` when `blockdev` is not shipped) makes the kernel
-   see the new table; the new device size is verified in sysfs before the mount. sysfs
-   reports sizes in 512-byte units while `sfdisk` reports logical sectors, so every
-   comparison is converted through `queue/logical_block_size`; a 4Kn disk is therefore
-   grown, not reported as `fail:size-unchanged`.
-5. After the p4 mount, `btrfs filesystem resize max` extends the filesystem onto the
-   grown partition. It also runs on `already-full`, where it is a no-op, so a boot that
-   grew the table but died before resizing the filesystem is repaired on the next start.
+5. The table is read back and compared, and `sfdisk --verify` checks primary and backup GPT:
+   a write that did not land is `fail:table-write-not-verified`, a table that does not
+   verify is `fail:table-verify`, and neither reboots. An `sfdisk` without `--verify` is
+   recorded as `verify=unsupported` and the growth continues.
+6. The root subvolume is mounted again, `result=table-written` is recorded (the buffered
+   `grow.log` is appended to `.ab/grow.log` first), the mount is given back, the writes are
+   flushed, and the machine reboots.
+7. On the next boot the resize runs on a clean mount of p4 - no `compress=`, no `discard=`,
+   no `subvol=` - and records `result=done`.
 
 The outcome is one line in `<p4 root subvolume>/.ab/grow`:
 
 ```
-result=<state> last_lba=<n>
+result=<token> last_lba=<n>
 ```
 
 | State | Meaning |
 |---|---|
-| `done` | the table and the filesystem grew to the end of the disk |
-| `already-full` | p4 already reached the end of the disk; nothing was written |
+| `table-write-pending` | a table write is in flight; a boot that dies in the write window leaves this behind |
+| `table-written` | the table was written and verified; the reboot is the next step |
+| `done` | this boot resized the filesystem onto the new geometry |
+| `already-full` | the previous boot already recorded `done`/`already-full` at this disk end; nothing was written |
 | `missing-sfdisk` | `sfdisk` is not in this initramfs; nothing was written |
-| `fail:<token>` | a step failed: `partition-table-read`, `partition-table-write`, `partition-table-reread`, `size-unchanged`, `size-not-increased`, `btrfs-resize` |
+| `fail:<token>` | a step failed: `partition-table-read`, `partition-table-write`, `p4-still-mounted`, `table-write-not-verified`, `table-verify`, `table-write-lost`, `resize-mount`, `btrfs-resize` |
+
+A record written by the one-phase firmware is still read correctly: `done` and
+`already-full` keep their meaning, and a retired `fail:` token such as
+`partition-table-reread` reads as "not proven". A machine that was already grown therefore
+reports `already-full` on its first boot with this firmware.
+
+**`ab-boot` at run time, authoritative**: it reads `<p4>/.ab/grow`, retries
+`btrfs filesystem resize max /mnt/p4` when the initramfs could not do it (p4 mounted
+exactly once, btrfs-progs from the platform layer), and records
+`stage=resize result=<ok|fail:<token>> source=ab-boot` in the p1 ring log. A machine
+whose initramfs resize failed still reaches the end of the disk on that same boot.
+
+Where the evidence of a boot that died ends up: `ab-boot` writes this boot's ring log to
+`ab/log/boot-0.log`, and its first act on the next boot is to rotate that file to
+`boot-1.log`. A boot that never reached `ab-boot` - and the boot that writes the table is
+exactly that, by design - leaves its evidence in `.ab/grow`, in the append-only
+`.ab/grow.log`, and in `ab/log/boot-1.log` after the following power-on; read
+`ab-slot log --prev` (or `ab/log/boot-1.log`) for a post-mortem, and `boot-0.log` only for
+the boot that is running now.
 
 The table from before the write is kept at `<p4 root subvolume>/.ab/partitions.before`
-once p4 is mounted, because a copy that only lived in the initramfs dies with it.
+before the write, because a copy that only lived in the initramfs dies with it.
 
 The record lives on the p4 root subvolume, not inside a generation layer, so it outlives
 `@overlay-<version>` and is readable after the root switch: `ab-boot` mounts that
@@ -133,7 +169,11 @@ an error for the reader, and an image ships without one.
 
 Growth only ever enlarges p4 and is idempotent, because the decision depends on nothing
 but the table on the disk: a second boot on the same disk reads `already-full` and does
-not touch the table. `sfdisk`, `blockdev` and `btrfs` belong to the `boot` toolset of the
+not touch the table. The one thing the record decides is the loop guard: a `table-written`
+record for exactly the disk end this boot wants to write, while the table on disk still
+reads shorter, means the write was lost below the filesystem - that boot records
+`fail:table-write-lost` instead of writing and rebooting again, so a lost write cannot
+become a reboot loop. `sfdisk`, `blockdev` and `btrfs` belong to the `boot` toolset of the
 initramfs (`scripts/ci/initramfs-tools.lock.json`), so they are always present and always
 the same bytes as the rest of the release; if the toolset ever lost them the build would
 fail, and the boot-time `missing-sfdisk` / `fail:btrfs-resize` states remain as the

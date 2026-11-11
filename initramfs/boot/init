@@ -223,95 +223,246 @@ export WF_ESP_DEV
 esp_probe="$(wf_esp_health_probe "${esp}")"
 
 # --------------------------------------------------------------------------- #
-# 3. First-boot growth of p4, before anything is mounted
+# 2c. The p4 root subvolume: one mount helper, one release helper
 # --------------------------------------------------------------------------- #
-# The image ships p4 with 64 MiB and leaves the tail of the disk unallocated; the
-# table is rewritten here so the filesystem below is mounted on its final geometry.
-# Every outcome is a recorded state, never a boot failure: a 64 MiB p4 still boots, it
-# just cannot hold much. `<state>` is done, already-full, missing-sfdisk or fail:<token>.
+# The root subvolume is mounted more than once in a boot - before the table write, for the
+# growth record and the ESP verdict, and once more for the last two breadcrumbs - so the
+# subvolume name appears exactly once, in wf_p4root_mount, and every mount is given back
+# through wf_p4root_release. Two things go with the mount: the
+# p4 breadcrumb zone (`WF_P4_MOUNT`, which stops a line from landing in a tmpfs directory
+# the real mount covers) and the armed log file. Release clears both, because after it
+# /mnt/p4root is a bare directory on the initramfs tmpfs again.
+
+# wf_p4root_mount [<extra options>]: mount p4's root subvolume at /mnt/p4root.
+wf_p4root_mount() {
+    wf_prm_extra="${1:-}"
+    mkdir -p /mnt/p4root 2>/dev/null || :
+    wf_prm_opts="rw,noatime${wf_prm_extra:+,${wf_prm_extra}},subvol=/"
+    mount -o "${wf_prm_opts}" "${p4}" /mnt/p4root || return 1
+    WF_P4_MOUNT="/mnt/p4root"
+    export WF_P4_MOUNT
+    WF_MARK_LOG="$(wf_mark_zone)"
+    export WF_MARK_LOG
+    wf_log "p4 root subvolume mounted at /mnt/p4root (${wf_prm_opts})"
+    return 0
+}
+
+# wf_p4root_release: give the root subvolume back and disarm its breadcrumb zone with it.
+wf_p4root_release() {
+    if ! umount /mnt/p4root 2>/dev/null; then
+        wf_log "umount /mnt/p4root failed, retrying once"
+        sleep 1
+        umount /mnt/p4root 2>/dev/null || wf_log "warning: /mnt/p4root is still mounted"
+    fi
+    if awk -v mp=/mnt/p4root '$2 == mp { found = 1 } END { exit !found }' \
+        /proc/mounts 2>/dev/null; then
+        return 1
+    fi
+    WF_P4_MOUNT=""
+    export WF_P4_MOUNT
+    WF_MARK_LOG="$(wf_mark_zone)"
+    export WF_MARK_LOG
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
+# 3. First-boot growth of p4: the plan, then - only if the table is short - stage 1
+# --------------------------------------------------------------------------- #
+# The image ships p4 with 128 MiB and leaves the tail of the disk unallocated, so the same
+# image fits any disk. Growing it takes TWO boots on purpose: the boot that rewrites the
+# partition table never touches the filesystem and ends in a controlled reboot, and the boot
+# after that only runs `btrfs filesystem resize max`. Asking the kernel to re-read a table
+# (`blockdev --rereadpt`, `partx -u`) while this boot is still using the disk is what killed
+# a real machine on the first flash, so it is gone: the reboot IS the re-read, because the
+# next boot's kernel parses the GPT at probe time with nothing mounted.
+#
+# Every outcome is a recorded state, never a boot failure: a 128 MiB p4 still boots, it just
+# cannot hold much. `grow_plan_state` is grow, already-full, missing-sfdisk or fail:<token>;
+# `grow_state` is the token this boot records.
 
 if [ -n "${dev}" ] && [ -n "${p4}" ]; then
     # Diagnose from a pulled disk, not from a serial console. The buffer lives on the
     # initramfs tmpfs here because the ESP is not mounted yet, so writing "straight to /esp"
     # (as an earlier version did) would land in a tmpfs directory that the real mount covers
     # and the initramfs takes with it - which silently lost every line of one boot already.
-    # The buffer is copied onto p4 once that is mounted, and ab-boot carries it to the ESP.
-    # /tmp does not exist in this initramfs (only bin proc sys dev mnt lib/modules are
-    # created), so the buffer lives in /run/grow - the same directory wf_grow_run keeps
-    # its table dumps in, which this line creates first because wf_grow_log appends to it
-    # before wf_grow_run gets that far.
+    # The buffer is appended to the p4 side every time the root subvolume is mounted, and
+    # ab-boot carries it to the ESP. /tmp does not exist in this initramfs (only bin proc sys
+    # dev mnt lib/modules are created), so the buffer lives in /run/grow - the directory
+    # wf_grow_plan keeps its table dumps in, created here because wf_grow_log appends to it
+    # before wf_grow_plan gets that far.
     mkdir -p /run/grow 2>/dev/null || :
     WF_GROW_LOG_FILE="/run/grow/grow.log"
     export WF_GROW_LOG_FILE
     : >"${WF_GROW_LOG_FILE}" 2>/dev/null || :
-    grow_line="$(wf_grow_run "${dev}" "${p4}")" || grow_line="fail:grow-crashed 0"
+    grow_plan="$(wf_grow_plan "${dev}" "${p4}")" || grow_plan="fail:grow-crashed 0"
 elif [ -n "${dev_error}" ]; then
     # Writing a partition table on a disk nobody could identify is exactly the mistake
     # that bricks a machine, so the reason is recorded and the disks stay untouched.
     wf_log "p4 growth skipped: ${dev_error}"
-    grow_line="fail:${dev_error} 0"
+    grow_plan="fail:${dev_error} 0"
 else
     wf_log "p4 growth skipped: no data partition was found"
-    grow_line="fail:no-data-partition 0"
+    grow_plan="fail:no-data-partition 0"
 fi
-grow_state="${grow_line%% *}"
-grow_last_lba="${grow_line##* }"
-case "${grow_state}" in
-    done | already-full | missing-sfdisk) : ;;
+grow_plan_state="${grow_plan%% *}"
+# The plan line is `<state> <last_lba> [<new size>]`: the disk end is the middle field of a
+# growth and the only field of every other state, so it is read per state and never guessed.
+grow_last_lba="${grow_plan##* }"
+grow_new_size=""
+case "${grow_plan_state}" in
+    grow)
+        grow_new_size="${grow_plan##* }"
+        grow_plan_rest="${grow_plan#grow }"
+        grow_last_lba="${grow_plan_rest%% *}"
+        ;;
+    already-full | missing-sfdisk) : ;;
     fail:?*) : ;;
     *)
-        wf_log "unexpected growth result '${grow_state}', recording fail:grow-crashed"
-        grow_state="fail:grow-crashed"
+        wf_log "unexpected growth plan '${grow_plan_state}', recording fail:grow-crashed"
+        grow_plan_state="fail:grow-crashed"
         ;;
 esac
 case "${grow_last_lba}" in
     '' | *[!0-9]*) grow_last_lba=0 ;;
 esac
-wf_log "p4 growth: ${grow_state} (last usable LBA ${grow_last_lba})"
+grow_stage_token=""
+grow_resize=""
+wf_log "p4 growth plan: ${grow_plan_state} (last usable LBA ${grow_last_lba})"
+
+# mark_grow_done: the milestone that carries the growth outcome. Defined once and called by
+# both stages, at the one moment each of them knows the token - which is while the p4 root
+# subvolume is mounted, so the line lands on a disk instead of on the initramfs tmpfs.
+mark_grow_done() {
+    wf_mark grow-done "result=${grow_state}"
+}
 
 # --------------------------------------------------------------------------- #
-# 3b. Filesystem resize: a clean mount, the resize, and the mount given back
+# 3a. Stage 1: rewrite the table, record it, reboot
+# --------------------------------------------------------------------------- #
+# Only a boot whose plan is `grow` runs this, and in the normal case it never returns: the
+# reboot at the end of it is the point. It returns only when the machine is still running,
+# and then the boot continues on the old geometry with the reason on p4.
+#
+# The mount before the write is deliberate and it is new: with the partition table untouched
+# and p4 at its old geometry, the root subvolume is the only durable surface that exists in
+# this window, and a boot that dies while writing the table has to be able to say that a
+# write was in flight. It is given back before `sfdisk` runs, because writing a table with
+# the filesystem still mounted is the other half of what killed the machine.
+grow_stage1() {
+    if ! wf_p4root_mount "compress=zstd:6,discard=async"; then
+        wf_log "warning: p4 root subvolume not mountable; the table is left alone this boot"
+        grow_stage_token="fail:p4-not-mountable"
+        return 1
+    fi
+    grow_prev="$(wf_grow_record_state /mnt/p4root/.ab/grow)"
+    if [ "$(wf_grow_guard "${grow_prev%% *}" "${grow_prev##* }" "${grow_last_lba}")" = "refuse" ]; then
+        # This disk end was already written and verified by an earlier boot, and the table
+        # still reads shorter: the write was lost below us. Writing and rebooting again would
+        # repeat the same boot forever, so the reason is recorded and the boot continues.
+        grow_stage_token="fail:table-write-lost"
+        wf_grow_record /mnt/p4root "${grow_stage_token}" "${grow_last_lba}" ||
+            wf_log "warning: could not record ${grow_stage_token}"
+        wf_grow_flush_log /mnt/p4root
+        wf_p4root_release
+        return 1
+    fi
+    if ! wf_grow_stage1_prepare /mnt/p4root "${grow_last_lba}"; then
+        wf_log "warning: the write-ahead breadcrumb could not be written; writing the table anyway"
+    fi
+    # A mount that could not be given back is the other half of what killed the machine, so
+    # it stops the boot's write instead of being ignored: `sfdisk` runs on a disk with
+    # nothing mounted on it, or it does not run at all. The helper checks the same thing
+    # against the mount table, so the two cannot disagree.
+    if ! wf_p4root_release; then
+        wf_log "p4 root subvolume is still mounted; refusing to write the partition table"
+        grow_stage_token="fail:p4-still-mounted"
+        return 1
+    fi
+    grow_write="$(wf_grow_write_table "${dev}" "${p4}" "${grow_new_size}" \
+        "${WF_GROW_TMP}/grow/partitions.before" "${grow_last_lba}" "/mnt/p4root")" ||
+        grow_write="fail:grow-crashed"
+    if [ "${grow_write}" != "written" ]; then
+        wf_log "p4 table write: ${grow_write}"
+        grow_stage_token="${grow_write}"
+        return 1
+    fi
+    # 1c: record the outcome, give the mount back, reboot. The bare mount is enough here:
+    # the compression level belongs to the filesystem, which this boot has already mounted
+    # once.
+    grow_release_ok=0
+    if wf_p4root_mount ""; then
+        grow_stage_token="$(wf_grow_record_stage1 /mnt/p4root "${grow_last_lba}" "${grow_write}")" ||
+            grow_stage_token="fail:grow-crashed"
+        grow_state="${grow_stage_token}"
+        mark_grow_done
+        if wf_p4root_release; then
+            grow_release_ok=1
+        else
+            # Rebooting with the filesystem still mounted turns the record into a filesystem
+            # that has to replay, so this boot keeps running instead: the table is written and
+            # verified, and the next power cycle finishes the job.
+            wf_log "p4 root subvolume is still mounted; not rebooting into the re-read"
+        fi
+    else
+        wf_log "warning: 'table-written' could not be recorded on p4; the table is written and verified"
+        grow_stage_token="table-written"
+        grow_release_ok=1
+    fi
+    if [ "${grow_release_ok}" = "1" ] && wf_grow_should_reboot "${grow_stage_token}"; then
+        wf_log "p4 stage 1 recorded ${grow_stage_token}; rebooting so the kernel re-reads the table"
+        wf_grow_reboot || wf_log "the reboot command returned; this boot continues on the old geometry"
+    fi
+    # Getting here means the machine is still running: either a reboot came back or one was
+    # never asked for. The record on p4 says what happened and the next boot finishes it.
+    return 0
+}
+
+case "${grow_plan_state}" in
+    grow)
+        wf_log "p4 step=table-write start device=${p4} last_lba=${grow_last_lba} size=${grow_new_size}"
+        grow_stage1 || wf_log "p4 stage 1 did not write the table: ${grow_stage_token}"
+        ;;
+esac
+
+# --------------------------------------------------------------------------- #
+# 3b. Stage 2: the filesystem resize, on a clean mount, and the mount given back
 # --------------------------------------------------------------------------- #
 # The btrfs-progs shipped in the image does not resize an unmounted device — it answers
 # `ERROR: not a directory: /dev/vda4` — so the filesystem is mounted for the resize. That
-# mount carries NO options of its own: no compress=, no discard=, no subvol=. A resize on
-# a freshly grown partition must not depend on the options of a later mount, and keeping
-# them apart is what makes a failure diagnosable (`unable to resize ...: Invalid
-# argument` is an option/mount interaction, `not a directory` is a device target).
+# mount carries NO options of its own: no compress=, no discard=, no subvol=. A resize on a
+# freshly grown partition must not depend on the options of a later mount, and keeping them
+# apart is what makes a failure diagnosable (`unable to resize ...: Invalid argument` is an
+# option/mount interaction, `not a directory` is a device target).
 #
-# The mount is unmounted inside wf_grow_resize_mounted, before the option-carrying mount
-# that writes the growth record, so the filesystem is never mounted twice at once.
-# A resize failure is recorded, never fatal: ab-boot retries it at runtime with p4
-# mounted, and even without that a 64 MiB p4 still boots.
-case "${grow_state}" in
-    done | already-full)
-        wf_log "p4 step=resize target=${p4} state=${grow_state} clean-mount=${P4_RESIZE_MOUNT}"
-        grow_fs="$(wf_grow_resize_mounted "${p4}" "${P4_RESIZE_MOUNT}" "${dev}")"
-        case "${grow_fs}" in
+# This runs only when the plan is already-full, i.e. when the table on disk already ends at
+# the last usable LBA: that is the state the reboot of stage 1 leaves behind, and the only
+# thing left to do is the resize. A boot that wrote the table must NOT resize here - its
+# kernel has not re-read the device yet, so the resize would stop at the old size.
+#
+# The mount is unmounted inside wf_grow_resize_mounted. A resize failure is recorded, never
+# fatal: ab-boot retries it at runtime with p4 mounted, and even without that a 128 MiB p4
+# still boots.
+case "${grow_plan_state}" in
+    already-full)
+        wf_log "p4 step=resize target=${p4} state=${grow_plan_state} clean-mount=${P4_RESIZE_MOUNT}"
+        grow_resize="$(wf_grow_resize_mounted "${p4}" "${P4_RESIZE_MOUNT}" "${dev}")"
+        case "${grow_resize}" in
             done) wf_log "btrfs filesystem at max size" ;;
-            *)
-                wf_log "btrfs filesystem resize failed, recording ${grow_fs}"
-                grow_state="${grow_fs}"
-                ;;
+            *) wf_log "btrfs filesystem resize failed, recording ${grow_resize}" ;;
         esac
         ;;
 esac
 
-# Milestone 2. The growth and the resize are finished and their outcome is a token, so the
-# last state of it is what the breadcrumb carries - not the pre-resize one.
-wf_mark grow-done "result=${grow_state}"
-
 # --------------------------------------------------------------------------- #
-# 3c. p4 root subvolume: the second landing zone, and the growth record's home
+# 3c. p4 root subvolume: the second landing zone, the growth record's home, and the
+#     place where this boot's token is decided
 # --------------------------------------------------------------------------- #
 # This mount happens *here*, before the ESP is touched, and not in section 5a where the
 # record is written. The reason is the failure path: `esp-mount-failed` and `state-missing`
 # - the two candidates the 05:36 poweroff is blamed on - are the exact cases in which the
-# ESP cannot hold the evidence, and until this mount existed the p4 fallback had nowhere to
-# go either (`/mnt/p4root` was only created at 5a), so those failures were serial-only,
-# which is the defect this whole unit exists to fix. It cannot move earlier than this: the
-# growth and the resize both rewrite/rename partition state and need the disk with nothing
-# mounted on it (see `blockdev --rereadpt` in grow.sh).
+# ESP cannot hold the evidence, and until this mount existed the p4 fallback had nowhere
+# to go either (`/mnt/p4root` was only created at 5a), so those failures were serial-only,
+# which is the defect this whole unit exists to fix.
 #
 # The root subvolume outlives every generation layer and ab-boot mounts it at /mnt/p4 at
 # runtime, so `.ab/grow` and `.ab/esp-health` written here survive the boot.
@@ -320,26 +471,22 @@ wf_mark grow-done "result=${grow_state}"
 # filesystem; the generation mount below repeats the level (a filesystem has one), and the
 # root subvolume is given back before that second mount so btrfs-progs and the overlay never
 # see the filesystem mounted twice.
-mkdir -p /mnt/p4root 2>/dev/null || :
-WF_P4_MOUNT="/mnt/p4root"
-export WF_P4_MOUNT
+#
+# The record already on this disk is read here for the same reason: `done` and `already-full`
+# are two different tokens for the same geometry, and only the previous record tells them
+# apart. Reading it before the ESP mount is what lets the grow-done milestone carry the
+# final token instead of the plan.
 p4root_state="unavailable"
-if mount -o rw,noatime,compress=zstd:6,discard=async,"subvol=/" "${p4}" /mnt/p4root; then
+grow_prev="missing 0"
+if wf_p4root_mount "compress=zstd:6,discard=async"; then
     p4root_state="mounted"
-    # The first durable landing zone of this boot. It is armed here and not only after the
-    # ESP mount, because the two failures this unit exists for (`esp-mount-failed` and
-    # `state-missing`) happen while the ESP has no zone at all - with WF_MARK_LOG empty they
-    # would be serial-only, and a machine that powers itself off hands its serial log to
-    # nobody. Armed before the assertion below on purpose: that one can already fail the
-    # boot, and its breadcrumb has to land on a disk that is really there.
-    WF_MARK_LOG="$(wf_mark_zone)"
-    export WF_MARK_LOG
     p4root_line="$(awk '$2 == "/mnt/p4root" { print }' /proc/mounts)"
     case "${p4root_line}" in
         *compress=*) : ;;
         *) wf_fail p4-compress-option-missing ;;
     esac
     wf_log "p4 root subvolume mounted at /mnt/p4root (the p4 side of the breadcrumb log)"
+    grow_prev="$(wf_grow_record_state /mnt/p4root/.ab/grow)"
 else
     # The root subvolume is not mountable. The generation mount below still gets its chance:
     # only the root subvolume may be broken, and a boot with a degraded p4 is better than no
@@ -349,6 +496,21 @@ else
     WF_P4_MOUNT=""
     export WF_P4_MOUNT
 fi
+
+# Walk the plan: a boot that wrote the table already knows its token, everything else is
+# decided from the plan, the resize result and the record that was just read.
+case "${grow_plan_state}" in
+    grow) grow_state="${grow_stage_token:-fail:p4-not-mountable}" ;;
+    *)
+        grow_state="$(wf_grow_finalize "${grow_plan_state}" "${grow_last_lba}" "${grow_resize}" \
+            "${grow_prev%% *}" "${grow_prev##* }")"
+        ;;
+esac
+
+# Milestone 2. The growth and the resize are finished and their outcome is a token, so the
+# last state of it is what the breadcrumb carries - on the p4 side whenever it is mounted.
+mark_grow_done
+wf_log "p4 growth: ${grow_state} (last usable LBA ${grow_last_lba})"
 
 # --------------------------------------------------------------------------- #
 # 4. State from the ESP
@@ -444,15 +606,13 @@ if [ "${p4root_state}" = "mounted" ]; then
     if wf_grow_record /mnt/p4root "${grow_state}" "${grow_last_lba}"; then
         wf_log "p4 growth recorded: result=${grow_state} last_lba=${grow_last_lba}"
         p4root_state="recorded"
-        # Carry the buffered log next to the record: p4 survives the boot and ab-boot
-        # copies it to the ESP, so a failure has a reason on the disk either way.
-        if [ -s "${WF_GROW_LOG_FILE}" ]; then
-            cat "${WF_GROW_LOG_FILE}" >>/mnt/p4root/.ab/grow.log 2>/dev/null ||
-                wf_log "warning: could not keep the grow log on p4"
-        fi
     else
         wf_log "warning: could not write the growth record on the p4 root subvolume"
     fi
+    # Carry the buffered log next to the record: p4 survives the boot and ab-boot copies it
+    # to the ESP, so a failure has a reason on the disk either way. The buffer is emptied by
+    # the flush, which is what keeps a second mount in the same boot from duplicating lines.
+    wf_grow_flush_log /mnt/p4root || wf_log "warning: could not keep the grow log on p4"
     # The ESP verdict goes next to the growth record: this is the only place in the boot
     # where both the conclusion and a writable disk exist. The ESP is deliberately not the
     # place for it - a broken ESP is the case it has to describe.
@@ -463,26 +623,29 @@ if [ "${p4root_state}" = "mounted" ]; then
     fi
     # The mount is given back before the generation mount, so the filesystem is never
     # mounted twice while btrfs-progs or the overlay is working on it.
-    umount /mnt/p4root || {
-        wf_log "umount /mnt/p4root failed, retrying once"
-        sleep 1
-        umount /mnt/p4root || wf_log "warning: /mnt/p4root is still mounted"
-    }
-    if awk -v mp=/mnt/p4root '$2 == mp { found = 1 } END { exit !found }' \
-        /proc/mounts 2>/dev/null; then
-        wf_log "warning: p4 root subvolume is still mounted at /mnt/p4root"
-    else
+    if wf_p4root_release; then
         wf_log "p4 step=record done, the filesystem has no mount again"
+    else
+        wf_log "warning: p4 root subvolume is still mounted at /mnt/p4root"
     fi
 else
     wf_log "warning: p4 root subvolume not mountable; growth record and ESP verdict not kept"
 fi
-# The root subvolume is given back: from here the p4 landing zone is the generation's
-# writable layer (5b) or nothing at all. Leaving WF_P4_MOUNT on /mnt/p4root now would point
-# it at a bare directory on the initramfs tmpfs, and a breadcrumb written there would be
-# gone with the initramfs - the exact silent loss this file was fixed for.
-WF_P4_MOUNT=""
-export WF_P4_MOUNT
+# The root subvolume is given back and its zone is cleared with it (wf_p4root_release, or the
+# 3c branch that could not mount it at all): from here the p4 landing zone is the generation's
+# writable layer (5b) or nothing at all. A WF_P4_MOUNT left on /mnt/p4root would point at a
+# bare directory on the initramfs tmpfs, and a breadcrumb written there would be gone with the
+# initramfs - the exact silent loss this file was fixed for. The assertion keeps the zone and
+# the mount from drifting apart, whatever the branch above did.
+if awk -v mp=/mnt/p4root '$2 == mp { found = 1 } END { exit !found }' \
+    /proc/mounts 2>/dev/null; then
+    wf_log "warning: p4 root subvolume is still mounted at /mnt/p4root"
+else
+    # Re-resolved, not blanked: with the root subvolume gone the next zone that can hold a
+    # line is the ESP, and wf_mark_zone answering "nothing" is what the serial port is for.
+    WF_MARK_LOG="$(wf_mark_zone)"
+    export WF_MARK_LOG
+fi
 # Milestone 5. Whatever happened above, the boot now says what it managed to keep: the
 # growth result, the ESP verdict and whether the p4 record could be written at all.
 wf_mark p4-record "grow=${grow_state}" "esp=${esp_state}" "p4=${p4root_state}"
@@ -702,7 +865,7 @@ umount /esp || wf_log "warning: could not unmount the ESP"
 #                  given back before switch_root so it cannot leak into the new root.
 p4_last=""
 if [ "${degraded}" = "0" ] && [ -n "${p4}" ]; then
-    if mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root 2>/dev/null; then
+    if wf_p4root_mount ""; then
         p4_last="/mnt/p4root"
     else
         # The root subvolume will not mount again. The generation layer is still a real btrfs
@@ -741,13 +904,9 @@ wf_log "switching root to the overlay (${handover_init})"
 # and a breadcrumb written by a `switch_root` that returned would land in a tmpfs directory
 # the initramfs takes with it. The judge line and the serial port carry that failure.
 if [ "${p4_last}" = "/mnt/p4root" ]; then
-    umount /mnt/p4root || wf_log "warning: p4 root subvolume is still mounted"
-    WF_MARK_LOG=""
-    export WF_MARK_LOG
     # The zone goes with the mount: from here /mnt/p4root is a bare directory on the tmpfs
     # again, and the evidence path of a failure in this last stretch must not pick it.
-    WF_P4_MOUNT=""
-    export WF_P4_MOUNT
+    wf_p4root_release || wf_log "warning: p4 root subvolume is still mounted"
 fi
 # switch_root must be PID 1, and this script is a child of the shell that the kernel
 # started as init, so exec replaces the shell instead of forking a helper.

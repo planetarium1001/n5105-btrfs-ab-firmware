@@ -4,7 +4,9 @@
 # answer, not a log. A single leaked log line turns `done 921566` into `[grow]` and turns
 # a successful growth into `fail:grow-crashed` — which is exactly what happened when the
 # console mirroring was routed through stdout.
-#   ac-1 wf_grow_run prints exactly one line, `^(done|already-full|missing-sfdisk|fail:<token>) <n>$`
+#   ac-1 every growth step prints exactly one line: the plan is
+#        `grow <lba> <size>` | `already-full <lba>` | `missing-sfdisk 0` | `fail:<token> 0`,
+#        and the table write answers one token (`written` or `fail:<token>`)
 #   ac-2 every other captured helper (decide, apply, fs, sectors, di_resolve) prints one token
 #   ac-3 diagnostics still exist, on stderr, and are mirrored to the serial device only
 #   ac-4 the mirror never reaches stdout, even when the serial path is writable
@@ -61,10 +63,9 @@ WF_SERIAL="$serial"
 WF_CONSOLES="$consoles"
 WF_SYS_BLOCK="$sys"
 WF_GROW_TMP="$tmp/work"
-WF_GROW_VERIFY_TRIES=2
 WF_MOUNTS="$tmp/mounts"
 export DI_SYS_BLOCK DI_DEV_DIR DI_CMDLINE DI_MOUNTS DI_BLKID \
-  WF_SERIAL WF_CONSOLES WF_SYS_BLOCK WF_GROW_TMP WF_GROW_VERIFY_TRIES WF_MOUNTS
+  WF_SERIAL WF_CONSOLES WF_SYS_BLOCK WF_GROW_TMP WF_MOUNTS
 
 source "$root/initramfs/lib/wf.sh"
 source "$root/initramfs/lib/grow.sh"
@@ -72,10 +73,9 @@ source "$root/platform/lib/disk-identity.sh"
 
 WF_SFDISK="$tmp/bin/sfdisk"
 WF_BLOCKDEV="$tmp/bin/blockdev"
-WF_PARTX="$tmp/bin/partx"
 WF_BTRFS="$tmp/bin/btrfs"
 WF_SLEEP="$tmp/bin/sleep"
-export WF_SFDISK WF_BLOCKDEV WF_PARTX WF_BTRFS WF_SLEEP
+export WF_SFDISK WF_BLOCKDEV WF_BTRFS WF_SLEEP
 
 cat >"$tmp/bin/sfdisk" <<'STUB'
 #!/bin/sh
@@ -89,10 +89,9 @@ case "$1" in
     [ "${STUB_WRITE_FAIL:-0}" = "1" ] && exit 1
     cat >"${GROW_FIXTURE}/table/written"
     cp "${GROW_FIXTURE}/table/written" "${GROW_FIXTURE}/table/current"
-    size="$(sed -n 's|^/dev/vda4 : start= *[0-9]*, size= *\([0-9]*\).*|\1|p' \
-      "${GROW_FIXTURE}/table/written")"
-    printf '%s\n' "${size}" >"${GROW_FIXTURE}/sys/block/vda4/size"
+    # No sysfs update: this helper never asks the kernel to re-read the table.
     ;;
+  --verify) exit 0 ;;
   *) exit 2 ;;
 esac
 STUB
@@ -104,7 +103,6 @@ case "$1" in
   *) exit 2 ;;
 esac
 STUB
-printf '#!/bin/sh\nexit 1\n' >"$tmp/bin/partx"
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/btrfs"
 printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/sleep"
 chmod +x "$tmp/bin/"*
@@ -150,40 +148,59 @@ run_captured_env() {
   captured_err="$(cat "$tmp/stderr.txt")"
 }
 
-RESULT_RE='^(done|already-full|missing-sfdisk|fail:[a-z-]+) [0-9]+$'
+PLAN_RE='^(grow [0-9]+ [0-9]+|already-full [0-9]+|missing-sfdisk 0|fail:[a-z-]+ [0-9]+)$'
+TOKEN_RE='^(written|fail:[a-z-]+)$'
 
 # --------------------------------------------------------------------------- #
-# ac-1 wf_grow_run: exactly one result line, whatever the outcome
+# ac-1 the plan: exactly one line, whatever the outcome
 # --------------------------------------------------------------------------- #
 
 reset_fixture
-run_captured wf_grow_run /dev/vda /dev/vda4
+run_captured wf_grow_plan /dev/vda /dev/vda4
 assert_eq "$(printf '%s\n' "${captured_out}" | wc -l | tr -d ' ')" "1" \
-  "ac-1 a successful run prints exactly one line"
-assert_matches "${captured_out}" "${RESULT_RE}" "ac-1 the line is <state> <last_lba>"
-assert_eq "${captured_out}" "done ${last_lba}" "ac-1 the state is done on a first boot"
+  "ac-1 a plan prints exactly one line"
+assert_matches "${captured_out}" "${PLAN_RE}" "ac-1 the line is <state> <lba> [<size>]"
+assert_eq "${captured_out}" "grow ${last_lba} ${p4_grown}" \
+  "ac-1 a short p4 is planned as a growth"
 assert_contains "${captured_err}" "[grow]" "ac-1 the diagnostics went to stderr"
 
-run_captured wf_grow_run /dev/vda /dev/vda4
+table "${p4_grown}" >"$tmp/table/current"
+run_captured wf_grow_plan /dev/vda /dev/vda4
 assert_eq "${captured_out}" "already-full ${last_lba}" \
-  "ac-1 the second boot is a single already-full line"
+  "ac-1 a full p4 is planned as already-full, on one line"
 
 reset_fixture
-run_captured_env WF_SFDISK "$tmp/bin/absent-sfdisk" wf_grow_run /dev/vda /dev/vda4
+run_captured_env WF_SFDISK "$tmp/bin/absent-sfdisk" wf_grow_plan /dev/vda /dev/vda4
 assert_eq "${captured_out}" "missing-sfdisk 0" "ac-1 missing-sfdisk stays a single line"
 
 reset_fixture
-run_captured_env STUB_WRITE_FAIL 1 wf_grow_run /dev/vda /dev/vda4
-assert_eq "${captured_out}" "fail:partition-table-write ${last_lba}" \
-  "ac-1 a failed write is one fail:<token> line"
-assert_matches "${captured_out}" "${RESULT_RE}" "ac-1 a failure line matches the frozen shape"
-assert_contains "${captured_err}" "[grow]" "ac-1 failure diagnostics stay on stderr"
-
-reset_fixture
-run_captured_env STUB_DUMP_FAIL 1 wf_grow_run /dev/vda /dev/vda4
+run_captured_env STUB_DUMP_FAIL 1 wf_grow_plan /dev/vda /dev/vda4
 assert_eq "${captured_out}" "fail:partition-table-read 0" \
   "ac-1 an unreadable table is one line"
-assert_matches "${captured_out}" "${RESULT_RE}" "ac-1 the read failure matches the frozen shape"
+assert_matches "${captured_out}" "${PLAN_RE}" "ac-1 the read failure matches the frozen shape"
+
+# The write step answers one token, and the failure is a token as well - never a second line
+# and never a partial table reported as written. The plan runs first: it is what dumps the
+# pre-change table the write rewrites.
+reset_fixture
+run_captured wf_grow_plan /dev/vda /dev/vda4
+run_captured wf_grow_write_table /dev/vda /dev/vda4 "${p4_grown}" \
+  "$tmp/work/grow/partitions.before" "${last_lba}"
+assert_eq "$(printf '%s\n' "${captured_out}" | wc -l | tr -d ' ')" "1" \
+  "ac-1 the table write prints exactly one line"
+assert_eq "${captured_out}" "written" "ac-1 a successful table write is one token"
+assert_matches "${captured_out}" "${TOKEN_RE}" "ac-1 the token matches the frozen shape"
+assert_contains "${captured_err}" "verify=ok" \
+  "ac-1 the write says on stderr that the table verified"
+
+reset_fixture
+run_captured wf_grow_plan /dev/vda /dev/vda4
+run_captured_env STUB_WRITE_FAIL 1 wf_grow_write_table /dev/vda /dev/vda4 "${p4_grown}" \
+  "$tmp/work/grow/partitions.before" "${last_lba}"
+assert_eq "${captured_out}" "fail:partition-table-write" \
+  "ac-1 a failed write is one fail:<token> line"
+assert_matches "${captured_out}" "${TOKEN_RE}" "ac-1 a failure token matches the frozen shape"
+assert_contains "${captured_err}" "[grow]" "ac-1 failure diagnostics stay on stderr"
 
 # The mirror is a serial side channel: the captured stdout above must never contain it.
 assert_contains "$(cat "$serial")" "[grow]" \
