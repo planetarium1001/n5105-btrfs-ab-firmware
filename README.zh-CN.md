@@ -139,6 +139,7 @@ uci commit firewall
 ## 文档
 
 - [docs/](docs/README.zh-CN.md) —— 设计文档
+- [docs/backup.zh-CN.md](docs/backup.zh-CN.md) —— 备份与恢复契约：三种产物、各自能恢复到多大的盘、恢复决策树
 
 ## 状态
 

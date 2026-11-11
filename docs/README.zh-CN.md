@@ -13,6 +13,7 @@
 | [conflicts-payload.zh-CN.md](conflicts-payload.zh-CN.md) | 三方比对、处置、uci 边界、载荷契约、校验、构建输入 |
 | [network.zh-CN.md](network.zh-CN.md) | 首启网络生成、出厂默认值（WAN 口、桥端口、LAN 网段）、怎么改、WAN SSH 例外 |
 | [debug-ssh.zh-CN.md](debug-ssh.zh-CN.md) | 人工交互调试入口：触发、连接、已备好的产物、会话时长、安全、为什么它不是门禁 |
+| [backup.zh-CN.md](backup.zh-CN.md) | 三种产物各自能恢复到多大的盘、整盘镜像为什么在更小的盘上写入即失败、恢复决策树（路径 A–D），以及 `ab-backup` / `ab-restore` 往包里装什么 |
 
 ## 约定
 

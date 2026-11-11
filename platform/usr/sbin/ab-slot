@@ -422,6 +422,42 @@ p4_state() {
     fi
 }
 
+# boot_state: how this boot started, as the ring log recorded it.
+#
+# `ab-boot` writes one `stage=boot` line per boot, and the line for a boot that came up
+# without the writable partition carries `action=degraded-boot`: the upper is a tmpfs and
+# every write is lost on the next reboot. boot-0.log is the ring the running boot writes
+# (rotate_logs moves it to boot-1.log at the start of the next one), so it is the only
+# file that can answer for *this* boot.
+#
+# A missing or unreadable log is `unknown`, never `ok`. The field exists so that a
+# machine cannot claim a healthy boot it has no evidence for - a silent `ok` after a
+# boot that never wrote a line is exactly the failure this reports.
+boot_state() {
+    _boot_log="${LOGDIR}/boot-0.log"
+    [ -f "${_boot_log}" ] || {
+        printf 'unknown'
+        return 0
+    }
+    [ -r "${_boot_log}" ] || {
+        printf 'unknown'
+        return 0
+    }
+    while IFS= read -r _boot_line; do
+        case "${_boot_line}" in
+            *stage=boot*) ;;
+            *) continue ;;
+        esac
+        case "${_boot_line}" in
+            *action=degraded-boot*)
+                printf 'degraded'
+                return 0
+                ;;
+        esac
+    done <"${_boot_log}"
+    printf 'ok'
+}
+
 # --------------------------------------------------------------------------- #
 # Subcommands
 # --------------------------------------------------------------------------- #
@@ -434,6 +470,12 @@ cmd_status() {
     _generation="$(state_generation)" || die "state has no generation"
     _upper="$(state_upper "${_slot}")" || die "state has no layer for slot ${_slot}"
     _p4="$(p4_state)"
+    _boot="$(boot_state)"
+    # boot= is one token; the human line says what the token means, so nobody has to
+    # look up that a degraded boot is a tmpfs upper.
+    _boot_hint=""
+    [ "${_boot}" = "degraded" ] && _boot_hint=", the writable layer is a tmpfs and writes will not survive a reboot"
+    [ "${_boot}" = "unknown" ] && _boot_hint=", no readable ring log, so nothing here proves it came up clean"
     _data="$(mount_state "${DATA_MOUNT}")"
     _docker="$(mount_state "${DOCKER_MOUNT}")"
     _swap="$(mount_state "${SWAP_MOUNT}")"
@@ -448,12 +490,13 @@ cmd_status() {
         _identity="disk=unknown method=unavailable"
     fi
 
-    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s\n' \
+    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s\n' \
         "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}" \
-        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}"
+        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}" "${_boot}"
     say "ab-slot: running slot ${_slot} (${_upper}), generation ${_generation}"
     say "ab-slot: committed ${_committed}, pending ${_pending}, writable layer ${_p4}"
     say "ab-slot: mounts data=${_data} docker=${_docker} swap=${_swap}"
+    say "ab-slot: this boot is ${_boot}${_boot_hint}"
     say "ab-slot: the next boot runs slot ${_next}, ${_identity}"
 }
 

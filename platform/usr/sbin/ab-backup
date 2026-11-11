@@ -1,0 +1,442 @@
+#!/bin/sh
+# ab-backup - export the data a machine can be rebuilt from.
+#
+# The A/B model rebuilds a machine by installing an image and then pouring the data
+# back in, so the backup is not "some files": it is one fixed list, produced the same
+# way every time, and restorable by ab-restore without a human deciding what matters.
+#
+# The list (and nothing outside it):
+#
+#   data/        the whole of @data (mounted at /data)
+#   etc/config/  the running slot's overlay upper etc/config - the files that were
+#                changed on this machine and would otherwise be lost with the layer
+#   meta/        the bookkeeping that explains the machine: ab/state.json,
+#                ab/device.json, ab/image.json from the ESP, and the first-boot growth
+#                record (.ab/grow, .ab/grow.log) from the writable partition, plus a
+#                manifest written here
+#   docker/      @docker (mounted at /opt/docker), only with --with-docker
+#
+# The prefix a category gets inside the archive is the basename of its mount: the
+# running system mounts /data and /opt/docker, so the members are exactly data/... and
+# docker/.... etc/config keeps the path it has on disk. Nothing is renamed at restore
+# time; ab-restore reads the same three names.
+#
+# Consistency: @data is snapshotted read-only first (btrfs), so the archive is a point
+# in time. When the snapshot cannot be taken - no btrfs tool, no space, a filesystem
+# that is not btrfs - the export falls back to tarring the live tree and says so with a
+# `warn:` on stderr, because that copy is not point-in-time and a caller has to know.
+#
+# Space: the size is estimated and compared with the free space of the output directory
+# before anything is written. A package that cannot fit is refused, not half written: a
+# truncated archive that looks complete is worse than no archive.
+#
+# Output (stdout, one machine readable line each):
+#   backup=<absolute path of the archive>
+#   sha256=<path of the .sha256 file>
+#   entries data=<n> etc=<n> docker=<n> meta=<n>
+#   consistency=snapshot|live
+#
+# Refusals print `refuse: <reason>` on stderr and exit 3. Usage errors exit 2.
+#
+# Environment:
+#   AB_ESP        ESP mount point            (default /boot)
+#   AB_P4         writable partition mount   (default /mnt/p4)
+#   AB_DATA       @data mount point          (default /data)
+#   AB_DOCKER     @docker mount point        (default /opt/docker)
+#   AB_CMD        /proc/cmdline equivalent   (default /proc/cmdline, for tests)
+#   AB_BTRFS      the btrfs binary           (default btrfs; point it at a missing path
+#                                            to exercise the live-tree fallback)
+#   AB_SLOT_BIN   ab-slot to ask for the running slot and its layer
+#   AB_AVAIL_KB   free space to assume, instead of asking df (for tests)
+
+set -u
+# Keep whatever PATH we were given in front: the running system already supplies these
+# directories, and a test or a chroot can provide its own tools.
+PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+AB_BTRFS="${AB_BTRFS:-btrfs}"
+AB_ESP="${AB_ESP:-/boot}"
+AB_P4="${AB_P4:-/mnt/p4}"
+AB_DATA="${AB_DATA:-/data}"
+AB_DOCKER="${AB_DOCKER:-/opt/docker}"
+AB_CMD="${AB_CMD:-/proc/cmdline}"
+AB_SLOT_BIN="${AB_SLOT_BIN:-}"
+AB_AVAIL_KB="${AB_AVAIL_KB:-}"
+
+DATA_PREFIX=data
+DOCKER_PREFIX=docker
+ETC_REL=etc/config
+META_PREFIX=meta
+
+WITH_DOCKER=0
+DRY_RUN=0
+PLAIN=0
+OUT_DIR=""
+
+# Paths the run creates and must take back, whatever happens next.
+WORK=""
+SNAP_DIR=""
+# Set by tar_target: where to tar from, which member name to store, and whether the
+# source is a read-only snapshot or the live tree.
+TAR_ROOT=""
+TAR_MEMBER=""
+CONSISTENCY="live"
+
+say() {
+    printf '%s\n' "$*" >&2
+}
+
+die() {
+    say "ab-backup: $*"
+    exit 1
+}
+
+# refuse: the request cannot be honoured and nothing was written. The prefix is the
+# contract ab-restore and the docs use, so a caller can tell "no" from "broken".
+refuse() {
+    say "refuse: $*"
+    exit 3
+}
+
+usage() {
+    say "usage: ab-backup [--with-docker] [--out <dir>] [--dry-run] [--plain]"
+    exit 2
+}
+
+# --------------------------------------------------------------------------- #
+# The machine this runs on
+# --------------------------------------------------------------------------- #
+
+# ab_slot_path: the tool that owns the state file format. It is asked rather than
+# re-parsed here, so one format keeps one parser.
+ab_slot_path() {
+    if [ -n "${AB_SLOT_BIN}" ]; then
+        printf '%s' "${AB_SLOT_BIN}"
+        return 0
+    fi
+    for _candidate in /usr/sbin/ab-slot "$(dirname "$0")/ab-slot"; do
+        if [ -f "${_candidate}" ]; then
+            printf '%s' "${_candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# read_slot: set SLOT and UPPER from what ab-slot reports for this boot. Both are
+# required: the layer name decides which etc/config is exported, and it is never
+# derived from a version string here.
+read_slot() {
+    SLOT=""
+    UPPER=""
+    _bin="$(ab_slot_path)" || refuse "ab-slot not found, cannot resolve the running slot"
+    # Installed, ab-slot is executable; in a checkout or a mounted image it is a plain
+    # file, and asking the shell to read it is how every other tool runs it too.
+    if [ -x "${_bin}" ]; then
+        _line="$("${_bin}" status 2>/dev/null)" \
+            || refuse "ab-slot status failed, the slot state is unreadable"
+    else
+        _line="$(sh "${_bin}" status 2>/dev/null)" \
+            || refuse "ab-slot status failed, the slot state is unreadable"
+    fi
+    for _kv in ${_line}; do
+        case "${_kv}" in
+            slot=*) SLOT="${_kv#*=}" ;;
+            upper=*) UPPER="${_kv#*=}" ;;
+        esac
+    done
+    [ -n "${SLOT}" ] || refuse "ab-slot status reported no slot"
+    [ -n "${UPPER}" ] || refuse "ab-slot status reported no writable layer for slot ${SLOT}"
+}
+
+# meta_source <relative path>: where a meta file is on this machine, allowing for the
+# two layouts of the writable partition. The initramfs writes p4's subvolume root, so
+# the record is either directly under the mount or under the running slot's layer.
+meta_source() {
+    for _candidate in "${AB_P4}/$1" "${AB_P4}/${UPPER}/$1"; do
+        if [ -f "${_candidate}" ]; then
+            printf '%s' "${_candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# --------------------------------------------------------------------------- #
+# Sizes
+# --------------------------------------------------------------------------- #
+
+size_kb() { # path...
+    _total=0
+    for _path in "$@"; do
+        [ -e "${_path}" ] || continue
+        _kb="$(du -sk "${_path}" 2>/dev/null | awk '{print $1}')"
+        _total=$((_total + ${_kb:-0}))
+    done
+    printf '%s' "${_total}"
+}
+
+avail_kb() { # dir
+    if [ -n "${AB_AVAIL_KB}" ]; then
+        printf '%s' "${AB_AVAIL_KB}"
+        return 0
+    fi
+    _kb="$(df -Pk "$1" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+    printf '%s' "${_kb:-}"
+}
+
+count_entries() { # dir: top level entries, 0 when it is not there
+    if [ -d "$1" ]; then
+        ls -A "$1" 2>/dev/null | wc -l | tr -d ' '
+    else
+        printf '0'
+    fi
+}
+
+# --------------------------------------------------------------------------- #
+# Staging
+# --------------------------------------------------------------------------- #
+
+cleanup() {
+    if [ -n "${SNAP_DIR}" ]; then
+        for _snap in "${SNAP_DIR}/${DATA_PREFIX}" "${SNAP_DIR}/${DOCKER_PREFIX}"; do
+            [ -d "${_snap}" ] || continue
+            "${AB_BTRFS}" subvolume delete "${_snap}" >/dev/null 2>&1 || :
+            rm -rf "${_snap}" 2>/dev/null || :
+        done
+        rmdir "${SNAP_DIR}" 2>/dev/null || :
+        SNAP_DIR=""
+    fi
+    if [ -n "${WORK}" ]; then
+        rm -rf "${WORK}" 2>/dev/null || :
+        WORK=""
+    fi
+}
+
+# snapshot <source> <name>: a read-only copy of a subvolume, in a parent directory whose
+# child carries the name the archive needs. Failure is not fatal: the caller falls back
+# to the live tree.
+snapshot() {
+    _source="$1"
+    _name="$2"
+    [ -d "${AB_P4}" ] || return 1
+    if [ -z "${SNAP_DIR}" ]; then
+        _candidate="${AB_P4}/@backup-$(date -u +%Y%m%dT%H%M%S)-$$"
+        mkdir -p "${_candidate}" 2>/dev/null || return 1
+        SNAP_DIR="${_candidate}"
+    fi
+    "${AB_BTRFS}" subvolume snapshot -r "${_source}" "${SNAP_DIR}/${_name}" >/dev/null 2>&1 || {
+        say "ab-backup: warn: cannot snapshot ${_source}, archiving the live tree"
+        return 1
+    }
+    return 0
+}
+
+# tar_target <source> <name>: set TAR_ROOT and TAR_MEMBER so the archive gets the member
+# names it needs. A snapshot gives both; the live tree gives the mount's parent and its
+# basename, which on a running system are / and data (or /opt and docker).
+#
+# It sets globals rather than printing: the snapshot directory has to be remembered by
+# the caller that cleans it up, and a command substitution would hide it in a subshell.
+tar_target() {
+    if snapshot "$1" "$2"; then
+        CONSISTENCY=snapshot
+        TAR_ROOT="${SNAP_DIR}"
+        TAR_MEMBER="$2"
+        return 0
+    fi
+    TAR_MEMBER="$(basename "$1")"
+    [ "${TAR_MEMBER}" = "$2" ] \
+        || refuse "cannot name ${TAR_MEMBER} as $2/ in the archive: the mount point must be named $2"
+    TAR_ROOT="$(dirname "$1")"
+    CONSISTENCY=live
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --with-docker) WITH_DOCKER=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --plain) PLAIN=1; shift ;;
+        --out)
+            [ "$#" -ge 2 ] || usage
+            OUT_DIR="$2"
+            shift 2
+            ;;
+        -h | --help) usage ;;
+        *) say "ab-backup: unknown argument: $1"; usage ;;
+    esac
+done
+
+[ -d "${AB_DATA}" ] || refuse "@data is not mounted at ${AB_DATA}"
+
+read_slot
+
+# The output goes next to the data by default: @data is the filesystem that has room,
+# and the archive is part of what a rebuild needs.
+[ -n "${OUT_DIR}" ] || OUT_DIR="${AB_DATA}"
+OUT_ABS="$(cd "${OUT_DIR}" 2>/dev/null && pwd)" || OUT_ABS="${OUT_DIR}"
+
+SUFFIX=.tar.gz
+[ "${PLAIN}" = "1" ] && SUFFIX=.tar
+NAME="data-$(hostname 2>/dev/null || printf 'unknown')-$(date -u +%Y%m%dT%H%M)${SUFFIX}"
+ARCHIVE="${OUT_ABS}/${NAME}"
+
+UPPER_DIR="${AB_P4}/${UPPER}/upper"
+ETC_OK=0
+[ -d "${UPPER_DIR}/${ETC_REL}" ] && ETC_OK=1
+
+# Where the archive is written inside @data, its own members would otherwise be read
+# back while it is being written: tar is told to skip it.
+EXCLUDE=""
+case "${ARCHIVE}" in
+    "${AB_DATA}"/*)
+        _rel="${ARCHIVE#"${AB_DATA}"}"
+        EXCLUDE="${DATA_PREFIX}${_rel}"
+        ;;
+esac
+
+if [ "${DRY_RUN}" = "1" ]; then
+    printf 'plan=%s <- %s (%s entries)\n' "${DATA_PREFIX}" "${AB_DATA}" "$(count_entries "${AB_DATA}")"
+    if [ "${ETC_OK}" = "1" ]; then
+        printf 'plan=%s <- %s (%s entries)\n' "${ETC_REL}" "${UPPER_DIR}/${ETC_REL}" \
+            "$(count_entries "${UPPER_DIR}/${ETC_REL}")"
+    else
+        printf 'plan=%s <- none (slot %s has no copy-up config)\n' "${ETC_REL}" "${SLOT}"
+    fi
+    if [ "${WITH_DOCKER}" = "1" ]; then
+        printf 'plan=%s <- %s (%s entries)\n' "${DOCKER_PREFIX}" "${AB_DOCKER}" "$(count_entries "${AB_DOCKER}")"
+    fi
+    printf 'plan=%s <- %s/ab + %s/.ab (bookkeeping and growth record)\n' "${META_PREFIX}" "${AB_ESP}" "${AB_P4}"
+    printf 'would-write=%s\n' "${ARCHIVE}"
+    printf 'dry-run=1\n'
+    exit 0
+fi
+
+[ -d "${OUT_ABS}" ] || refuse "output directory ${OUT_ABS} does not exist"
+[ -w "${OUT_ABS}" ] || refuse "output directory ${OUT_ABS} is not writable"
+[ -e "${ARCHIVE}" ] && refuse "${ARCHIVE} already exists"
+
+# What the same sources are worth now, before a snapshot or a tar is started. The
+# estimate is the source size, so it is an upper bound for a compressed package and the
+# right figure for a plain one; either way nothing is written that cannot fit.
+_need="$(size_kb "${AB_DATA}")"
+[ "${ETC_OK}" = "1" ] && _need=$((_need + $(size_kb "${UPPER_DIR}/${ETC_REL}")))
+[ "${WITH_DOCKER}" = "1" ] && _need=$((_need + $(size_kb "${AB_DOCKER}")))
+_avail="$(avail_kb "${OUT_ABS}")"
+case "${_avail}" in
+    '' | *[!0-9]*) say "ab-backup: warn: free space of ${OUT_ABS} is unknown, neither checked nor guaranteed" ;;
+    *)
+        [ "${_avail}" -ge "${_need}" ] \
+            || refuse "not enough space in ${OUT_ABS}: the sources need about ${_need} KiB, ${_avail} KiB are free"
+        ;;
+esac
+
+WORK="${OUT_ABS}/.ab-backup.$$"
+mkdir -p "${WORK}/${META_PREFIX}" || die "cannot create ${WORK}"
+
+trap 'cleanup' EXIT INT TERM HUP
+
+# --- the read-only copies ---------------------------------------------------
+tar_target "${AB_DATA}" "${DATA_PREFIX}"
+DATA_ROOT="${TAR_ROOT}"
+DATA_MEMBER="${TAR_MEMBER}"
+# A mixed export - one category snapshotted, one read live - is reported as live: the
+# weaker claim is the true one.
+_consistency="${CONSISTENCY}"
+
+DOCKER_ROOT=""
+DOCKER_MEMBER=""
+if [ "${WITH_DOCKER}" = "1" ]; then
+    [ -d "${AB_DOCKER}" ] || refuse "@docker is not mounted at ${AB_DOCKER}, cannot honour --with-docker"
+    tar_target "${AB_DOCKER}" "${DOCKER_PREFIX}"
+    DOCKER_ROOT="${TAR_ROOT}"
+    DOCKER_MEMBER="${TAR_MEMBER}"
+    [ "${CONSISTENCY}" = "live" ] && _consistency=live
+fi
+
+# --- meta/ ------------------------------------------------------------------
+_meta_etc="$(count_entries "${UPPER_DIR}/${ETC_REL}")"
+_meta_data="$(count_entries "${AB_DATA}")"
+_meta_docker="$(count_entries "${AB_DOCKER}")"
+[ "${WITH_DOCKER}" = "1" ] || _meta_docker=0
+
+for _pair in "state.json:ab/state.json" "device.json:ab/device.json" "image.json:ab/image.json"; do
+    _dst="${_pair%%:*}"
+    _src_rel="${_pair#*:}"
+    [ -f "${AB_ESP}/${_src_rel}" ] || continue
+    cp "${AB_ESP}/${_src_rel}" "${WORK}/${META_PREFIX}/${_dst}" \
+        || die "cannot copy ${AB_ESP}/${_src_rel}"
+done
+for _rel in .ab/grow .ab/grow.log; do
+    _dst="$(basename "${_rel}")"
+    if _src="$(meta_source "${_rel}")"; then
+        cp "${_src}" "${WORK}/${META_PREFIX}/${_dst}" || die "cannot copy ${_src}"
+    fi
+done
+
+{
+    printf 'archive=%s\n' "${NAME}"
+    printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'hostname=%s\n' "$(hostname 2>/dev/null || printf 'unknown')"
+    printf 'slot=%s upper=%s\n' "${SLOT}" "${UPPER}"
+    printf 'with_docker=%s plain=%s consistency=%s\n' "${WITH_DOCKER}" "${PLAIN}" "${_consistency}"
+    printf 'entries data=%s etc=%s docker=%s\n' "${_meta_data}" "${_meta_etc}" "${_meta_docker}"
+} >"${WORK}/${META_PREFIX}/manifest.txt"
+
+{
+    printf '{\n'
+    printf '  "archive": "%s",\n' "${NAME}"
+    printf '  "created": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '  "slot": "%s",\n' "${SLOT}"
+    printf '  "upper": "%s",\n' "${UPPER}"
+    printf '  "with_docker": %s,\n' "$([ "${WITH_DOCKER}" = "1" ] && printf 'true' || printf 'false')"
+    printf '  "consistency": "%s",\n' "${_consistency}"
+    printf '  "entries": { "data": %s, "etc": %s, "docker": %s }\n' \
+        "${_meta_data}" "${_meta_etc}" "${_meta_docker}"
+    printf '}\n'
+} >"${WORK}/${META_PREFIX}/ab-backup.json"
+
+# Counted last: the manifest and the summary above are meta entries too.
+_meta_count="$(count_entries "${WORK}/${META_PREFIX}")"
+
+# --- the archive ------------------------------------------------------------
+set -- --create --file "${ARCHIVE}"
+[ "${PLAIN}" = "1" ] || set -- "$@" --gzip
+[ -z "${EXCLUDE}" ] || set -- "$@" --exclude "${EXCLUDE}"
+set -- "$@" -C "${DATA_ROOT}" "${DATA_MEMBER}"
+[ -z "${DOCKER_ROOT}" ] || set -- "$@" -C "${DOCKER_ROOT}" "${DOCKER_MEMBER}"
+[ "${ETC_OK}" = "1" ] && set -- "$@" -C "${UPPER_DIR}" "${ETC_REL}"
+set -- "$@" -C "${WORK}" "${META_PREFIX}"
+
+tar "$@" || {
+    rm -f "${ARCHIVE}" 2>/dev/null || :
+    die "tar failed, no package was written"
+}
+
+if command -v sha256sum >/dev/null 2>&1; then
+    _digest="$(sha256sum "${ARCHIVE}" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+    _digest="$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')"
+else
+    rm -f "${ARCHIVE}" 2>/dev/null || :
+    die "no sha256sum or shasum, cannot verify the package"
+fi
+# The digest file carries the absolute path, so `sha256sum -c <file>` works from any
+# working directory - which is how the device check runs it.
+printf '%s  %s\n' "${_digest}" "${ARCHIVE}" >"${ARCHIVE}.sha256" \
+    || die "cannot write ${ARCHIVE}.sha256"
+
+sync 2>/dev/null || :
+
+printf 'backup=%s\n' "${ARCHIVE}"
+printf 'sha256=%s\n' "${ARCHIVE}.sha256"
+printf 'entries data=%s etc=%s docker=%s meta=%s\n' \
+    "${_meta_data}" "${_meta_etc}" "${_meta_docker}" "${_meta_count}"
+printf 'consistency=%s\n' "${_consistency}"
+say "ab-backup: ${ARCHIVE} (${_meta_data} data, ${_meta_etc} config, ${_meta_docker} docker entries, ${_consistency})"

@@ -13,6 +13,7 @@ Each document covers one topic. Every number is either measured or has an explic
 | [conflicts-payload.md](conflicts-payload.md) | Three-way comparison, disposition, uci boundary, payload contract, validation, build inputs |
 | [network.md](network.md) | First-boot network generation, the shipped defaults (WAN port, bridge ports, LAN subnet), how to change them, and the WAN SSH exception |
 | [debug-ssh.md](debug-ssh.md) | Manual interactive debugging entry point: trigger, connection, prepared artifacts, session bounds, security, why it is not a gate |
+| [backup.md](backup.md) | The three products and the capacity each one can be restored to, why a whole-disk image fails on a smaller disk, the restore decision tree (paths A-D), and what `ab-backup` / `ab-restore` put in a package |
 
 ## Conventions
 

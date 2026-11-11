@@ -1,0 +1,271 @@
+#!/bin/sh
+# ab-restore - put a package from ab-backup back on a machine.
+#
+# The archive is read as three fixed categories and nothing else:
+#
+#   data/        -> the @data mount (/data)
+#   etc/config/  -> the running slot's overlay upper etc/config
+#   meta/        -> @data/.ab-restore-meta/ - never the ESP
+#
+# meta/ is kept, not applied: it describes the machine the package came from (its slot
+# state, its device identity, its first-boot growth record). Writing it back onto the
+# ESP would copy an old disk geometry and an old slot pairing into a freshly installed
+# system, which is harder to diagnose than a missing meta file. It is dropped next to
+# the data so a human can read it.
+#
+# Refusals - all of them before anything is written - print `refuse: <reason>` on stderr
+# and exit 3:
+#   * the package is not there, or cannot be read
+#   * its .sha256 does not match it
+#   * a member is not one of the three categories, or would escape its target
+#   * @data is not empty and --force was not given
+#   * a target would be on the ESP
+#
+# Output (stdout, one machine readable line each):
+#   restored=data path=<abs> entries=<n>
+#   restored=etc/config path=<abs> entries=<n> | restored=etc/config none
+#   restored=meta path=<abs> entries=<n> | restored=meta skipped
+#
+# Environment:
+#   AB_ESP        ESP mount point            (default /boot)
+#   AB_P4         writable partition mount   (default /mnt/p4)
+#   AB_DATA       @data mount point          (default /data)
+#   AB_CMD        /proc/cmdline equivalent   (default /proc/cmdline, for tests)
+#   AB_SLOT_BIN   ab-slot, for the running slot and its layer
+#   AB_TAR        the tar binary             (default tar, for tests)
+
+set -u
+PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+AB_ESP="${AB_ESP:-/boot}"
+AB_P4="${AB_P4:-/mnt/p4}"
+AB_DATA="${AB_DATA:-/data}"
+AB_CMD="${AB_CMD:-/proc/cmdline}"
+AB_SLOT_BIN="${AB_SLOT_BIN:-}"
+AB_TAR="${AB_TAR:-tar}"
+
+DATA_PREFIX=data
+DOCKER_PREFIX=docker
+ETC_REL=etc/config
+META_PREFIX=meta
+META_DEST=.ab-restore-meta
+
+FORCE=0
+DATA_ONLY=0
+ARCHIVE=""
+
+say() {
+    printf '%s\n' "$*" >&2
+}
+
+die() {
+    say "ab-restore: $*"
+    exit 1
+}
+
+refuse() {
+    say "refuse: $*"
+    exit 3
+}
+
+usage() {
+    say "usage: ab-restore <archive> [--force] [--data-only]"
+    exit 2
+}
+
+# --------------------------------------------------------------------------- #
+# The machine
+# --------------------------------------------------------------------------- #
+
+ab_slot_path() {
+    if [ -n "${AB_SLOT_BIN}" ]; then
+        printf '%s' "${AB_SLOT_BIN}"
+        return 0
+    fi
+    for _candidate in /usr/sbin/ab-slot "$(dirname "$0")/ab-slot"; do
+        if [ -f "${_candidate}" ]; then
+            printf '%s' "${_candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+read_slot() {
+    SLOT=""
+    UPPER=""
+    _bin="$(ab_slot_path)" || refuse "ab-slot not found, cannot resolve the running slot"
+    if [ -x "${_bin}" ]; then
+        _line="$("${_bin}" status 2>/dev/null)" \
+            || refuse "ab-slot status failed, the slot state is unreadable"
+    else
+        _line="$(sh "${_bin}" status 2>/dev/null)" \
+            || refuse "ab-slot status failed, the slot state is unreadable"
+    fi
+    for _kv in ${_line}; do
+        case "${_kv}" in
+            slot=*) SLOT="${_kv#*=}" ;;
+            upper=*) UPPER="${_kv#*=}" ;;
+        esac
+    done
+    [ -n "${SLOT}" ] || refuse "ab-slot status reported no slot"
+    [ -n "${UPPER}" ] || refuse "ab-slot status reported no writable layer for slot ${SLOT}"
+}
+
+sha256_of() { # path
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+count_entries() { # dir
+    if [ -d "$1" ]; then
+        ls -A "$1" 2>/dev/null | wc -l | tr -d ' '
+    else
+        printf '0'
+    fi
+}
+
+# under <path> <root>: the path is the root or inside it.
+under() {
+    case "$1" in
+        "$2" | "$2"/*) return 0 ;;
+    esac
+    return 1
+}
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --force) FORCE=1; shift ;;
+        --data-only) DATA_ONLY=1; shift ;;
+        --)
+            shift
+            [ "$#" -ge 1 ] || usage
+            ARCHIVE="$1"
+            shift
+            ;;
+        -h | --help) usage ;;
+        -*) say "ab-restore: unknown argument: $1"; usage ;;
+        *)
+            [ -z "${ARCHIVE}" ] || usage
+            ARCHIVE="$1"
+            shift
+            ;;
+    esac
+done
+
+[ -n "${ARCHIVE}" ] || usage
+[ -f "${ARCHIVE}" ] || refuse "package not found: ${ARCHIVE}"
+[ -r "${ARCHIVE}" ] || refuse "package is not readable: ${ARCHIVE}"
+
+# A digest next to the package is used when it is there: a package that was truncated
+# in transfer would otherwise be unpacked halfway and called restored.
+if [ -f "${ARCHIVE}.sha256" ]; then
+    _want="$(awk 'NR == 1 { print $1 }' "${ARCHIVE}.sha256")"
+    if _got="$(sha256_of "${ARCHIVE}")"; then
+        [ "${_want}" = "${_got}" ] \
+            || refuse "${ARCHIVE} does not match ${ARCHIVE}.sha256 (expected ${_want}, got ${_got})"
+    else
+        say "ab-restore: warn: no sha256sum or shasum, ${ARCHIVE}.sha256 was not checked"
+    fi
+fi
+
+# Every member has to belong to one of the three categories, and to stay inside its
+# target. A package that says otherwise is not an ab-backup package, and unpacking the
+# same bytes into a fresh install is not the place to find that out.
+# The member list goes through a file rather than a command substitution: a member name
+# may contain spaces, and the counts below have to survive the loop.
+LIST="$(mktemp "${TMPDIR:-/tmp}/ab-restore.XXXXXX")" || die "cannot create a temporary file"
+trap 'rm -f "${LIST}"' EXIT INT TERM HUP
+"${AB_TAR}" -tf "${ARCHIVE}" >"${LIST}" 2>/dev/null \
+    || refuse "cannot read the package: ${ARCHIVE}"
+_have_data=0
+_have_etc=0
+_have_meta=0
+while IFS= read -r _member; do
+    [ -n "${_member}" ] || continue
+    case "${_member}" in
+        /* | *..*) refuse "member ${_member} would leave the target, refusing the package" ;;
+    esac
+    case "${_member}" in
+        "${DATA_PREFIX}" | "${DATA_PREFIX}"/*) _have_data=1 ;;
+        "${ETC_REL}" | "${ETC_REL}"/*) _have_etc=1 ;;
+        "${META_PREFIX}" | "${META_PREFIX}"/*) _have_meta=1 ;;
+        *) refuse "unexpected member ${_member}: not a data/, ${ETC_REL}/ or ${META_PREFIX}/ package" ;;
+    esac
+done <"${LIST}"
+[ "${_have_data}" = "1" ] || refuse "the package carries no ${DATA_PREFIX}/, there is nothing to restore"
+
+read_slot
+
+DATA_ABS="$(cd "${AB_DATA}" 2>/dev/null && pwd)" || DATA_ABS="${AB_DATA}"
+[ -d "${AB_DATA}" ] || refuse "@data is not mounted at ${AB_DATA}"
+
+if under "${DATA_ABS}" "${AB_ESP}"; then
+    refuse "@data (${DATA_ABS}) is on the ESP (${AB_ESP}), refusing to write the package there"
+fi
+
+# The ESP is reported, never written: meta/ is kept beside the data instead.
+META_ABS="${DATA_ABS}/${META_DEST}"
+if under "${META_ABS}" "${AB_ESP}"; then
+    refuse "${META_ABS} is on the ESP (${AB_ESP}), refusing to write meta there"
+fi
+
+ETC_TARGET="${AB_P4}/${UPPER}/upper/${ETC_REL}"
+if [ "${DATA_ONLY}" = "0" ] && [ "${_have_etc}" = "1" ]; then
+    [ -d "${AB_P4}" ] || refuse "the writable partition is not mounted at ${AB_P4}, cannot restore ${ETC_REL}"
+    if under "${ETC_TARGET}" "${AB_ESP}"; then
+        refuse "${ETC_TARGET} is on the ESP (${AB_ESP}), refusing to write ${ETC_REL} there"
+    fi
+fi
+
+# Overwriting a machine's data has to be asked for: the common accident is restoring onto
+# the machine the package came from.
+if [ "${FORCE}" = "0" ]; then
+    _existing="$(count_entries "${AB_DATA}")"
+    [ "${_existing}" = "0" ] \
+        || refuse "@data (${AB_DATA}) is not empty (${_existing} entries); run with --force if the overwrite is intended"
+fi
+
+# --- the restore ------------------------------------------------------------
+${AB_TAR} -xf "${ARCHIVE}" -C "${AB_DATA}" --strip-components=1 "${DATA_PREFIX}/*" \
+    || die "cannot extract ${DATA_PREFIX}/ into ${AB_DATA}"
+printf 'restored=%s path=%s entries=%s\n' "${DATA_PREFIX}" "${DATA_ABS}" "$(count_entries "${AB_DATA}")"
+
+if [ "${DATA_ONLY}" = "1" ]; then
+    printf 'restored=%s skipped\n' "${ETC_REL}"
+    printf 'restored=%s skipped\n' "${META_PREFIX}"
+    say "ab-restore: restored @data only, ${ETC_REL} and ${META_PREFIX} were left alone"
+    exit 0
+fi
+
+if [ "${_have_etc}" = "1" ]; then
+    mkdir -p "${ETC_TARGET}" || die "cannot create ${ETC_TARGET}"
+    ${AB_TAR} -xf "${ARCHIVE}" -C "${ETC_TARGET}" --strip-components=2 "${ETC_REL}/*" \
+        || die "cannot extract ${ETC_REL}/ into ${ETC_TARGET}"
+    printf 'restored=%s path=%s entries=%s\n' "${ETC_REL}" "${ETC_TARGET}" "$(count_entries "${ETC_TARGET}")"
+else
+    printf 'restored=%s none\n' "${ETC_REL}"
+fi
+
+if [ "${_have_meta}" = "1" ]; then
+    mkdir -p "${META_ABS}" || die "cannot create ${META_ABS}"
+    ${AB_TAR} -xf "${ARCHIVE}" -C "${META_ABS}" --strip-components=1 "${META_PREFIX}/*" \
+        || die "cannot extract ${META_PREFIX}/ into ${META_ABS}"
+    printf 'restored=%s path=%s entries=%s\n' "${META_PREFIX}" "${META_ABS}" "$(count_entries "${META_ABS}")"
+else
+    printf 'restored=%s none\n' "${META_PREFIX}"
+fi
+
+sync 2>/dev/null || :
+
+say "ab-restore: ${ARCHIVE} restored into ${DATA_ABS} (slot ${SLOT}, layer ${UPPER})"

@@ -124,12 +124,12 @@ write_state a none 1
 slot_cmd next --write >/dev/null 2>&1
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid" \
+  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown" \
   "ac-1 status line reports the documented fields"
 
 status="$(slot_cmd_full status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=partuuid" \
+  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=partuuid boot=unknown" \
   "ac-1 status reports the three mount points of the writable partition"
 
 # Without the identity library the status line says so instead of inventing a device.
@@ -144,7 +144,7 @@ write_state a a 2
 slot_cmd next --write >/dev/null 2>&1
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=b upper=@overlay-25.12.2 generation=2 committed=a pending=a p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid" \
+  "slot=b upper=@overlay-25.12.2 generation=2 committed=a pending=a p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown" \
   "ac-1 status follows ab.slot= on the kernel command line"
 printf 'console=ttyS0 ab.slot=a\n' >"$cmdline"
 

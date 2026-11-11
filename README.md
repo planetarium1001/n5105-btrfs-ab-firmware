@@ -154,6 +154,7 @@ never hides another.
 ## Documentation
 
 - [docs/](docs/README.md) — design documents
+- [docs/backup.md](docs/backup.md) — backup and restore contract: the three products, what each one can be restored to, and the restore decision tree
 
 ## Status
 
