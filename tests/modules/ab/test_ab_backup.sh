@@ -144,6 +144,10 @@ assert_eq "$(find "$esp" -newer "$marker" 2>/dev/null)" "" \
   "ac-6 the ESP is never written"
 assert_contains "$stdout" "entries data=2 etc=2 docker=0 meta=7" \
   "ac-6 the manifest counts what went in, and no docker category by default"
+# The human summary goes to stderr, and a successful run has no warning on it.
+assert_contains "$err" "ab-backup: " "ac-6 the human summary is on stderr, not stdout"
+assert_eq "$(printf '%s' "$err" | grep -c 'warn:')" "0" \
+  "ac-6 a snapshot-backed export prints no warn:"
 
 # --- --with-docker ---------------------------------------------------------
 out_docker="$tmp/out-docker"
