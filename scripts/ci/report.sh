@@ -51,8 +51,10 @@ result_cell() {
     local result="${1-}"
     case "${result}" in
         success) printf 'PASS' ;;
+        failure) printf 'FAIL' ;;
         skipped) printf 'SKIPPED' ;;
         cancelled) printf 'CANCELLED' ;;
+        timed_out) printf 'TIMEOUT' ;;
         "") printf 'n/a' ;;
         *) printf '%s' "${result}" | tr '[:lower:]' '[:upper:]' ;;
     esac
