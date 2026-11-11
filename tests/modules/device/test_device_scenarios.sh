@@ -417,6 +417,14 @@ assert_contains "$netlog" "the watchdog restores" "when the host cannot reach th
 assert_eq "$(test -f "$FAKE_DEV/config.tsv" && echo yes || echo no)" "no" \
     "no inventory was written after the failed change, so a jump case cannot judge a state the machine does not have"
 
+# The probe table is `name:args` and split on whitespace: a table entry that carries a
+# space used to split into two entries, and the case recorded a bare-program usage error
+# as the baseline it then compared against.
+setup_fake_world 25.12.2
+plan=$(sh "$root/scripts/device/scenarios.sh" --dry-run --case S1 --payload-dir "$tmp/payloads" 2>&1)
+assert_contains "$plan" "curl --version" "the probe table keeps the argument with its program"
+assert_contains "$plan" "htop --version" "the second probe keeps its argument too"
+
 # The helper is a driver artifact, not a fact about the machine. When it does not come
 # back after a reboot, the case must say so instead of reporting that the user's data,
 # packages and services are gone.

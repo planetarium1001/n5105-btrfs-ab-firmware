@@ -140,7 +140,7 @@ SCEN_ZONENAME=${AB_SCEN_ZONENAME:-Asia/Shanghai}
 SCEN_SERVICES=${AB_SCEN_SERVICES:-uhttpd}
 # Packages that can be executed once to prove the binary still runs. A package outside
 # this list is judged by apk info -e plus the existence of its own files.
-SCEN_PROBES=${AB_SCEN_PROBES:-"curl:curl --version htop:htop --version"}
+SCEN_PROBES=${AB_SCEN_PROBES:-"curl:--version htop:--version"}
 SCEN_LOW=${AB_SCEN_LOW:-25.12.0}
 SCEN_HIGH=${AB_SCEN_HIGH:-25.12.2}
 # After the network reload: how many consecutive ssh answers, spaced apart, make the
@@ -1007,10 +1007,13 @@ _hash_cmp() {
 }
 
 # _scen_probe_cmd <pkg>: the command that proves one package still runs, if we know one.
+# The table is `name:args` and is split on whitespace, so the args must not carry any:
+# `curl:curl --version` used to split into `curl:curl` and a stray `--version`, which ran
+# the bare program and recorded a usage error as the baseline.
 _scen_probe_cmd() {
     for _pair in ${SCEN_PROBES}; do
         case "${_pair}" in
-            "${1}:"*) printf '%s\n' "${_pair#*:}"; return 0 ;;
+            "${1}:"*) printf '%s %s\n' "${1}" "${_pair#*:}" | sed 's/ *$//'; return 0 ;;
         esac
     done
     return 1
@@ -1156,7 +1159,7 @@ run_s1() {
     # taken here and compared in S3/S4 instead of being assumed.
     for _pair in ${SCEN_PROBES}; do
         _p=${_pair%%:*}
-        _cmd=${_pair#*:}
+        _cmd=$(_scen_probe_cmd "${_p}") || continue
         grep -q "^pkg	${_p}	" "${probefile}" || continue
         _out=$(scen exec ${_cmd} 2>/dev/null | grep '^cmd=' | head -n 1)
         _rc=$(printf '%s\n' "${_out}" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')
@@ -1481,7 +1484,7 @@ v_software() {
     # The probes: what ran before the jump has to run after it.
     for _pair in ${SCEN_PROBES}; do
         _p=${_pair%%:*}
-        _cmd=${_pair#*:}
+        _cmd=$(_scen_probe_cmd "${_p}") || continue
         _want_rc=$(printf '%s\n' "${_exp}" | awk -F'\t' -v k="${_p}" '$1 == "probe" && $2 == k {print $3; exit}')
         [ -n "${_want_rc}" ] || continue
         _out=$(scen exec ${_cmd} 2>/dev/null | grep '^cmd=' | head -n 1)
@@ -1666,6 +1669,9 @@ scen_hop() {
     # The machine just rebooted; whatever lives on tmpfs is gone. The helper is re-pushed
     # before the first judgement so a missing helper can never read as missing data.
     push_helper || { CASE_NOTE="helper could not be pushed again after the reboot"; return 1; }
+    # PROBE carries the kernel the machine booted, so it has to be read again here: a
+    # finding that says "the machine now runs <old kernel>" is worse than no finding.
+    probe_machine || { CASE_NOTE="the machine did not answer the helper's probe after the reboot"; return 1; }
     if ! _booted=$(dev_wait_settled "${AB_WAIT_SETTLE}"); then
         ev "settle: no status line within ${AB_WAIT_SETTLE}s after the machine answered ssh"
         return 1
@@ -2084,7 +2090,8 @@ plan_case() {
             done
             printf '%s pkg-snapshot %s/apk-snapshot-<stamp>.txt expect=count>0 (apk info -v, else apk list --installed)\n' "${_case}" "${SCEN_EVIDENCE}"
             printf '%s pkg-version <every installed package> -> %s/packages.tsv expect=one row per package and per kmod\n' "${_case}" "${SCEN_EVIDENCE}"
-            printf '%s probe-baseline <curl, htop> expect=rc recorded for comparison after the jump\n' "${_case}"
+            printf '%s probe-baseline <%s> expect=rc recorded for comparison after the jump\n' \
+                "${_case}" "$(for _p in ${SCEN_PROBES}; do _scen_probe_cmd "${_p%%:*}" || true; done | tr '\n' ',' | sed 's/,$//')" 
             printf '%s assert installed>=1 package and>=1 kmod expect=PASS, else GAP with the per-package reason\n' "${_case}"
             printf '%s record\n' "${_case}"
             ;;
