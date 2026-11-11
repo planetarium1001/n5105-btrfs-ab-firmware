@@ -4,8 +4,8 @@
 # A release is only worth publishing if it can be checked after the fact, so this
 # stage produces three things and nothing else:
 #
-#   n5105-ab-<platform>-<upstream>.img.gz   the disk image, compressed
-#   n5105-ab-<platform>-<upstream>.tar      the update payload
+#   n5105-ab-<upstream>-install.img.gz      the disk image, compressed
+#   n5105-ab-<upstream>-upgrade.tar         the update payload
 #   SHA256SUMS                              digests of both
 #   release-notes.md                        versions, inputs, verification steps
 #
@@ -13,7 +13,7 @@
 # so a truncated or corrupted compression cannot be published.
 #
 # Inputs (environment):
-#   CI_PLATFORM_VERSION   platform version, used in the file names
+#   CI_PLATFORM_VERSION   platform version, recorded in the notes only
 #   CI_UPSTREAM_VERSION   upstream release label, used in the file names
 #   CI_IMAGE              raw image to compress      (one of the two is required)
 #   CI_IMAGE_GZ           already compressed image
@@ -48,7 +48,7 @@ platform_version="${CI_PLATFORM_VERSION:?CI_PLATFORM_VERSION is required}"
 upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
 release_dir="${CI_RELEASE_DIR:-${CI_TMP_ROOT}/release}"
 tag="${CI_RELEASE_TAG:-local}"
-base="n5105-ab-${platform_version}-${upstream_version}"
+base="n5105-ab-${upstream_version}"
 
 image="${CI_IMAGE:-}"
 image_gz_in="${CI_IMAGE_GZ:-}"
@@ -56,13 +56,14 @@ payload_in="${CI_PAYLOAD:-}"
 [ -n "${image}" ] || [ -n "${image_gz_in}" ] || ci_die "either CI_IMAGE or CI_IMAGE_GZ is required"
 
 mkdir -p "${release_dir}"
-rm -f "${release_dir}"/*.img.gz "${release_dir}"/SHA256SUMS "${release_dir}"/release-notes.md
+rm -f "${release_dir}"/*.img.gz "${release_dir}"/*.tar \
+    "${release_dir}"/SHA256SUMS "${release_dir}"/release-notes.md
 
 # --------------------------------------------------------------------------- #
 # 1. Image
 # --------------------------------------------------------------------------- #
 
-image_gz="${release_dir}/${base}.img.gz"
+image_gz="${release_dir}/${base}-install.img.gz"
 if [ -n "${image_gz_in}" ]; then
     [ -f "${image_gz_in}" ] || ci_die "compressed image not found: ${image_gz_in}"
     cp "${image_gz_in}" "${image_gz}"
@@ -93,7 +94,7 @@ ci_log "image artefact: ${image_gz} ($(ci_file_size "${image_gz}") bytes, sha256
 payload_copy=""
 if [ -n "${payload_in}" ]; then
     [ -f "${payload_in}" ] || ci_die "payload not found: ${payload_in}"
-    payload_copy="${release_dir}/${base}.tar"
+    payload_copy="${release_dir}/${base}-upgrade.tar"
     cp "${payload_in}" "${payload_copy}"
     ci_log "payload artefact: ${payload_copy} ($(ci_file_size "${payload_copy}") bytes, sha256 $(ci_sha256 "${payload_copy}"))"
 else
@@ -107,9 +108,9 @@ fi
 sums="${release_dir}/SHA256SUMS"
 (
     cd "${release_dir}"
-    sha256sum "${base}.img.gz" >"${sums}"
+    sha256sum "${base}-install.img.gz" >"${sums}"
     if [ -n "${payload_copy}" ]; then
-        sha256sum "${base}.tar" >>"${sums}"
+        sha256sum "${base}-upgrade.tar" >>"${sums}"
     fi
 )
 ci_log "checksums:"
@@ -134,9 +135,9 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf '\n'
     printf '| File | Size | SHA256 |\n'
     printf '| --- | --- | --- |\n'
-    printf '| `%s.img.gz` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${image_gz}")" "${image_gz_sha256}"
+    printf '| `%s-install.img.gz` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${image_gz}")" "${image_gz_sha256}"
     if [ -n "${payload_copy}" ]; then
-        printf '| `%s.tar` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${payload_copy}")" \
+        printf '| `%s-upgrade.tar` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${payload_copy}")" \
             "$(ci_sha256 "${payload_copy}")"
     fi
     printf '\n'
@@ -175,7 +176,7 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf 'checklist and the rollback procedure. The short version:\n'
     printf '\n'
     printf '```\n'
-    printf 'gunzip -c %s.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync\n' "${base}"
+    printf 'gunzip -c %s-install.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync\n' "${base}"
     printf '```\n'
     printf '\n'
     printf 'After the first boot run `ab-slot status`; it must report `p4=ok` and a\n'
@@ -183,8 +184,8 @@ judge_line="${CI_S5_LINE:-not recorded}"
 } >"${notes}"
 ci_log "release notes: ${notes}"
 
-artifacts="${base}.img.gz"
-[ -n "${payload_copy}" ] && artifacts="${artifacts} ${base}.tar"
+artifacts="${base}-install.img.gz"
+[ -n "${payload_copy}" ] && artifacts="${artifacts} ${base}-upgrade.tar"
 artifacts="${artifacts} SHA256SUMS release-notes.md"
 
 ci_emit_output "release_dir" "${release_dir}"

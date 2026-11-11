@@ -13,8 +13,8 @@ A release directory contains four files:
 
 | File | Purpose |
 | --- | --- |
-| `n5105-ab-<platform>-<upstream>.img.gz` | the complete disk image, written once per machine |
-| `n5105-ab-<platform>-<upstream>.tar` | the update payload, used by `ab-upgrade` |
+| `n5105-ab-<upstream>-install.img.gz` | the complete disk image, written once per machine |
+| `n5105-ab-<upstream>-upgrade.tar` | the update payload, used by `ab-upgrade` |
 | `SHA256SUMS` | digests of both files |
 | `release-notes.md` | versions, upstream inputs and the acceptance lines of the build |
 
@@ -40,8 +40,8 @@ publishes exactly one of those, under one of two names:
 
 | Where | Name | Use |
 | --- | --- | --- |
-| GitHub release | `n5105-ab-<platform>-<upstream>.img.gz` | write this one; it is the only file the release job proved bootable |
-| Actions artifact (tag builds) | `image-flashable` | the same bytes, for testing before a release |
+| GitHub release | `n5105-ab-<upstream>-install.img.gz` | write this one; it is the only file the release job proved bootable |
+| Actions artifact (tag builds) | `image-install` | the same bytes, for testing before a release |
 | Actions artifact (every build) | `image-probe` | **never write this**: it is the S1 module probe, it looks for `/dev/vda` and powers off on real hardware |
 
 Which one an image carries is recorded inside it: mount the ESP (`PARTNAME ab-esp`, FAT) and
@@ -62,7 +62,7 @@ then write:
 
 ```sh
 lsblk -o NAME,SIZE,MODEL
-gunzip -c n5105-ab-<platform>-<upstream>.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync
+gunzip -c n5105-ab-<upstream>-install.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync
 sudo sync
 ```
 
@@ -79,7 +79,7 @@ same root filesystem.
 To write to a file instead, for a virtual machine test:
 
 ```sh
-gunzip -c n5105-ab-<platform>-<upstream>.img.gz > test.img
+gunzip -c n5105-ab-<upstream>-install.img.gz > test.img
 qemu-system-x86_64 -machine q35 -m 1G -bios /usr/share/OVMF/OVMF_CODE.fd \
   -drive file=test.img,if=virtio,format=raw -netdev user,id=n0 \
   -device virtio-net-pci,netdev=n0 -nographic
@@ -338,8 +338,8 @@ An update writes the inactive slot and marks it pending. It never touches the ru
 slot, so the machine keeps working if anything goes wrong.
 
 ```sh
-ab-upgrade --check /root/n5105-ab-<platform>-<upstream>.tar
-ab-upgrade /root/n5105-ab-<platform>-<upstream>.tar
+ab-upgrade --check /root/n5105-ab-<upstream>-upgrade.tar
+ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar
 ab-slot status
 ab-slot conflicts
 ab-slot log --upgrade

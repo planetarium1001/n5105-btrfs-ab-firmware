@@ -5,6 +5,21 @@ Every stage of the pipeline is a shell script in this directory. The workflows i
 upload the results and collect diagnostics. Keeping the logic here means a stage can be
 reproduced locally with the same inputs the workflow passes.
 
+## Stage map
+
+Five stages, in the order they run. The name is what the job is called on the run page;
+the last two columns say what the stage buys you and what you lose when it fails.
+
+| Stage | Name | What it proves | What breaks when it fails |
+|---|---|---|---|
+| S1 | probe | kernel loads the official btrfs module closure and mounts btrfs | no later stage can rely on btrfs in initramfs |
+| S2 | image | four-partition geometry, ESP, GPT PARTNAME | nothing can be installed |
+| S3 | boot | overlay root composed and switch_root reached, twice | no slot can boot |
+| S4 | slots | commit, abandon, rollback and the health check, four boots | A/B switching is unproven |
+| S5 | upgrade | payload upgrade, degraded boot and reclamation, four boots | updates are unproven |
+
+## Workflows
+
 | Workflow | Stage |
 |---|---|
 | `.github/workflows/ci.yml` | entry point: triggers, stage selection, final verdict |
@@ -52,6 +67,7 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `payload-build.sh` | s5 | build the test upgrade payload (rootfs, kernel, initramfs, platform layer, manifest) |
 | `release.sh` | release | name, compress, checksum and describe the published artifacts |
 | `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
+| `stage-summary.sh` | s1, s2, s3, s4, s5 | render one stage's verdict as a fixed five-column block for the run page |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
 | `diagnostics.sh` | all | environment facts, disk usage and file inventories for failure triage |
 
@@ -63,8 +79,8 @@ The names say which, so nobody has to remember:
 | Artifact | Built by | Initramfs | Write it to a disk? |
 | --- | --- | --- | --- |
 | `image-probe` | s2 | S1 module-load probe (`initramfs/init`) | **never** - it looks for `/dev/vda` and powers off on anything else |
-| `image-flashable` | s3 | production boot init (`initramfs/boot/init`) | yes - this is the image the release publishes |
-| release `*.img.gz` | release (from `image-flashable`) | production boot init | yes |
+| `image-install` | s3 | production boot init (`initramfs/boot/init`) | yes - this is the image the release publishes |
+| release `*.img.gz` | release (from `image-install`) | production boot init | yes |
 
 The image records its own identity in `ab/image.json` on the ESP (`"kind": "boot"|"probe"`).
 Three gates depend on it: `disk.sh` refuses to build a probe image without
@@ -540,8 +556,10 @@ if the fixture's deliberate conflict does not show up, so the path stays covered
 
 ### Releases
 
-`release.sh` turns a verified build into `n5105-ab-<platform>-<upstream>.img.gz`, the
-matching `.tar`, `SHA256SUMS` and `release-notes.md`. The compressed image is
+`release.sh` turns a verified build into `n5105-ab-<upstream>-install.img.gz`, the
+matching `-upgrade.tar`, `SHA256SUMS` and `release-notes.md`. The firmware version is a
+release counter, not part of the file name: the release page's tag already names it. The
+compressed image is
 decompressed again and compared with the raw image digest before it is published.
 
 `.github/workflows/release.yml` runs on `v*` tags only, calls the ordinary pipeline

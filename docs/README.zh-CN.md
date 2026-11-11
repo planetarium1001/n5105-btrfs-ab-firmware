@@ -6,6 +6,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [ci-pipeline.zh-CN.md](ci-pipeline.zh-CN.md) | 三条 CI workflow、五个阶段（各自证明什么、失败代价）、产物对照表，以及怎么读一个 run 页面 |
 | [partitions.zh-CN.md](partitions.zh-CN.md) | 分区几何、GPT PARTNAME 与文件系统 LABEL 命名、尺寸依据、`mkfs` 与挂载参数、子卷、首启扩容 |
 | [boot-overlay.zh-CN.md](boot-overlay.zh-CN.md) | 引导顺序、层职责、挂载合成与顺序、平台层注入、GRUB 断言、降级启动 |
 | [lifecycle.zh-CN.md](lifecycle.zh-CN.md) | 代号模型、状态文件、更新事务、健康检查、回收、日志、命令 |

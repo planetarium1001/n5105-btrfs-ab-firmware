@@ -1,4 +1,4 @@
-name: ci-fetch
+name: fetch upstream
 
 # Stage 2 - fetch.
 #
@@ -82,7 +82,7 @@ defaults:
 
 jobs:
   fetch:
-    name: fetch upstream artifacts
+    name: fetch upstream
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -145,7 +145,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-fetch
-          path: ${{ runner.temp }}/ci/diagnostics
+          name: logs-fetch
+          path: |
+            ${{ runner.temp }}/ci/logs
+            ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7

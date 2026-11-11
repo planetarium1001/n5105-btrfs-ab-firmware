@@ -7,7 +7,7 @@
 # booted what was published; the first real machine powered off at the GRUB menu.
 #
 # So two things are locked here, statically and behaviourally:
-#   ac-1 the release takes image-flashable (S3's booted image), never image-probe
+#   ac-1 the release takes image-install (S3's booted image), never image-probe
 #   ac-2 the build refuses a probe initramfs unless it is allowed on purpose
 #   ac-3 the release refuses bytes whose initrd is not the production init
 set -uo pipefail
@@ -25,9 +25,9 @@ disk="$root/scripts/ci/disk.sh"
 # ac-1: artifact names say what they are, and the release takes the bootable one
 # --------------------------------------------------------------------------- #
 
-assert_contains "$(cat "$rel")" "name: image-flashable" \
-    "ac-1 the release downloads the flashable image"
-assert_contains "$(cat "$s3")" "name: image-flashable" \
+assert_contains "$(cat "$rel")" "name: image-install" \
+    "ac-1 the release downloads the install image"
+assert_contains "$(cat "$s3")" "name: image-install" \
     "ac-1 S3 uploads the image it actually booted"
 assert_contains "$(cat "$s2")" "name: image-probe" \
     "ac-1 S2's artifact is named as the probe it is"
@@ -73,7 +73,7 @@ assert_contains "$(ii_image_json boot initrd-a 0.0.8 25.12.2 2026-11-11T00:00:00
 # --------------------------------------------------------------------------- #
 
 rel_text="$(cat "$rel")"
-assert_contains "$rel_text" "Refuse an image that is not bootable" \
+assert_contains "$rel_text" "Verify the image is bootable" \
     "ac-3 the release has a byte-level gate"
 assert_contains "$rel_text" "S3 boot init" \
     "ac-3 the gate looks for the production init"

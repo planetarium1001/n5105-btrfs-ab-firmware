@@ -33,7 +33,7 @@ gh workflow run ci-debug.yml --ref main -f stage=s4 -f boot_timeout=1200
 gh run list --workflow ci-debug.yml --limit 1
 ```
 
-网页：**Actions** → **ci-debug** → **Run workflow**，分支选 `main`，再选 `stage`。
+网页：**Actions** → **Firmware CI - debug session** → **Run workflow**，分支选 `main`，再选 `stage`。
 
 | `stage` | 进会话之前会跑什么 |
 |---|---|

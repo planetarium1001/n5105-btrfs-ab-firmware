@@ -1,4 +1,4 @@
-name: ci-s3
+name: S3 boot
 
 # Stage S3 - layered boot on a version-named writable layer.
 #
@@ -78,7 +78,7 @@ defaults:
 
 jobs:
   s3:
-    name: layered boot
+    name: S3 boot - layered root
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -161,7 +161,7 @@ jobs:
 
       # The firmware boots the ESP in the third boot below, so prove it is bootable
       # before running any of them.
-      - name: "Preflight: the ESP boots through GRUB (gating)"
+      - name: Preflight - the ESP boots through GRUB
         id: verify0
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -171,7 +171,7 @@ jobs:
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-preflight.log"
 
       # Boot 1: compose the root and leave probe files behind.
-      - name: Boot 1 - compose the layered root (gating)
+      - name: Boot 1 - compose the layered root
         id: boot1
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -199,7 +199,7 @@ jobs:
           } >>"${GITHUB_OUTPUT}"
 
       # Boot 2: same image, nothing wiped. The first boot's probe must still be there.
-      - name: Boot 2 - verify persistence (gating)
+      - name: Boot 2 - verify persistence
         id: boot2
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -217,7 +217,7 @@ jobs:
       # committed entry, and the production system starts. This boot does NOT run a
       # probe initramfs: there is no /s3.sh and no S3-RESULT line here, so the run stops
       # on the first line our own boot hook prints and grades what it reported.
-      - name: "Boot 3: the ESP boots through GRUB (gating)"
+      - name: Boot 3 - the ESP boots through GRUB
         id: boot3
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -236,7 +236,7 @@ jobs:
       # GRUB picked an entry, our initramfs composed the root and our own hook ran. The
       # evidence is the hook's own console output, not a probe that could only exist in
       # a test initramfs.
-      - name: "Assert the GRUB boot reached our boot hook"
+      - name: Assert the GRUB boot reached our boot hook
         id: judge_grub
         env:
           SERIAL: ${{ steps.boot3.outputs.serial_log }}
@@ -282,22 +282,21 @@ jobs:
       # The image this stage actually booted: production initramfs, both slots, and the
       # only image a machine may be flashed with. It is what the release publishes; S2's
       # image-probe exists to test assembly and is never bootable outside QEMU.
-      - name: Upload the flashable image
+      - name: Upload the install image
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: image-flashable
+          name: image-install
           path: ${{ runner.temp }}/ci/disk/*.img.gz
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload probe artifacts
+      - name: Upload stage evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: s3-probe
+          name: evidence-s3
           path: |
-            ${{ runner.temp }}/ci/qemu/serial-*.log
             ${{ runner.temp }}/ci/qemu/qemu-*.out
             ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
             ${{ runner.temp }}/ci/disk/grub.cfg
@@ -309,7 +308,23 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-s3
-          path: ${{ runner.temp }}/ci/diagnostics
+          name: logs-s3
+          path: |
+            ${{ runner.temp }}/ci/logs
+            ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7
+
+      # The summary block is the run page the user reads: same five columns for every
+      # stage, written even when the stage failed (if: always()).
+      - name: Write stage summary
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci"
+          cat "${CI_LOG_DIR:-${RUNNER_TEMP}}/ci/logs"/*.log >"${RUNNER_TEMP}/ci/s3-judge.log" 2>/dev/null || true
+          bash scripts/ci/stage-summary.sh \
+            --stage s3 \
+            --result "${{ job.status }}" \
+            --judge-log "${RUNNER_TEMP}/ci/s3-judge.log" \
+            --artifact image-install \
+            --artifact-file "${RUNNER_TEMP}/ci/disk/n5105-ab-image.img.gz"
