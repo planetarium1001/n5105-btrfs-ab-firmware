@@ -1,7 +1,7 @@
 #!/bin/sh
-# Real-user scenarios S1-S6: does what a person installed, wrote and configured
-# survive a version jump, is the software still usable afterwards, and did the tools
-# that boot the machine travel with the update?
+# Real-user scenarios S1-S7: does what a person installed, wrote and configured
+# survive a version jump, is the software still usable afterwards, did the tools that
+# boot the machine travel with the update, and does the package source follow the version?
 #
 # The matrix (matrix.sh, M1-M7) answers "did this jump keep a bootable machine": slot
 # fields, boot breadcrumbs, the layer invariant. This driver answers the question the
@@ -28,10 +28,13 @@
 #   S6  boottools    the boot chain versus the payload: the kernel and the initramfs on the
 #                    ESP and the tool in the platform layer (btrfs) are byte-identical to
 #                    the members of payload-<version>.tar. Read-only, no install, no reboot.
+#   S7  releasefeeds each version installed from its own release's feeds, then a jump, then
+#                    a version and ABI snapshot diff -- and the feed list's own verdict.
 #
-#   scripts/device/scenarios.sh                       # S1..S6
+#   scripts/device/scenarios.sh                       # S1..S7
 #   scripts/device/scenarios.sh --case S3 --case S4    # the two jumps
 #   scripts/device/scenarios.sh --case S6              # the boot toolchain alone
+#   scripts/device/scenarios.sh --case S7              # the package source versus the version
 #   scripts/device/scenarios.sh --resume               # skip cases that already PASS
 #   scripts/device/scenarios.sh --dry-run              # print steps and verdicts, touch nothing
 #
@@ -73,6 +76,50 @@
 # as a FINDING: the user is told which version the tools come from, and nothing is red,
 # because nothing is mis-assembled.
 #
+# Why S7 installs from the release's own feeds instead of from "the newest packages in the
+# repository": a matrix run that installs from whatever the machine's sources serve today
+# answers "does the current feed set work" and says nothing about what a user got on the day
+# they installed release v, or about what the same package looks like after the jump. The
+# feed list a release ships is that release's own statement about where its packages live,
+# so S7 takes it from the release (it is inside payload-<version>.tar's rootfs.tar.gz and is
+# read, never rebuilt -- the kmods directory in it is <kernel>-1-<hash>, a build hash no
+# version string can predict) and compares two snapshots taken on either side of the jump.
+#
+# Why the user-space half of that comparison is expected to show nothing: the three releases
+# publish byte-identical indexes for packages/x86_64/packages (sha256 e06121acb3131ece... for
+# 25.12.0, 25.12.1 and 25.12.2; htop is 3.5.3-r1 in all three, measured). So "the user-space
+# versions a user had on release day" is not a dimension that differs between these releases,
+# and S7 keeps that conclusion measured rather than assumed: the diff table names the packages
+# that moved, and the user-space ones do not appear in it.
+#
+# Why the kernel-bound half is the ABI surface: targets/x86/64/packages (the target's own
+# libc and kernel packages) and targets/x86/64/kmods/<kernel>-1-<hash> are built per release
+# and per kernel, and the three indexes differ (c80d7bcc... for 25.12.0, 9d3953a4... for
+# 25.12.1, 0c614677... for 25.12.2; the kmods directories are 6.12.87-1-bd81971a...,
+# 6.12.94-1-..., 6.12.103-1-0413601b...). A kmod records the kernel it was built for as a
+# package dependency, so `apk info -R` on the kmod is where "built for a kernel this machine
+# no longer runs" is visible -- the module file itself is often not even present (the kmods
+# this project installs carry configuration stubs only).
+#
+# Why the feed list has to follow the version, and why that is a FINDING: ab-upgrade treats
+# /etc/apk/repositories.d/distfeeds.list as user configuration and keeps it across a jump
+# (measured: after a downgrade to 25.12.0 the list still named 6.12.103's kmods index), so
+# every install afterwards answers from an index built for a kernel the machine does not run.
+# Nothing is broken by that -- the machine boots, the data is there, the old packages still
+# work -- so it is recorded as FINDING: the package source did not follow the version, and
+# the user is told which index they are on. Turning it red would report a design choice as a
+# defect; staying silent would leave the user on the wrong shelf without being told.
+#
+# Why S7 does not simply declare a red line on the aligned install: the point of reloading
+# the running version's feeds and installing from them is to separate two causes. A package
+# that cannot be installed from its own version's feed is a package problem; a machine that
+# cannot install anything from that feed is a feed problem. S7 therefore tries the kmod its
+# own batch installed first (its version genuinely differs per release) and a package that is
+# not installed at all second, and only a run where neither install changed anything is red.
+# The kmod is allowed to fail on its own: apk's world file keeps pinning the old kernel, and
+# `apk add --force-overwrite`, `apk add <pkg>=<version>` and `--force-reinstall` were all
+# measured either to conflict (rc=99) or to do nothing silently on this line of releases.
+#
 # Why a second driver instead of extending matrix.sh: matrix.sh is an executable, not a
 # library -- sourcing it would run its main flow. lib.sh owns the primitives (dev_ssh,
 # dev_push, dev_install, dev_wait_up, assert_*, record) and both drivers use them; the
@@ -92,7 +139,7 @@ export AB_REPO_ROOT
 # shellcheck source=scripts/device/lib.sh
 . "${DEVICE_DIR}/lib.sh"
 
-CASES_ALL="S1 S2 S3 S4 S5 S6"
+CASES_ALL="S1 S2 S3 S4 S5 S6 S7"
 
 PAYLOAD_DIR=${AB_PAYLOAD_DIR:-payloads}
 RESULTS=${AB_RESULTS:-results.tsv}
@@ -164,13 +211,26 @@ SCEN_PLATFORM_TOOL=${AB_SCEN_PLATFORM_TOOL:-btrfs}
 # downgrade run compare the tools a machine was left with against the payload they came
 # from.
 SCEN_S6_PAYLOAD=${AB_SCEN_S6_PAYLOAD:-}
+# S7 reads the feed list a release ships: /etc/apk/repositories.d/distfeeds.list is where
+# apk looks for it, and it is the file ab-upgrade classifies as keep-user, which is the fact
+# the case exists to measure. Only the location is configurable; the content is never built
+# here (see s7_feeds_render).
+SCEN_S7_FEEDS=${AB_SCEN_S7_FEEDS:-/etc/apk/repositories.d/distfeeds.list}
+# Where the three feed lines are assembled from when a payload carries no readable rootfs
+# feed list at all. It is the shape the release's own file has: one line per index *file*.
+SCEN_S7_FEED_BASE=${AB_SCEN_S7_FEED_BASE:-https://downloads.immortalwrt.org}
+# The packages a machine certainly does not have yet, used to prove that an aligned feed
+# serves a real install. The first one absent from the snapshot is picked; a package that is
+# already installed proves nothing, because apk answers rc=0 and changes nothing (measured).
+# The list is several names long because an image that already carries nano may not carry jq.
+SCEN_S7_FRESH_PKGS=${AB_SCEN_S7_FRESH_PKGS:-"nano less vim jq tmux git"}
 
 usage() {
     cat <<'USAGE'
-usage: scenarios.sh [--case S1..S6]... [--payload-dir DIR] [--results FILE]
+usage: scenarios.sh [--case S1..S7]... [--payload-dir DIR] [--results FILE]
                     [--evidence-dir DIR] [--resume] [--dry-run]
 
-  --case S1..S6      case to run, repeatable; default is all six
+  --case S1..S7      case to run, repeatable; default is all seven
   --payload-dir DIR  directory holding payload-<version>.tar (default: payloads)
   --results FILE     results.tsv to append to (default: results.tsv)
   --evidence-dir DIR evidence directory (default: <results dir>/evidence)
@@ -178,7 +238,7 @@ usage: scenarios.sh [--case S1..S6]... [--payload-dir DIR] [--results FILE]
   --dry-run          print the steps and the verdict rules, then exit; no ssh call is made
   --render-helper F  write the remote helper to F and exit (used by the unit tests)
 
-  S1 preinstall  S2 userdata  S3 up  S4 down  S5 abi  S6 boottools
+  S1 preinstall  S2 userdata  S3 up  S4 down  S5 abi  S6 boottools  S7 releasefeeds
 USAGE
 }
 
@@ -894,6 +954,18 @@ driver_error_mark() {
     : >"${SCEN_DRIVER_ERROR_FILE}"
 }
 
+# machine_unreachable_mark/seen: the opposite of a driver error. The reload broke the
+# connection to a machine that is still running; that is the fact the case exists to
+# report, so it must not be rewritten as "the helper did not answer".
+machine_unreachable_mark() {
+    [ -n "${SCEN_DRIVER_ERROR_FILE}" ] || return 0
+    : >"${SCEN_DRIVER_ERROR_FILE}.ssh-lost"
+}
+
+machine_unreachable_seen() {
+    [ -n "${SCEN_DRIVER_ERROR_FILE}" ] && [ -f "${SCEN_DRIVER_ERROR_FILE}.ssh-lost" ]
+}
+
 driver_error_seen() {
     [ -n "${SCEN_DRIVER_ERROR_FILE}" ] && [ -f "${SCEN_DRIVER_ERROR_FILE}" ]
 }
@@ -1304,7 +1376,15 @@ run_s2() {
     # check runs immediately and the machine has its own revert scheduled. A machine that
     # cannot schedule one does not apply the change at all -- see cmd_net_apply -- and the
     # skipped half is a FINDING, not a silent pass.
-    _ap=$(scen net-apply "${_bak}" "${SCEN_ROLLBACK_GRACE}" 2>/dev/null | grep -E '^(watchdog|net-reload)=')
+    _ap=$(scen net-apply "${_bak}" "${SCEN_ROLLBACK_GRACE}" 2>/dev/null \
+        | grep -E '^(watchdog|net-reload)(=|[[:space:]])')
+    # `net-reload rc=0` carries a space, so a `=`-only pattern silently dropped the one
+    # line that proves the reload happened. A missing watchdog line is worse: without it
+    # the machine never scheduled a way back, so the case must not be read as a pass.
+    if ! printf '%s\n' "${_ap}" | grep -q '^watchdog='; then
+        _fail "${_case}" "the reload step reported no watchdog line: no revert could have been scheduled"
+        return 1
+    fi
     ev "network reload: $(printf '%s' "${_ap}" | tr '\n' ' ')"
     if [ "$(kv "${_ap}" watchdog)" = "no" ]; then
         _finding "this image has neither setsid nor start-stop-daemon, so the revert cannot be scheduled: /etc/config/network was written but not applied, and the ssh-liveness half of S2 was skipped"
@@ -1330,6 +1410,7 @@ run_s2() {
         else
             ev "the machine did not answer within ${AB_WAIT_UP}s after the rollback"
         fi
+        machine_unreachable_mark
         CASE_NOTE="ssh lost after applying /etc/config/network; backed up to ${_bak}, rolled back, ${_recovery}"
         return 1
     fi
@@ -1463,6 +1544,7 @@ v_software() {
     fi
     _exp=${RDATA}
     _n=0
+    _filemissing=0
     for _p in $(printf '%s\n' "${_exp}" | awk -F'\t' '$1 == "pkg" || $1 == "kmod" {print $2}'); do
         _n=$((_n + 1))
         _line=$(scen pkgcheck "${_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
@@ -1476,10 +1558,18 @@ v_software() {
         case "${_fileok}" in
             yes) ev "software ${_p}: present, ${_file} exists" ;;
             no) _fail "${_case}" "software ${_p}: the package is installed but none of its files exist (first: ${_file:-none})" ;;
-            *) ev "software ${_p}: present, apk reported no file list" ;;
+            *)
+                # apk keeps no file list until its cache has been rebuilt, so this witness
+                # is simply absent. Saying so is the point: a silently skipped second
+                # witness is how "the files are still there" gets claimed without evidence.
+                ev "software ${_p}: present, no file list to check (apk has none for it)"
+                _filemissing=$((_filemissing + 1))
+                ;;
         esac
     done
     [ "${_n}" -gt 0 ] || _fail "${_case}" "software: the recorded set is empty, nothing was judged"
+    [ "${_filemissing}" -eq 0 ] \
+        || _finding "software: ${_filemissing} package(s) had no file list, so their files were not checked"
 
     # The probes: what ran before the jump has to run after it.
     for _pair in ${SCEN_PROBES}; do
@@ -1730,7 +1820,12 @@ run_jump() {
     if [ "${_running}" != "${_from}" ]; then
         ev "positioning: ${_running:-unknown} -> ${_from}"
         scen_hop "${_case}" "${_from}" position
-        case "$?" in
+        _pos_rc=$?
+        if [ "${_pos_rc}" -ne 0 ] && driver_error_seen; then
+            CASE_NOTE="driver error: the scenario helper did not answer while positioning the machine; the case did not start"
+            return 1
+        fi
+        case "${_pos_rc}" in
             0) : ;;
             2) CASE_NOTE="no payload for the start version ${_from}"; return 2 ;;
             *) CASE_NOTE="positioning to ${_from} failed; the case did not start"; return 1 ;;
@@ -1739,7 +1834,12 @@ run_jump() {
 
     ev "hop: ${_from} -> ${_to}"
     scen_hop "${_case}" "${_to}" ladder
-    case "$?" in
+    _hop_rc=$?
+    if [ "${_hop_rc}" -ne 0 ] && driver_error_seen; then
+        CASE_NOTE="driver error: the scenario helper did not answer during the jump; the machine was not judged"
+        return 1
+    fi
+    case "${_hop_rc}" in
         0) : ;;
         2) CASE_NOTE="no payload for ${_to}"; return 2 ;;
         20) CASE_NOTE="the jump to ${_to} was refused with exit 74"; return 1 ;;
@@ -1757,6 +1857,10 @@ run_jump() {
     v_software "${_case}"
     v_abi "${_case}"
     v_platform "${_case}"
+    if driver_error_seen; then
+        CASE_NOTE="driver error: the scenario helper stopped answering during the judgement; the machine was not judged"
+        return 1
+    fi
     [ "${CASE_FAILED}" -eq 0 ] || { CASE_NOTE="the jump to ${_to} committed but the user's state did not survive"; return 1; }
 
     _files=$(pull "${SCEN_EVIDENCE}/data.sha256" && kv "${RDATA}" files)
@@ -1784,6 +1888,10 @@ run_s5() {
     v_abi "${_case}"
     v_software "${_case}"
     v_platform "${_case}"
+    if driver_error_seen; then
+        CASE_NOTE="driver error: the scenario helper stopped answering while the ledger was read; the machine was not judged"
+        return 1
+    fi
     [ "${CASE_FAILED}" -eq 0 ] || { CASE_NOTE="the package set or the machine around it did not survive"; return 1; }
 
     _kver=$(kv "${PROBE}" kver)
@@ -2032,6 +2140,576 @@ run_s6() {
 }
 
 # --------------------------------------------------------------------------- #
+# S7: does a release's package source travel with its version
+# --------------------------------------------------------------------------- #
+
+# s7_kmods: the kernel modules this case tracks -- the kmod-* members of the S1 batch,
+# because a kmod is the package whose ABI question a version jump actually asks.
+s7_kmods() {
+    for _p in ${SCEN_PKGS}; do
+        case "${_p}" in
+            kmod-*) printf '%s\n' "${_p}" ;;
+        esac
+    done
+}
+
+# s7_payload_kernel <payload.tar>: the kernel package the payload records, e.g.
+# 6.12.103~0413601b1c3f0490e17f340fe09229ea-r1.
+# Read the way the rest of the driver reads the manifest (squeezed to one line, one sed per
+# field): a second JSON parser here could disagree with the installer about what the payload
+# says, and this value is the cross-check for the kmods directory a feed list names.
+s7_payload_kernel() {
+    _pk_mf=$(tar -xOf "${1}" manifest.json 2>/dev/null) || return 1
+    [ -n "${_pk_mf}" ] || return 1
+    printf '%s' "${_pk_mf}" | tr -d ' \t\r\n' | sed -n 's/.*"kernel":"\([^"]*\)".*/\1/p'
+}
+
+# s7_feeds_render <version> <outfile>: the feed list that version's release ships, as bytes.
+# Prints the source it used:
+#   rootfs    payload-<version>.tar's rootfs.tar.gz carried
+#             /etc/apk/repositories.d/distfeeds.list, which is copied out verbatim
+#   manifest  rebuilt from the kernel package the manifest records, because the rootfs could
+#             not be unpacked here; that is enough to name the kmods directory
+#   none      no payload, or a payload carrying neither, and the case cannot start
+# The rootfs is the primary source because the alternative -- assembling URLs from a version
+# string -- has to guess the kmods directory name <kernel>-1-<hash>, and the guess would be
+# this driver's rather than the release's. The list is also not derived from the version in
+# the file name: a release's rootfs can name another release's feeds (25.12.3's names
+# 25.12.2's, measured), and that is a fact about the release, not an error to correct.
+s7_feeds_render() {
+    _fr_v=$1
+    _fr_out=$2
+    _fr_p="${PAYLOAD_DIR}/payload-${_fr_v}.tar"
+    : >"${_fr_out}"
+    [ -f "${_fr_p}" ] || { printf 'none\n'; return 1; }
+
+    _fr_tgz="${_tmp}/s7-rootfs-${_fr_v}.tar.gz"
+    if payload_member_get "${_fr_p}" rootfs.tar.gz "${_fr_tgz}"; then
+        _fr_member=$(tar -tzf "${_fr_tgz}" 2>/dev/null \
+            | grep -E '(^|/)etc/apk/repositories\.d/distfeeds\.list$' | head -n 1)
+        if [ -n "${_fr_member}" ]; then
+            tar -xOf "${_fr_tgz}" "${_fr_member}" >"${_fr_out}" 2>/dev/null
+        fi
+    fi
+    if [ -s "${_fr_out}" ]; then printf 'rootfs\n'; return 0; fi
+
+    _fr_k=$(s7_payload_kernel "${_fr_p}") || _fr_k=""
+    if [ -n "${_fr_k}" ]; then
+        _fr_kver=${_fr_k%%~*}
+        _fr_hash=${_fr_k#*~}
+        _fr_hash=${_fr_hash%%-*}
+        if [ -n "${_fr_kver}" ] && [ -n "${_fr_hash}" ] && [ "${_fr_hash}" != "${_fr_k}" ]; then
+            # One line per index *file*, which is the shape the release's own list has, and
+            # exactly the feeds the S1 batch can come from: the store's apps, the plain
+            # packages, the target's own packages and the kmods of this payload's kernel.
+            {
+                printf '%s/releases/%s/packages/x86_64/packages/packages.adb\n' \
+                    "${SCEN_S7_FEED_BASE}" "${_fr_v}"
+                printf '%s/releases/%s/packages/x86_64/base/packages.adb\n' \
+                    "${SCEN_S7_FEED_BASE}" "${_fr_v}"
+                printf '%s/releases/%s/packages/x86_64/luci/packages.adb\n' \
+                    "${SCEN_S7_FEED_BASE}" "${_fr_v}"
+                printf '%s/releases/%s/targets/x86/64/packages/packages.adb\n' \
+                    "${SCEN_S7_FEED_BASE}" "${_fr_v}"
+                printf '%s/releases/%s/targets/x86/64/kmods/%s-1-%s/packages.adb\n' \
+                    "${SCEN_S7_FEED_BASE}" "${_fr_v}" "${_fr_kver}" "${_fr_hash}"
+            } >"${_fr_out}"
+            printf 'manifest\n'
+            return 0
+        fi
+    fi
+    : >"${_fr_out}"
+    printf 'none\n'
+    return 1
+}
+
+# s7_feed_of <feed list> <packages|targets|kmods>: the line of one kind, or "none".
+# Matched on the release layout rather than on the host name, so a mirror's list reads the
+# same way as the upstream one.
+s7_feed_of() {
+    case "${2}" in
+        packages) _fo_pat='/packages/x86_64/packages/' ;;
+        targets) _fo_pat='/targets/x86/64/packages/' ;;
+        kmods) _fo_pat='/targets/x86/64/kmods/' ;;
+        *)
+            printf 'none\n'
+            return 1
+            ;;
+    esac
+    _fo_line=$(grep -F "${_fo_pat}" "${1}" 2>/dev/null | head -n 1)
+    printf '%s\n' "${_fo_line:-none}"
+}
+
+# s7_feeds_write <local feed list>: put those bytes on the machine as its feed list and read
+# them back. An unverified write is a write that can silently not have happened, and the whole
+# case rests on knowing which list the machine is really using.
+s7_feeds_write() {
+    _fw_src=$1
+    _fw_remote="${AB_REMOTE_TMP}/$(basename "${_fw_src}")"
+    dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_fw_src}" "${_fw_remote}" >/dev/null || return 1
+    _fw_out=$(scen exec cp "${_fw_remote}" "${SCEN_S7_FEEDS}" 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_fw_out}" rc)" != "0" ]; then
+        ev "feed write failed: ${_fw_out:-no answer}"
+        return 1
+    fi
+    if ! dev_collect "${SCEN_S7_FEEDS}" "${_tmp}/s7-feeds-verify.list"; then
+        ev "feed write: ${SCEN_S7_FEEDS} is not readable afterwards"
+        return 1
+    fi
+    if ! cmp -s "${_fw_src}" "${_tmp}/s7-feeds-verify.list"; then
+        ev "feed write: ${SCEN_S7_FEEDS} did not take the bytes of ${_fw_src}"
+        return 1
+    fi
+    printf '%s\n' "${_fw_out}"
+}
+
+# s7_restore <backup file>: the machine's own feed list back, compared byte for byte with the
+# copy taken before the first write. Copying is not proof; the comparison is.
+s7_restore() {
+    _rs_bf=$1
+    _rs_out=$(scen exec cp "${_rs_bf}" "${SCEN_S7_FEEDS}" 2>/dev/null | grep '^cmd=' | head -n 1)
+    [ "$(kv "${_rs_out}" rc)" = "0" ] || return 1
+    dev_collect "${SCEN_S7_FEEDS}" "${_tmp}/s7-feeds-restored.list" || return 1
+    cmp -s "${_tmp}/s7-feeds-original.list" "${_tmp}/s7-feeds-restored.list" || return 1
+    return 0
+}
+
+# s7_restore_or_warn <backup file>: put the list back and record which of the two happened.
+# Used by the paths that stop before step 6 has judged the install: the machine is left with
+# its own feeds either way, and a restore that failed is named here rather than implied.
+s7_restore_or_warn() {
+    if s7_restore "${1}"; then
+        ev "feeds restored"
+    else
+        ev "feeds were NOT restored: put ${1} back by hand"
+    fi
+}
+
+# s7_installed_version <installed list> <name>: the <name>-<version> token apk printed for
+# that package, empty when apk does not have it.
+# The name is matched literally and the rest of the token has to start with a digit, so that
+# kmod-usb-storage-extras cannot answer for kmod-usb-storage and a package name carrying a
+# regex metacharacter is not read as a pattern.
+s7_installed_version() {
+    awk -v n="${2}" '
+        index($1, n "-") == 1 && substr($1, length(n) + 2) ~ /^[0-9]/ { print $1; exit }
+    ' "${1}" 2>/dev/null
+}
+
+s7_installed_has() {
+    [ -n "$(s7_installed_version "${1}" "${2}")" ]
+}
+
+# s7_snapshot <a|b> <prefix>: what apk has, in two files.
+#   <prefix>.installed  the full installed set exactly as apk printed it
+#   <prefix>.tsv        one row per fact: phase, kver, feed, pkg, kmod, installed count
+# The packages of the S1 batch are recorded even when nothing about them changed: "htop is
+# still 3.5.3-r1" is the answer to "is the user-space side the same on both releases", and a
+# snapshot that only carried differences could not say it.
+s7_snapshot() {
+    _sn_ph=$1
+    _sn_pre=$2
+    _sn_kver=$(kv "${PROBE}" kver)
+    [ -n "${_sn_kver}" ] || _sn_kver=unknown
+    _sn_remote="${SCEN_EVIDENCE}/s7-${_sn_ph}-installed.txt"
+    _sn_snap=$(scen pkgsnap "${_sn_remote}" 2>/dev/null | grep '^snap=') || _sn_snap=""
+    if ! dev_collect "${_sn_remote}" "${_sn_pre}.installed"; then
+        ev "snapshot ${_sn_ph}: ${_sn_remote} could not be read back from the machine"
+        return 1
+    fi
+    {
+        printf 'phase\t%s\t%s\n' "${_sn_ph}" "$(dev_stamp)"
+        printf 'kver\t%s\n' "${_sn_kver}"
+        printf 'installed\t%s\tcount=%s\n' "${_sn_remote}" "$(kv "${_sn_snap}" count)"
+    } >"${_sn_pre}.tsv"
+    if dev_collect "${SCEN_S7_FEEDS}" "${_sn_pre}.feeds"; then
+        while IFS= read -r _sn_f; do
+            [ -n "${_sn_f}" ] || continue
+            printf 'feed\t%s\n' "${_sn_f}"
+        done <"${_sn_pre}.feeds" >>"${_sn_pre}.tsv"
+    fi
+    for _sn_p in ${SCEN_PKGS}; do
+        _sn_line=$(scen pkgcheck "${_sn_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
+        printf 'pkg\t%s\t%s\tpresent=%s\n' "${_sn_p}" \
+            "$(kv "${_sn_line}" version)" "$(kv "${_sn_line}" present)" >>"${_sn_pre}.tsv"
+    done
+    for _sn_k in $(s7_kmods); do
+        _sn_line=$(scen kmodcheck "${_sn_k}" 2>/dev/null | grep '^kmod=' | head -n 1)
+        printf 'kmod\t%s\t%s\tmodver=%s\tdepver=%s\tstate=%s\n' "${_sn_k}" \
+            "$(kv "${_sn_line}" version)" "$(kv "${_sn_line}" modver)" \
+            "$(kv "${_sn_line}" depver)" "$(kv "${_sn_line}" state)" >>"${_sn_pre}.tsv"
+    done
+    return 0
+}
+
+# s7_diff <a-prefix> <b-prefix>: the table, one row per package.
+#   version-changed | disappeared | new   from the two full installed sets
+#   same                                  for the packages of the S1 batch, always printed
+#   unchanged                             one summary row for the rest of the machine
+# A package name is the token with the trailing -<version>-r<release> removed; that is the
+# only way to compare two apk indexes that spell the version differently, and it needs no
+# knowledge of any particular package.
+s7_diff() {
+    _df_a=$1
+    _df_b=$2
+    awk '
+        function pkgname(s) { sub(/-[0-9][^-]*-r[0-9]+$/, "", s); return s }
+        FNR == NR { n = $1; a[pkgname(n)] = n; next }
+        { n = $1; b[pkgname(n)] = n }
+        END {
+            for (k in a) {
+                if (!(k in b)) { printf "disappeared\t%s\t%s\t-\n", k, a[k]; continue }
+                if (a[k] != b[k]) { printf "version-changed\t%s\t%s\t%s\n", k, a[k], b[k]; continue }
+                same++
+            }
+            for (k in b) if (!(k in a)) printf "new\t%s\t-\t%s\n", k, b[k]
+            printf "unchanged\t(all other packages)\t%s\t%s\n", same + 0, same + 0
+        }
+    ' "${_df_a}.installed" "${_df_b}.installed" | LC_ALL=C sort
+    for _df_p in ${SCEN_PKGS}; do
+        _df_va=$(awk -F'\t' -v n="${_df_p}" '$1 == "pkg" && $2 == n { print $3 }' "${_df_a}.tsv")
+        _df_vb=$(awk -F'\t' -v n="${_df_p}" '$1 == "pkg" && $2 == n { print $3 }' "${_df_b}.tsv")
+        if [ "${_df_va}" = "${_df_vb}" ]; then
+            printf 'same\t%s\t%s\t%s\n' "${_df_p}" "${_df_va:-none}" "${_df_vb:-none}"
+        else
+            printf 'version-changed\t%s\t%s\t%s\n' "${_df_p}" "${_df_va:-none}" "${_df_vb:-none}"
+        fi
+    done
+}
+
+# run_s7: two snapshots of the same machine, one per version, both installed from that
+# version's own release feeds.
+#
+# Six steps, each judged on its own:
+#   1. back up the feed list (nothing else is touched until that copy exists)
+#   2. write the from version's feed list, apk update, install the S1 batch, snapshot A
+#   3. jump to the to version (scen_hop, the same skeleton S3/S4 walk), snapshot B
+#   4. diff A against B, one row per package, and the kernel dependency each kmod carries
+#   5. read the feed list again: which version's feeds is the machine on now
+#   6. align to the to version's feeds, install one thing that really changes, restore the
+#      backup and prove the restore
+# The verdicts: PASS when both snapshots exist, the table was built, the did-not-follow
+# finding was recorded, one aligned install changed something and the feed list is back;
+# FAIL when the jump fails (scen_hop's own rule), a snapshot cannot be taken, nothing
+# installs from an aligned feed, or the feed list cannot be restored; GAP when a payload is
+# missing, the machine has no apk, has no /data to keep the backup on, or cannot reach its
+# own release feeds at all.
+run_s7() {
+    _case=S7
+    require_healthy_committed "${_case}" || return 1
+    AB_STATUS_LINE=${STATUS_LINE}
+
+    _from=${SCEN_LOW}
+    _to=${SCEN_HIGH}
+    if [ "${_from}" = "${_to}" ]; then
+        CASE_NOTE="the two ends of the jump are the same version (${_from}): there is no across-version comparison to make"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    _feeds_from="${_tmp}/s7-feeds-${_from}.list"
+    _feeds_to="${_tmp}/s7-feeds-${_to}.list"
+    _src_from=$(s7_feeds_render "${_from}" "${_feeds_from}") || _src_from=none
+    _src_to=$(s7_feeds_render "${_to}" "${_feeds_to}") || _src_to=none
+    if [ "${_src_from}" = "none" ]; then
+        CASE_NOTE="no feed list for ${_from}: ${PAYLOAD_DIR}/payload-${_from}.tar is missing or carries no readable rootfs feed list, so there is nothing to point the machine at"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    if [ "${_src_to}" = "none" ]; then
+        CASE_NOTE="no feed list for ${_to}: ${PAYLOAD_DIR}/payload-${_to}.tar is missing or carries no readable rootfs feed list, so there is nothing to align to after the jump"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    ev "feeds source: ${_from} from ${_src_from}, ${_to} from ${_src_to}"
+    for _sv in "${_from}" "${_to}"; do
+        case "${_sv}" in
+            "${_from}") _sv_file=${_feeds_from} ;;
+            *) _sv_file=${_feeds_to} ;;
+        esac
+        ev "feed ${_sv} 1/3 packages: $(s7_feed_of "${_sv_file}" packages)"
+        ev "feed ${_sv} 2/3 targets: $(s7_feed_of "${_sv_file}" targets)"
+        ev "feed ${_sv} 3/3 kmods: $(s7_feed_of "${_sv_file}" kmods)"
+    done
+
+    push_helper || { CASE_NOTE="helper could not be pushed"; return 1; }
+    probe_machine || { CASE_NOTE="the machine did not answer the helper's probe"; return 1; }
+    if [ "$(kv "${PROBE}" apk)" != "yes" ]; then
+        CASE_NOTE="no apk on this image: there is no package source to align or compare"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    if [ "$(kv "${PROBE}" data)" != "mounted" ]; then
+        CASE_NOTE="/data is not mounted: the backup of the feed list has nowhere to live, so the file could not be put back"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    scen mkdirs "${SCEN_EVIDENCE}" "${SCEN_BACKUP}" >/dev/null 2>&1
+
+    # Position first: "the from version's own feeds" only means something when the machine
+    # runs the from version, because its kmods index is built for that kernel.
+    _running=$(dev_running_version) || _running=""
+    if [ "${_running}" != "${_from}" ]; then
+        ev "positioning: ${_running:-unknown} -> ${_from}"
+        scen_hop "${_case}" "${_from}" position
+        case "$?" in
+            0) : ;;
+            2)
+                CASE_NOTE="no payload for the start version ${_from}"
+                ev "${CASE_NOTE}"
+                return 2
+                ;;
+            *)
+                CASE_NOTE="positioning to ${_from} failed; the case did not start"
+                ev "${CASE_NOTE}"
+                return 1
+                ;;
+        esac
+    fi
+
+    # --- 1. the file this case is about ---------------------------------- #
+    # Two copies for two different jobs: one on the machine's /data, which a person can put
+    # back by hand if the run dies mid-case, and one here, which step 6 compares against so
+    # that "restored" is a byte comparison and not a claim.
+    if ! dev_collect "${SCEN_S7_FEEDS}" "${_tmp}/s7-feeds-original.list"; then
+        CASE_NOTE="${SCEN_S7_FEEDS} is not readable on this machine: there is no feed list to align or restore"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    _stamp=$(dev_stamp | tr ':' '-')
+    _bak="${SCEN_BACKUP}/s7-feeds-${_stamp}"
+    _bo=$(scen cfg-backup "${_bak}" "${SCEN_S7_FEEDS}" 2>/dev/null)
+    _bakf=$(printf '%s\n' "${_bo}" | sed -n 's/^backup=.* -> \(.*\) ok=yes$/\1/p' | head -n 1)
+    if [ "$(kv "${_bo}" backups)" != "1" ] || [ -z "${_bakf}" ]; then
+        CASE_NOTE="the feed list could not be backed up ($(printf '%s' "${_bo}" | tr '\n' ' ')): nothing else is changed"
+        _fail "${_case}" "${CASE_NOTE}"
+        return 1
+    fi
+    ev "backup: ${SCEN_S7_FEEDS} -> ${_bakf}"
+
+    # --- 2. the from version's own feeds, and the S1 batch --------------- #
+    if ! _w=$(s7_feeds_write "${_feeds_from}"); then
+        CASE_NOTE="the ${_from} feed list could not be written to ${SCEN_S7_FEEDS}, so the machine keeps the feeds it had"
+        _fail "${_case}" "${CASE_NOTE}"
+        return 1
+    fi
+    ev "feeds now ${_from}'s: ${_w}"
+    _upd=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_upd}" rc)" != "0" ]; then
+        CASE_NOTE="apk update failed on ${_from}'s own feeds (rc=$(kv "${_upd}" rc): $(printf '%s' "${_upd}" | sed -n 's/.* out=//p')): this machine cannot reach its release feeds, so the package source cannot be judged"
+        ev "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 2
+    fi
+
+    _inst=0
+    _unavail=""
+    for _p in ${SCEN_PKGS}; do
+        _line=$(scen pkginstall "${_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
+        case "$(kv "${_line}" state)" in
+            installed)
+                _inst=$((_inst + 1))
+                ev "install ${_p}: $(kv "${_line}" version) from ${_from}'s feeds"
+                ;;
+            *)
+                _err=$(printf '%s' "${_line}" | sed -n 's/.* err=//p' | cut -c1-60)
+                _unavail="${_unavail}${_p}($(kv "${_line}" rc):${_err:-no-error-line}) "
+                ev "install ${_p}: unavailable $(kv "${_line}" rc) ${_err:-no error line}"
+                ;;
+        esac
+    done
+    if [ "${_inst}" -eq 0 ]; then
+        CASE_NOTE="not one package of the S1 batch could be installed from ${_from}'s own feeds: unavailable ${_unavail}"
+        _fail "${_case}" "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 1
+    fi
+
+    if ! s7_snapshot a "${_tmp}/s7-a"; then
+        CASE_NOTE="snapshot A (what apk has on ${_from}) could not be taken, so there is nothing to compare against"
+        _fail "${_case}" "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 1
+    fi
+    cp "${_tmp}/s7-a.tsv" "${EVIDENCE_DIR}/s7-snapshot-a.tsv" 2>/dev/null || true
+    cp "${_tmp}/s7-a.installed" "${EVIDENCE_DIR}/s7-installed-a.txt" 2>/dev/null || true
+    _n_a=$(wc -l <"${_tmp}/s7-a.installed" | tr -d ' ')
+    ev "snapshot A: ${_n_a} installed package(s), kver=$(kv "${PROBE}" kver)"
+
+    # --- 3. the jump, then the same snapshot on the other version -------- #
+    ev "hop: ${_from} -> ${_to}"
+    scen_hop "${_case}" "${_to}" ladder
+    case "$?" in
+        0) : ;;
+        2)
+            CASE_NOTE="no payload for ${_to}"
+            ev "${CASE_NOTE}"
+            s7_restore_or_warn "${_bakf}"
+            return 2
+            ;;
+        20)
+            CASE_NOTE="the jump to ${_to} was refused with exit 74; the feed list was put back"
+            _fail "${_case}" "${CASE_NOTE}"
+            s7_restore_or_warn "${_bakf}"
+            return 1
+            ;;
+        *)
+            CASE_NOTE="the jump to ${_to} did not commit; the feed list was put back"
+            _fail "${_case}" "${CASE_NOTE}"
+            s7_restore_or_warn "${_bakf}"
+            return 1
+            ;;
+    esac
+    if driver_error_seen; then
+        CASE_NOTE="driver error: the scenario helper did not answer after the reboot; the second snapshot was not taken"
+        ev "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 1
+    fi
+    if ! s7_snapshot b "${_tmp}/s7-b"; then
+        CASE_NOTE="snapshot B (what apk has after the jump to ${_to}) could not be taken, so there is nothing to compare against"
+        _fail "${_case}" "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 1
+    fi
+    cp "${_tmp}/s7-b.tsv" "${EVIDENCE_DIR}/s7-snapshot-b.tsv" 2>/dev/null || true
+    cp "${_tmp}/s7-b.installed" "${EVIDENCE_DIR}/s7-installed-b.txt" 2>/dev/null || true
+    _n_b=$(wc -l <"${_tmp}/s7-b.installed" | tr -d ' ')
+    _kver_a=$(awk -F'\t' '$1 == "kver" { print $2 }' "${_tmp}/s7-a.tsv")
+    _kver_b=$(awk -F'\t' '$1 == "kver" { print $2 }' "${_tmp}/s7-b.tsv")
+    ev "snapshot B: ${_n_b} installed package(s), kver=${_kver_b}"
+
+    # --- 4. the table ---------------------------------------------------- #
+    _diff=$(s7_diff "${_tmp}/s7-a" "${_tmp}/s7-b")
+    {
+        printf '### s7 snapshot diff A(%s kver=%s) vs B(%s kver=%s)\n' \
+            "${_from}" "${_kver_a}" "${_to}" "${_kver_b}"
+        printf 'status\tpackage\tA\tB\n'
+        printf '%s\n' "${_diff}"
+    } >>"${AB_EVIDENCE_LOG}"
+    _n_chg=$(printf '%s\n' "${_diff}" | grep -c '^version-changed' || true)
+    _n_gone=$(printf '%s\n' "${_diff}" | grep -c '^disappeared' || true)
+    _n_new=$(printf '%s\n' "${_diff}" | grep -c '^new' || true)
+    _n_unchanged=$(printf '%s\n' "${_diff}" | awk -F'\t' '$1 == "unchanged" { print $3 }')
+    ev "diff: ${_n_chg} version change(s), ${_n_gone} disappeared, ${_n_new} new, ${_n_unchanged:-0} unchanged"
+
+    # A package of the S1 batch that vanished is recorded here and judged by S3/S4: those
+    # cases own "the user's software survived", and S7 owns "the package source follows the
+    # version". Two verdicts on one fact would make the row unreadable.
+    for _p in $(printf '%s\n' "${_diff}" | awk -F'\t' '$1 == "disappeared" { print $2 }'); do
+        case " ${SCEN_PKGS} " in
+            *" ${_p} "*) _finding "${_p} is gone from apk's database after the jump: S7 records it, the verdict on it belongs to S3/S4" ;;
+        esac
+    done
+
+    # The ABI half: a kmod records the kernel it was built for as a package dependency, and
+    # that dependency does not move when the machine changes slot. This is the same finding
+    # S3/S4/S5 report, here with both sides of the jump in one line.
+    _kmod_first=$(s7_kmods | head -n 1)
+    _dep_b=""
+    for _k in $(s7_kmods); do
+        _kver_dep_a=$(awk -F'\t' -v n="${_k}" '$1 == "kmod" && $2 == n { print $5 }' "${_tmp}/s7-a.tsv" | sed 's/^depver=//')
+        _dep_b=$(awk -F'\t' -v n="${_k}" '$1 == "kmod" && $2 == n { print $5 }' "${_tmp}/s7-b.tsv" | sed 's/^depver=//')
+        _ver_a=$(awk -F'\t' -v n="${_k}" '$1 == "kmod" && $2 == n { print $3 }' "${_tmp}/s7-a.tsv")
+        _ver_b=$(awk -F'\t' -v n="${_k}" '$1 == "kmod" && $2 == n { print $3 }' "${_tmp}/s7-b.tsv")
+        ev "kmod ${_k}: ${_ver_a:-none} (kernel dependency ${_kver_dep_a:-none}) -> ${_ver_b:-none} (${_dep_b:-none}), running kernel ${_kver_b}"
+        if [ -n "${_dep_b}" ] && [ "${_dep_b}" != "${_kver_b}" ]; then
+            _finding "${_k} is built for kernel ${_dep_b} and the machine now runs ${_kver_b}: nothing reinstalls it during a jump, and apk's world file keeps pinning the old kernel, so it has to come from the running version's own kmods feed"
+        fi
+    done
+
+    # --- 5. which version's feeds is the machine on now ------------------ #
+    _after_feeds="${_tmp}/s7-feeds-after.list"
+    if ! dev_collect "${SCEN_S7_FEEDS}" "${_after_feeds}"; then
+        CASE_NOTE="${SCEN_S7_FEEDS} is not readable after the jump, so the feed list this case is about cannot be judged"
+        _fail "${_case}" "${CASE_NOTE}"
+        return 1
+    fi
+    if cmp -s "${_after_feeds}" "${_feeds_from}"; then
+        _feeds_state="still ${_from}'s"
+        _finding "the package source did not follow the version: after the jump to ${_to}, ${SCEN_S7_FEEDS} still names ${_from}'s feeds (ab-upgrade keeps it as user configuration), so the kmods index in use is $(s7_feed_of "${_after_feeds}" kmods) while the machine runs kernel ${_kver_b}"
+    elif cmp -s "${_after_feeds}" "${_feeds_to}"; then
+        _feeds_state="${_to}'s"
+        ev "feeds after the jump: ${SCEN_S7_FEEDS} names ${_to}'s feeds"
+    else
+        _feeds_state="neither ${_from}'s nor ${_to}'s"
+        _finding "the package source did not follow the version: after the jump to ${_to}, ${SCEN_S7_FEEDS} is neither ${_from}'s nor ${_to}'s release list (someone edited it): first line $(sed -n '1p' "${_after_feeds}")"
+    fi
+    ev "feeds after the jump: ${_feeds_state}"
+
+    # --- 6. the other direction: does an install work at all ------------- #
+    # Aligning the feeds to the version now running is what separates "the source was
+    # wrong" from "the package is wrong". An install only counts when it changed something:
+    # apk answers rc=0 and does nothing for a package it already has (measured), and a
+    # verdict built on that rc would be a false PASS.
+    if ! _w=$(s7_feeds_write "${_feeds_to}"); then
+        CASE_NOTE="the ${_to} feed list could not be written to ${SCEN_S7_FEEDS}, so no install could be aimed at it"
+        _fail "${_case}" "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 1
+    fi
+    ev "feeds now ${_to}'s: ${_w}"
+    _upd=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_upd}" rc)" != "0" ]; then
+        CASE_NOTE="apk update failed on ${_to}'s own feeds (rc=$(kv "${_upd}" rc)): the aligned feed could not be refreshed"
+        _fail "${_case}" "${CASE_NOTE}"
+        s7_restore_or_warn "${_bakf}"
+        return 1
+    fi
+
+    _cands=${_kmod_first}
+    for _f in ${SCEN_S7_FRESH_PKGS}; do
+        s7_installed_has "${_tmp}/s7-b.installed" "${_f}" && continue
+        _cands="${_cands} ${_f}"
+        break
+    done
+    _proved=""
+    _proved_ver=""
+    _kmod_state=""
+    _kmod_err=""
+    for _p in ${_cands}; do
+        _before=$(s7_installed_version "${_tmp}/s7-b.installed" "${_p}")
+        _line=$(scen pkginstall "${_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
+        _state=$(kv "${_line}" state)
+        _ver=$(kv "${_line}" version)
+        _err=$(printf '%s' "${_line}" | sed -n 's/.* err=//p' | cut -c1-60)
+        _changed=no
+        if [ "${_state}" = "installed" ] && { [ -z "${_before}" ] || [ "${_before}" != "${_ver}" ]; }; then
+            _changed=yes
+        fi
+        ev "aligned install ${_p}: state=${_state} before=${_before:-not-installed} after=${_ver:-none} changed=${_changed} ${_err}"
+        if [ "${_p}" = "${_kmod_first}" ]; then
+            _kmod_state=${_state}
+            _kmod_err=${_err:-no-error-line}
+        fi
+        if [ "${_changed}" = "yes" ]; then
+            _proved=${_p}
+            _proved_ver=${_ver}
+            break
+        fi
+    done
+
+    if ! s7_restore "${_bakf}"; then
+        CASE_NOTE="${SCEN_S7_FEEDS} could not be restored from ${_bakf}: the machine is left on ${_to}'s feeds and has to be put back by hand"
+        _fail "${_case}" "${CASE_NOTE}"
+        return 1
+    fi
+    ev "feeds restored: ${SCEN_S7_FEEDS} is byte-identical to the backup taken in step 1"
+
+    if [ -z "${_proved}" ]; then
+        CASE_NOTE="not one package could be installed from ${_to}'s own feeds after aligning them (tried: ${_cands}): the feed is not what fails, an install from it is"
+        _fail "${_case}" "${CASE_NOTE}"
+        return 1
+    fi
+    if [ -n "${_kmod_first}" ] && [ "${_proved}" != "${_kmod_first}" ]; then
+        _finding "${_kmod_first} was not replaced from ${_to}'s kmods feed (${_kmod_state:-not-tried}: ${_kmod_err:-no error line}) while ${_proved} installed: the world file apk carries still constrains the kernel, so the kmod is served by the aligned feed and refused by the world"
+    fi
+
+    [ "${CASE_FAILED}" -eq 0 ] || return 1
+    CASE_NOTE="${_from}->${_to}: A ${_n_a} / B ${_n_b} installed package(s), diff ${_n_chg} version change(s), ${_n_gone} disappeared, ${_n_new} new (${_n_unchanged:-0} unchanged), kernel ${_kver_a:-?}->${_kver_b:-?}; feeds after the jump ${_feeds_state}; aligned ${_to} feeds install ${_proved} (${_proved_ver:-unknown}); ${SCEN_S7_FEEDS} restored"
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
 # Cases
 # --------------------------------------------------------------------------- #
 
@@ -2055,6 +2733,7 @@ scen_case() {
         S4) run_jump S4 "${SCEN_HIGH}" "${SCEN_LOW}" ;;
         S5) run_s5 ;;
         S6) run_s6 ;;
+        S7) run_s7 ;;
         *) CASE_NOTE="unknown case"; return 1 ;;
     esac
 }
@@ -2067,6 +2746,7 @@ case_label() {
         S4) printf 'down: %s -> %s, same judgement\n' "${SCEN_HIGH}" "${SCEN_LOW}" ;;
         S5) printf 'abi: kernel module ledger on the running kernel\n' ;;
         S6) printf 'boottools: ESP kernel/initramfs and the platform layer tool against the payload\n' ;;
+        S7) printf 'releasefeeds: %s and %s each from its own release feeds, version and ABI snapshot diff\n' "${SCEN_LOW}" "${SCEN_HIGH}" ;;
         *) return 1 ;;
     esac
 }
@@ -2185,6 +2865,53 @@ plan_case() {
             printf '%s version relation expect=same version is silent; tools newer than the rootfs -> FINDING: boot tools come from <payload> while the running rootfs is <running> (never FAIL)\n' "${_case}"
             printf '%s record\n' "${_case}"
             ;;
+        S7)
+            # The three feed lines each version will be given, taken out of the release
+            # itself: a plan that cannot name them has not found the release it plans on.
+            _s7_from=${SCEN_LOW}
+            _s7_to=${SCEN_HIGH}
+            _s7_kmod=$(s7_kmods | head -n 1)
+            _payload_warn "payload-${_s7_from}.tar"
+            _payload_warn "payload-${_s7_to}.tar"
+            printf '# case S7 releasefeeds: %s and %s, each installed from its own release feeds\n' \
+                "${_s7_from}" "${_s7_to}"
+            printf '%s status expect=committed slot with boot=ok esp=ok (else the run aborts with exit 3)\n' "${_case}"
+            for _s7_v in "${_s7_from}" "${_s7_to}"; do
+                _s7_file="${_tmp}/s7-plan-${_s7_v}.list"
+                if s7_feeds_render "${_s7_v}" "${_s7_file}" >/dev/null 2>&1; then
+                    printf '%s feeds 1/3 %s (from payload-%s.tar)\n' "${_case}" "$(s7_feed_of "${_s7_file}" packages)" "${_s7_v}"
+                    printf '%s feeds 2/3 %s (from payload-%s.tar)\n' "${_case}" "$(s7_feed_of "${_s7_file}" targets)" "${_s7_v}"
+                    printf '%s feeds 3/3 %s (from payload-%s.tar)\n' "${_case}" "$(s7_feed_of "${_s7_file}" kmods)" "${_s7_v}"
+                else
+                    printf '%s feeds 1/3 unknown (%s: no payload, or its rootfs carries no feed list)\n' "${_case}" "${_s7_v}"
+                    printf '%s feeds 2/3 unknown (%s)\n' "${_case}" "${_s7_v}"
+                    printf '%s feeds 3/3 unknown (%s)\n' "${_case}" "${_s7_v}"
+                fi
+            done
+            printf '%s feeds-source expect=%s read out of payload-<version>.tar rootfs.tar.gz and never rebuilt (the kmods directory <kernel>-1-<hash> is a build hash), else GAP\n' \
+                "${_case}" "${SCEN_S7_FEEDS}"
+            printf '%s helper push %s -> %s\n' "${_case}" "ab-scen-helper.sh" "${SCEN_HELPER}"
+            printf '%s probe expect=apk=yes and data=mounted (else GAP: no package source, or nowhere to keep the backup)\n' "${_case}"
+            printf '%s position %s (only when the machine runs something else: the from version has to be the running one, its kmods index is built for that kernel)\n' \
+                "${_case}" "${_s7_from}"
+            printf '%s 1/6 backup %s -> %s/s7-feeds-<stamp> expect=1 of 1, else FAIL and nothing else is changed\n' \
+                "${_case}" "${SCEN_S7_FEEDS}" "${SCEN_BACKUP}"
+            printf '%s 2/6 write the %s feed list, apk update expect=rc=0 (a machine that cannot reach its own release feeds is a GAP, and the list is put back)\n' \
+                "${_case}" "${_s7_from}"
+            printf '%s 2/6 install %s expect=each package recorded from the %s feeds; zero installed is a FAIL\n' \
+                "${_case}" "${SCEN_PKGS}" "${_s7_from}"
+            printf '%s 2/6 snapshot A expect=apk list --installed plus the version of every package and the kernel dependency (apk info -R) of every kmod\n' "${_case}"
+            printf '%s 3/6 hop %s -> %s expect=committed on the other slot, generation+1, upper=@overlay-%s (scen_hop'"'"'s own rule)\n' \
+                "${_case}" "${_s7_from}" "${_s7_to}" "${_s7_to}"
+            printf '%s 3/6 snapshot B expect=the same two files on the version now running\n' "${_case}"
+            printf '%s 4/6 diff A vs B expect=one row per package (version-changed|disappeared|new|same) and each kmod with the kernel dependency it carries against the running kernel\n' "${_case}"
+            printf '%s 5/6 read %s expect=equal to the %s bytes -> FINDING: the package source did not follow the version (never FAIL); equal to the %s bytes -> recorded, no finding\n' \
+                "${_case}" "${SCEN_S7_FEEDS}" "${_s7_from}" "${_s7_to}"
+            printf '%s 6/6 align the %s feeds, apk update, install %s then a package that was not installed expect=one install that really changed something, else FAIL\n' \
+                "${_case}" "${_s7_to}" "${_s7_kmod:-<kmod>}"
+            printf '%s 6/6 restore %s from the backup expect=byte-identical to step 1, else FAIL\n' "${_case}" "${SCEN_S7_FEEDS}"
+            printf '%s record\n' "${_case}"
+            ;;
         *)
             return 1
             ;;
@@ -2226,7 +2953,7 @@ for _case in ${WANT_CASES}; do
     fi
     printf '== %s %s' "${_case}" "$(case_label "${_case}")"
     SCEN_DRIVER_ERROR_FILE="${EVIDENCE_DIR}/driver-error.flag"
-    rm -f "${SCEN_DRIVER_ERROR_FILE}"
+    rm -f "${SCEN_DRIVER_ERROR_FILE}" "${SCEN_DRIVER_ERROR_FILE}.ssh-lost"
     scen_case "${_case}"
     _rc=$?
     # A case that never reached the machine is a driver failure, whatever the case itself
@@ -2235,14 +2962,10 @@ for _case in ${WANT_CASES}; do
     # Only the notes that mean "nothing was judged" are rewritten: a machine that really did
     # stop answering after the reload has already said so in its own words, and replacing
     # that with a driver error would hide the one fact the case exists to report.
-    case "${CASE_NOTE}" in
-        ""|*"did not answer the helper's probe"*|*"helper could not be pushed again"*)
-            if driver_error_seen && [ "${_rc}" -ne 0 ]; then
-                CASE_NOTE="driver error: the scenario helper did not answer (helper-unavailable); the machine was not judged"
-                _rc=1
-            fi
-            ;;
-    esac
+    if driver_error_seen && ! machine_unreachable_seen && [ "${_rc}" -ne 0 ]; then
+        CASE_NOTE="driver error: the scenario helper did not answer (helper-unavailable); the machine was not judged"
+        _rc=1
+    fi
     # The finding prefix is part of the note, not a verdict: a row can be PASS and still
     # carry what the user has to do about their kernel modules.
     _note=${CASE_NOTE}

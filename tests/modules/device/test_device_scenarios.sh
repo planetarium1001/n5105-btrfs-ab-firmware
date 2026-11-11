@@ -9,6 +9,10 @@
 #   ac-4 ssh lost after the network reload is a FAIL, after the machine reverts itself
 #   ac-4 the ESP kernel/initramfs and the platform layer tool are compared with the payload
 #        byte for byte, and tools newer than the rootfs are a FINDING, never a FAIL
+#   ac-4 each version installed from its own release feeds: the A/B snapshot diff names the
+#        packages whose version moved or vanished, a feed list that stayed behind is a
+#        FINDING (never a FAIL), and one install from the aligned feed is what proves the
+#        source works
 #   ac-4 --dry-run prints the steps in order and names a missing payload before a run does
 set -uo pipefail
 
@@ -49,6 +53,51 @@ uci_set() { # <key> <value>
 }
 uci_get() { sed -n "s/^$1=//p" "$dev/uci" 2>/dev/null | head -n 1; }
 
+# ver_of <pkg>: the version apk reports for a package. When a test gives the machine an
+# installed set ($dev/installed, swapped by the reboot below), that set is the authority --
+# the package database is what apk answers from. Without one, every package is 1.0-r0 in
+# both worlds, which is all the cases that never compare two versions need.
+ver_of() {
+    if [ -f "$dev/ver-$1" ]; then
+        cat "$dev/ver-$1"
+        return
+    fi
+    if [ -f "$dev/installed" ]; then
+        v=$(awk -v n="$1" 'index($1, n "-") == 1 && substr($1, length(n) + 2) ~ /^[0-9]/ { print $1; exit }' \
+            "$dev/installed")
+        if [ -n "$v" ]; then
+            printf '%s\n' "$v"
+            return
+        fi
+    fi
+    printf '%s-1.0-r0' "$1"
+}
+
+# present_of <pkg>: whether apk has it, which is the same set the versions come from.
+present_of() {
+    if [ -n "${FAKE_PRESENT:-}" ]; then
+        printf '%s\n' "$FAKE_PRESENT"
+        return
+    fi
+    if [ ! -f "$dev/installed" ]; then
+        printf 'yes\n'
+        return
+    fi
+    if awk -v n="$1" 'index($1, n "-") == 1 && substr($1, length(n) + 2) ~ /^[0-9]/ { found = 1 } END { exit !found }' \
+        "$dev/installed"; then
+        printf 'yes\n'
+    else
+        printf 'no\n'
+    fi
+}
+
+# A reboot on a machine whose next version differs: the state files the driver reads are
+# swapped where the install would have written them. The kernel changes, the kmod's recorded
+# dependency does not -- that difference is the whole ABI question.
+swap_after_boot() { # <name>
+    if [ -f "$dev/$1-after" ]; then cp "$dev/$1-after" "$dev/$1"; fi
+}
+
 slot=$(cat "$dev/committed")
 if [ "$slot" = "a" ]; then other=b; else other=a; fi
 pending=$(cat "$dev/pending")
@@ -86,6 +135,9 @@ case "${last}" in
             printf 'none' >"$dev/pending"
         fi
         printf '%s' "${FAKE_BOOT_AFTER:-ok}" >"$dev/boot"
+        swap_after_boot kver
+        swap_after_boot installed
+        if [ -f "$dev/distfeeds-after" ]; then cp "$dev/distfeeds-after" "$dev/distfeeds.list"; fi
         ;;
     "ab-upgrade --check "*)
         ver=$(printf '%s' "$last" | sed -e 's|.*/payload-||' -e 's|\.tar$||')
@@ -115,6 +167,12 @@ case "${last}" in
         # A reboot on an image whose helper lives on tmpfs leaves nothing to run: the shell
         # exits non-zero with no output, which is the answer this stub reproduces.
         if [ "${FAKE_HELPER_MISSING:-0}" = "1" ]; then exit 127; fi
+        if [ -n "${FAKE_HELPER_DIES_AFTER:-}" ]; then
+            n=$(cat "$dev/helper-calls" 2>/dev/null || echo 0)
+            n=$((n + 1))
+            printf '%s' "$n" >"$dev/helper-calls"
+            [ "$n" -le "${FAKE_HELPER_DIES_AFTER}" ] || exit 127
+        fi
         # sh <helper> <sub> <args...>: dispatch the same subcommands the real helper has.
         rest=$(printf '%s' "$last" | sed -e 's|^sh [^ ]* ||')
         sub=${rest%% *}
@@ -136,26 +194,75 @@ case "${last}" in
                 for d in "$@"; do printf 'mkdir=%s ok=yes\n' "$d"; done
                 ;;
             pkginstall)
-                if grep -qx "$1" "$dev/pkgfail" 2>/dev/null; then
+                # A package whose own release feed refuses it: the file names the packages,
+                # and it only bites while the aligned feeds are the ones in place.
+                if grep -qx "$1" "$dev/pkgfail-aligned" 2>/dev/null \
+                    && grep -q "releases/${FAKE_S7_TO_VERSION:-25.12.2}/" "$dev/distfeeds.list" 2>/dev/null; then
+                    printf 'pkg=%s state=unavailable rc=99 err=ERROR: unable to select packages:\n' "$1"
+                elif grep -qx "$1" "$dev/pkgfail" 2>/dev/null; then
                     printf 'pkg=%s state=unavailable rc=1 err=ERROR: unable to select packages:\n' "$1"
                 else
-                    printf 'pkg=%s state=installed rc=0 version=%s-1.0-r0\n' "$1" "$1"
+                    # A real apk add records the package; the set the driver reads back has
+                    # to show it, or a successful install would look like no change.
+                    pk_new=$(ver_of "$1")
+                    if [ -f "$dev/installed" ] \
+                        && ! awk -v n="$1" 'index($1, n "-") == 1 && substr($1, length(n) + 2) ~ /^[0-9]/ { found = 1 } END { exit !found }' "$dev/installed"; then
+                        printf '%s\n' "$pk_new" >>"$dev/installed"
+                    fi
+                    printf 'pkg=%s state=installed rc=0 version=%s\n' "$1" "$pk_new"
                 fi
                 ;;
             pkgsnap)
-                printf 'snap=%s count=%s\n' "$1" "${FAKE_SNAP_COUNT:-42}"
+                # The installed set is a file, because "what did the user have" has to be
+                # answerable after the jump; a reboot can swap it for the next version's.
+                if [ -f "$dev/installed" ]; then
+                    cp "$dev/installed" "$dev/$(basename "$1")"
+                    printf 'snap=%s count=%s\n' "$1" "$(wc -l <"$dev/installed" | tr -d ' ')"
+                else
+                    printf 'snap=%s count=%s\n' "$1" "${FAKE_SNAP_COUNT:-42}"
+                fi
                 ;;
             pkgcheck)
-                printf 'pkg=%s present=%s version=%s-1.0-r0 file=/usr/bin/%s fileok=%s\n' \
-                    "$1" "${FAKE_PRESENT:-yes}" "$1" "$1" "${FAKE_FILEOK:-yes}"
+                pk_present=$(present_of "$1")
+                pk_ver=$(ver_of "$1")
+                [ "$pk_present" = "yes" ] || pk_ver=none
+                printf 'pkg=%s present=%s version=%s file=/usr/bin/%s fileok=%s\n' \
+                    "$1" "$pk_present" "$pk_ver" "$1" "${FAKE_FILEOK:-yes}"
                 ;;
             kmodcheck)
-                printf 'kmod=%s state=%s kver=%s version=%s-1.0-r0 modver=%s depver=%s\n' \
-                    "$1" "${FAKE_KMOD_STATE:-match}" "$(cat "$dev/kver")" "$1" \
-                    "${FAKE_KMOD_MODVER:-$(cat "$dev/kver")}" "${FAKE_KMOD_DEPVER:-$(cat "$dev/kver")}"
+                # The kernel a kmod was built for is a recorded dependency, not a property of
+                # the machine: a hop changes $dev/kver and leaves $dev/kmod-depver alone.
+                kver=$(cat "$dev/kver")
+                modver=${FAKE_KMOD_MODVER:-$(cat "$dev/kmod-modver" 2>/dev/null || printf '%s' "$kver")}
+                depver=${FAKE_KMOD_DEPVER:-$(cat "$dev/kmod-depver" 2>/dev/null || printf '%s' "$kver")}
+                state=match
+                [ "$modver" = "$kver" ] || state=stale
+                [ "$depver" = "$kver" ] || state=stale
+                printf 'kmod=%s state=%s kver=%s version=%s modver=%s depver=%s\n' \
+                    "$1" "${FAKE_KMOD_STATE:-$state}" "$kver" "$(ver_of "$1")" "$modver" "$depver"
                 ;;
             exec)
-                printf 'cmd=%s rc=%s out=stub\n' "$*" "${FAKE_EXEC_RC:-0}"
+                # cmd_exec runs the command it is given; the two the driver uses are a copy
+                # (writing the feed list) and an index refresh.
+                set -- $args
+                case "${1:-}" in
+                    cp)
+                        if [ -f "$dev/$(basename "$2")" ]; then
+                            cp "$dev/$(basename "$2")" "$dev/$(basename "$3")"
+                            rc=$?
+                        else
+                            rc=1
+                        fi
+                        printf 'cmd=cp %s %s rc=%s out=\n' "$2" "$3" "$rc"
+                        ;;
+                    apk)
+                        printf 'cmd=apk update rc=%s out=OK: %s packages\n' \
+                            "${FAKE_APK_UPDATE_RC:-0}" "${FAKE_APK_INDEX_COUNT:-11751}"
+                        ;;
+                    *)
+                        printf 'cmd=%s rc=%s out=stub\n' "$*" "${FAKE_EXEC_RC:-0}"
+                        ;;
+                esac
                 ;;
             seed)
                 printf 'seed=%s rc=%s files=9 dirs=5\n' "$2" "${FAKE_SEED_RC:-0}"
@@ -167,12 +274,20 @@ case "${last}" in
                 for f in "$@"; do printf 'tar=%s rc=%s members=2\n' "$f" "${FAKE_TAR_RC:-0}"; done
                 ;;
             cfg-backup)
+                # The real helper copies each file to <bakdir>/<path with / as _>.bak; the
+                # simulator keeps the same names, so a restore copied back is comparable.
                 bak=$1
                 shift
                 n=0
                 for f in "$@"; do
                     n=$((n + 1))
-                    printf 'backup=%s -> %s ok=yes\n' "$f" "$bak"
+                    b=$(printf '%s\n' "$f" | sed -e 's|^/|_|' -e 's|/|_|g')
+                    if [ -f "$dev/$(basename "$f")" ]; then
+                        cp "$dev/$(basename "$f")" "$dev/$b.bak"
+                    else
+                        : >"$dev/$b.bak"
+                    fi
+                    printf 'backup=%s -> %s/%s.bak ok=yes\n' "$f" "$bak" "$b"
                 done
                 printf 'backups=%s of=%s\n' "${FAKE_BACKUPS:-$n}" "$n"
                 ;;
@@ -424,6 +539,33 @@ setup_fake_world 25.12.2
 plan=$(sh "$root/scripts/device/scenarios.sh" --dry-run --case S1 --payload-dir "$tmp/payloads" 2>&1)
 assert_contains "$plan" "curl --version" "the probe table keeps the argument with its program"
 assert_contains "$plan" "htop --version" "the second probe keeps its argument too"
+
+# The flag has to be read after the judgement as well: the helper can stop answering in the
+# middle of the checks, and that must not be written down as the user's state being gone.
+setup_fake_world 25.12.2
+setup_inventories
+export FAKE_HELPER_DIES_AFTER=6
+out=$(run_scen "$tmp/r-s3-mid" --case S3)
+rc=$?
+unset FAKE_HELPER_DIES_AFTER
+assert_eq "$rc" "1" "a helper that dies mid-judgement stops the case"
+assert_contains "$(note_of "$tmp/r-s3-mid")" "driver error" \
+    "the note blames the driver even when the loss happens during the judgement"
+case "$(note_of "$tmp/r-s3-mid")" in
+    *"did not survive"*) assert_eq "leaked" "clean" "the note does not claim the user data is gone" ;;
+    *) assert_eq "clean" "clean" "the note does not claim the user data is gone" ;;
+esac
+
+# Same during the jump itself: a helper that vanished must not read as "positioning failed".
+setup_fake_world 25.12.2
+setup_inventories
+export FAKE_HELPER_DIES_AFTER=2
+out=$(run_scen "$tmp/r-s3-hop" --case S3)
+rc=$?
+unset FAKE_HELPER_DIES_AFTER
+assert_eq "$rc" "1" "a helper that dies during a hop stops the case"
+assert_contains "$(note_of "$tmp/r-s3-hop")" "driver error" \
+    "the hop path reports a driver error rather than a positioning failure"
 
 # The helper is a driver artifact, not a fact about the machine. When it does not come
 # back after a reboot, the case must say so instead of reporting that the user's data,
@@ -819,6 +961,176 @@ out=$(run_scen_payloads "$payloads_s6" "$tmp/r-s6-fold" --case S6)
 assert_eq "$(grep -c 'ab-upgrade' "$STUB_CALLS" || true)" "0" "S6 installs nothing"
 assert_eq "$(grep -c 'reboot' "$STUB_CALLS" || true)" "0" "S6 reboots nothing"
 
+# --- ac-4: each version from its own release feeds ------------------------- #
+# S7 asks what the matrix cannot: what did a user actually get on release day, and what do
+# they get after a jump. The payloads below are real tars whose rootfs carries the release's
+# own /etc/apk/repositories.d/distfeeds.list, so the driver's answer to "which feeds belong
+# to this version" comes out of the release and not out of a string this test made up.
+S7_FEED_BASE="https://downloads.immortalwrt.org"
+S7_KMODS_20="6.12.87-1-bd81971a1c3f0490e17f340fe09229ea"
+S7_KMODS_22="6.12.103-1-0413601b1c3f0490e17f340fe09229ea"
+
+payloads_s7="$tmp/payloads-s7"
+mkdir -p "$payloads_s7"
+
+build_s7_payload() { # <version> <kernel version> <kmods directory>
+    local v=$1 kver=$2 kmods=$3 dir="$tmp/s7-build-$1"
+    rm -rf "$dir"
+    mkdir -p "$dir/stage" "$dir/rootfs/etc/apk/repositories.d" "$dir/platform/usr/sbin"
+    {
+        printf '%s/releases/%s/targets/x86/64/packages/packages.adb\n' "$S7_FEED_BASE" "$v"
+        printf '%s/releases/%s/packages/x86_64/base/packages.adb\n' "$S7_FEED_BASE" "$v"
+        printf '%s/releases/%s/targets/x86/64/kmods/%s/packages.adb\n' "$S7_FEED_BASE" "$v" "$kmods"
+        printf '%s/releases/%s/packages/x86_64/luci/packages.adb\n' "$S7_FEED_BASE" "$v"
+        printf '%s/releases/%s/packages/x86_64/packages/packages.adb\n' "$S7_FEED_BASE" "$v"
+        printf '%s/releases/%s/packages/x86_64/routing/packages.adb\n' "$S7_FEED_BASE" "$v"
+        printf '%s/releases/%s/packages/x86_64/telephony/packages.adb\n' "$S7_FEED_BASE" "$v"
+    } >"$dir/rootfs/etc/apk/repositories.d/distfeeds.list"
+    printf 'apk-openssl\nbusybox\n' >"$dir/rootfs/etc/apk/world"
+    ( cd "$dir/rootfs" && tar -czf "$dir/stage/rootfs.tar.gz" . )
+    printf 'kernel of %s\n' "$v" >"$dir/stage/kernel.bin"
+    printf 'initramfs of %s\n' "$v" >"$dir/stage/initramfs.cpio.gz"
+    printf '#!/bin/sh\necho btrfs-progs v6.12\n' >"$dir/platform/usr/sbin/btrfs"
+    chmod +x "$dir/platform/usr/sbin/btrfs"
+    ( cd "$dir/platform" && tar -cf "$dir/stage/platform.tar" . )
+    S7_KERNEL_SHA=$(host_sha "$dir/stage/kernel.bin")
+    S7_INITRD_SHA=$(host_sha "$dir/stage/initramfs.cpio.gz")
+    {
+        printf '{\n  "format": "ab-payload/1",\n  "rootfs": "%s",\n' "$v"
+        printf '  "kernel": "%s~%s-r1",\n  "members": {\n' "$kver" "${kmods#*-1-}"
+        printf '    "initramfs.cpio.gz": {"sha256": "%s", "size": 1},\n' "$S7_INITRD_SHA"
+        printf '    "kernel.bin": {"sha256": "%s", "size": 1},\n' "$S7_KERNEL_SHA"
+        printf '    "platform.tar": {"sha256": "%s", "size": 1},\n' "$(host_sha "$dir/stage/platform.tar")"
+        printf '    "rootfs.tar.gz": {"sha256": "%s", "size": 1}\n' "$(host_sha "$dir/stage/rootfs.tar.gz")"
+        printf '  }\n}\n'
+    } >"$dir/stage/manifest.json"
+    ( cd "$dir/stage" && tar -cf "$payloads_s7/payload-$v.tar" \
+        manifest.json rootfs.tar.gz kernel.bin initramfs.cpio.gz platform.tar )
+}
+
+build_s7_payload 25.12.0 6.12.87 "$S7_KMODS_20"
+build_s7_payload 25.12.2 6.12.103 "$S7_KMODS_22"
+
+# The machine S7 finds: running 25.12.0, its feed list pointing at a mirror of its own (a
+# machine whose operator set the feeds by hand, which is what makes the restore checkable),
+# with the kmod the batch installs recorded against 25.12.0's kernel.
+setup_s7_device() {
+    setup_fake_world 25.12.0
+    printf '6.12.87' >"$FAKE_DEV/kver"
+    printf '6.12.103' >"$FAKE_DEV/kver-after"
+    printf '6.12.87' >"$FAKE_DEV/kmod-depver"
+    printf '6.12.87' >"$FAKE_DEV/kmod-modver"
+    printf 'curl-8.5.0-r0\nhtop-3.3.0-r1\nkmod-usb-storage-6.12.87-r1\nluci-app-ttyd-1.0-r1\nbusybox-1.36.1-r1\n' \
+        >"$FAKE_DEV/installed"
+    printf 'curl-8.9.0-r0\nkmod-usb-storage-6.12.87-r1\nluci-app-ttyd-1.0-r1\nbusybox-1.36.1-r2\nfirewall4-1.0-r2\n' \
+        >"$FAKE_DEV/installed-after"
+    printf 'https://mirror.lan/releases/25.12.0/packages/x86_64/packages/packages.adb\n' >"$FAKE_DEV/distfeeds.list"
+    : >"$FAKE_DEV/pkgfail-aligned"
+}
+
+tab=$'\t'
+
+setup_s7_device
+out=$(run_scen_payloads "$payloads_s7" "$tmp/r-s7" --case S7)
+assert_eq "$?" "0" "S7 exits zero when both snapshots exist, an aligned install works and the feed list is back"
+assert_eq "$(verdict_of "$tmp/r-s7")" "PASS" "S7 records PASS"
+s7log=$(cat "$(evidence_of "$tmp/r-s7" s7)")
+
+# The feed list each version is given comes out of that version's own rootfs, in the order
+# the plan promises: user-space first, the target's own packages second, the kmods of its
+# kernel third.
+assert_contains "$s7log" "feeds source: 25.12.0 from rootfs, 25.12.2 from rootfs" \
+    "both feed lists were read out of the releases themselves"
+assert_contains "$s7log" "feed 25.12.0 1/3 packages: $S7_FEED_BASE/releases/25.12.0/packages/x86_64/packages/packages.adb" \
+    "the from version's user-space feed is its own release's"
+assert_contains "$s7log" "feed 25.12.0 3/3 kmods: $S7_FEED_BASE/releases/25.12.0/targets/x86/64/kmods/$S7_KMODS_20/packages.adb" \
+    "the from version's kmods feed names its own kernel and its own build hash"
+assert_contains "$s7log" "feed 25.12.2 3/3 kmods: $S7_FEED_BASE/releases/25.12.2/targets/x86/64/kmods/$S7_KMODS_22/packages.adb" \
+    "the to version's kmods feed is a different directory: the kernel-bound half really does differ"
+assert_contains "$(cat "$STUB_CALLS")" "exec cp /tmp/s7-feeds-25.12.0.list /etc/apk/repositories.d/distfeeds.list" \
+    "the from version's feed list was written before the batch was installed"
+
+# The two snapshots, and what they say the versions are.
+assert_file_exists "$tmp/r-s7/evidence/s7-snapshot-a.tsv" "snapshot A is kept as evidence"
+assert_file_exists "$tmp/r-s7/evidence/s7-snapshot-b.tsv" "snapshot B is kept as evidence"
+assert_contains "$(cat "$tmp/r-s7/evidence/s7-snapshot-a.tsv")" "kver${tab}6.12.87" \
+    "snapshot A records the kernel the from version runs"
+assert_contains "$(cat "$tmp/r-s7/evidence/s7-snapshot-b.tsv")" "kver${tab}6.12.103" \
+    "snapshot B records the kernel the to version runs"
+
+# The table: one row per package, naming both sides of a change.
+assert_contains "$s7log" "version-changed${tab}curl${tab}curl-8.5.0-r0${tab}curl-8.9.0-r0" \
+    "a package whose version moved is named with both versions"
+assert_contains "$s7log" "disappeared${tab}htop${tab}htop-3.3.0-r1${tab}-" \
+    "a package that is gone is named, not counted"
+assert_contains "$s7log" "new${tab}firewall4${tab}-${tab}firewall4-1.0-r2" \
+    "a package that only the new version has is named too"
+assert_contains "$s7log" "same${tab}luci-app-ttyd${tab}luci-app-ttyd-1.0-r1${tab}luci-app-ttyd-1.0-r1" \
+    "a user-space package that did not move is printed as unchanged: the user-space feeds are the same in both releases"
+
+# The ABI half: the kmod still carries the kernel dependency of the version it was built for,
+# and the machine runs the other kernel.
+assert_contains "$s7log" \
+    "kmod kmod-usb-storage: kmod-usb-storage-6.12.87-r1 (kernel dependency 6.12.87) -> kmod-usb-storage-6.12.87-r1 (6.12.87), running kernel 6.12.103" \
+    "the kmod's recorded kernel dependency is compared with the kernel that is running"
+
+# The feed list stayed behind: a FINDING, and the verdict is untouched.
+note=$(note_of "$tmp/r-s7")
+case "$note" in
+    FINDING:*) assert_eq "prefixed" "prefixed" "the standing feed list is reported as a FINDING" ;;
+    *) assert_eq "prefixed" "not-prefixed [$note]" "the standing feed list is reported as a FINDING" ;;
+esac
+assert_contains "$note" "the package source did not follow the version" \
+    "the finding says what the problem is"
+assert_contains "$note" "still names 25.12.0's feeds" "the finding names the release the feeds belong to"
+assert_contains "$note" "while the machine runs kernel 6.12.103" \
+    "the finding puts the feed list against the kernel that is running"
+
+# Step 6: the same apk, the same machine, the feeds of the version now running. The kmod is
+# served but apk changes nothing (the world file still pins the old kernel, measured), so a
+# package that was not installed is what proves the aligned feed works -- and only an install
+# that changed something counts as proof.
+assert_contains "$s7log" "aligned install kmod-usb-storage: state=installed before=kmod-usb-storage-6.12.87-r1 after=kmod-usb-storage-6.12.87-r1 changed=no" \
+    "an install that changes nothing is recorded as no change, not as a pass"
+assert_contains "$s7log" "aligned install nano: state=installed before=not-installed after=nano-1.0-r0 changed=yes" \
+    "the aligned feed is proven by an install that really happened"
+assert_contains "$note" "aligned 25.12.2 feeds install nano" "the note says which install proved the feed"
+
+# Step 6 also restores: not "we copied something", but the same bytes as before the case.
+assert_eq "$(cat "$FAKE_DEV/distfeeds.list")" \
+    "https://mirror.lan/releases/25.12.0/packages/x86_64/packages/packages.adb" \
+    "the machine's own feed list is back after the case aligned and installed"
+assert_eq "$(cat "$FAKE_DEV/_etc_apk_repositories.d_distfeeds.list.bak")" \
+    "https://mirror.lan/releases/25.12.0/packages/x86_64/packages/packages.adb" \
+    "the backup the case took holds the machine's own list"
+assert_contains "$s7log" "feeds restored: /etc/apk/repositories.d/distfeeds.list is byte-identical" \
+    "the restore is a byte comparison, and it is in the evidence"
+
+# The other half of the rule: a feed that is aligned and still installs nothing is a FAIL,
+# because that is the one outcome which says the source is not what is wrong.
+setup_s7_device
+printf 'kmod-usb-storage\nnano\n' >"$FAKE_DEV/pkgfail-aligned"
+out=$(run_scen_payloads "$payloads_s7" "$tmp/r-s7-fail" --case S7)
+rc=$?
+assert_eq "$rc" "1" "an aligned feed that installs nothing makes the run non-zero"
+assert_eq "$(verdict_of "$tmp/r-s7-fail")" "FAIL" "nothing installed from the aligned feed is a FAIL"
+assert_contains "$(note_of "$tmp/r-s7-fail")" "not one package could be installed from 25.12.2's own feeds" \
+    "the failure says which feed was aligned and that it is the source, not the jump"
+assert_eq "$(cat "$FAKE_DEV/distfeeds.list")" \
+    "https://mirror.lan/releases/25.12.0/packages/x86_64/packages/packages.adb" \
+    "the feed list is restored even when the aligned install fails"
+
+# No feed list for one end: there is nothing to align to, so the case cannot judge anything.
+mkdir -p "$tmp/payloads-s7-partial"
+cp "$payloads_s7/payload-25.12.0.tar" "$tmp/payloads-s7-partial/"
+setup_s7_device
+out=$(run_scen_payloads "$tmp/payloads-s7-partial" "$tmp/r-s7-gap" --case S7)
+assert_eq "$?" "4" "a missing payload is a gap, not a failure"
+assert_eq "$(verdict_of "$tmp/r-s7-gap")" "GAP" "missing feeds for the to version records GAP"
+assert_contains "$(note_of "$tmp/r-s7-gap")" "no feed list for 25.12.2" "the gap names the version it lacks"
+assert_eq "$(grep -c 'ab-upgrade' "$STUB_CALLS" || true)" "0" \
+    "nothing was installed or jumped without the feeds of both ends"
+
 # --- the red line ---------------------------------------------------------- #
 setup_fake_world 25.12.2
 printf 'none' >"$FAKE_DEV/committed"
@@ -834,7 +1146,7 @@ calls_before=$(wc -l <"$STUB_CALLS" | tr -d ' ')
 out=$(run_scen "$tmp/dry" --dry-run)
 assert_eq "$?" "0" "scenarios.sh --dry-run exits zero"
 assert_eq "$(printf '%s\n' "$out" | grep '^# case ' | awk '{print $3}' | tr '\n' ' ')" \
-    "S1 S2 S3 S4 S5 S6 " "the six cases are planned in order"
+    "S1 S2 S3 S4 S5 S6 S7 " "the seven cases are planned in order"
 assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S3" && $2 == "1/1" {print $3}' | tr '\n' ',')" \
     "unmount,push,check,install,reboot,wait_up,settle,status,assert," \
     "one hop runs the fixed skeleton in order"
@@ -867,6 +1179,23 @@ assert_contains "$out" "# warning: missing $tmp/payloads-partial/payload-25.12.2
     "the warning carries the path, not just the name"
 assert_contains "$out" "S3 1/1 push $tmp/payloads-partial/payload-25.12.2.tar" \
     "the plan still shows the step it would run"
+
+# S7's plan names the three feeds of each version before a machine is touched: the
+# user-space index, the target's own packages and the kmods of that release's kernel.
+calls_before=$(wc -l <"$STUB_CALLS" | tr -d ' ')
+out=$(run_scen_payloads "$payloads_s7" "$tmp/dry-s7" --dry-run --case S7)
+assert_eq "$?" "0" "scenarios.sh --dry-run --case S7 exits zero"
+assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S7" && $2 == "feeds" {print $3}' | tr '\n' ' ')" \
+    "1/3 2/3 3/3 1/3 2/3 3/3 " "the three feeds of each version are planned in order"
+assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S7" && $2 == "feeds" {print $4}' | tr '\n' ' ')" \
+    "$S7_FEED_BASE/releases/25.12.0/packages/x86_64/packages/packages.adb $S7_FEED_BASE/releases/25.12.0/targets/x86/64/packages/packages.adb $S7_FEED_BASE/releases/25.12.0/targets/x86/64/kmods/$S7_KMODS_20/packages.adb $S7_FEED_BASE/releases/25.12.2/packages/x86_64/packages/packages.adb $S7_FEED_BASE/releases/25.12.2/targets/x86/64/packages/packages.adb $S7_FEED_BASE/releases/25.12.2/targets/x86/64/kmods/$S7_KMODS_22/packages.adb " \
+    "every URL comes out of the release itself, the kmods directory included"
+assert_contains "$out" "S7 5/6 read /etc/apk/repositories.d/distfeeds.list expect=equal to the 25.12.0 bytes -> FINDING" \
+    "the plan states the feed-list rule before a machine is touched"
+assert_contains "$out" "S7 6/6 align the 25.12.2 feeds" \
+    "the plan says the aligned feed is what has to install something"
+assert_eq "$(wc -l <"$STUB_CALLS" | tr -d ' ')" "$calls_before" "planning S7 reaches no machine"
+assert_eq "$(test -e "$tmp/dry-s7/results.tsv" && echo yes || echo no)" "no" "planning S7 writes no results file"
 
 # --- results.tsv shape ----------------------------------------------------- #
 assert_eq "$(awk -F'\t' 'NF != 4' "$tmp/r-s3/results.tsv" | wc -l | tr -d ' ')" "0" \
