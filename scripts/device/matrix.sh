@@ -567,15 +567,34 @@ run_case() {
 # Plan (--dry-run)
 # --------------------------------------------------------------------------- #
 
+# payload_present <name>: a dry-run that lists steps for a payload nobody has is worse than
+# no dry-run: the missing file is only discovered by the run that was supposed to touch the
+# machine, and by then a broken symlink reads as a device fault.
+payload_present() {
+    [ -f "${PAYLOAD_DIR}/$1" ] && printf '%s\n' "ok" && return 0
+    printf 'missing %s\n' "${PAYLOAD_DIR}/$1"
+    return 1
+}
+
 plan_case() {
     _case=$1
     _path=$(case_path "${_case}") || return 1
+    case "${_case}" in
+        M7) payload_present payload-bad.tar >/dev/null || printf '# warning: %s\n' "$(payload_present payload-bad.tar)"
+            ;;
+        *) for _v in $(printf '%s' "${_path}" | tr ' ' '\n' | awk '!seen[$0]++'); do
+               payload_present "payload-${_v}.tar" >/dev/null                    || printf '# warning: %s\n' "$(payload_present "payload-${_v}.tar")"
+           done
+           ;;
+    esac
     printf '# case %s %s\n' "${_case}" "$(path_label "${_path}")"
     if [ "${_case}" = "M7" ]; then
+        # The bad payload is refused at the structure stage, so the plan must not promise a
+        # reclamation step or a mount cleanup that the run does not perform: a dry-run that
+        # lists steps the real run skips is how a reader stops trusting the dry-run.
         printf '%s status\n' "${_case}"
-        printf '%s gc\n' "${_case}"
-        printf '%s unmount /mnt/slots/a /mnt/slots/b (left behind by an earlier --check; their absence is deliberately not asserted)\n' "${_case}"
         printf '%s push %s/payload-bad.tar -> %s/payload-bad.tar\n' "${_case}" "${PAYLOAD_DIR}" "${AB_REMOTE_TMP}"
+        printf '%s unmount /mnt/slots/a /mnt/slots/b (left behind by an earlier --check; their absence is deliberately not asserted)\n' "${_case}"
         printf '%s check %s/payload-bad.tar expect=exit-74 (slot state unchanged; the ESP is not inspected)\n' "${_case}" "${AB_REMOTE_TMP}"
         printf '%s status expect=unchanged generation/committed/pending\n' "${_case}"
         printf '%s record\n' "${_case}"
