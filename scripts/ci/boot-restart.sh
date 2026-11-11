@@ -35,6 +35,17 @@ BR_BOOT_PATTERN='^Linux version '
 # line, and loose at the end so a trailing detail cannot hide it.
 BR_REBOOT_PATTERN='^\[grow\] rebooting so the kernel re-reads the partition table'
 
+# boot_restart_counts <serial log>: the standard pair, printed as "<boots> <reboots>".
+#
+# This is the only place the two patterns above are applied, so a stage that wants the
+# standard counts has one call to make and nothing to keep in step.
+boot_restart_counts() {
+    local br_std_log="${1:-}"
+    printf '%s %s' \
+        "$(boot_restart_count "${br_std_log}" "${BR_BOOT_PATTERN}")" \
+        "$(boot_restart_count "${br_std_log}" "${BR_REBOOT_PATTERN}")"
+}
+
 # boot_restart_count <serial log> <extended regex>: how many lines match. A missing log, an
 # empty pattern or a grep that fails all answer 0 - a stage that never wrote a serial log is
 # "no evidence of a restart", not a broken harness.
@@ -56,6 +67,10 @@ boot_restart_count() {
 # Both counts are budgeted, which is what makes the judgement robust in the two directions
 # that matter: a growth reboot shows up as one extra boot and one extra line, and a panic
 # loop shows up as extra boots with no line at all. Anything over the budget is a loop.
+#
+# The two patterns above are the counting contract for that: a caller that wants the
+# standard judgement (rather than a hand-picked regex) uses them here, so the harness and
+# the stages cannot disagree about what a boot start or a growth reboot looks like.
 boot_restart_verdict() {
     local br_boots="${1:-}" br_reboots="${2:-}" br_max="${3:-}"
     case "${br_boots}" in
