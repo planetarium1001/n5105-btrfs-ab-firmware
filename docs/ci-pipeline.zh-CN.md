@@ -54,6 +54,18 @@ workflow 什么时候跑、每个阶段证明什么、哪个文件才是该写�
   起来的 judge 行。耗时取自 Actions API，是真实的 job 墙钟时间。
 - 失败的 run 会把要紧的话写在第一行：卡在哪个阶段，以及看原因的那条命令。
 
+## 构建非 pin 版本
+
+手动入口接受 `upstream_version` 输入，流水线会端到端拉取那个版本。三个 lockfile
+（`kmod-closure.json`、`initramfs-tools.lock.json`、`runtime-closure.json`）钉的是一个版本的
+程序，所以为别的版本构建时，会在 `$CI_TMP_ROOT/locks/` 下派生自己的副本、对副本做断言，并在 run
+页面上告警。已提交的 lockfile 仍是 pin 的契约；`CI_LOCK_STRICT=1` 让所有版本回到硬失败。
+
+同一 ref 上两次派发会互相取消，因为 `concurrency` 组只由 workflow 与 ref 组成。多版本矩阵
+是一组**串行**的 run，不是并行的。
+
+在真机上消费这些构建的驱动见 [`device-matrix.zh-CN.md`](device-matrix.zh-CN.md)。
+
 ## 阶段失败时
 
 1. 先看 report 的第一行，它点名了阶段。

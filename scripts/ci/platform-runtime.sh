@@ -16,7 +16,16 @@
 # keeps the addition to what the linker actually asks for.
 #
 # Drift policy matches the module closure: scripts/ci/runtime-closure.json is the
-# contract. `--write-lock` rewrites it from what the feed publishes.
+# contract for the upstream release it pins. If the feed publishes a different version,
+# digest or package set for that release, the stage fails instead of silently following.
+# Refresh it deliberately with `--write-lock` and review the diff.
+#
+# A build for another upstream release cannot be asserted against that contract: the
+# btrfs-progs package and the library closure are different by construction. Such a build
+# derives its own lockfile under $CI_TMP_ROOT from what the feed publishes for that
+# release, asserts against that copy and warns about it, so the pinned lockfile stays
+# untouched and a green stage never claims the pin was verified. CI_LOCK_STRICT=1 keeps
+# the pin contract for every release.
 #
 # Inputs (environment):
 #   CI_UPSTREAM_BASE_URL  release directory URL
@@ -25,9 +34,10 @@
 #   CI_ROOTFS_TAR         rootfs tarball used to decide what is already provided
 #   CI_RUNTIME_LOCKFILE   lockfile path (default: scripts/ci/runtime-closure.json)
 #   CI_RUNTIME_LIMIT_MIB  unpacked platform layer budget (default: 8)
+#   CI_LOCK_STRICT        1 asserts the lockfile even when CI_UPSTREAM_VERSION differs
 #
 # Outputs: runtime_bytes, runtime_packages, runtime_sonames, runtime_btrfs,
-#          runtime_limit_mib, lockfile
+#          runtime_limit_mib, lockfile (the pinned lockfile, or the derived per-version one)
 
 set -euo pipefail
 
@@ -54,6 +64,66 @@ lockfile="${CI_RUNTIME_LOCKFILE:-${CI_REPO_ROOT}/scripts/ci/runtime-closure.json
 limit_mib="${CI_RUNTIME_LIMIT_MIB:-8}"
 rootfs_tar="${CI_ROOTFS_TAR:-${CI_TMP_ROOT}/fetch/upstream/rootfs.tar.gz}"
 [ -f "${rootfs_tar}" ] || ci_die "rootfs tarball not found: ${rootfs_tar}"
+
+# --------------------------------------------------------------------------- #
+# 0. Which lockfile this build is bound by
+#
+# The pin is a contract between one upstream release and the committed lockfile: the
+# btrfs-progs build and the library set in it belong to that release's feed. A build for
+# another release would fail that contract by construction, so it derives its own lockfile
+# from what the feed publishes for its release and asserts against that copy.
+# CI_LOCK_STRICT=1 keeps the pin contract for every release, which is what a bisect of the
+# pin itself needs.
+# --------------------------------------------------------------------------- #
+
+lock_is_derived="false"
+lock_upstream=""
+if [ -f "${lockfile}" ]; then
+    lock_upstream="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("upstream_version", ""))' "${lockfile}")" \
+        || ci_die "cannot read upstream_version from ${lockfile}"
+fi
+
+if [ "${write_lock}" != "true" ] && [ -n "${CI_UPSTREAM_VERSION:-}" ] \
+    && [ -n "${lock_upstream}" ] && [ "${lock_upstream}" != "${upstream_version}" ]; then
+    if [ "${CI_LOCK_STRICT:-0}" = "1" ]; then
+        ci_log "CI_LOCK_STRICT=1: asserting the pinned lockfile (${lock_upstream}) for the ${upstream_version} build"
+    else
+        # Regenerated on every run: a copy left behind by an earlier build of the same
+        # release must not become the contract of this one.
+        lockfile="${CI_TMP_ROOT}/locks/runtime-closure-${upstream_version}.json"
+        mkdir -p "$(dirname "${lockfile}")"
+        lock_is_derived="true"
+        write_lock="true"
+    fi
+fi
+
+# lock_die <message>: a rejection has to say whether the pin or a derived copy made it.
+# Without that, a red assemble step for a matrix release reads as "the committed lockfile
+# was violated", which is the one thing that must not be inferred here.
+lock_die() {
+    if [ "${lock_is_derived}" = "true" ]; then
+        ci_die "derived lockfile ${lockfile}: $*"
+    fi
+    ci_die "$*"
+}
+
+# warn_derived_lock: the step log and the run page both have to carry the fact that this
+# build is not under the pin contract, because a green assemble step otherwise reads as
+# "the committed lockfile was verified".
+warn_derived_lock() {
+    ci_warn "derived per-version lockfile: ${lockfile}"
+    ci_warn "  the ${upstream_version} build does not assert the committed lockfile (pinned ${lock_upstream}): package drift is NOT enforced for this release"
+    ci_warn "  CI_LOCK_STRICT=1 turns the same drift back into a hard failure"
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        printf '::warning title=runtime derived lockfile::%s build uses %s; the committed lockfile pins %s, so package drift is not asserted for this release\n' \
+            "${upstream_version}" "${lockfile}" "${lock_upstream}"
+    fi
+}
+
+if [ "${lock_is_derived}" = "true" ]; then
+    ci_log "deriving a per-version lockfile for upstream ${upstream_version}: ${lockfile}"
+    warn_derived_lock
+fi
 
 # The package feed lives next to the target release: packages/<arch>/packages/.
 feed="${base_url%/targets/*}/packages/x86_64/packages"
@@ -346,26 +416,38 @@ PYTHON
 if [ "${write_lock}" = "true" ]; then
     cp "${lock_json}" "${lockfile}"
     ci_log "lockfile rewritten: ${lockfile}"
-else
-    [ -f "${lockfile}" ] || ci_die "lockfile missing: ${lockfile}"
-    python3 - "${lockfile}" "${lock_json}" <<'PYTHON'
+fi
+
+# A derived lockfile is asserted exactly like the pin, and through the same code: the copy
+# was written from this feed a moment ago, so the assertion proves the copy carries what
+# this run resolved rather than that the committed lockfile still holds.
+if [ "${write_lock}" != "true" ] || [ "${lock_is_derived}" = "true" ]; then
+    [ -f "${lockfile}" ] || lock_die "lockfile missing: ${lockfile}"
+    # The drift header names the derived copy when one is in force, so the reader of a red
+    # matrix build does not go looking for a change in the committed lockfile.
+    drift_label="[runtime] lockfile drift:"
+    if [ "${lock_is_derived}" = "true" ]; then
+        drift_label="[runtime] derived lockfile ${lockfile} drift:"
+    fi
+    python3 - "${lockfile}" "${lock_json}" "${drift_label}" <<'PYTHON'
 import json, sys
 want = json.load(open(sys.argv[1], encoding="utf-8"))
 have = json.load(open(sys.argv[2], encoding="utf-8"))
+drift = sys.argv[3]
 for key in ("upstream_version", "btrfs_image"):
     if want.get(key) != have.get(key):
-        print(f"[runtime] lockfile drift: {key} is {want.get(key)!r}, feed has {have.get(key)!r}", file=sys.stderr)
+        print(f"{drift} {key} is {want.get(key)!r}, feed has {have.get(key)!r}", file=sys.stderr)
         sys.exit(1)
 for name, meta in sorted(have["packages"].items()):
     if name not in want["packages"]:
-        print(f"[runtime] lockfile drift: {name} is not in the lockfile", file=sys.stderr)
+        print(f"{drift} {name} is not in the lockfile", file=sys.stderr)
         sys.exit(1)
     if want["packages"][name]["sha256"] != meta["sha256"]:
-        print(f"[runtime] lockfile drift: {name} digest changed", file=sys.stderr)
+        print(f"{drift} {name} digest changed", file=sys.stderr)
         sys.exit(1)
 for name in sorted(want["packages"]):
     if name not in have["packages"]:
-        print(f"[runtime] lockfile drift: {name} is not published any more", file=sys.stderr)
+        print(f"{drift} {name} is not published any more", file=sys.stderr)
         sys.exit(1)
 print("[runtime] lockfile matches the feed")
 PYTHON

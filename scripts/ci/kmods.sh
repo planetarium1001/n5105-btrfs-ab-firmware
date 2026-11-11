@@ -7,10 +7,17 @@
 # sha256sums, unpacks the modules out of the apk-tools v3 containers, and asserts
 # that the result still matches the committed lockfile.
 #
-# Drift policy: the lockfile (scripts/ci/kmod-closure.json) is the contract. If the
-# mirror publishes a different version, digest or module set for the same upstream
-# release, the stage fails instead of silently following. Refresh it deliberately
-# with `--write-lock` and review the diff.
+# Drift policy: the lockfile (scripts/ci/kmod-closure.json) is the contract for the
+# upstream release it pins. If the mirror publishes a different version, digest or module
+# set for that release, the stage fails instead of silently following. Refresh it
+# deliberately with `--write-lock` and review the diff.
+#
+# A build for another upstream release cannot be asserted against that contract: the
+# release's kernel and module packages are different by construction. Such a build
+# derives its own lockfile under $CI_TMP_ROOT from what the mirror publishes for that
+# release, asserts against that copy and warns about it, so the pinned lockfile stays
+# untouched and a green stage never claims the pin was verified. CI_LOCK_STRICT=1 keeps
+# the pin contract for every release.
 #
 # Inputs (environment):
 #   CI_KMODS_DIR         kernel module directory name, for example 6.12.103-1-<hash>
@@ -18,13 +25,14 @@
 #   CI_UPSTREAM_VERSION  upstream release label, recorded in the lockfile
 #   CI_KMODS_OUT         output directory (default: $CI_TMP_ROOT/kmods)
 #   CI_LOCKFILE          lockfile path (default: scripts/ci/kmod-closure.json)
+#   CI_LOCK_STRICT       1 asserts the lockfile even when CI_UPSTREAM_VERSION differs
 #
 # Modes:
 #   (default)      verify the unpacked modules and the mirror metadata against the lockfile
 #   --write-lock   rewrite the lockfile from what the mirror currently publishes
 #
 # Outputs: module_count, module_paths, btrfs_module, btrfs_vermagic, package_count,
-#          virtual_packages, lockfile
+#          virtual_packages, lockfile (the pinned lockfile, or the derived per-version one)
 
 set -euo pipefail
 
@@ -59,6 +67,69 @@ modules_dir="${out_dir}/modules"
 mkdir -p "${apk_dir}" "${modules_dir}"
 if [ "${write_lock}" != "true" ]; then
     [ -f "${lockfile}" ] || ci_die "lockfile not found: ${lockfile} (run with --write-lock to create it)"
+fi
+
+# --------------------------------------------------------------------------- #
+# 0. Which lockfile this build is bound by
+#
+# The pin is a contract between one upstream release and the committed lockfile: the
+# module versions in it belong to that release's kernel. A build for another release
+# would fail that contract by construction, so it derives its own lockfile from what the
+# mirror publishes for its release and asserts against that copy. CI_LOCK_STRICT=1 keeps
+# the pin contract for every release, which is what a bisect of the pin itself needs.
+# --------------------------------------------------------------------------- #
+
+# closure_source stays the pinned lockfile even when the contract moves to a derived
+# copy: a different release may change module versions, never which modules the
+# initramfs needs.
+closure_source="${lockfile}"
+lock_is_derived="false"
+lock_upstream=""
+if [ -f "${lockfile}" ]; then
+    lock_upstream="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("upstream_version", ""))' "${lockfile}")" \
+        || ci_die "cannot read upstream_version from ${lockfile}"
+fi
+
+if [ "${write_lock}" != "true" ] && [ -n "${CI_UPSTREAM_VERSION:-}" ] \
+    && [ -n "${lock_upstream}" ] && [ "${lock_upstream}" != "${upstream_version}" ]; then
+    if [ "${CI_LOCK_STRICT:-0}" = "1" ]; then
+        ci_log "CI_LOCK_STRICT=1: asserting the pinned lockfile (${lock_upstream}) for the ${upstream_version} build"
+    else
+        # Regenerated on every run: a copy left behind by an earlier build of the same
+        # release must not become the contract of this one.
+        lockfile="${CI_TMP_ROOT}/locks/kmod-closure-${upstream_version}.json"
+        mkdir -p "$(dirname "${lockfile}")"
+        lock_is_derived="true"
+        write_lock="true"
+    fi
+fi
+
+# lock_die <message>: a rejection has to say whether the pin or a derived copy made it.
+# Without that, a red assemble step for a matrix release reads as "the committed
+# lockfile was violated", which is the one thing that must not be inferred here.
+lock_die() {
+    if [ "${lock_is_derived}" = "true" ]; then
+        ci_die "derived lockfile ${lockfile}: $*"
+    fi
+    ci_die "$*"
+}
+
+# warn_derived_lock: the step log and the run page both have to carry the fact that this
+# build is not under the pin contract, because a green assemble step otherwise reads as
+# "the committed lockfile was verified".
+warn_derived_lock() {
+    ci_warn "derived per-version lockfile: ${lockfile}"
+    ci_warn "  the ${upstream_version} build does not assert the committed lockfile (pinned ${lock_upstream}): module drift is NOT enforced for this release"
+    ci_warn "  CI_LOCK_STRICT=1 turns the same drift back into a hard failure"
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        printf '::warning title=kmods derived lockfile::%s build uses %s; the committed lockfile pins %s, so module drift is not asserted for this release\n' \
+            "${upstream_version}" "${lockfile}" "${lock_upstream}"
+    fi
+}
+
+if [ "${lock_is_derived}" = "true" ]; then
+    ci_log "deriving a per-version lockfile for upstream ${upstream_version}: ${lockfile}"
+    warn_derived_lock
 fi
 
 # The closure list is the only hand-maintained input. It comes from the DEPENDS graph
@@ -131,19 +202,23 @@ if [ "${write_lock}" = "true" ]; then
         # shellcheck disable=SC2086  # the closure list is intentionally word-split
         package_lines="$(resolved_lines ${CI_KMODS_CLOSURE})" || ci_die "could not resolve the given closure from the mirror"
         ci_log "using CI_KMODS_CLOSURE (${CI_KMODS_CLOSURE})"
-    elif [ -f "${lockfile}" ]; then
-        locked_names="$(python3 - "${lockfile}" <<'PYTHON'
+    elif [ -f "${closure_source}" ]; then
+        locked_names="$(python3 - "${closure_source}" <<'PYTHON'
 import json, sys
 print(" ".join(pkg["name"] for pkg in json.load(open(sys.argv[1], encoding="utf-8"))["packages"]))
 PYTHON
 )"
         # shellcheck disable=SC2086  # the name list is intentionally word-split
-        package_lines="$(resolved_lines ${locked_names})" || ci_die "could not resolve the closure from the mirror"
+        package_lines="$(resolved_lines ${locked_names})" || lock_die "could not resolve the closure from the mirror"
     else
         # shellcheck disable=SC2086  # the closure list is intentionally word-split
-        package_lines="$(resolved_lines ${closure_list})" || ci_die "could not resolve the closure from the mirror"
+        package_lines="$(resolved_lines ${closure_list})" || lock_die "could not resolve the closure from the mirror"
     fi
-    ci_warn "write-lock mode: pinning what the mirror publishes now"
+    if [ "${lock_is_derived}" = "true" ]; then
+        ci_log "derived lockfile mode: pinning what the mirror publishes for ${upstream_version}"
+    else
+        ci_warn "write-lock mode: pinning what the mirror publishes now"
+    fi
 else
     package_lines="$(locked_lines)"
 fi
@@ -167,14 +242,14 @@ index = json.load(open(sys.argv[1], encoding="utf-8"))["packages"]
 print(index.get(sys.argv[2], ""))
 PYTHON
 )"
-    [ -n "${published}" ] || ci_die "${name} is no longer published in the kmods index"
+    [ -n "${published}" ] || lock_die "${name} is no longer published in the kmods index"
     if [ "${published}" != "${version}" ]; then
-        ci_die "${name}: mirror publishes ${published}, lockfile pins ${version}"
+        lock_die "${name}: mirror publishes ${published}, lockfile pins ${version}"
     fi
 
     expected="$(ci_lookup_sha256 "${sums_file}" "kmods/${kmods_dir}/${name}-${version}.apk")"
     if [ "${expected}" != "${sha256}" ]; then
-        ci_die "${name}: release digest ${expected} differs from lockfile ${sha256}"
+        lock_die "${name}: release digest ${expected} differs from lockfile ${sha256}"
     fi
 
     if [ -s "${file}" ] && [ "$(ci_sha256 "${file}")" = "${sha256}" ]; then
@@ -240,13 +315,22 @@ doc = {
 open(lockpath, "w", encoding="utf-8").write(json.dumps(doc, indent=2, sort_keys=False) + "\n")
 print(f"[kmods] wrote {lockpath} with {len(doc['packages'])} packages")
 PYTHON
-    ci_warn "lockfile rewritten; review the diff before committing"
+    if [ "${lock_is_derived}" != "true" ]; then
+        ci_warn "lockfile rewritten; review the diff before committing"
+    fi
 fi
 
-python3 - "${lockfile}" "${inventory}" <<'PYTHON'
+# The drift header names the derived copy when one is in force, so the reader of a red
+# matrix build does not go looking for a change in the committed lockfile.
+drift_label="[kmods] lockfile drift:"
+if [ "${lock_is_derived}" = "true" ]; then
+    drift_label="[kmods] derived lockfile ${lockfile} drift:"
+fi
+
+python3 - "${lockfile}" "${inventory}" "${drift_label}" <<'PYTHON'
 import json, sys
 
-lockpath, inventory = sys.argv[1], sys.argv[2]
+lockpath, inventory, drift_label = sys.argv[1], sys.argv[2], sys.argv[3]
 lock = json.load(open(lockpath, encoding="utf-8"))
 found = {pkg["package"]: pkg for pkg in json.load(open(inventory, encoding="utf-8"))}
 problems = []
@@ -280,7 +364,7 @@ for name in found:
         problems.append(f"{name}: unpacked but not in the lockfile")
 
 if problems:
-    print("[kmods] lockfile drift:", file=sys.stderr)
+    print(drift_label, file=sys.stderr)
     for item in problems:
         print(f"  - {item}", file=sys.stderr)
     sys.exit(1)

@@ -155,6 +155,30 @@ bash scripts/ci/report.sh
 `lib.sh` falls back to `shasum -a 256` when `sha256sum` is absent, so the scripts also run
 on macOS.
 
+## Building a release other than the pin
+
+`workflow_dispatch` takes an `upstream_version` input, and the same value reaches
+`resolve`, `fetch`, `assemble` and S1–S5 as `CI_UPSTREAM_VERSION`. That is enough for the
+pipeline to fetch a different release, but not for the three lockfiles to stay honest:
+`kmod-closure.json`, `initramfs-tools.lock.json` and `runtime-closure.json` each pin the
+programs of one release, and a different release ships different kernels, modules and
+`btrfs-progs` by construction.
+
+A build that names another release therefore **derives its own lockfile** under
+`$CI_TMP_ROOT/locks/`, asserts against that copy and warns in the step log and on the run
+page. The committed lockfiles are untouched, so a green stage for another release never
+claims the pin was verified, and the pin keeps its drift contract. `CI_LOCK_STRICT=1`
+turns the drift back into a hard failure for every release, which is what a bisect of the
+pin itself needs.
+
+```sh
+gh workflow run ci.yml --ref main -f stage=assemble -f upstream_version=25.12.1
+```
+
+Two dispatches on the same ref cancel each other: the `concurrency` group is built from
+workflow and ref only, not from `upstream_version`. A matrix of releases is therefore a
+**sequential** set of runs, not a parallel one.
+
 ## S1: the module-load probe
 
 The upstream kernel is built without `CONFIG_KERNEL_BTRFS_FS`, so btrfs only exists as

@@ -11,6 +11,11 @@
 # runtime needs. Every build verifies all of it; a drift fails the stage instead of
 # producing an image with a different program in it.
 #
+# A build for another upstream release cannot be verified against that contract - the
+# release publishes different programs by construction - so it derives its own lockfile
+# under $CI_TMP_ROOT, verifies against that copy and warns. The committed lockfile stays
+# the contract for the pin; CI_LOCK_STRICT=1 keeps it in force for every release.
+#
 # Inputs (environment):
 #   CI_UPSTREAM_BASE       mirror root (default: https://downloads.immortalwrt.org)
 #   CI_UPSTREAM_VERSION    upstream release; defaults to CI_UPSTREAM_VERSION_PIN and
@@ -22,6 +27,8 @@
 #   CI_APK_DIR             apk cache (default: $CI_TMP_ROOT/apks)
 #   CI_APK_TOOLS_LOCK      lockfile (default: scripts/ci/initramfs-tools.lock.json)
 #   CI_APK_TOOLS_SUMMARY   where to write the JSON summary (default: <tmp>/tools.json)
+#   CI_APK_TOOLS           lock generator and installer (default: scripts/ci/apk_tools.py)
+#   CI_LOCK_STRICT         1 asserts the lockfile even when CI_UPSTREAM_VERSION differs
 #
 # Outputs: tools_digest, tools_versions, tools_bytes, tools_files
 #
@@ -50,6 +57,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 lockfile="${CI_APK_TOOLS_LOCK:-${CI_SCRIPT_DIR}/initramfs-tools.lock.json}"
+apk_tools="${CI_APK_TOOLS:-${CI_SCRIPT_DIR}/apk_tools.py}"
 apk_dir="${CI_APK_DIR:-${CI_TMP_ROOT:-/tmp/ci}/apks}"
 release_root="${CI_UPSTREAM_BASE%/}/releases"
 if [ -n "${CI_UPSTREAM_BASE_URL:-}" ]; then
@@ -62,10 +70,23 @@ fi
 
 ci_require_cmd python3 curl
 
+# warn_derived_lock: the step log and the run page both have to carry the fact that this
+# build is not under the pin contract, because a green stage otherwise reads as "the
+# committed lockfile was verified".
+warn_derived_lock() {
+    ci_warn "derived per-version lockfile: ${lockfile}"
+    ci_warn "  the ${build_version} build does not assert the committed lockfile (pinned ${pin_lock_version}): program drift is NOT enforced for this release"
+    ci_warn "  CI_LOCK_STRICT=1 turns the same drift back into a hard failure"
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        printf '::warning title=initramfs-tools derived lockfile::%s build uses %s; the committed lockfile pins %s, so program drift is not asserted for this release\n' \
+            "${build_version}" "${lockfile}" "${pin_lock_version}"
+    fi
+}
+
 if [ "${write_lock}" = "true" ]; then
     version="${CI_UPSTREAM_VERSION:-${CI_UPSTREAM_VERSION_PIN}}"
     ci_log "regenerating ${lockfile#"${CI_REPO_ROOT}"/} for upstream ${version}"
-    python3 "${CI_SCRIPT_DIR}/apk_tools.py" lock \
+    python3 "${apk_tools}" lock \
         --lock "${lockfile}" \
         --base-url "${CI_UPSTREAM_BASE}" \
         --upstream-version "${version}" \
@@ -78,12 +99,37 @@ fi
 [ -n "${stage}" ] || ci_die "--stage is required"
 [ -f "${lockfile}" ] || ci_die "lockfile not found: ${lockfile}"
 
-# The lockfile and the pin must agree. A pin bump without the matching lock update
-# would silently keep building the previous release's programs.
+# The lockfile and the build's release must agree. A pin bump without the matching lock
+# update would silently keep building the previous release's programs, so a build that
+# names no release at all always dies here. A build that names another release derives
+# its own lockfile instead: the pin cannot be asserted against programs it never pinned,
+# and the derived copy is what the rest of this script verifies and stages.
+build_version="${CI_UPSTREAM_VERSION:-${CI_UPSTREAM_VERSION_PIN}}"
 lock_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["upstream_version"])' "${lockfile}")"
-pin_version="${CI_UPSTREAM_VERSION:-${CI_UPSTREAM_VERSION_PIN}}"
-if [ "${lock_version}" != "${pin_version}" ]; then
-    ci_die "lockfile pins upstream ${lock_version} but this build uses ${pin_version}; run initramfs-tools.sh --write-lock and commit the result"
+pin_lock_version="${lock_version}"
+if [ "${lock_version}" != "${build_version}" ]; then
+    if [ -z "${CI_UPSTREAM_VERSION:-}" ] || [ "${CI_LOCK_STRICT:-0}" = "1" ]; then
+        ci_die "lockfile pins upstream ${lock_version} but this build uses ${build_version}; run initramfs-tools.sh --write-lock and commit the result"
+    fi
+    lockfile="${CI_TMP_ROOT:-/tmp/ci}/locks/initramfs-tools-${build_version}.lock.json"
+    mkdir -p "$(dirname "${lockfile}")"
+    if [ -f "${lockfile}" ]; then
+        # One derived lockfile serves every toolset of the same build: it lives in the
+        # build's scratch root, and every staging run verifies the packages it names, so
+        # a second toolset does not pay for another feed resolution.
+        ci_log "reusing the derived lockfile ${lockfile}"
+    else
+        ci_log "deriving a per-version lockfile for upstream ${build_version}: ${lockfile}"
+        python3 "${apk_tools}" lock \
+            --lock "${lockfile}" \
+            --base-url "${CI_UPSTREAM_BASE}" \
+            --upstream-version "${build_version}" \
+            --work "${apk_dir}" \
+            || ci_die "could not derive ${lockfile} from ${CI_UPSTREAM_BASE} for upstream ${build_version}"
+        [ -f "${lockfile}" ] || ci_die "deriving ${lockfile} produced no lockfile"
+    fi
+    lock_version="${build_version}"
+    warn_derived_lock
 fi
 
 # Download exactly the packages the lockfile names, into a cache shared by all stages.
@@ -107,12 +153,12 @@ PYTHON
 
 summary="${CI_APK_TOOLS_SUMMARY:-${CI_TMP_ROOT:-/tmp/ci}/initramfs-tools-${toolset}.json}"
 mkdir -p "$(dirname "${summary}")"
-python3 "${CI_SCRIPT_DIR}/apk_tools.py" install \
+python3 "${apk_tools}" install \
     --lock "${lockfile}" \
     --stage "${stage}" \
     --toolset "${toolset}" \
     --apk-dir "${apk_dir}" \
-    --upstream-version "${pin_version}" \
+    --upstream-version "${build_version}" \
     | tee "${summary}"
 
 digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "${summary}")"

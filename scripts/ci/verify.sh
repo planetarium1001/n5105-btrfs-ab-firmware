@@ -56,6 +56,15 @@ if [ -d "${CI_REPO_ROOT}/platform" ]; then
         init_scripts+=("${path}")
     done < <(find "${CI_REPO_ROOT}/platform" -type f ! -name '*.md' ! -name 'platform-release' | LC_ALL=C sort)
 fi
+# The device driver scripts in scripts/device run on a workstation, but they are written
+# in the same POSIX shell as the target, and they are the ones that decide whether the
+# machine on the bench keeps a bootable slot. Linting them as sh keeps a quoting bug from
+# reaching the run that flashes a board.
+if [ -d "${CI_REPO_ROOT}/scripts/device" ]; then
+    while IFS= read -r path; do
+        init_scripts+=("${path}")
+    done < <(find "${CI_REPO_ROOT}/scripts/device" -maxdepth 1 -type f -name '*.sh' | LC_ALL=C sort)
+fi
 for module in image ab upgrade runtime release; do
     [ -d "${CI_REPO_ROOT}/tests/modules/${module}" ] || continue
     while IFS= read -r path; do

@@ -7,6 +7,7 @@ Each document covers one topic. Every number is either measured or has an explic
 | Document | Contents |
 |---|---|
 | [ci-pipeline.md](ci-pipeline.md) | The three CI workflows, the five stages (what each proves and what a failure costs), the artifact map, and how to read a run page |
+| [device-matrix.md](device-matrix.md) | Driving a real machine through the version matrix over SSH: what each assertion proves, the resume file, the result states, and the red line that keeps a bootable slot |
 | [partitions.md](partitions.md) | Partition geometry, GPT PARTNAME and filesystem LABEL naming, sizing rationale, `mkfs` and mount options, subvolumes, first-boot growth |
 | [boot-overlay.md](boot-overlay.md) | Boot sequence, layer responsibilities, mount composition and order, platform-layer injection, GRUB assertions, degraded boot |
 | [lifecycle.md](lifecycle.md) | Generation model, state file, update transaction, health checks, reclamation, logging, commands |

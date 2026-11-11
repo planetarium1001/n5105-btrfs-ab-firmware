@@ -61,6 +61,21 @@ carries it.
 - A failing run repeats the important part in its first line: which stage failed and
   the command that shows why.
 
+## Building a release other than the pin
+
+The manual entry point takes an `upstream_version` input, and the pipeline fetches that
+release end to end. The three lockfiles (`kmod-closure.json`,
+`initramfs-tools.lock.json`, `runtime-closure.json`) pin one release's programs, so a
+build for another release derives its own copy under `$CI_TMP_ROOT/locks/`, asserts
+against it and warns on the run page. The committed lockfiles stay the contract for the
+pin; `CI_LOCK_STRICT=1` restores the hard failure for every release.
+
+Two dispatches on the same ref cancel each other, because the `concurrency` group is
+built from workflow and ref only. A matrix of releases is a sequential set of runs.
+
+The driver that uses those builds on a real machine is described in
+[`device-matrix.md`](device-matrix.md).
+
 ## When a stage fails
 
 1. Read the report's first line: it names the stage.
