@@ -27,14 +27,29 @@
 #   CI_QEMU_STOP_PATTERN  serial pattern that means "the guest is done"
 #                     (default: ^<judge prefix>=)
 #   CI_QEMU_APPEND_EXTRA extra kernel parameters, appended verbatim
+#   CI_QEMU_MAX_REBOOTS   how many by-design guest reboots a stage may see (default: 1).
+#                     The first-boot growth of p4 takes two boots and ends the first one in
+#                     a controlled reboot, so one restart is the design; a second one is a
+#                     restart loop.
+#   CI_QEMU_REBOOT_PATTERN  the serial line that announces that reboot
+#                     (default: scripts/ci/boot-restart.sh BR_REBOOT_PATTERN)
+#   CI_QEMU_BOOT_PATTERN    the serial line that marks a boot start, which is what makes a
+#                     panic loop countable too (default: BR_BOOT_PATTERN)
 #
-# Outputs: serial_log, judge_line, boot_seconds, qemu_mode, judge_prefix
+# Outputs: serial_log, judge_line, boot_seconds, qemu_mode, judge_prefix, boots, reboots,
+# restart_verdict
 
 set -euo pipefail
 
 CI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/lib.sh
 . "${CI_SCRIPT_DIR}/lib.sh"
+# The two-stage first-boot growth reboots the guest once by design, and `-no-reboot` used to
+# turn that into "QEMU exited and the stop pattern never came". The judgement of "one restart
+# is the design, two is a loop" lives in its own file so it can be tested from serial-log
+# fixtures instead of a VM that really reboots.
+# shellcheck source=scripts/ci/boot-restart.sh
+. "${CI_SCRIPT_DIR}/boot-restart.sh"
 
 ci_stage_init qemu
 
@@ -56,6 +71,12 @@ if [ -z "${stop_pattern}" ] && [ -n "${judge_prefix}" ]; then
 fi
 [ -n "${stop_pattern}" ] || ci_die "either CI_JUDGE_PREFIX or CI_QEMU_STOP_PATTERN is required"
 append_extra="${CI_QEMU_APPEND_EXTRA:-}"
+max_reboots="${CI_QEMU_MAX_REBOOTS:-${BR_MAX_DEFAULT}}"
+boot_pattern="${CI_QEMU_BOOT_PATTERN:-${BR_BOOT_PATTERN}}"
+reboot_pattern="${CI_QEMU_REBOOT_PATTERN:-${BR_REBOOT_PATTERN}}"
+case "${max_reboots}" in
+    '' | *[!0-9]*) ci_die "CI_QEMU_MAX_REBOOTS must be a number, got ${max_reboots}" ;;
+esac
 
 [ -f "${kernel}" ] || ci_die "kernel image not found: ${kernel}"
 [ -f "${initramfs}" ] || ci_die "initramfs not found: ${initramfs}"
@@ -139,7 +160,9 @@ qemu_args=(
     -accel tcg
     -display none
     -monitor none
-    -no-reboot
+    # No `-no-reboot`: the first boot of a grown disk ends in a controlled `reboot -f`, and
+    # QEMU has to let the machine come back so the second boot can print the stop pattern.
+    # A machine that keeps coming back is caught by the reboot budget below.
     -serial "file:${serial}"
 )
 if [ "${mode}" = "uefi-disk" ]; then
@@ -211,8 +234,22 @@ timeout "${timeout_s}" qemu-system-x86_64 "${qemu_args[@]}" \
     >"${qemu_dir}/qemu-${mode}.out" 2>&1 &
 qemu_pid=$!
 stopped_on_judge=0
+restart_budget_hit=0
 deadline=$((started + timeout_s))
 while kill -0 "${qemu_pid}" 2>/dev/null; do
+    # A machine that is still restarting must not be waited on until the timeout, and this
+    # is asked before the stop pattern: the first reboot is the two-stage growth doing its
+    # job, the second one is a loop, and a loop must not be reported as a verdict that
+    # happened to be printed by one of its boots.
+    boots_now="$(boot_restart_count "${serial}" "${boot_pattern}")"
+    reboots_now="$(boot_restart_count "${serial}" "${reboot_pattern}")"
+    if [ "$(boot_restart_verdict "${boots_now}" "${reboots_now}" "${max_reboots}")" != "ok" ]; then
+        restart_budget_hit=1
+        ci_warn "the guest booted ${boots_now} time(s) and printed ${reboots_now} growth reboot line(s), budget is ${max_reboots} reboot(s)"
+        sleep 1
+        kill "${qemu_pid}" 2>/dev/null
+        break
+    fi
     if grep -Eq "${stop_pattern}" "${serial}" 2>/dev/null; then
         stopped_on_judge=1
         sleep 1
@@ -228,7 +265,11 @@ wait "${qemu_pid}" 2>/dev/null
 qemu_rc=$?
 set -e
 boot_seconds=$(( $(date +%s) - started ))
-if [ "${stopped_on_judge}" = "1" ]; then
+if [ "${restart_budget_hit}" = "1" ]; then
+    # Stopped by the budget, not by a verdict: say so instead of claiming a stop pattern
+    # that only happened to be in the log as well.
+    ci_log "qemu stopped after ${boot_seconds}s: the restart budget was spent"
+elif [ "${stopped_on_judge}" = "1" ]; then
     ci_log "qemu stopped on the judge line after ${boot_seconds}s"
 else
     ci_log "qemu exited with ${qemu_rc} after ${boot_seconds}s (124 means the timeout fired)"
@@ -238,6 +279,27 @@ else
         ci_warn "qemu exited within ${boot_seconds}s, its own output follows:"
         tail -n 20 "${qemu_dir}/qemu-${mode}.out" 2>/dev/null | sed 's/^/[qemu]   /' || true
     fi
+fi
+
+# --------------------------------------------------------------------------- #
+# Restart verdict: the design's one reboot, or a loop
+# --------------------------------------------------------------------------- #
+# Measured on the real stages: the growth reboot makes QEMU exit after ~14s and every stage
+# then died with "the guest never printed the stop pattern", which reads like a broken image
+# and says nothing about the machine going round in circles. The verdict is taken from the
+# serial log and it is decided before the stop-pattern complaint, so a loop keeps its own
+# diagnosis.
+
+boots_total="$(boot_restart_count "${serial}" "${boot_pattern}")"
+reboots_total="$(boot_restart_count "${serial}" "${reboot_pattern}")"
+restart_verdict="$(boot_restart_verdict "${boots_total}" "${reboots_total}" "${max_reboots}")"
+if [ "${restart_verdict}" = "ok" ] && [ "${reboots_total}" -gt 0 ]; then
+    ci_log "the guest rebooted ${reboots_total} time(s) by design: ${boots_total} boot(s), budget ${max_reboots}"
+fi
+if [ "${restart_verdict}" != "ok" ] || [ "${restart_budget_hit}" = "1" ]; then
+    ci_warn "serial log tail:"
+    tail -n 80 "${serial}" 2>/dev/null | sed 's/^/[qemu]   /' || true
+    ci_die "restart-loop: the guest booted ${boots_total} time(s) and printed ${reboots_total} first-boot-growth reboot line(s); the budget is ${max_reboots} reboot(s), because the two-stage growth reboots exactly once"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -267,6 +329,9 @@ ci_emit_output "boot_seconds" "${boot_seconds}"
 ci_emit_output "qemu_mode" "${mode}"
 ci_emit_output "judge_prefix" "${judge_prefix}"
 ci_emit_output "stopped_on_judge" "${stopped_on_judge}"
+ci_emit_output "boots" "${boots_total}"
+ci_emit_output "reboots" "${reboots_total}"
+ci_emit_output "restart_verdict" "${restart_verdict}"
 
 if [ -n "${judge_prefix}" ]; then
     if [ "${count}" != "1" ]; then
