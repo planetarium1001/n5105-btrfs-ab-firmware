@@ -10,8 +10,8 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `n5105-ab-<platform>-<upstream>.img.gz` | 完整磁盘镜像，每台机器写一次 |
-| `n5105-ab-<platform>-<upstream>.tar` | 升级载荷，供 `ab-upgrade` 使用 |
+| `n5105-ab-<upstream>-install.img.gz` | 完整磁盘镜像，每台机器写一次 |
+| `n5105-ab-<upstream>-upgrade.tar` | 升级载荷，供 `ab-upgrade` 使用 |
 | `SHA256SUMS` | 上面两个文件的摘要 |
 | `release-notes.md` | 版本、上游输入与本次构建的验收判据行 |
 
@@ -32,9 +32,13 @@ sha256sum -c SHA256SUMS
 
 | 位置 | 名称 | 用途 |
 | --- | --- | --- |
-| GitHub release | `n5105-ab-<platform>-<upstream>.img.gz` | 写这个；发布作业已验证过它能启动 |
-| Actions 产物（tag 构建） | `image-flashable` | 与发布版同一份字节，用于发布前测试 |
+| GitHub release | `n5105-ab-<upstream>-install.img.gz` | 写这个；发布作业已验证过它能启动 |
+| Actions 产物（tag 构建） | `image-install` | 与发布版同一份字节，用于发布前测试 |
 | Actions 产物（每次构建） | `image-probe` | **永远不要写它**：它是 S1 模块探针，找 `/dev/vda`，在真机上会直接关机 |
+
+文件名带的是板型、产品线、上游基线与角色，不带我们自己的发版计数器 —— 那个在 GitHub release 上。
+更早的发布把同一份字节叫 `n5105-ab-<platform>-<upstream>.img.gz` 与 `.tar`；如果你的脚本还在用
+那个模式，它就是同一个文件，只是在扩展名前多了 `-install` 或 `-upgrade`。
 
 镜像自己会说明身份：挂上 ESP（`PARTNAME ab-esp`，FAT），读 `ab/image.json` —— `"kind": "boot"`
 才是可写的，`"kind": "probe"` 是 CI 夹具。发布作业会拒绝 `kind` 不是 `boot` 的镜像，并且会把
@@ -49,7 +53,7 @@ sha256sum -c SHA256SUMS
 
 ```sh
 lsblk -o NAME,SIZE,MODEL
-gunzip -c n5105-ab-<platform>-<upstream>.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync
+gunzip -c n5105-ab-<upstream>-install.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync
 sudo sync
 ```
 
@@ -61,7 +65,7 @@ sudo sync
 想写到文件里做虚拟机测试：
 
 ```sh
-gunzip -c n5105-ab-<platform>-<upstream>.img.gz > test.img
+gunzip -c n5105-ab-<upstream>-install.img.gz > test.img
 qemu-system-x86_64 -machine q35 -m 1G -bios /usr/share/OVMF/OVMF_CODE.fd \
   -drive file=test.img,if=virtio,format=raw -netdev user,id=n0 \
   -device virtio-net-pci,netdev=n0 -nographic
@@ -255,8 +259,8 @@ dropbear` 会告诉你守护进程到底有没有在监听。
 升级写入非活动槽并把它标记为待验证，全程不碰运行中的槽，所以出问题机器照样能用。
 
 ```sh
-ab-upgrade --check /root/n5105-ab-<platform>-<upstream>.tar
-ab-upgrade /root/n5105-ab-<platform>-<upstream>.tar
+ab-upgrade --check /root/n5105-ab-<upstream>-upgrade.tar
+ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar
 ab-slot status
 ab-slot conflicts
 ab-slot log --upgrade

@@ -50,7 +50,7 @@ gh workflow run ci-debug.yml --ref main -f stage=s4 -f boot_timeout=1200
 gh run list --workflow ci-debug.yml --limit 1
 ```
 
-From the web UI: **Actions** -> **ci-debug** -> **Run workflow**, branch `main`, pick a
+From the web UI: **Actions** -> **Firmware CI - debug session** -> **Run workflow**, branch `main`, pick a
 `stage`.
 
 | `stage` | What runs before the shell opens |

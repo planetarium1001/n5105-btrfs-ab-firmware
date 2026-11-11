@@ -1,4 +1,4 @@
-name: ci-s4
+name: S4 slots
 
 # Stage S4 - A/B state machine and health check, through the real boot path.
 #
@@ -86,7 +86,7 @@ defaults:
 
 jobs:
   s4:
-    name: slot state machine
+    name: S4 slots - A/B state machine
     runs-on: ubuntu-latest
     timeout-minutes: 75
     permissions:
@@ -173,7 +173,7 @@ jobs:
       # bootable *before* the first boot runs: the loader, the menu, grub-script-check,
       # the loader's `source` command, and a runtime slot file that agrees with
       # ab/state.json. A failure here is a build problem, not a boot flake.
-      - name: "Preflight: the ESP boots through GRUB (gating)"
+      - name: Preflight - the ESP boots through GRUB
         id: verify0
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -196,7 +196,7 @@ jobs:
           bash scripts/ci/ab-fixtures.sh --network --grow-tail 2048 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-network.log"
 
-      - name: "Boot 1: commit slot a (gating)"
+      - name: Boot 1 - commit slot a
         id: boot1
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -211,7 +211,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot1.log"
 
-      - name: "Phase 1: verify the commit of slot a"
+      - name: Phase 1 - verify the commit of slot a
         id: phase1
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -232,7 +232,7 @@ jobs:
 
       # The ring log says the growth happened; this says the reason survived the boot on
       # the ESP. Without it a failure with no UART still has no reason to show.
-      - name: The grow log reached the ESP
+      - name: Verify the grow log reached the ESP
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
@@ -242,7 +242,7 @@ jobs:
           grep -q '\[grow\]' "${out}" \
             || { echo "ab/log/grow.log carries no [grow] lines" >&2; exit 1; }
 
-      - name: "Verify: the runtime file and the state agree after the commit"
+      - name: Verify the runtime file and the state agree after the commit
         id: verify1
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -251,7 +251,7 @@ jobs:
           bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-commit-a.log"
 
-      - name: "Fixture: break slot b and mark it pending"
+      - name: Fixture - break slot b and mark it pending
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
@@ -261,7 +261,7 @@ jobs:
 
       # Marking a slot pending has to move the file GRUB sources; without this check
       # the pending boot below could pass for the wrong reason.
-      - name: "Verify: the pending marker reached the runtime slot file"
+      - name: Verify the pending marker reached the runtime slot file
         id: verify2
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -270,7 +270,7 @@ jobs:
           bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-pending-b.log"
 
-      - name: "Boot 2: health check fails, slot b is abandoned (gating)"
+      - name: Boot 2 - health check fails, slot b is abandoned
         id: boot2
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -285,7 +285,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot2.log"
 
-      - name: "Phase 2: verify the abandon and the untouched committed slot"
+      - name: Phase 2 - verify the abandon and the untouched committed slot
         id: phase2
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -298,7 +298,7 @@ jobs:
 
       # The abandoned slot must not be tried again: the file has to be back on the
       # committed slot, which is what makes the next boot return there.
-      - name: "Verify: the abandon moved the next boot back to the committed slot"
+      - name: Verify the abandon moved the next boot back to the committed slot
         id: verify3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -307,7 +307,7 @@ jobs:
           bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-abandon.log"
 
-      - name: "Fixture: repair slot b and mark it pending"
+      - name: Fixture - repair slot b and mark it pending
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
@@ -315,7 +315,7 @@ jobs:
           bash scripts/ci/ab-fixtures.sh --repair-slot b --pending b 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-repair.log"
 
-      - name: "Boot 3: commit slot b (gating)"
+      - name: Boot 3 - commit slot b
         id: boot3
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -330,7 +330,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot3.log"
 
-      - name: "Phase 3: verify the commit of slot b"
+      - name: Phase 3 - verify the commit of slot b
         id: phase3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -345,7 +345,7 @@ jobs:
 
       # The shipped ab-slot, not a host copy: rollback is a documented command, and
       # the point is to see the machine follow the hint it writes.
-      - name: "Fixture: roll back through the shipped ab-slot"
+      - name: Fixture - roll back through the shipped ab-slot
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
@@ -372,7 +372,7 @@ jobs:
           sudo sync
           sudo umount "${work}/esp"
 
-      - name: "Verify: the rollback moved the next boot to the other slot"
+      - name: Verify the rollback moved the next boot to the other slot
         id: verify4a
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -381,7 +381,7 @@ jobs:
           bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-rollback.log"
 
-      - name: "Boot 4: the rollback is booted and committed (gating)"
+      - name: Boot 4 - the rollback boots and commits
         id: boot4
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -396,7 +396,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot4.log"
 
-      - name: "Phase 4: verify the rollback boot committed slot a"
+      - name: Phase 4 - verify the rollback boot committed slot a
         id: phase4
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -407,7 +407,7 @@ jobs:
             --expect-log 'stage=commit slot=a' \
             2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase4.log"
 
-      - name: "Verify: the final runtime file matches the final state"
+      - name: Verify the final runtime file matches the final state
         id: verify4
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -426,13 +426,13 @@ jobs:
           bash scripts/ci/diagnostics.sh s4 "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu" 2>&1 \
             | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
-      - name: Upload probe artifacts
+      - name: Upload stage evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: s4-probe
+          name: evidence-s4
           path: |
-            ${{ runner.temp }}/ci/qemu/serial-*.log
+            ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/ab-phase/evidence
             ${{ runner.temp }}/ci/disk/grub.cfg
             ${{ runner.temp }}/ci/disk/ab-slot.cfg
@@ -444,7 +444,21 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-s4
-          path: ${{ runner.temp }}/ci/diagnostics
+          name: logs-s4
+          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7
+
+      # The summary block is the run page the user reads: same five columns for every
+      # stage, written even when the stage failed (if: always()).
+      - name: Write stage summary
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci"
+          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s4-judge.log" 2>/dev/null || true
+          bash scripts/ci/stage-summary.sh \
+            --stage s4 \
+            --result "${{ job.status }}" \
+            --judge-log "${RUNNER_TEMP}/ci/s4-judge.log" \
+            --artifact evidence-s4 \
+            --artifact-file "${RUNNER_TEMP}/ci/disk/platform.tar"

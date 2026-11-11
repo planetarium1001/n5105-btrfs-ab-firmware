@@ -1,4 +1,4 @@
-name: CI
+name: Firmware CI - build and validate
 
 # Single entry point for the whole pipeline.
 #
@@ -72,7 +72,7 @@ jobs:
   # stage logic stays in scripts/ci and can be reproduced locally.
   # Stage 1: resolve the upstream release and derive the cache key.
   resolve:
-    name: resolve
+    name: resolve upstream
     uses: ./.github/workflows/ci-resolve.yml
     permissions:
       contents: read
@@ -81,7 +81,7 @@ jobs:
 
   # Stage 2: download and verify the upstream artifacts.
   fetch:
-    name: fetch
+    name: fetch upstream
     needs: resolve
     # Every stage except `verify` consumes the upstream artifacts, so resuming one of them
     # has to resume this one too: with the enumeration this condition used to have
@@ -109,7 +109,7 @@ jobs:
   # Stage 3: assemble the update payload (S0 skeleton).
   # `resolve` is listed explicitly because this job also reads its outputs.
   assemble:
-    name: assemble
+    name: assemble payload
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'assemble') }}
     uses: ./.github/workflows/ci-assemble.yml
@@ -126,7 +126,7 @@ jobs:
   # `all` so the proof keeps running; drop the `inputs.stage == 'all'` clause to make
   # it opt-in only once later stages cover the same ground.
   s1:
-    name: s1
+    name: S1 probe - kernel mounts btrfs
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's1') }}
     uses: ./.github/workflows/ci-s1.yml
@@ -142,7 +142,7 @@ jobs:
   # keeps being asserted; it is the heaviest stage, so it can be moved to
   # dispatch-only by dropping the `inputs.stage == 'all'` clause below.
   s2:
-    name: s2
+    name: S2 image - four partitions
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's2') }}
     uses: ./.github/workflows/ci-s2.yml
@@ -157,7 +157,7 @@ jobs:
   # Stage 6: layered boot. Boots the S2 image twice and proves the overlay root and
   # the writable generation survive a reboot.
   s3:
-    name: s3
+    name: S3 boot - layered root
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's3') }}
     uses: ./.github/workflows/ci-s3.yml
@@ -172,7 +172,7 @@ jobs:
   # Stage 7: A/B state machine. Boots the image three times and proves commit,
   # abandon and switch-over through the ESP state the guest writes.
   s4:
-    name: s4
+    name: S4 slots - A/B state machine
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's4') }}
     uses: ./.github/workflows/ci-s4.yml
@@ -186,7 +186,7 @@ jobs:
 
   # Stage 8: upgrade payload, reclamation and the degraded boot. Four boots.
   s5:
-    name: s5
+    name: S5 upgrade - upgrade and reclaim
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's5') }}
     uses: ./.github/workflows/ci-s5.yml
@@ -200,7 +200,7 @@ jobs:
 
   # Stage 9: static checks that need no upstream artifact.
   verify:
-    name: verify
+    name: static checks
     needs: resolve
     if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'verify') }}
     uses: ./.github/workflows/ci-verify.yml
@@ -215,6 +215,8 @@ jobs:
     uses: ./.github/workflows/ci-report.yml
     permissions:
       contents: read
+      # The report reads job start/end times from the Actions API for its duration column.
+      actions: read
     with:
       stage: ${{ inputs.stage || 'all' }}
       trigger: ${{ github.event_name }}

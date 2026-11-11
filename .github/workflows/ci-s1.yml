@@ -1,4 +1,4 @@
-name: ci-s1
+name: S1 probe
 
 # Stage S1 - upstream-consumption spike.
 #
@@ -61,7 +61,7 @@ defaults:
 
 jobs:
   s1:
-    name: module-load probe
+    name: S1 probe - kernel mounts btrfs
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -114,7 +114,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
 
-      - name: Boot the kernel and mount btrfs (gating)
+      - name: Boot the kernel and mount btrfs
         id: probe
         env:
           CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
@@ -126,7 +126,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu.log"
 
-      - name: Boot through OVMF (informational)
+      - name: Boot through OVMF - advisory
         id: probe_uefi
         if: always()
         continue-on-error: true
@@ -140,7 +140,7 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-uefi.log"
 
-      - name: Cross-check the closure with the upstream apk (informational)
+      - name: Cross-check the closure with the upstream apk - advisory
         id: apk_crosscheck
         if: always()
         continue-on-error: true
@@ -159,13 +159,13 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}" "${CI_DIAG_DIR}"
           bash scripts/ci/diagnostics.sh s1 "${CI_KMODS_OUT}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
-      - name: Upload probe artifacts
+      - name: Upload stage evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: s1-probe
+          name: evidence-s1
           path: |
-            ${{ runner.temp }}/ci/qemu/serial-*.log
+            ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/qemu/mkfs.log
             ${{ runner.temp }}/ci/kmods/inventory.json
             ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
@@ -176,7 +176,21 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-s1
-          path: ${{ runner.temp }}/ci/diagnostics
+          name: logs-s1
+          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
           if-no-files-found: ignore
           retention-days: 7
+
+      # The summary block is the run page the user reads: same five columns for every
+      # stage, written even when the stage failed (if: always()).
+      - name: Write stage summary
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci"
+          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s1-judge.log" 2>/dev/null || true
+          bash scripts/ci/stage-summary.sh \
+            --stage s1 \
+            --result "${{ job.status }}" \
+            --judge-log "${RUNNER_TEMP}/ci/s1-judge.log" \
+            --artifact evidence-s1 \
+            --artifact-file "${RUNNER_TEMP}/ci/initramfs/initramfs.cpio.gz"

@@ -1,4 +1,4 @@
-name: release
+name: Firmware CI - release
 
 # Publishing is a tag action, never a branch action: pushing to main validates, a tag
 # releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    name: build
+    name: verify pipeline - S1 to S5
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
@@ -41,16 +41,17 @@ jobs:
       # *production* initramfs. S2's artifact is named image-probe for a reason - v0.0.6
       # and v0.0.7 published it by mistake and every real machine shut down at the GRUB
       # menu with S1-RESULT=fail reason=no-device-node.
-      - name: Download the flashable image
+      - name: Download the install image
         uses: actions/download-artifact@v4
         with:
-          name: image-flashable
+          name: image-install
           path: ${{ runner.temp }}/ci/disk
 
       # Defence in depth: the bytes about to be published are opened and asked which
       # initramfs they carry. A probe image, or one without ab/image.json, stops the
       # release here instead of on somebody's desk.
-      - name: Refuse an image that is not bootable
+      - name: Verify the image is bootable
+        id: image_kind
         run: |
           set -euo pipefail
           img_gz="$(ls "${RUNNER_TEMP}"/ci/disk/*.img.gz | head -n 1)"
@@ -68,6 +69,7 @@ jobs:
           sudo mount -o ro "${loop}p1" "${p1}"
           kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' "${p1}/ab/image.json" 2>/dev/null || echo unreadable)"
           echo "image kind: ${kind}"
+          echo "kind=${kind}" >>"${GITHUB_OUTPUT}"
           [ "${kind}" = "boot" ] || { echo "refusing to publish an image whose kind is '${kind}'" >&2; exit 1; }
           sudo cp "${p1}/initrd-a" "${RUNNER_TEMP}/ci/disk/initrd-a"
           sudo chmod 0644 "${RUNNER_TEMP}/ci/disk/initrd-a"
@@ -85,7 +87,7 @@ jobs:
       - name: Download the update payload
         uses: actions/download-artifact@v4
         with:
-          name: payload
+          name: payload-upgrade
           path: ${{ runner.temp }}/ci/payload
 
       # The upstream version and the input digests come from the payload manifest the
@@ -103,6 +105,7 @@ jobs:
           print(f"upstream_version={doc['rootfs']}")
           print(f"rootfs_sha={members['rootfs.tar.gz']['sha256']}")
           print(f"kernel_sha={members['kernel.bin']['sha256']}")
+          print(f"kernel_package={doc.get('kernel', 'n/a')}")
           PYTHON
           . "${RUNNER_TEMP}/ci/versions.env"
           {
@@ -111,6 +114,7 @@ jobs:
             printf 'upstream_version=%s\n' "${upstream_version}"
             printf 'rootfs_sha=%s\n' "${rootfs_sha}"
             printf 'kernel_sha=%s\n' "${kernel_sha}"
+            printf 'kernel_package=%s\n' "${kernel_package:-n/a}"
             printf 'image_gz=%s\n' "$(ls "${RUNNER_TEMP}/ci/disk"/*.img.gz | head -n 1)"
           } >>"${GITHUB_OUTPUT}"
 
@@ -128,13 +132,55 @@ jobs:
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/release.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/release.log"
 
+      # One screen for whoever opens the run page: what is about to be published, how it
+      # was proved and which versions it carries. The digests are read back from the
+      # SHA256SUMS file that ships with the release, so the screen and the release cannot
+      # disagree.
+      - name: Write the pre-publish summary
+        env:
+          KIND: ${{ steps.image_kind.outputs.kind }}
+          TAG: ${{ steps.versions.outputs.tag }}
+          UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
+          PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+          KERNEL_PACKAGE: ${{ steps.versions.outputs.kernel_package }}
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/ci/release"
+          sums="${release_dir}/SHA256SUMS"
+          [ -f "${sums}" ] || { echo "no SHA256SUMS to summarise: ${sums}" >&2; exit 1; }
+          digest_of() {
+            awk -v f="$1" '$2 == f { print $1; exit }' "${sums}"
+          }
+          image="$(awk '$2 ~ /\.img\.gz$/ { print $2; exit }' "${sums}")"
+          payload="$(awk '$2 ~ /\.tar$/ { print $2; exit }' "${sums}")"
+          {
+            printf '## Pre-publish check - %s\n\n' "${TAG}"
+            printf '| item | value |\n'
+            printf '| --- | --- |\n'
+            printf '| image kind check | `%s` |\n' "${KIND}"
+            if [ -n "${image}" ]; then
+              printf '| image | `%s` `%s` |\n' "${image}" "$(digest_of "${image}")"
+            fi
+            if [ -n "${payload}" ]; then
+              printf '| payload | `%s` `%s` |\n' "${payload}" "$(digest_of "${payload}")"
+            fi
+            printf '| upstream version | `%s` |\n' "${UPSTREAM_VERSION}"
+            printf '| platform version | `%s` |\n' "${PLATFORM_VERSION}"
+            printf '| kernel package | `%s` |\n' "${KERNEL_PACKAGE:-n/a}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.versions.outputs.tag }}
           RELEASE_DIR: ${{ runner.temp }}/ci/release
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # The stage verdict rides with the notes, so a reader of the release page learns
+          # which run proved it without opening the Actions tab.
+          printf 'Verified by CI run %s: S1 to S5 all passed, image kind=boot.\n' "${RUN_URL}" \
+            >>"${RELEASE_DIR}/release-notes.md"
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "release ${TAG} exists, uploading the artifacts again"
             gh release upload "${TAG}" "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar \

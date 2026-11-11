@@ -1,4 +1,4 @@
-name: ci-debug
+name: Firmware CI - debug session
 
 # MANUAL DEBUGGING ENTRY POINT -- NOT A DELIVERY PIPELINE STAGE.
 #
@@ -87,7 +87,7 @@ env:
 
 jobs:
   debug:
-    name: interactive shell
+    name: debug session
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -145,7 +145,7 @@ jobs:
       # The chain ci-s4/ci-s5 run, stopped at the disk image: everything after that is
       # what the session is for. A failure here is not fatal -- the human gets the shell
       # anyway, which is the whole point of a debug entry point.
-      - name: Prepare the disk image (resolve, fetch, kmods, ESP, runtime, initramfs, disk)
+      - name: Prepare the disk image - resolve, fetch, kmods, ESP, runtime, initramfs, disk
         id: prepare
         if: ${{ inputs.stage != 'none' }}
         continue-on-error: true

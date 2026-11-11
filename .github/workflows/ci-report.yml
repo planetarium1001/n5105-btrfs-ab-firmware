@@ -1,4 +1,4 @@
-name: ci-report
+name: pipeline report
 
 # Stage 5 - report.
 #
@@ -279,6 +279,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # The duration column is read from the Actions API; nothing else needs this scope.
+      actions: read
     env:
       CI_REQUESTED_STAGE: ${{ inputs.stage }}
       CI_TRIGGER: ${{ inputs.trigger }}
@@ -337,7 +339,22 @@ jobs:
         with:
           persist-credentials: false
 
+      # The duration column cannot be measured from inside a job: only the Actions API
+      # knows when the other jobs started and finished. The call is optional - if it
+      # fails, report.sh renders `n/a` and the run still reports.
+      - name: Collect job durations
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/ci"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            >"${RUNNER_TEMP}/ci/jobs.json" \
+            || echo "job durations unavailable, the report prints n/a"
+
       - name: Write the pipeline summary
+        env:
+          CI_JOBS_JSON: ${{ runner.temp }}/ci/jobs.json
         run: |
           mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/report.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/report.log"
@@ -355,7 +372,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diag-report
-          path: ${{ runner.temp }}/ci
+          name: logs-report
+          path: |
+            ${{ runner.temp }}/ci/logs
+            ${{ runner.temp }}/ci/diagnostics/summary.txt
+            ${{ runner.temp }}/ci/report.md
+            ${{ runner.temp }}/ci/jobs.json
           if-no-files-found: ignore
           retention-days: 7
