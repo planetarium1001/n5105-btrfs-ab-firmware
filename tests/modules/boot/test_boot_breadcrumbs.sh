@@ -99,10 +99,12 @@ mark_logs="$(lines_of '^[[:space:]]*WF_MARK_LOG=')"
 first_log="$(printf '%s\n' "${mark_logs}" | sed -n 1p)"
 second_log="$(printf '%s\n' "${mark_logs}" | sed -n 2p)"
 third_log="$(printf '%s\n' "${mark_logs}" | sed -n 3p)"
-assert_eq "$(printf '%s\n' "${mark_logs}" | wc -l | tr -d ' ')" "3" \
-  "ac-3 the breadcrumb log is armed once per landing zone"
+assert_eq "$(printf '%s\n' "${mark_logs}" | wc -l | tr -d ' ')" "4" \
+  "ac-3 the breadcrumb log is armed per landing zone and disarmed once at the end"
 assert_eq "$(count_of '^[[:space:]]*WF_MARK_LOG="[$][(]wf_mark_zone[)]["]$')" "3" \
-  "ac-3 ... and every time by wf_mark_zone, never by a path spelled out here"
+  "ac-3 three arms, every one of them by wf_mark_zone, never by a path spelled out here"
+assert_eq "$(count_of '^[[:space:]]*WF_MARK_LOG=""$')" "1" \
+  "ac-3 the log is disarmed once, when the last write mount is given back"
 assert_eq "$((first_log > p4root_mount_line))" "1" \
   "ac-3 the log is armed right after the p4 root subvolume is mounted"
 assert_eq "$((first_log < mount_line))" "1" \
@@ -152,10 +154,11 @@ assert_eq "$((p4_zone_line < unmount_esp_step))" "1" \
   "ac-3 ... and before the first milestone that needs it"
 
 # A degraded boot has no writable partition: /mnt/p4 is a tmpfs, so it is not a zone.
-# Three branches can leave the p4 side without a disk behind it: the root subvolume that will
-# not mount, the moment it is given back, and a degraded boot whose /mnt/p4 is a tmpfs. Each
-# one clears the zone instead of letting a breadcrumb land in a file no disk ever held.
-assert_eq "$(count_of '^[[:space:]]*WF_P4_MOUNT=""$')" "3" \
+# Four branches can leave the p4 side without a disk behind it: the root subvolume that will
+# not mount, the moment it is given back in 5a, a degraded boot whose /mnt/p4 is a tmpfs, and
+# the write mount that section 9a releases before switch_root. Each one clears the zone
+# instead of letting a breadcrumb land in a file no disk ever held.
+assert_eq "$(count_of '^[[:space:]]*WF_P4_MOUNT=""$')" "4" \
   "ac-3 every branch that leaves the p4 side unwritable clears the zone"
 
 # --------------------------------------------------------------------------- #
@@ -222,6 +225,90 @@ assert_contains "$(cat "$tmp/ttyS0")" "step=switching-root" \
   "ac-3 a boot with no writable partition still reports its last milestone"
 assert_eq "$(find "$p4" "$p4root" -name 'init-fail.log' 2>/dev/null | wc -l | tr -d ' ')" "1" \
   "ac-3 ... and writes nothing new on either side"
+
+# --------------------------------------------------------------------------- #
+# ac-2/ac-3 the last two milestones have to survive the handover
+#
+# `esp-unmounted` and `switching-root` are the two lines a boot that dies *at* the handover
+# leaves behind, and on the real first boot after flashing neither reached a disk: the ESP is
+# given back just before them, and the generation layer that was still mounted is a subvolume
+# (`@overlay-<version>`) nothing mounts at runtime, so the lines went where a human never
+# looks - 4 breadcrumbs in the ring log, no file in /mnt/p4/.ab/. They now go to the p4 root
+# subvolume, which is where `.ab/grow` and `.ab/esp-health` already are.
+# --------------------------------------------------------------------------- #
+
+umount_esp_line="$(first_line 'umount /esp')"
+esp_unmounted_line="$(first_line 'wf_mark esp-unmounted')"
+switching_root_line="$(first_line 'wf_mark switching-root')"
+remote_p4_line="$(first_line 'mount -o rw,noatime,"subvol=/"')"
+
+assert_eq "$((esp_unmounted_line > umount_esp_line))" "1" \
+  "ac-2 esp-unmounted is written after the ESP is actually given back"
+assert_eq "$((switching_root_line > esp_unmounted_line))" "1" \
+  "ac-2 switching-root follows it"
+# The acceptance: both come after `overlay` (the last milestone that still had the ESP).
+assert_eq "$((esp_unmounted_line > $(first_line 'wf_mark overlay')))" "1" \
+  "ac-2 both handover milestones come after the overlay is composed"
+# The p4 side is re-mounted for exactly those two lines, and given back before the switch.
+assert_eq "$((remote_p4_line > umount_esp_line))" "1" \
+  "ac-3 the p4 root subvolume is mounted again after the ESP is given back"
+assert_eq "$((remote_p4_line < esp_unmounted_line))" "1" \
+  "ac-3 ... before the first line that needs it"
+assert_eq "$(( $(first_line 'umount /mnt/p4root$') > 0 ))" "1" \
+  "ac-3 ... and given back again before switch_root"
+p4_last_umount="$(lines_of 'umount /mnt/p4root' | tail -n1)"
+assert_eq "$((p4_last_umount > switching_root_line))" "1" \
+  "ac-3 the write mount is released only after the last milestone is on it"
+assert_eq "$(( $(first_line 'exec ') > p4_last_umount ))" "1" \
+  "ac-3 ... so no mount outlives the handover"
+# The fallback keeps the line on the p4 disk, and the degraded boot keeps it off the tmpfs.
+assert_eq "$(count_of '^[[:space:]]*p4_last="/mnt/p4"$')" "1" \
+  "ac-3 when the root subvolume will not re-mount, the generation layer is the fallback"
+assert_eq "$(count_of '^[[:space:]]*p4_last=""$')" "1" \
+  "ac-3 a degraded boot has no p4 side at all, so its last lines stay on the serial port"
+# One file name, owned by wf.sh: init never spells a p4 breadcrumb path out itself.
+assert_eq "$(count_of 'init-fail\\.log')" "0" \
+  "ac-3 init does not name the p4 breadcrumb file; wf_mark_zone does, so there is one name"
+
+# The same sequence, run: /esp gone, /mnt/p4 (the generation layer) still mounted, the p4
+# root subvolume mounted again - exactly the state section 9a creates.
+p4root_again="$tmp/mnt/p4root-again"
+mkdir -p "$p4root_again"
+# A directory of its own: the ladder above already used $tmp/mnt/p4 as a p4 side.
+generation="$tmp/mnt/gen-layer"
+mkdir -p "$generation"
+printf '/dev/vda4 %s btrfs rw 0 0\n' "$generation" >"$tmp/mounts"
+
+handover_marks() {
+  (
+    WF_SERIAL="$tmp/ttyS0"
+    WF_CONSOLES="$tmp/consoles"
+    WF_MOUNTS="$tmp/mounts"
+    WF_ESP_MOUNT="$esp"
+    WF_P4_MOUNT="$p4root_again"
+    WF_TMP="$tmp/run"
+    WF_MARK_LOG=""
+    export WF_SERIAL WF_CONSOLES WF_MOUNTS WF_ESP_MOUNT WF_P4_MOUNT WF_TMP WF_MARK_LOG
+    # shellcheck source=../../../initramfs/lib/wf.sh
+    . "$root/initramfs/lib/wf.sh"
+    WF_MARK_LOG="$(wf_mark_zone)"
+    export WF_MARK_LOG
+    wf_mark esp-unmounted >/dev/null
+    wf_mark switching-root "init=/sbin/init" >/dev/null
+  )
+}
+handover_marks
+handover_file="$p4root_again/.ab/init-fail.log"
+assert_file_exists "${handover_file}" \
+  "ac-3 the handover milestones land in .ab/init-fail.log on the p4 root subvolume"
+assert_eq "$(sed -n 1p "${handover_file}")" "stage=mark seq=1 step=esp-unmounted" \
+  "ac-2 the first handover line has the documented shape"
+assert_eq "$(sed -n 2p "${handover_file}")" "stage=mark seq=2 step=switching-root init=/sbin/init" \
+  "ac-2 ... and so has the second, with the program that takes over"
+assert_eq "$(wc -l <"${handover_file}" | tr -d ' ')" "2" \
+  "ac-3 exactly two lines, in the order the boot produced them"
+assert_eq "$(find "$generation" -name 'init-fail.log' | wc -l | tr -d ' ')" "0" \
+  "ac-3 ... and nothing is written into the generation layer, which nothing reads at runtime"
 
 # --------------------------------------------------------------------------- #
 # ac-2 the source stays POSIX sh: init runs under the initramfs busybox

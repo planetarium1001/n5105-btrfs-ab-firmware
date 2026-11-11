@@ -682,9 +682,40 @@ case "${handover}" in
     *" /sbin/init") handover_init="/sbin/init" ;;
 esac
 umount /esp || wf_log "warning: could not unmount the ESP"
-# The ESP left the mount table. wf_mark_zone cannot resolve to it again, and the p4 zone is
-# the generation's writable layer (or nothing at all in a degraded boot), so the last two
-# milestones land on a disk that outlives the initramfs whenever there is one.
+
+# --------------------------------------------------------------------------- #
+# 9a. The p4 side for the last two milestones: the *root* subvolume, not the layer
+# --------------------------------------------------------------------------- #
+# Giving the ESP back is the moment the ESP stops being able to hold a breadcrumb, and
+# `esp-unmounted` / `switching-root` are exactly the two lines a boot that dies at the
+# handover has to leave behind. Two ways to put them on p4, and only one of them is
+# findable afterwards:
+#
+#   /mnt/p4        the generation's writable layer. It *is* still mounted here, and a line
+#                  written there lands inside @overlay-<version>, a subvolume nothing mounts
+#                  at runtime - which is why a real boot left 4 breadcrumbs in the ring log
+#                  and no file at all where a human looks (`/mnt/p4/.ab/`).
+#   /mnt/p4root    the root subvolume: `.ab/grow`, `.ab/esp-health` and `.ab/partitions.before`
+#                  are already there, ab-boot reads that directory at runtime, and it is what
+#                  a pulled disk shows. Mounted once more, read-write and without compress (the
+#                  level belongs to the filesystem already), for the two lines below only, and
+#                  given back before switch_root so it cannot leak into the new root.
+p4_last=""
+if [ "${degraded}" = "0" ] && [ -n "${p4}" ]; then
+    if mount -o rw,noatime,"subvol=/" "${p4}" /mnt/p4root 2>/dev/null; then
+        p4_last="/mnt/p4root"
+    else
+        # The root subvolume will not mount again. The generation layer is still a real btrfs
+        # subvolume on the same disk, so a line there is at least on p4 and not in a tmpfs -
+        # the file name stays the same (`.ab/init-fail.log`), only the directory differs.
+        wf_log "warning: p4 root subvolume not mountable for the last breadcrumbs; using ${upper}"
+        p4_last="/mnt/p4"
+    fi
+fi
+# No p4 at all (a degraded boot): the zone stays empty and the last two lines go to the
+# serial port. Never into the tmpfs that stands in for /mnt/p4 in that boot.
+WF_P4_MOUNT="${p4_last}"
+export WF_P4_MOUNT
 WF_MARK_LOG="$(wf_mark_zone)"
 export WF_MARK_LOG
 wf_mark esp-unmounted
@@ -705,6 +736,19 @@ done
 # handover, the disk already says how far this boot got and which program was next.
 wf_mark switching-root "init=${handover_init}"
 wf_log "switching root to the overlay (${handover_init})"
+# The write mount has done its job and is given back, so it cannot survive as an unreachable
+# mount under the new root. The log is disarmed with it: from here there is no landing zone,
+# and a breadcrumb written by a `switch_root` that returned would land in a tmpfs directory
+# the initramfs takes with it. The judge line and the serial port carry that failure.
+if [ "${p4_last}" = "/mnt/p4root" ]; then
+    umount /mnt/p4root || wf_log "warning: p4 root subvolume is still mounted"
+    WF_MARK_LOG=""
+    export WF_MARK_LOG
+    # The zone goes with the mount: from here /mnt/p4root is a bare directory on the tmpfs
+    # again, and the evidence path of a failure in this last stretch must not pick it.
+    WF_P4_MOUNT=""
+    export WF_P4_MOUNT
+fi
 # switch_root must be PID 1, and this script is a child of the shell that the kernel
 # started as init, so exec replaces the shell instead of forking a helper.
 # shellcheck disable=SC2086  # the words of the command line are the argument list

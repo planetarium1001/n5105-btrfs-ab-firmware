@@ -528,4 +528,34 @@ assert_contains "$(cat "$tmp/order-ttyS0")" \
   "S3-RESULT=fail reason=state-missing" \
   "A the serial mirror still carries the judge line, but it is no longer the only copy"
 
+
+# --------------------------------------------------------------------------- #
+# A2 the handover stretch: a failure after the write mount is released
+#
+# init writes its last two milestones onto the p4 root subvolume and then gives that mount
+# back, so for the few lines between there and switch_root there is no landing zone at all.
+# The zone has to be disarmed with the mount: `/mnt/p4root` is a bare directory on the
+# initramfs tmpfs by then, and a breadcrumb or an abandon line written into it is a line no
+# disk ever held - the silent loss this unit is about. A `switch_root` that returns is
+# reported on the judge line and on the serial port, which is what a person at the machine
+# has.
+# --------------------------------------------------------------------------- #
+
+released="$tmp/p4root-released"
+mkdir -p "$released"
+: >"$tmp/released-ttyS0"
+out="$(WF_MARK_LOG="" WF_P4_MOUNT="" WF_SERIAL="$tmp/released-ttyS0" \
+  WF_CONSOLES="$tmp/consoles" WF_MOUNTS="$tmp/mounts" WF_ESP_MOUNT="$tmp/esp-absent" \
+  WF_ESP_DEV="" wf_fail switch-root-failed 2>&1)"
+rc=$?
+assert_eq "${rc}" "1" "A2 a failed switch_root still powers off"
+assert_contains "${out}" "S3-RESULT=fail reason=switch-root-failed" \
+  "A2 the judge line still names the reason"
+assert_contains "$(cat "$tmp/released-ttyS0")" "S3-RESULT=fail reason=switch-root-failed" \
+  "A2 ... and reaches the serial port, the only channel that exists then"
+assert_eq "$(find "$released" -mindepth 1 | wc -l | tr -d ' ')" "0" \
+  "A2 nothing is written into the directory whose mount was released"
+assert_eq "$(find "$tmp/p4" -newer "$tmp/released-ttyS0" -name 'init-fail.log' 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "A2 ... and the drained zone does not fall through to some other p4 path either"
+
 finish
