@@ -55,10 +55,6 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
-
 jobs:
   # What is published has to be what was proved, so every job that writes says what it
   # writes and nothing else.
