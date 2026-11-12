@@ -28,10 +28,6 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: bash
-
 # One run per lane: a second automatic run on the same ref cancels the one in flight,
 # while a manual dispatch neither cancels nor is cancelled by anything.
 concurrency:

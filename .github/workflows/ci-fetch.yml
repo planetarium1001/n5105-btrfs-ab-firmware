@@ -35,10 +35,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
   fetch:
     name: fetch upstream
@@ -61,7 +57,9 @@ jobs:
       members: ${{ steps.fetch.outputs.members }}
       artifact_name: upstream-files
     steps:
-      - name: Check out the repository
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
         uses: ./.github/actions/setup-ci
 
       - name: Restore cached upstream downloads

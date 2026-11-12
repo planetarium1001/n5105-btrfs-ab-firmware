@@ -219,6 +219,9 @@ else
     "the composite refactor did not remove a third of the duplicated YAML"
 fi
 
+assert_eq "$(grep -c 'uses: actions/checkout@' "$root/.github/actions/setup-ci/action.yml" 2>/dev/null || true)" "0" \
+  "ac-11 setup-ci does not check out (a local action cannot run before checkout)"
+
 for action in setup-ci run-stage-script stage-evidence stage-summary qemu-boot; do
   assert_file_exists "$root/.github/actions/$action/action.yml" "ac-11 composite $action exists"
 done
@@ -233,8 +236,13 @@ for stage in s1 s2 s3 s4 s5; do
     "ac-11 $stage renders its summary through the shared composite"
   assert_contains "$(cat "$wf")" './.github/actions/setup-ci' \
     "ac-11 $stage sets up through the shared composite"
-  assert_eq "$(grep -c 'actions/checkout@' "$wf")" "0" \
-    "ac-11 $stage has no checkout of its own"
+  # A local composite cannot be the first step of a job: GitHub resolves
+  # `./.github/actions/setup-ci` before the workspace exists. The checkout therefore stays
+  # a step of the job, once, and setup-ci never does it.
+  assert_eq "$(grep -c 'actions/checkout@' "$wf")" "1" \
+    "ac-11 $stage checks out exactly once, before the composite"
+  assert_eq "$(grep -c 'persist-credentials: false' "$wf")" "1" \
+    "ac-11 $stage leaves no credentials in the workspace"
 done
 
 # The artifact names and the judge-line vocabulary are the run page contract: nothing in

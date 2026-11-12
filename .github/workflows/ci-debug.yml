@@ -39,10 +39,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
   debug:
     name: debug session

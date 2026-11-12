@@ -1,10 +1,16 @@
 name: Set up a CI job
 description: >-
-  The part every stage workflow used to copy by hand: check out the repository without
-  leaving credentials behind, install the runner tooling the stage needs, create the
-  stage log directory, and (optionally) restore the upstream artifacts the fetch stage
-  produced. CI_TMP_ROOT and CI_LOG_DIR are exported to later steps through GITHUB_ENV,
-  so no step has to repeat the scratch layout.
+  The part every stage workflow used to copy by hand: install the runner tooling the
+  stage needs, create the stage log directory, and (optionally) restore the upstream
+  artifacts the fetch stage produced.
+
+  It does *not* check the repository out, and cannot: GitHub resolves a local action
+  before any step runs, so a job that starts with `./.github/actions/setup-ci` dies with
+  "Can't find 'action.yml' ... Did you forget to run actions/checkout". Every job
+  therefore opens with `actions/checkout` (no persisted credentials) and then calls this.
+
+  CI_TMP_ROOT and CI_LOG_DIR are exported to later steps through GITHUB_ENV, so no step
+  has to repeat the scratch layout.
 
 inputs:
   apt:
@@ -15,20 +21,9 @@ inputs:
     description: "Download the upstream-files artifact into ${RUNNER_TEMP}/ci/fetch"
     required: false
     default: "false"
-  fetch-depth:
-    description: "checkout depth"
-    required: false
-    default: "1"
-
 runs:
   using: composite
   steps:
-    - name: Check out the repository
-      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      with:
-        persist-credentials: false
-        fetch-depth: ${{ inputs.fetch-depth }}
-
     # The version banners are advisory: they say on the run page which toolchain the
     # stage actually used, and a tool that is absent for this stage prints nothing.
     - name: Install the stage tooling

@@ -40,10 +40,6 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
   s4:
     name: S4 slots - A/B state machine
@@ -64,7 +60,9 @@ jobs:
       next_slot_final: ${{ steps.verify4.outputs.esp_next_slot }}
       grub_cfg_sha256: ${{ steps.disk.outputs.grub_cfg_sha256 }}
     steps:
-      - name: Check out the repository
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
         uses: ./.github/actions/setup-ci
         with:
           download-upstream: "true"
