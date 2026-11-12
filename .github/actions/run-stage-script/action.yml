@@ -1,0 +1,231 @@
+name: Run a CI stage script
+description: >-
+  Runs one scripts/ci stage script, appends every line to the stage log directory and
+  republishes the script's ci_emit_output keys as step outputs. The environment stays at
+  the calling step and job, which is where the static wiring check looks for it; this
+  action only owns the log plumbing every stage used to repeat.
+
+inputs:
+  script:
+    description: "Script file name inside scripts/ci, for example kmods.sh"
+    required: true
+  args:
+    description: "Arguments for the script, passed word-split; quoting inside is not preserved"
+    required: false
+    default: ""
+  log:
+    description: "Log file name inside the stage log directory, empty for <script>.log"
+    required: false
+    default: ""
+
+# A composite action has to declare its outputs statically, so this is a fixed superset:
+# a key its script did not emit renders as an empty string. Adding a script output means
+# adding it here too, which is what the conventions test checks.
+outputs:
+  kernel_version:
+    description: "kernel_version"
+    value: ${{ steps.run.outputs.kernel_version }}
+  kernel_package:
+    description: "kernel_package"
+    value: ${{ steps.run.outputs.kernel_package }}
+  kernel_sha256:
+    description: "kernel_sha256"
+    value: ${{ steps.run.outputs.kernel_sha256 }}
+  kmods_dir:
+    description: "kmods_dir"
+    value: ${{ steps.run.outputs.kmods_dir }}
+  module_count:
+    description: "module_count"
+    value: ${{ steps.run.outputs.module_count }}
+  initramfs_path:
+    description: "initramfs_path"
+    value: ${{ steps.run.outputs.initramfs_path }}
+  image_path:
+    description: "image_path"
+    value: ${{ steps.run.outputs.image_path }}
+  image_bytes:
+    description: "image_bytes"
+    value: ${{ steps.run.outputs.image_bytes }}
+  image_gz:
+    description: "image_gz"
+    value: ${{ steps.run.outputs.image_gz }}
+  image_gz_bytes:
+    description: "image_gz_bytes"
+    value: ${{ steps.run.outputs.image_gz_bytes }}
+  image_gz_path:
+    description: "image_gz_path"
+    value: ${{ steps.run.outputs.image_gz_path }}
+  esp_dir:
+    description: "esp_dir"
+    value: ${{ steps.run.outputs.esp_dir }}
+  esp_next_slot:
+    description: "esp_next_slot"
+    value: ${{ steps.run.outputs.esp_next_slot }}
+  runtime_packages:
+    description: "runtime_packages"
+    value: ${{ steps.run.outputs.runtime_packages }}
+  payload_path:
+    description: "payload_path"
+    value: ${{ steps.run.outputs.payload_path }}
+  payload_layer:
+    description: "payload_layer"
+    value: ${{ steps.run.outputs.payload_layer }}
+  payload_version:
+    description: "payload_version"
+    value: ${{ steps.run.outputs.payload_version }}
+  payload_members:
+    description: "payload_members"
+    value: ${{ steps.run.outputs.payload_members }}
+  payload_total_bytes:
+    description: "payload_total_bytes"
+    value: ${{ steps.run.outputs.payload_total_bytes }}
+  payload_manifest_sha256:
+    description: "payload_manifest_sha256"
+    value: ${{ steps.run.outputs.payload_manifest_sha256 }}
+  judge_line:
+    description: "judge_line"
+    value: ${{ steps.run.outputs.judge_line }}
+  boot_seconds:
+    description: "boot_seconds"
+    value: ${{ steps.run.outputs.boot_seconds }}
+  serial_log:
+    description: "serial_log"
+    value: ${{ steps.run.outputs.serial_log }}
+  committed:
+    description: "committed"
+    value: ${{ steps.run.outputs.committed }}
+  conflicts:
+    description: "conflicts"
+    value: ${{ steps.run.outputs.conflicts }}
+  reclaimed:
+    description: "reclaimed"
+    value: ${{ steps.run.outputs.reclaimed }}
+  evidence_line:
+    description: "evidence_line"
+    value: ${{ steps.run.outputs.evidence_line }}
+  slot:
+    description: "slot"
+    value: ${{ steps.run.outputs.slot }}
+  upper:
+    description: "upper"
+    value: ${{ steps.run.outputs.upper }}
+  verdict:
+    description: "verdict"
+    value: ${{ steps.run.outputs.verdict }}
+  verify_status:
+    description: "verify_status"
+    value: ${{ steps.run.outputs.verify_status }}
+  syntax_status:
+    description: "syntax_status"
+    value: ${{ steps.run.outputs.syntax_status }}
+  shellcheck_status:
+    description: "shellcheck_status"
+    value: ${{ steps.run.outputs.shellcheck_status }}
+  tests_status:
+    description: "tests_status"
+    value: ${{ steps.run.outputs.tests_status }}
+  python_status:
+    description: "python_status"
+    value: ${{ steps.run.outputs.python_status }}
+  design_checks_status:
+    description: "design_checks_status"
+    value: ${{ steps.run.outputs.design_checks_status }}
+  design_checks_problems:
+    description: "design_checks_problems"
+    value: ${{ steps.run.outputs.design_checks_problems }}
+  design_checks_failed:
+    description: "design_checks_failed"
+    value: ${{ steps.run.outputs.design_checks_failed }}
+  verified_checks:
+    description: "verified_checks"
+    value: ${{ steps.run.outputs.verified_checks }}
+  rootfs_files:
+    description: "rootfs_files"
+    value: ${{ steps.run.outputs.rootfs_files }}
+  expect_file:
+    description: "expect_file"
+    value: ${{ steps.run.outputs.expect_file }}
+  upstream_version:
+    description: "upstream_version"
+    value: ${{ steps.run.outputs.upstream_version }}
+  upstream_base_url:
+    description: "upstream_base_url"
+    value: ${{ steps.run.outputs.upstream_base_url }}
+  cache_key:
+    description: "cache_key"
+    value: ${{ steps.run.outputs.cache_key }}
+  cache_restore_prefix:
+    description: "cache_restore_prefix"
+    value: ${{ steps.run.outputs.cache_restore_prefix }}
+  version_source:
+    description: "version_source"
+    value: ${{ steps.run.outputs.version_source }}
+  fetch_total_bytes:
+    description: "fetch_total_bytes"
+    value: ${{ steps.run.outputs.fetch_total_bytes }}
+  cache_hit:
+    description: "cache_hit"
+    value: ${{ steps.run.outputs.cache_hit }}
+  members:
+    description: "members"
+    value: ${{ steps.run.outputs.members }}
+  tag:
+    description: "tag"
+    value: ${{ steps.run.outputs.tag }}
+  platform_version:
+    description: "platform_version"
+    value: ${{ steps.run.outputs.platform_version }}
+  rootfs_sha256:
+    description: "rootfs_sha256"
+    value: ${{ steps.run.outputs.rootfs_sha256 }}
+  rootfs_sha:
+    description: "rootfs_sha"
+    value: ${{ steps.run.outputs.rootfs_sha }}
+  kernel_sha:
+    description: "kernel_sha"
+    value: ${{ steps.run.outputs.kernel_sha }}
+  rootfs_name:
+    description: "rootfs_name"
+    value: ${{ steps.run.outputs.rootfs_name }}
+  kernel_name:
+    description: "kernel_name"
+    value: ${{ steps.run.outputs.kernel_name }}
+  btrfs_kmod_name:
+    description: "btrfs_kmod_name"
+    value: ${{ steps.run.outputs.btrfs_kmod_name }}
+  btrfs_kmod_sha256:
+    description: "btrfs_kmod_sha256"
+    value: ${{ steps.run.outputs.btrfs_kmod_sha256 }}
+  grub_cfg_sha256:
+    description: "grub_cfg_sha256"
+    value: ${{ steps.run.outputs.grub_cfg_sha256 }}
+  payload_check:
+    description: "payload_check"
+    value: ${{ steps.run.outputs.payload_check }}
+  image:
+    description: "image"
+    value: ${{ steps.run.outputs.image }}
+  host_checks:
+    description: "host_checks"
+    value: ${{ steps.run.outputs.host_checks }}
+  device_line:
+    description: "device_line"
+    value: ${{ steps.run.outputs.device_line }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run the stage script
+      id: run
+      shell: bash
+      env:
+        CI_STAGE_SCRIPT: ${{ inputs.script }}
+        CI_STAGE_ARGS: ${{ inputs.args }}
+        CI_STAGE_LOG: ${{ inputs.log }}
+      run: |
+        set -eo pipefail
+        log_dir="${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+        mkdir -p "${log_dir}"
+        log="${CI_STAGE_LOG:-${CI_STAGE_SCRIPT%.sh}.log}"
+        # shellcheck disable=SC2086  # the arguments are a pre-split string
+        bash "scripts/ci/${CI_STAGE_SCRIPT}" ${CI_STAGE_ARGS} 2>&1 | tee -a "${log_dir}/${log}"

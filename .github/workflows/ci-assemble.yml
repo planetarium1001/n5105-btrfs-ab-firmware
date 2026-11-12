@@ -2,70 +2,39 @@ name: assemble payload
 
 # Stage 3 - assemble (S0 skeleton).
 #
-# Publishes a payload directory that already follows the contract in
-# docs/conflicts-payload.md: member names, per-member size and sha256, format tag and
-# rootfs version. Only the upstream members exist today; `initramfs.cpio.gz` and
-# `wf.tar` are listed as missing members rather than shipped as empty placeholders, so
-# nothing downstream can mistake the skeleton for a complete payload.
+# Publishes a payload directory that follows docs/conflicts-payload.md: member names,
+# per-member size and sha256, format tag and rootfs version. A member the build cannot
+# produce fails the build instead of being listed as missing.
 
 on:
   workflow_call:
     inputs:
-      upstream_version:
-        description: "Resolved upstream version, recorded in the payload manifest"
-        required: true
-        type: string
-      upstream_base_url:
-        description: "Release directory URL for the target"
-        required: false
-        type: string
-        default: ""
-      kernel_package:
-        description: "Kernel package version, recorded in the payload manifest"
-        required: true
-        type: string
-      kmods_dir:
-        description: "Kernel module directory name on the mirror"
-        required: false
-        type: string
-        default: ""
+      upstream_version: {description: "Resolved upstream version, recorded in the payload manifest", required: true, type: string}
+      upstream_base_url: {description: "Release directory URL for the target", required: false, type: string, default: ""}
+      kernel_package: {description: "Kernel package version, recorded in the payload manifest", required: true, type: string}
+      kmods_dir: {description: "Kernel module directory name on the mirror", required: false, type: string, default: ""}
+      platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
     outputs:
-      payload_manifest_sha256:
-        description: "sha256 of the produced payload manifest"
-        value: ${{ jobs.assemble.outputs.payload_manifest_sha256 }}
-      payload_total_bytes:
-        description: "Total size of the payload members"
-        value: ${{ jobs.assemble.outputs.payload_total_bytes }}
-      payload_members:
-        description: "Comma separated list of payload members"
-        value: ${{ jobs.assemble.outputs.payload_members }}
-      artifact_name:
-        description: "Name of the artifact that carries the payload"
-        value: ${{ jobs.assemble.outputs.artifact_name }}
+      payload_manifest_sha256: {description: "sha256 of the produced payload manifest", value: "${{ jobs.assemble.outputs.payload_manifest_sha256 }}"}
+      payload_total_bytes: {description: "Total size of the payload members", value: "${{ jobs.assemble.outputs.payload_total_bytes }}"}
+      payload_members: {description: "Comma separated list of payload members", value: "${{ jobs.assemble.outputs.payload_members }}"}
+      artifact_name: {description: "Name of the artifact that carries the payload", value: "${{ jobs.assemble.outputs.artifact_name }}"}
 
 permissions:
   contents: read
-
-defaults:
-  run:
-    shell: bash
 
 jobs:
   assemble:
     name: assemble payload
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    permissions:
-      contents: read
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
       CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
       CI_KMODS_DIR: ${{ inputs.kmods_dir }}
-      # The CI guest assertion (/s3-post.sh) is injected only when this is 1, read from the
-      # repository variable of the same name. The initramfs this stage publishes is the one
-      # machines install, so a build without the flag ships without the CI hook; see
-      # docs/boot-overlay.md, "Boot sequence".
+      CI_PLATFORM_VERSION: ${{ inputs.platform_version }}
+      # /s3-post.sh is injected only when this is 1: this stage publishes the image's initramfs.
       AB_CI_HOOKS: ${{ vars.AB_CI_HOOKS }}
     outputs:
       payload_manifest_sha256: ${{ steps.assemble.outputs.payload_manifest_sha256 }}
@@ -76,13 +45,13 @@ jobs:
       payload_check: ${{ steps.assemble.outputs.payload_check }}
       artifact_name: payload-upgrade
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
 
       - name: Download upstream artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: upstream-files
           path: ${{ runner.temp }}/ci/fetch
@@ -94,17 +63,15 @@ jobs:
 
       - name: Unpack the btrfs and vfat module closure
         id: kmods
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: kmods.sh}
 
       - name: Resolve the btrfs runtime closure
         id: runtime
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/platform-runtime.sh 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/runtime.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: platform-runtime.sh, log: runtime.log}
 
+      # wf.sh always travels with the boot init; the S3 guest assertion only when AB_CI_HOOKS=1.
       - name: Build the boot initramfs
         id: initramfs
         env:
@@ -112,28 +79,22 @@ jobs:
           CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
           CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          # wf.sh always travels with the boot init; the S3 guest assertion travels only
-          # when AB_CI_HOOKS=1 says this build is a CI build. Unset is the production
-          # answer, so the payload cannot pick the hook up by accident.
           extra="${GITHUB_WORKSPACE}/initramfs/lib/wf.sh:/lib/wf.sh"
           if [ "${AB_CI_HOOKS:-0}" = "1" ]; then
             extra="${extra} ${GITHUB_WORKSPACE}/initramfs/boot/post.sh:/s3-post.sh"
           fi
           CI_EXTRA_FILES="${extra}" bash scripts/ci/initramfs.sh 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+            | tee -a "${CI_LOG_DIR}/initramfs.log"
 
       - name: Assemble payload
         id: assemble
         env:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/assemble.log"
+        run: bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR}/assemble.log"
 
       - name: Upload payload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: payload-upgrade
           path: |
@@ -149,12 +110,11 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/diagnostics.sh assemble "${CI_ASSEMBLE_DIR}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+          bash scripts/ci/diagnostics.sh assemble "${CI_ASSEMBLE_DIR}" 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs-assemble
           path: |

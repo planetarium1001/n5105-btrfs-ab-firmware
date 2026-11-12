@@ -1,39 +1,18 @@
 name: Firmware CI - build and validate
 
-# Single entry point for the whole pipeline.
-#
-# This file only orchestrates: every stage is a reusable workflow named
-# ci-<stage>.yml next to this file, and all real logic lives in scripts/ci/. There is
-# no workflow_run chaining, so a run has exactly one graph and one verdict.
-#
-# The stage workflows live at the root of .github/workflows because GitHub does not
-# support reusable workflows in subdirectories of that directory.
-#
-# Stage graph (stage=all):
+# Single entry point: this file only orchestrates. Every stage is a reusable workflow next
+# to this one, all real logic lives in scripts/ci/, and there is no workflow_run chaining, so
+# a run has one graph and one verdict.
 #
 #   resolve ──┬── fetch ──┬── assemble ──┐
-#             │           ├── s1 ────────┤
-#             │           ├── s2 ────────┤
-#             │           ├── s3 ────────┤
-#             │           ├── s4 ────────┤
-#             │           └── s5 ────────┤
+#             │           ├── s1..s5 ────┤
 #             └── verify ────────────────┴── report
 #
-# Stage selection through workflow_dispatch lets a failed run be resumed where it
-# stopped, and lets the slow QEMU probe be run on its own:
-#
-#   stage=fetch     resolve, fetch, report
-#   stage=assemble  resolve, fetch, assemble, report
-#   stage=s1        resolve, fetch, s1, report
-#   stage=s2        resolve, fetch, s2, report
-#   stage=s3        resolve, fetch, s3, report
-#   stage=s4        resolve, fetch, s4, report
-#   stage=s5        resolve, fetch, s5, report
-#   stage=verify    resolve, verify, report
+# workflow_dispatch resumes a failed run where it stopped and lets the slow QEMU probe run on
+# its own.
 
 on:
-  # release.yml calls this workflow on a tag, so a published release is built by the
-  # same stages that normal pushes run.
+  # release.yml calls this workflow on a tag: a release is built by the stages a push runs.
   workflow_call:
   push:
     branches: [main]
@@ -63,35 +42,50 @@ on:
 permissions:
   contents: read
 
+# Manual and automatic runs never cancel each other: a dispatch used to be killed by the next
+# push to the same ref, and a push by a dispatch. The composite refactor of this file also
+# removed the per-job `permissions:` repeats - the top-level block covers them.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
-  # Stages run in dependency order; every job is a reusable workflow call so the
-  # stage logic stays in scripts/ci and can be reproduced locally.
-  # Stage 1: resolve the upstream release and derive the cache key.
+  # The platform version has one source: VERSION. This is also the only job ci.yml runs
+  # itself - every other job is a reusable-workflow call, which accepts no steps and no
+  # timeout - so it carries the entry point's own budget.
+  versions:
+    name: read the platform version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platform_version: ${{ steps.read.outputs.platform_version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+
+      - name: Read VERSION
+        id: read
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          [ -n "${version}" ] || { echo "::error::VERSION is empty"; exit 1; }
+          printf 'platform_version=%s\n' "${version}"
+          printf 'platform_version=%s\n' "${version}" >>"${GITHUB_OUTPUT}"
+
+  # Stage 1: resolve the upstream release, the platform version and the cache key.
   resolve:
     name: resolve upstream
     uses: ./.github/workflows/ci-resolve.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ inputs.upstream_version || '' }}
 
-  # Stage 2: download and verify the upstream artifacts.
+  # Stage 2: the upstream artifacts every stage except verify needs, so resuming one resumes this.
   fetch:
     name: fetch upstream
     needs: resolve
-    # Every stage except `verify` consumes the upstream artifacts, so resuming one of them
-    # has to resume this one too: with the enumeration this condition used to have
-    # (`all`, `fetch`, `assemble`), dispatching `stage: s4` skipped fetch, which skipped
-    # s4 as well (`needs.fetch.result == 'success'`) and left the stage selector unable to
-    # do the one thing it exists for.
     if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage != 'verify') }}
     uses: ./.github/workflows/ci-fetch.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
@@ -107,96 +101,81 @@ jobs:
       cache_restore_prefix: ${{ needs.resolve.outputs.cache_restore_prefix }}
 
   # Stage 3: assemble the update payload (S0 skeleton).
-  # `resolve` is listed explicitly because this job also reads its outputs.
   assemble:
     name: assemble payload
-    needs: [resolve, fetch]
+    needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'assemble') }}
     uses: ./.github/workflows/ci-assemble.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      platform_version: ${{ needs.versions.outputs.platform_version }}
 
-  # Stage 4: upstream-consumption spike - boot the official kernel with the probe
-  # initramfs and prove the official btrfs module set mounts btrfs. Included in
-  # `all` so the proof keeps running; drop the `inputs.stage == 'all'` clause to make
-  # it opt-in only once later stages cover the same ground.
+  # Stage 4: upstream-consumption spike - official kernel, official btrfs modules.
   s1:
     name: S1 probe - kernel mounts btrfs
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's1') }}
     uses: ./.github/workflows/ci-s1.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
 
-  # Stage 5: four-partition disk image assembly. Included in `all` so the geometry
-  # keeps being asserted; it is the heaviest stage, so it can be moved to
-  # dispatch-only by dropping the `inputs.stage == 'all'` clause below.
+  # Stage 5: four-partition disk image assembly (the heaviest stage, 40 min budget).
   s2:
     name: S2 image - four partitions
-    needs: [resolve, fetch]
+    needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's2') }}
     uses: ./.github/workflows/ci-s2.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      platform_version: ${{ needs.versions.outputs.platform_version }}
 
-  # Stage 6: layered boot. Boots the S2 image twice and proves the overlay root and
-  # the writable generation survive a reboot.
+  # Stage 6: layered boot - the image booted twice proves the writable generation survives.
   s3:
     name: S3 boot - layered root
-    needs: [resolve, fetch]
+    needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's3') }}
     uses: ./.github/workflows/ci-s3.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      platform_version: ${{ needs.versions.outputs.platform_version }}
 
-  # Stage 7: A/B state machine. Boots the image three times and proves commit,
-  # abandon and switch-over through the ESP state the guest writes.
+  # Stage 7: A/B state machine - commit, abandon and rollback through the ESP state.
   s4:
     name: S4 slots - A/B state machine
-    needs: [resolve, fetch]
+    needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's4') }}
     uses: ./.github/workflows/ci-s4.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      platform_version: ${{ needs.versions.outputs.platform_version }}
 
-  # Stage 8: upgrade payload, reclamation and the degraded boot. Four boots.
+  # Stage 8: upgrade payload, reclamation and the degraded boot.
   s5:
     name: S5 upgrade - upgrade and reclaim
-    needs: [resolve, fetch]
+    needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's5') }}
     uses: ./.github/workflows/ci-s5.yml
-    permissions:
-      contents: read
     with:
       upstream_version: ${{ needs.resolve.outputs.upstream_version }}
       upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
+      platform_version: ${{ needs.versions.outputs.platform_version }}
 
   # Stage 9: static checks that need no upstream artifact.
   verify:
@@ -204,8 +183,6 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'verify') }}
     uses: ./.github/workflows/ci-verify.yml
-    permissions:
-      contents: read
 
   # Stage 10: single verdict, rendered as the run summary.
   report:

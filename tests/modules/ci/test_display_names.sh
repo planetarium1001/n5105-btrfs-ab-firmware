@@ -137,7 +137,11 @@ allowed = {
 }
 problems = []
 
-for path in workflows:
+targets = workflows + sorted((root / ".github" / "actions").glob("*/action.yml"))
+for path in targets:
+    # stage-evidence derives its names from its inputs; the call sites are checked below.
+    if path.parent.name == "stage-evidence":
+        continue
     lines = path.read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if "uses: actions/upload-artifact" not in line:
@@ -168,25 +172,50 @@ for path in workflows:
 
 # The serial console log is the one file every failure needs; it must be uploaded exactly
 # once per stage, through the logs artifact, and never copied into a second artifact.
+#
+# Since task 20261112-03 the upload itself lives in .github/actions/stage-evidence: the
+# workflow only names the stage and the paths, and the composite derives logs-<stage>.
+# The invariants therefore split in two - what the call site asks for, and what the
+# composite does with it - and both halves are asserted here.
+composite = (root / ".github" / "actions" / "stage-evidence" / "action.yml").read_text(
+    encoding="utf-8"
+)
 for num in range(1, 6):
     text = (root / ".github" / "workflows" / f"ci-s{num}.yml").read_text(encoding="utf-8")
-    evidence_blocks = re.findall(r"name: evidence-s%d\n(?:.*\n)*?\s*if-no-files-found" % num, text)
-    if not evidence_blocks:
-        problems.append(f"ci-s{num}.yml: no evidence-s{num} artifact")
-    for block in evidence_blocks:
-        # The stage logs - serial copies included - travel with the evidence, once.
-        if "ci/logs" not in block:
-            problems.append(f"ci-s{num}.yml: evidence-s{num} does not carry the stage logs")
-        if "serial-" in block:
-            problems.append(f"ci-s{num}.yml: evidence-s{num} uploads a second copy of a serial log")
-    logs_blocks = re.findall(r"name: logs-s%d\n(?:.*\n)*?\s*if-no-files-found" % num, text)
-    if not logs_blocks:
-        problems.append(f"ci-s{num}.yml: no logs-s{num} artifact")
-    for block in logs_blocks:
-        if "diagnostics/summary.txt" not in block:
-            problems.append(f"ci-s{num}.yml: logs-s{num} does not carry the diagnostics summary")
-        if "ci/logs" in block:
-            problems.append(f"ci-s{num}.yml: logs-s{num} duplicates the stage logs")
+    call = re.search(
+        r"uses: \./\.github/actions/stage-evidence\n\s+with:\n((?:\s{10,}\S.*\n|\s*\n)*)",
+        text,
+    )
+    if not call:
+        problems.append(f"ci-s{num}.yml: no stage-evidence call")
+        continue
+    block = call.group(1)
+    # Exact match: a rename to evidence-s2x must not pass as evidence-s2.
+    if not re.search(rf"^\s+name: evidence-s{num}\s*$", block, re.M):
+        problems.append(f"ci-s{num}.yml: does not name evidence-s{num}")
+    if f"stage: s{num}" not in block:
+        problems.append(f"ci-s{num}.yml: the stage-evidence stage is not s{num}")
+    # The stage logs - serial copies included - travel with the evidence, once.
+    if "ci/logs" not in block:
+        problems.append(f"ci-s{num}.yml: evidence-s{num} does not carry the stage logs")
+    if "serial-" in block:
+        problems.append(f"ci-s{num}.yml: evidence-s{num} uploads a second copy of a serial log")
+    if "logs-name:" in block:
+        problems.append(f"ci-s{num}.yml: overrides the derived logs artifact name")
+    if "logs-paths:" in block:
+        problems.append(f"ci-s{num}.yml: overrides the diagnostics artifact path")
+
+for needle, message in (
+    ("name: ${{ inputs.name }}", "the evidence artifact is named by the caller"),
+    ("path: ${{ inputs.paths }}", "the evidence artifact carries the caller's paths"),
+    ("format('logs-{0}', inputs.stage)", "the diagnostics artifact is named logs-<stage>"),
+    (
+        "format('{0}/ci/diagnostics/summary.txt', runner.temp)",
+        "the diagnostics artifact carries only the diagnostics summary",
+    ),
+):
+    if needle not in composite:
+        problems.append(f"stage-evidence: {message}")
 
 release = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 for needle in ("name: image-install", "name: payload-upgrade"):

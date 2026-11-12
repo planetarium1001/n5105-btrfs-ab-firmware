@@ -4,12 +4,23 @@
 # Checks, in order:
 #   1. `bash -n` on every scripts/ci/*.sh, `sh -n` on the initramfs and guest
 #      assertion scripts (they run in the guest's busybox shell)
-#   2. `shellcheck` on the same files, when the runner provides it
-#   3. `python3 scripts/check_design.py all`, the executable form of the thresholds
+#   2. `actionlint` on .github/workflows: a workflow that does not parse stops a stage
+#      from starting while still looking present in the tree
+#   3. `shellcheck` on the same files
+#   4. `python3 scripts/check_design.py all`, the executable form of the thresholds
 #      and contracts written down in docs/
+#   5. the test suite, tests/modules/**
+#
+# None of these checks is optional: a missing actionlint or shellcheck fails the stage
+# instead of skipping the check, because a check that never runs is the failure mode
+# this stage exists to kill. CI installs both (see .github/actions/actionlint and
+# .github/workflows/ci-verify.yml); locally, put them on PATH or point
+# CI_ACTIONLINT_BIN at an actionlint binary.
 #
 # The script keeps going after a failing check so one run reports every finding, and
-# only then fails the stage.
+# only then fails the stage. Every check publishes one verdict line in the summary, and
+# the same verdicts are appended to $GITHUB_STEP_SUMMARY when Actions sets it, so the
+# run page shows them as list items without opening the log.
 
 set -euo pipefail
 
@@ -25,7 +36,10 @@ python_bin="${CI_PYTHON:-python3}"
 ci_require_cmd "${python_bin}"
 
 syntax_status="ok"
-shellcheck_status="skipped"
+# Both lint statuses start at "fail": the checks below can only clear them, so a path
+# that never reaches a linter (a missing binary) still ends red.
+actionlint_status="fail"
+shellcheck_status="fail"
 design_status="ok"
 design_problem_count="0"
 design_failed_checks=""
@@ -106,6 +120,47 @@ for path in ${init_scripts[@]+"${init_scripts[@]}"}; do
 done
 
 # --------------------------------------------------------------------------- #
+# 2a. actionlint
+#
+# The workflow files are the only part of the pipeline that is not shell, and a
+# workflow that does not parse (a misspelled key, a context used where GitHub does not
+# allow it) kills a stage while the file still looks present. This check used to skip
+# itself whenever the linter was absent, so nobody noticed it never ran; a missing
+# linter is a stage failure now. CI installs the pinned release through
+# .github/actions/actionlint and leaves it on PATH; elsewhere, put actionlint on PATH
+# or point CI_ACTIONLINT_BIN at it.
+#
+# The shellcheck integration is off on purpose (`-shellcheck ""`): when shellcheck is
+# on PATH, actionlint runs it over every `run:` snippet and reports its *info*-level
+# findings as errors - including SC2016 on backticks that are meant literally, as in a
+# printf emitting markdown - so the verdict of this gate would depend on whether the
+# machine happens to have shellcheck installed. The shell in this repository is linted
+# by the next section instead, at severity warning and above, which is the same rule
+# everywhere.
+# --------------------------------------------------------------------------- #
+
+workflow_dir="${CI_REPO_ROOT}/.github/workflows"
+actionlint_bin="${CI_ACTIONLINT_BIN:-}"
+if [ -z "${actionlint_bin}" ] && ci_have actionlint; then
+    actionlint_bin="$(command -v actionlint)"
+fi
+if [ -z "${actionlint_bin}" ]; then
+    ci_warn "actionlint is not installed, and the workflow check is not optional"
+    ci_warn "CI installs it through .github/actions/actionlint; here, use 'brew install actionlint'," \
+        "'go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7', or set CI_ACTIONLINT_BIN"
+elif [ ! -x "${actionlint_bin}" ]; then
+    ci_warn "CI_ACTIONLINT_BIN does not point at an executable: ${actionlint_bin}"
+else
+    ci_log "actionlint $("${actionlint_bin}" --version | head -n 1) (${workflow_dir#"${CI_REPO_ROOT}"/})"
+    if "${actionlint_bin}" -no-color -shellcheck "" "${workflow_dir}"/*.yml; then
+        actionlint_status="ok"
+    else
+        ci_warn "actionlint rejected the workflows above"
+        actionlint_status="fail"
+    fi
+fi
+
+# --------------------------------------------------------------------------- #
 # 2. ShellCheck
 # --------------------------------------------------------------------------- #
 
@@ -125,7 +180,8 @@ if ci_have shellcheck; then
         shellcheck_status="fail"
     fi
 else
-    ci_warn "shellcheck is not installed, static lint skipped"
+    ci_warn "shellcheck is not installed, and the shell lint is not optional"
+    ci_warn "CI installs it with apt-get; here, use 'brew install shellcheck' or 'apt-get install shellcheck'"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -197,9 +253,9 @@ fi
 # --------------------------------------------------------------------------- #
 
 verify_status="ok"
-if [ "${syntax_status}" = "fail" ] || [ "${shellcheck_status}" = "fail" ] \
-    || [ "${python_status}" = "fail" ] || [ "${design_status}" = "fail" ] \
-    || [ "${tests_status}" = "fail" ]; then
+if [ "${syntax_status}" = "fail" ] || [ "${actionlint_status}" = "fail" ] \
+    || [ "${shellcheck_status}" = "fail" ] || [ "${python_status}" = "fail" ] \
+    || [ "${design_status}" = "fail" ] || [ "${tests_status}" = "fail" ]; then
     verify_status="fail"
 fi
 
@@ -207,6 +263,7 @@ summary="${CI_LOG_DIR}/verify-summary.txt"
 {
     printf 'verify: %s\n' "${verify_status}"
     printf '  bash -n:    %s\n' "${syntax_status}"
+    printf '  actionlint: %s\n' "${actionlint_status}"
     printf '  shellcheck: %s\n' "${shellcheck_status}"
     printf '  python:     %s\n' "${python_status}"
     printf '  design:     %s (%s problem(s))\n' "${design_status}" "${design_problem_count}"
@@ -216,8 +273,26 @@ summary="${CI_LOG_DIR}/verify-summary.txt"
     fi
 } | tee "${summary}"
 
+# The run page is the first place a reader looks, and one line per check is all it takes
+# to see which gate went red: the verdicts are appended as list items of their own, not
+# buried in the step log.
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+        printf '## Stage verify: %s\n' "${verify_status}"
+        printf '\n'
+        printf '%s\n' "- actionlint: ${actionlint_status}"
+        printf '%s\n' "- shellcheck: ${shellcheck_status}"
+        printf '%s\n' "- tests: ${tests_status}"
+        printf '%s\n' "- design: ${design_status}"
+        printf '%s\n' "- bash -n: ${syntax_status}"
+        printf '%s\n' "- python: ${python_status}"
+    } >>"${GITHUB_STEP_SUMMARY}" ||
+        printf '[%s] WARNING: could not append to %s\n' "${CI_STAGE}" "${GITHUB_STEP_SUMMARY}" >&2
+fi
+
 ci_emit_output "verify_status" "${verify_status}"
 ci_emit_output "syntax_status" "${syntax_status}"
+ci_emit_output "actionlint_status" "${actionlint_status}"
 ci_emit_output "shellcheck_status" "${shellcheck_status}"
 ci_emit_output "python_status" "${python_status}"
 ci_emit_output "design_checks_status" "${design_status}"

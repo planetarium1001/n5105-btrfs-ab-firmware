@@ -33,7 +33,8 @@
 #                     is a CI fixture, not something a machine can boot
 #   CI_DISK_DIR       scratch directory (default: $CI_TMP_ROOT/disk)
 #   CI_DISK_OUT       output image path (default: $CI_DISK_DIR/<name>.img)
-#   CI_PLATFORM_VERSION  version recorded in the platform release file
+#   CI_PLATFORM_VERSION  version recorded in the platform release file and in
+#                        ab/image.json (required; VERSION is the only source)
 #   CI_UPSTREAM_VERSION  upstream release label recorded in the platform release file
 #   CI_PLATFORM_SRC      platform layer source tree (default: platform/)
 #   CI_PLATFORM_RUNTIME_DIR  btrfs tooling staged by the runtime stage (default: $CI_TMP_ROOT/runtime)
@@ -73,7 +74,9 @@ rootfs_tar="${fetch_dir}/upstream/rootfs.tar.gz"
 kernel="${fetch_dir}/upstream/kernel.bin"
 disk_dir="${CI_DISK_DIR:-${CI_TMP_ROOT}/disk}"
 image="${CI_DISK_OUT:-${disk_dir}/n5105-ab-image.img}"
-platform_version="${CI_PLATFORM_VERSION:-0.0.1}"
+# No default on purpose: ab/image.json is what the release refuses to publish unless it
+# agrees with VERSION, so a silent 0.0.1 here is the one thing that breaks that check.
+platform_version="${CI_PLATFORM_VERSION:?CI_PLATFORM_VERSION is required, it is recorded in ab/image.json}"
 upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required, the writable layer is named after it}"
 # The writable layer is named after the upstream release: @overlay-<version>, with a
 # -r<N> suffix when the same release is shipped again with a different platform layer.
