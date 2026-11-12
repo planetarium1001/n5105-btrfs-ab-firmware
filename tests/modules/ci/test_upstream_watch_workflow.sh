@@ -42,13 +42,18 @@ assert_contains "$text" "  workflow_dispatch:" "ac-2 the watch can be dispatched
 assert_eq "$(grep -c '^  push:' "$watch")" "0" \
   "ac-2 the watch is not triggered by a push: a push by GITHUB_TOKEN would not trigger it anyway"
 
-# Concurrency belongs to the entry point and never cancels a manual run.
-assert_contains "$text" 'group: ci-${{ github.workflow }}-${{ github.event_name == '"'"'workflow_dispatch'"'"' && '"'"'manual'"'"' || '"'"'auto'"'"' }}-${{ github.ref }}' \
-  "ac-2 the watch scopes its concurrency group by lane"
-assert_contains "$text" 'cancel-in-progress: ${{ github.event_name != '"'"'workflow_dispatch'"'"' }}' \
-  "ac-2 the watch never cancels a manual run"
-assert_eq "$(grep -c '^concurrency:' "$watch")" "1" \
-  "ac-2 the watch declares exactly one concurrency block"
+# GitHub cannot nest concurrency: a reusable workflow that declares a concurrency group is
+# silently dropped when its caller declares one too, and the pipeline this run builds with
+# (ci.yml) declares one. Single-flight is covered by the merge guard instead, so both facts
+# are asserted here: no concurrency block, and a guard that stops a second run.
+assert_eq "$(grep -c '^concurrency:' "$watch")" "0" \
+  "ac-2 the watch declares no concurrency group, so the pipeline call is not dropped"
+assert_contains "$text" "GitHub cannot nest concurrency" \
+  "ac-2 the reason the group is absent is written down where the group would be"
+assert_contains "$(job_block merge)" "already pins" \
+  "ac-2 a second overlapping run stops when the base branch already carries the pin"
+assert_contains "$(job_block merge)" "if: steps.already.outputs.skip != 'true'" \
+  "ac-2 the merge is skipped when the release already happened"
 
 # --------------------------------------------------------------------------- #
 # ac-2: nothing happens when nothing is new

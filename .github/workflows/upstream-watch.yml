@@ -49,6 +49,12 @@ on:
 
 # The workflow-level grant has to cover every permission a job grants, and every
 # permission a called workflow asks for; each job below narrows it again.
+# GitHub cannot nest concurrency: calling a reusable workflow that itself declares a
+# concurrency group from a workflow that declares one silently drops the call (the job
+# never appears in the run). The pipeline this run builds with is ci.yml, which declares
+# one, so this workflow declares none. Single-flight is not lost - `merge` re-reads the pin
+# from the base branch and stops when the release has already happened, so two overlapping
+# runs converge on the same answer instead of merging twice.
 permissions:
   contents: write
   actions: read
@@ -232,10 +238,13 @@ jobs:
   # that graph, and nothing waits for a push or a tag to start it.
   build:
     name: build the new upstream release
+    needs: [detect, bump]
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       actions: read
+    with:
+      upstream_version: ${{ needs.detect.outputs.version }}
 
   # The three lockfiles are contracts for one upstream release; a new release needs its
   # own. They are derived with the same scripts the pipeline uses, committed to the branch,
@@ -351,10 +360,30 @@ jobs:
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
 
+      # Two overlapping runs converge instead of merging twice: if the base branch already
+      # carries this pin, the release happened while this run was building.
+      - name: Stop when the release has already happened
+        id: already
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ needs.bump.outputs.base }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "${BASE}"
+          released="$(git show "origin/${BASE}:.github/upstream-pin.conf" | sed -n 's/^UPSTREAM_VERSION=//p' | tail -n 1)"
+          if [ "${released}" = "${VERSION}" ]; then
+            echo "::warning title=auto-release::${BASE} already pins ${VERSION}; this run only verifies the build"
+            echo "skip=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "skip=false" >>"${GITHUB_OUTPUT}"
+          fi
+
       # What was built is what gets merged: the branch may carry the pin and the three
       # lockfiles and nothing else. A workflow that quietly touches a fourth file has
       # published something nobody built.
       - name: Guard the diff
+        if: steps.already.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ needs.bump.outputs.branch }}
@@ -376,6 +405,7 @@ jobs:
           printf 'the automatic branch changes exactly:\n%s\n' "${changed}"
 
       - name: Squash merge the pull request
+        if: steps.already.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ needs.bump.outputs.pr }}
@@ -390,6 +420,7 @@ jobs:
       # A bare X.Y.Z tag: the release is identified by the system version, and a bare tag
       # never matches the v* line, so tagging cannot start a second release.
       - name: Tag the merged commit
+        if: steps.already.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ needs.bump.outputs.branch }}
