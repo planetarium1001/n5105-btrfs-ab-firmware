@@ -37,7 +37,7 @@ on:
       version:
         description: "Treat this upstream version as the new release (rehearsal only; empty means discover it)"
         type: string
-        default: "25.99.99"
+        default: "25.12.1"
       dry-run:
         description: "Rehearse: merge into a scratch branch and publish a draft release"
         type: boolean
@@ -86,7 +86,7 @@ jobs:
       - name: Detect the newest upstream formal release
         id: detect
         env:
-          CI_FORCE_VERSION: ${{ inputs.version || '25.99.99' }}
+          CI_FORCE_VERSION: ${{ inputs.version || '25.12.1' }}
         run: bash scripts/ci/upstream-watch.sh detect 2>&1 | tee -a "${CI_LOG_DIR}/detect.log"
 
       # The candidates are the new release plus the three formal releases before it. They
