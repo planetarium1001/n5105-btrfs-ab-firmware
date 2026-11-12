@@ -21,6 +21,13 @@ name: upstream watch
 # outcome of most days, not a failure.
 
 on:
+  # TEMPORARY REHEARSAL TRIGGER - not part of the deliverable.
+  # GitHub only dispatches or schedules a workflow that exists on the default branch, so
+  # this file cannot be triggered at all while it lives on a work branch. A push trigger on
+  # the work branch is the only way to run it before it is merged; the next commit removes
+  # this block and restores the empty defaults below.
+  push:
+    branches: [wf/20261112-02-upstream-auto-release-main]
   schedule:
     # 20:00 UTC = 04:00 in Beijing: after the upstream mirrors settle for the day and
     # outside the hours anyone here dispatches a build by hand.
@@ -30,15 +37,15 @@ on:
       version:
         description: "Treat this upstream version as the new release (rehearsal only; empty means discover it)"
         type: string
-        default: ""
+        default: "25.12.1"
       dry-run:
         description: "Rehearse: merge into a scratch branch and publish a draft release"
         type: boolean
-        default: false
+        default: true
       base:
         description: "Branch the PR is opened against and merged into"
         type: string
-        default: "main"
+        default: "auto/dryrun-main"
 
 permissions:
   contents: read
@@ -72,7 +79,7 @@ jobs:
       - name: Detect the newest upstream formal release
         id: detect
         env:
-          CI_FORCE_VERSION: ${{ inputs.version }}
+          CI_FORCE_VERSION: ${{ inputs.version || '25.12.1' }}
         run: bash scripts/ci/upstream-watch.sh detect 2>&1 | tee -a "${CI_LOG_DIR}/detect.log"
 
       # The candidates are the new release plus the three formal releases before it. They
@@ -151,8 +158,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.detect.outputs.version }}
-          DRY_RUN: ${{ inputs.dry-run }}
-          BASE_INPUT: ${{ inputs.base }}
+          DRY_RUN: ${{ inputs.dry-run || true }}
+          BASE_INPUT: ${{ inputs.base || 'auto/dryrun-main' }}
         run: |
           set -euo pipefail
           base="${BASE_INPUT:-main}"
@@ -405,7 +412,7 @@ jobs:
       tag-policy: bare
       title: "ImmortalWrt N5105 A/B firmware {tag}"
       extra-notes: ${{ needs.detect.outputs.candidates }}
-      dry-run: ${{ inputs.dry-run }}
+      dry-run: ${{ inputs.dry-run || true }}
 
   # A red run has to leave one place to look. The title is stable per upstream version, so
   # a second failure updates the issue instead of opening another one.
