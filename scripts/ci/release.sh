@@ -133,7 +133,7 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf '\n'
     printf '## Artifacts\n'
     printf '\n'
-    printf '| File | Size | SHA256 |\n'
+    printf '| artifact | size | sha256 |\n'
     printf '| --- | --- | --- |\n'
     printf '| `%s-install.img.gz` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${image_gz}")" "${image_gz_sha256}"
     if [ -n "${payload_copy}" ]; then
@@ -155,7 +155,7 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf '\n'
     printf '## Inputs\n'
     printf '\n'
-    printf '| Input | Value |\n'
+    printf '| field | value |\n'
     printf '| --- | --- |\n'
     printf '| Upstream version | `%s` |\n' "${upstream_version}"
     printf '| Upstream rootfs sha256 | `%s` |\n' "${upstream_rootfs}"
