@@ -457,4 +457,30 @@ assert_contains "$(cat scripts/ci/boot-member.sh)" 'source_image="${CI_BOOT_SOUR
 assert_contains "$(cat scripts/ci/boot-member.sh)" 'source_sha="${CI_BOOT_SOURCE_SHA256:-}"' \
   "ac-4 the boot block records no digest when the caller passed none"
 
+# --------------------------------------------------------------------------- #
+# ac-8 (L5/L6): the two leftovers the earlier tasks claimed to have closed
+#
+# L5: no third-party action may float on a major tag - what runs with the runner's
+# credentials has to be the commit that was reviewed. L6: the GRUB menu comment has to say
+# both who writes the menu and the one thing that can replace it, because the payload ships
+# a new menu and a comment claiming "written once, never rewritten" contradicts it.
+# --------------------------------------------------------------------------- #
+
+floating=""
+for wf in .github/workflows/*.yml .github/actions/*/action.yml; do
+  bad=$(grep -E '^\s*uses:' "$wf" | sed -E 's/^[[:space:]]*uses:[[:space:]]*//' \
+    | grep -vE '^\./' \
+    | grep -vE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}( # v[0-9].*)?$' || true)
+  if [ -n "$bad" ]; then
+    floating="${floating}${wf}: ${bad}; "
+  fi
+done
+assert_eq "${floating}" "" "ac-8 every third-party action is pinned to a 40-character sha"
+
+grub_template="$(cat scripts/ci/grub.cfg.in)"
+assert_contains "${grub_template}" "rendered once, here, at build time" \
+  "ac-8 the GRUB menu comment says when it is written"
+assert_contains "${grub_template}" "replaces the whole file from the payload's" \
+  "ac-8 the GRUB menu comment names the one writer that can replace it"
+
 finish
