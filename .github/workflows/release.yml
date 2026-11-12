@@ -4,10 +4,15 @@ name: Firmware CI - release
 # releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
 # something the same stages already proved.
 #
-#   git tag -a v0.0.6 -m "0.0.6: ..." && git push origin v0.0.6
+#   git tag -a v0.0.8 -m "0.0.8: ..." && git push origin v0.0.8
 #
-# Produces a GitHub Release carrying the image, the update payload, SHA256SUMS and
-# release-notes.md. `contents: write` is granted to the publishing job only.
+# The publishing steps are not here: they live in release-publish.yml, which the upstream
+# auto-release line (upstream-watch.yml) calls too. Two callers, one implementation - what
+# "publish" means cannot drift between the two lines, and the release preflight runs on
+# both of them.
+#
+# The tagged line publishes VERSION: the tag has to agree with it, which this caller lets
+# release-publish.yml assert rather than trusting the caller.
 
 on:
   push:
@@ -22,180 +27,19 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      # ci.yml's report job reads the Actions API for its duration column, and a called
+      # workflow may not ask for a permission its caller does not grant: without this the
+      # run fails at startup and no job ever appears.
+      actions: read
 
   publish:
     name: publish
     needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
       contents: write
       actions: read
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      # The image a machine may be flashed with: produced by S3, the stage that boots the
-      # *production* initramfs. S2's artifact is named image-probe for a reason - v0.0.6
-      # and v0.0.7 published it by mistake and every real machine shut down at the GRUB
-      # menu with S1-RESULT=fail reason=no-device-node.
-      - name: Download the install image
-        uses: actions/download-artifact@v4
-        with:
-          name: image-install
-          path: ${{ runner.temp }}/ci/disk
-
-      # Defence in depth: the bytes about to be published are opened and asked which
-      # initramfs they carry. A probe image, or one without ab/image.json, stops the
-      # release here instead of on somebody's desk.
-      - name: Verify the image is bootable
-        id: image_kind
-        run: |
-          set -euo pipefail
-          img_gz="$(ls "${RUNNER_TEMP}"/ci/disk/*.img.gz | head -n 1)"
-          [ -n "${img_gz}" ] || { echo "no image to publish" >&2; exit 1; }
-          img="${RUNNER_TEMP}/ci/disk/publish.img"
-          gunzip -c "${img_gz}" >"${img}"
-          loop="$(sudo losetup --find --show --partscan "${img}")"
-          p1="${RUNNER_TEMP}/ci/disk/p1"
-          cleanup() {
-            sudo umount "${p1}" 2>/dev/null || true
-            sudo losetup -d "${loop}" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          sudo mkdir -p "${p1}"
-          sudo mount -o ro "${loop}p1" "${p1}"
-          kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' "${p1}/ab/image.json" 2>/dev/null || echo unreadable)"
-          echo "image kind: ${kind}"
-          echo "kind=${kind}" >>"${GITHUB_OUTPUT}"
-          [ "${kind}" = "boot" ] || { echo "refusing to publish an image whose kind is '${kind}'" >&2; exit 1; }
-          sudo cp "${p1}/initrd-a" "${RUNNER_TEMP}/ci/disk/initrd-a"
-          sudo chmod 0644 "${RUNNER_TEMP}/ci/disk/initrd-a"
-          cleanup
-          trap - EXIT
-          gzip -dc "${RUNNER_TEMP}/ci/disk/initrd-a" | cpio -i --to-stdout init >"${RUNNER_TEMP}/ci/disk/init.head" 2>/dev/null || true
-          head -3 "${RUNNER_TEMP}/ci/disk/init.head"
-          grep -q "S3 boot init" "${RUNNER_TEMP}/ci/disk/init.head" || { echo "the published initrd is not the production boot init" >&2; exit 1; }
-          if grep -q "S1-RESULT" "${RUNNER_TEMP}/ci/disk/init.head"; then
-            echo "the published initrd is the S1 probe" >&2
-            exit 1
-          fi
-          echo "image is bootable: production init, kind=boot"
-
-      - name: Download the update payload
-        uses: actions/download-artifact@v4
-        with:
-          name: payload-upgrade
-          path: ${{ runner.temp }}/ci/payload
-
-      # The upstream version and the input digests come from the payload manifest the
-      # assemble stage produced, so the release notes describe exactly what was built.
-      - name: Select the versions
-        id: versions
-        run: |
-          set -euo pipefail
-          manifest="${RUNNER_TEMP}/ci/payload/payload/manifest.json"
-          [ -f "${manifest}" ] || { echo "payload manifest not found: ${manifest}" >&2; exit 1; }
-          python3 - "${manifest}" >"${RUNNER_TEMP}/ci/versions.env" <<'PYTHON'
-          import json, sys
-          doc = json.load(open(sys.argv[1], encoding="utf-8"))
-          members = doc["members"]
-          print(f"upstream_version={doc['rootfs']}")
-          print(f"rootfs_sha={members['rootfs.tar.gz']['sha256']}")
-          print(f"kernel_sha={members['kernel.bin']['sha256']}")
-          print(f"kernel_package={doc.get('kernel', 'n/a')}")
-          PYTHON
-          . "${RUNNER_TEMP}/ci/versions.env"
-          {
-            printf 'tag=%s\n' "${GITHUB_REF_NAME}"
-            printf 'platform_version=%s\n' "${GITHUB_REF_NAME#v}"
-            printf 'upstream_version=%s\n' "${upstream_version}"
-            printf 'rootfs_sha=%s\n' "${rootfs_sha}"
-            printf 'kernel_sha=%s\n' "${kernel_sha}"
-            printf 'kernel_package=%s\n' "${kernel_package:-n/a}"
-            printf 'image_gz=%s\n' "$(ls "${RUNNER_TEMP}/ci/disk"/*.img.gz | head -n 1)"
-          } >>"${GITHUB_OUTPUT}"
-
-      - name: Render the release artifacts
-        id: release
-        env:
-          CI_IMAGE_GZ: ${{ steps.versions.outputs.image_gz }}
-          CI_PAYLOAD: ${{ runner.temp }}/ci/payload/payload.tar
-          CI_PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
-          CI_UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
-          CI_UPSTREAM_ROOTFS_SHA256: ${{ steps.versions.outputs.rootfs_sha }}
-          CI_UPSTREAM_KERNEL_SHA256: ${{ steps.versions.outputs.kernel_sha }}
-          CI_RELEASE_TAG: ${{ steps.versions.outputs.tag }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/release.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/release.log"
-
-      # One screen for whoever opens the run page: what is about to be published, how it
-      # was proved and which versions it carries. The digests are read back from the
-      # SHA256SUMS file that ships with the release, so the screen and the release cannot
-      # disagree.
-      - name: Write the pre-publish summary
-        env:
-          KIND: ${{ steps.image_kind.outputs.kind }}
-          TAG: ${{ steps.versions.outputs.tag }}
-          UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
-          PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
-          KERNEL_PACKAGE: ${{ steps.versions.outputs.kernel_package }}
-        run: |
-          set -euo pipefail
-          release_dir="${RUNNER_TEMP}/ci/release"
-          sums="${release_dir}/SHA256SUMS"
-          [ -f "${sums}" ] || { echo "no SHA256SUMS to summarise: ${sums}" >&2; exit 1; }
-          digest_of() {
-            awk -v f="$1" '$2 == f { print $1; exit }' "${sums}"
-          }
-          image="$(awk '$2 ~ /\.img\.gz$/ { print $2; exit }' "${sums}")"
-          payload="$(awk '$2 ~ /\.tar$/ { print $2; exit }' "${sums}")"
-          {
-            printf '## Pre-publish check - %s\n\n' "${TAG}"
-            printf '| item | value |\n'
-            printf '| --- | --- |\n'
-            printf '| image kind check | `%s` |\n' "${KIND}"
-            if [ -n "${image}" ]; then
-              printf '| image | `%s` `%s` |\n' "${image}" "$(digest_of "${image}")"
-            fi
-            if [ -n "${payload}" ]; then
-              printf '| payload | `%s` `%s` |\n' "${payload}" "$(digest_of "${payload}")"
-            fi
-            printf '| upstream version | `%s` |\n' "${UPSTREAM_VERSION}"
-            printf '| platform version | `%s` |\n' "${PLATFORM_VERSION}"
-            printf '| kernel package | `%s` |\n' "${KERNEL_PACKAGE:-n/a}"
-          } >>"${GITHUB_STEP_SUMMARY}"
-
-      - name: Publish the GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.versions.outputs.tag }}
-          RELEASE_DIR: ${{ runner.temp }}/ci/release
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          # The stage verdict rides with the notes, so a reader of the release page learns
-          # which run proved it without opening the Actions tab.
-          printf 'Verified by CI run %s: S1 to S5 all passed, image kind=boot.\n' "${RUN_URL}" \
-            >>"${RELEASE_DIR}/release-notes.md"
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "release ${TAG} exists, uploading the artifacts again"
-            gh release upload "${TAG}" "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar \
-              "${RELEASE_DIR}/SHA256SUMS" --clobber
-          else
-            gh release create "${TAG}" \
-              --title "N5105 AB firmware ${TAG#v}" \
-              --notes-file "${RELEASE_DIR}/release-notes.md" \
-              "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS"
-          fi
-
-      - name: Record the release in the run summary
-        run: |
-          {
-            printf '## Release %s\n\n' "${{ steps.versions.outputs.tag }}"
-            printf '| Artifact | SHA256 |\n| --- | --- |\n'
-            awk '{ printf "| `%s` | `%s` |\n", $2, $1 }' "${{ runner.temp }}/ci/release/SHA256SUMS"
-          } >>"${GITHUB_STEP_SUMMARY}"
+    uses: ./.github/workflows/release-publish.yml
+    with:
+      tag: ${{ github.ref_name }}
+      tag-policy: v
+      title: "N5105 AB firmware {tag}"

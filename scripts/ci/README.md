@@ -31,7 +31,9 @@ the last two columns say what the stage buys you and what you lose when it fails
 | `.github/workflows/ci-s3.yml` | s3 (layered boot) |
 | `.github/workflows/ci-s4.yml` | s4 (slot state machine, three boots) |
 | `.github/workflows/ci-s5.yml` | s5 (upgrade payload, reclamation, degraded boot) |
-| `.github/workflows/release.yml` | tag-triggered publisher, calls `ci.yml` |
+| `.github/workflows/release.yml` | tag-triggered publisher, calls `ci.yml` and `release-publish.yml` |
+| `.github/workflows/release-publish.yml` | reusable publisher: preflight, artifacts, `gh release`; both release lines call it |
+| `.github/workflows/upstream-watch.yml` | daily watch: discover, build, move the pin and the lockfiles, merge, tag, publish |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -47,6 +49,10 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `resolve.sh` | resolve | pick the upstream release, cross-check the kernel module directory, derive the cache key |
 | `fetch.sh` | fetch | download rootfs, kernel and btrfs module, verify every sha256, write a receipt |
 | `assemble.sh` | assemble | build the payload directory and `manifest.json` (S0 skeleton) |
+| `upstream-watch.sh` | watch | decide whether a new upstream formal release exists, move the pin through `ci_write_upstream_pin`, render the automatic PR and failure-issue bodies |
+| `matrix-select.sh` | watch | the candidate list of an automatic release: the new version plus the previous three formal releases, with the gap recorded |
+| `heartbeat-tag.sh` | watch | keep the scheduled workflow alive with a `heartbeat-YYYYMM` tag every ≥50 days |
+| `release-preflight.sh` | publish | refuse to publish unless the image record, the payload manifest, the tag and the bootloader agree |
 | `verify.sh` | verify | `bash -n`/`sh -n`, ShellCheck, `python3 scripts/check_design.py all` |
 | `kmods.sh` | s1 | fetch, verify and unpack the btrfs module closure against the lockfile |
 | `apk_extract.py` | s1 | unpack `.ko` files out of apk-tools v3 (ADB) containers |

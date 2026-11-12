@@ -18,15 +18,18 @@ source "$root/tests/lib/assert.sh"
 
 s2="$root/.github/workflows/ci-s2.yml"
 s3="$root/.github/workflows/ci-s3.yml"
-rel="$root/.github/workflows/release.yml"
+# Publishing - including the image kind gate - lives in the shared reusable workflow.
+rel="$root/.github/workflows/release-publish.yml"
 disk="$root/scripts/ci/disk.sh"
 
 # --------------------------------------------------------------------------- #
 # ac-1: artifact names say what they are, and the release takes the bootable one
 # --------------------------------------------------------------------------- #
 
-assert_contains "$(cat "$rel")" "name: image-install" \
-    "ac-1 the release downloads the install image"
+assert_contains "$(cat "$rel")" 'name: ${{ inputs.image-artifact }}' \
+    "ac-1 the release downloads the artifact the caller names"
+assert_contains "$(cat "$rel")" "default: image-install" \
+    "ac-1 the install image stays the default artifact of the release"
 assert_contains "$(cat "$s3")" "name: image-install" \
     "ac-1 S3 uploads the image it actually booted"
 assert_contains "$(cat "$s2")" "name: image-probe" \

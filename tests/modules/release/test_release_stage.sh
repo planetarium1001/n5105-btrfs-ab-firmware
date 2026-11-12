@@ -78,10 +78,13 @@ assert_eq "$?" "1" "ac-3 a damaged compressed image is refused"
 
 # --- ac-4 publishing rules -------------------------------------------------
 release_yml="$(cat .github/workflows/release.yml)"
+publish_yml="$(cat .github/workflows/release-publish.yml)"
 assert_contains "$release_yml" 'tags: ["v*"]' "ac-4 releases trigger on tags"
 assert_contains "$release_yml" "uses: ./.github/workflows/ci.yml" "ac-4 the release reuses the pipeline"
-assert_contains "$release_yml" "contents: write" "ac-4 publishing is granted write access"
-assert_contains "$release_yml" "gh release create" "ac-4 the release is created by gh"
+# The publishing steps were extracted so the upstream automatic line publishes with the
+# same implementation; the rules follow the steps into the reusable workflow.
+assert_contains "$publish_yml" "contents: write" "ac-4 publishing is granted write access"
+assert_contains "$publish_yml" "gh release create" "ac-4 the release is created by gh"
 assert_eq "$(printf '%s' "$release_yml" | grep -c 'branches:')" "0" \
   "ac-4 no branch can trigger a release"
 

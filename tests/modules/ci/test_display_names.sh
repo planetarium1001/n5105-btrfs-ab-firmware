@@ -217,10 +217,10 @@ for needle, message in (
     if needle not in composite:
         problems.append(f"stage-evidence: {message}")
 
-release = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-for needle in ("name: image-install", "name: payload-upgrade"):
+release = (root / ".github" / "workflows" / "release-publish.yml").read_text(encoding="utf-8")
+for needle in ("default: image-install", "default: payload-upgrade"):
     if needle not in release:
-        problems.append(f"release.yml: missing download of {needle!r}")
+        problems.append(f"release-publish.yml: missing download of {needle!r}")
 
 print("\n".join(problems))
 PY
@@ -231,15 +231,17 @@ assert_eq "${report}" "" "ac-10 the artifacts and the log uploads follow the voc
 # ac-7 / ac-8: the release screen and the release notes line
 # --------------------------------------------------------------------------- #
 
+# Publishing lives in the reusable workflow now; release.yml only builds and calls it.
 rel_text="$(cat "$WF/release.yml")"
 assert_contains "$rel_text" "    name: verify pipeline - S1 to S5" \
   "ac-7 the release build job is named"
-assert_contains "$rel_text" "      - name: Write the pre-publish summary" \
+pub_text="$(cat "$WF/release-publish.yml")"
+assert_contains "$pub_text" "      - name: Write the pre-publish summary" \
   "ac-7 the release summarises what it is about to publish"
-assert_contains "$rel_text" "SHA256SUMS" "ac-7 the pre-publish summary reads the digests"
-assert_contains "$rel_text" 'echo "kind=${kind}" >>"${GITHUB_OUTPUT}"' \
+assert_contains "$pub_text" "SHA256SUMS" "ac-7 the pre-publish summary reads the digests"
+assert_contains "$pub_text" 'echo "kind=${kind}" >>"${GITHUB_OUTPUT}"' \
   "ac-7 the image kind check is published as an output"
-assert_contains "$rel_text" "Verified by CI run" "ac-8 the release notes name the run that proved it"
+assert_contains "$pub_text" "Verified by CI run" "ac-8 the release notes name the run that proved it"
 
 # --------------------------------------------------------------------------- #
 # ac-11: the stage map a reader lands on first

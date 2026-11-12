@@ -1,0 +1,382 @@
+name: release publish
+
+# The publishing half of a release, shared by both release lines.
+#
+#   * the tagged line  (release.yml):        push v0.0.8            -> build -> this workflow
+#   * the upstream line (upstream-watch.yml): a new upstream formal release -> this workflow
+#
+# Publishing is the one action that cannot be taken back from CI's point of view, so this
+# workflow opens with the check that has to pass before anything is created:
+# scripts/ci/release-preflight.sh proves that the image record (ab/image.json), the payload
+# manifest and the tag agree, and that the payload carries a bootloader. A mismatch is a
+# refused release, never a release with a warning.
+#
+# `dry-run: true` keeps every step except the publishing itself: the release is created as
+# a *draft*, so a rehearsal never becomes a published release.
+#
+# The inputs are the whole difference between the two lines: `tag-policy: v` for
+# v0.0.8-style tags, `tag-policy: bare` (default) for the bare upstream version. `title` is
+# a template in which `{tag}` becomes the version without a leading v.
+#
+# `platform_version` and `upstream_version` are optional: when a caller cannot know them
+# (release.yml cannot, because ci.yml exposes no workflow-level outputs), the versions are
+# read back from the payload manifest and the VERSION file, and a caller-supplied value is
+# asserted against them instead of trusted.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag, exactly as it will be created"
+        required: true
+        type: string
+      tag-policy:
+        description: "Tag shape: bare (25.13.0, the upstream line) or v (v0.0.8, the tagged line)"
+        required: false
+        type: string
+        default: bare
+      title:
+        description: "Release title template; {tag} is replaced with the tag minus any leading v"
+        required: false
+        type: string
+        default: "{tag}"
+      platform_version:
+        description: "Platform version; empty reads the repository VERSION file"
+        required: false
+        type: string
+        default: ""
+      upstream_version:
+        description: "Upstream release the build consumed; empty reads the payload manifest"
+        required: false
+        type: string
+        default: ""
+      image-artifact:
+        description: "Artifact carrying the install image"
+        required: false
+        type: string
+        default: image-install
+      payload-artifact:
+        description: "Artifact carrying the update payload"
+        required: false
+        type: string
+        default: payload-upgrade
+      extra-notes:
+        description: "Extra markdown appended to the release notes, for example the matrix candidates"
+        required: false
+        type: string
+        default: ""
+      run-id:
+        description: "Run whose artifacts carry the build; empty uses the calling run"
+        required: false
+        type: string
+        default: ""
+      dry-run:
+        description: "Create the release as a draft and never publish it"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+        with: {apt: "cpio"}
+
+      # The image a machine may be flashed with: produced by S3, the stage that boots the
+      # *production* initramfs. S2's artifact is named image-probe for a reason - v0.0.6 and
+      # v0.0.7 published it by mistake and every real machine shut down at the GRUB menu
+      # with S1-RESULT=fail reason=no-device-node.
+      - name: Download the install image
+        if: ${{ inputs.run-id == '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.image-artifact }}
+          path: ${{ runner.temp }}/ci/disk
+
+      - name: Download the update payload
+        if: ${{ inputs.run-id == '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.payload-artifact }}
+          path: ${{ runner.temp }}/ci/payload
+
+      # A caller that publishes artifacts from its own earlier run passes that run's id;
+      # both callers today build in the same run, so this is the escape hatch rather than
+      # the ordinary path.
+      - name: Download the build artifacts from another run
+        if: ${{ inputs.run-id != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run-id }}
+          IMAGE_ARTIFACT: ${{ inputs.image-artifact }}
+          PAYLOAD_ARTIFACT: ${{ inputs.payload-artifact }}
+        run: |
+          set -euo pipefail
+          echo "downloading ${IMAGE_ARTIFACT} and ${PAYLOAD_ARTIFACT} from run ${RUN_ID}"
+          rm -rf "${RUNNER_TEMP}/ci/disk" "${RUNNER_TEMP}/ci/payload"
+          mkdir -p "${RUNNER_TEMP}/ci/disk" "${RUNNER_TEMP}/ci/payload"
+          gh run download "${RUN_ID}" -n "${IMAGE_ARTIFACT}" -D "${RUNNER_TEMP}/ci/disk"
+          gh run download "${RUN_ID}" -n "${PAYLOAD_ARTIFACT}" -D "${RUNNER_TEMP}/ci/payload"
+
+      # The upstream version and the input digests come from the payload manifest the
+      # assemble stage produced, so the release notes describe exactly what was built. A
+      # caller that passes a version only gets it asserted.
+      - name: Select the versions
+        id: versions
+        env:
+          MANIFEST: ${{ runner.temp }}/ci/payload/payload/manifest.json
+          PLATFORM_VERSION: ${{ inputs.platform_version }}
+          UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+          TAG: ${{ inputs.tag }}
+          TAG_POLICY: ${{ inputs.tag-policy }}
+        run: |
+          set -euo pipefail
+          [ -f "${MANIFEST}" ] || { echo "payload manifest not found: ${MANIFEST}" >&2; exit 1; }
+          derived_upstream="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["rootfs"])' "${MANIFEST}")"
+          [ -n "${derived_upstream}" ] || { echo "the payload manifest carries no rootfs version" >&2; exit 1; }
+          # The release notes record what was built, so the two upstream digests come from
+          # the manifest the build produced rather than from the caller.
+          rootfs_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["members"]["rootfs.tar.gz"]["sha256"])' "${MANIFEST}")"
+          kernel_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["members"]["kernel.bin"]["sha256"])' "${MANIFEST}")"
+          {
+            printf 'rootfs_sha256=%s\n' "${rootfs_sha}"
+            printf 'kernel_sha256=%s\n' "${kernel_sha}"
+          } >>"${GITHUB_OUTPUT}"
+          file_platform="$(tr -d '[:space:]' < VERSION)"
+          [ -n "${file_platform}" ] || { echo "VERSION is empty" >&2; exit 1; }
+          [ -z "${UPSTREAM_VERSION}" ] || [ "${UPSTREAM_VERSION}" = "${derived_upstream}" ] || {
+            echo "the caller says upstream ${UPSTREAM_VERSION}, the payload manifest says ${derived_upstream}" >&2
+            exit 1
+          }
+          [ -z "${PLATFORM_VERSION}" ] || [ "${PLATFORM_VERSION}" = "${file_platform}" ] || {
+            echo "the caller says platform ${PLATFORM_VERSION}, VERSION says ${file_platform}" >&2
+            exit 1
+          }
+          # The tagged line releases VERSION itself: a tag that disagrees with VERSION would
+          # publish a version no artifact carries.
+          if [ "${TAG_POLICY}" = "v" ]; then
+            [ "${TAG#v}" = "${file_platform}" ] || {
+              echo "tag ${TAG} disagrees with VERSION ${file_platform}" >&2
+              exit 1
+            }
+          fi
+          {
+            printf 'upstream_version=%s\n' "${derived_upstream}"
+            printf 'platform_version=%s\n' "${file_platform}"
+            printf 'bare_version=%s\n' "${TAG#v}"
+          } >>"${GITHUB_OUTPUT}"
+          echo "upstream ${derived_upstream}, platform ${file_platform}"
+
+      # The preflight reads the image record from the ESP, so the image is mounted here and
+      # stays mounted for the next steps; `always()` unmounts it at the end of the job.
+      - name: Mount the image ESP
+        id: mount
+        run: |
+          set -euo pipefail
+          img_gz="$(find "${RUNNER_TEMP}/ci/disk" -name '*.img.gz' -print -quit)"
+          [ -n "${img_gz}" ] || { echo "no image to publish" >&2; exit 1; }
+          img="${RUNNER_TEMP}/ci/disk/publish.img"
+          gunzip -c "${img_gz}" >"${img}"
+          loop="$(sudo losetup --find --show --partscan "${img}")"
+          root="${RUNNER_TEMP}/ci/image-root"
+          sudo mkdir -p "${root}"
+          sudo mount -o ro "${loop}p1" "${root}"
+          {
+            printf 'CI_IMAGE_GZ=%s\n' "${img_gz}"
+            printf 'CI_IMAGE_LOOP=%s\n' "${loop}"
+            printf 'CI_IMAGE_ROOT=%s\n' "${root}"
+          } >>"${GITHUB_ENV}"
+          echo "mounted ${loop}p1 at ${root}"
+
+      # Defence in depth: the bytes about to be published are opened and asked which
+      # initramfs they carry. A probe image stops the release here, not on somebody's desk.
+      - name: Verify the image is bootable
+        id: image_kind
+        run: |
+          set -euo pipefail
+          kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' "${CI_IMAGE_ROOT}/ab/image.json" 2>/dev/null || echo unreadable)"
+          echo "image kind: ${kind}"
+          echo "kind=${kind}" >>"${GITHUB_OUTPUT}"
+          [ "${kind}" = "boot" ] || { echo "refusing to publish an image whose kind is '${kind}'" >&2; exit 1; }
+          sudo cp "${CI_IMAGE_ROOT}/initrd-a" "${RUNNER_TEMP}/ci/initrd-a"
+          sudo chmod 0644 "${RUNNER_TEMP}/ci/initrd-a"
+          gzip -dc "${RUNNER_TEMP}/ci/initrd-a" | cpio -i --to-stdout init >"${RUNNER_TEMP}/ci/init.head" 2>/dev/null || true
+          head -3 "${RUNNER_TEMP}/ci/init.head"
+          grep -q "S3 boot init" "${RUNNER_TEMP}/ci/init.head" || { echo "the published initrd is not the production boot init" >&2; exit 1; }
+          if grep -q "S1-RESULT" "${RUNNER_TEMP}/ci/init.head"; then
+            echo "the published initrd is the S1 probe" >&2
+            exit 1
+          fi
+          echo "image is bootable: production init, kind=boot"
+
+      # ac-17: image record <-> payload manifest <-> tag, and the payload must carry a
+      # bootloader. Nothing is created before this passes.
+      - name: Preflight the release image payload and tag
+        id: preflight
+        env:
+          TAG: ${{ inputs.tag }}
+          TAG_POLICY: ${{ inputs.tag-policy }}
+          PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/release-preflight.sh \
+            --image-dir "${CI_IMAGE_ROOT}" \
+            --payload-manifest "${RUNNER_TEMP}/ci/payload/payload/manifest.json" \
+            --payload-tar "${RUNNER_TEMP}/ci/payload/payload.tar" \
+            --tag "${TAG}" \
+            --tag-policy "${TAG_POLICY}" \
+            --platform-version "${PLATFORM_VERSION}" \
+            2>&1 | tee -a "${CI_LOG_DIR}/release-preflight.log"
+
+      - name: Render the release title
+        id: title
+        env:
+          TITLE_TEMPLATE: ${{ inputs.title }}
+          BARE_VERSION: ${{ steps.versions.outputs.bare_version }}
+        run: |
+          set -euo pipefail
+          title="${TITLE_TEMPLATE//\{tag\}/${BARE_VERSION}}"
+          [ -n "${title}" ] || { echo "the release title rendered empty" >&2; exit 1; }
+          printf 'release_title=%s\n' "${title}" >>"${GITHUB_OUTPUT}"
+          echo "release title: ${title}"
+
+      - name: Render the release artifacts
+        id: release
+        env:
+          CI_PAYLOAD: ${{ runner.temp }}/ci/payload/payload.tar
+          CI_PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+          CI_UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
+          CI_UPSTREAM_ROOTFS_SHA256: ${{ steps.versions.outputs.rootfs_sha256 }}
+          CI_UPSTREAM_KERNEL_SHA256: ${{ steps.versions.outputs.kernel_sha256 }}
+          CI_RELEASE_TAG: ${{ inputs.tag }}
+          CI_EXTRA_NOTES: ${{ inputs.extra-notes }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/release.sh 2>&1 | tee -a "${CI_LOG_DIR}/release.log"
+          if [ -n "${CI_EXTRA_NOTES}" ]; then
+            {
+              printf '\n## Matrix candidates\n\n'
+              printf '%s\n' "${CI_EXTRA_NOTES}"
+            } >>"${RUNNER_TEMP}/ci/release/release-notes.md"
+          fi
+
+      # One screen for whoever opens the run page: what is about to be published, how it
+      # was proved and which versions it carries. The digests are read back from the
+      # SHA256SUMS file that ships with the release, so the screen and the release cannot
+      # disagree.
+      - name: Write the pre-publish summary
+        env:
+          KIND: ${{ steps.image_kind.outputs.kind }}
+          TITLE: ${{ steps.title.outputs.release_title }}
+          TAG: ${{ inputs.tag }}
+          UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
+          PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+          ROOTFS_SHA: ${{ steps.versions.outputs.rootfs_sha256 }}
+          KERNEL_SHA: ${{ steps.versions.outputs.kernel_sha256 }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/ci/release"
+          sums="${release_dir}/SHA256SUMS"
+          [ -f "${sums}" ] || { echo "no SHA256SUMS to summarise: ${sums}" >&2; exit 1; }
+          digest_of() {
+            awk -v f="$1" '$2 == f { print $1; exit }' "${sums}"
+          }
+          image="$(awk '$2 ~ /\.img\.gz$/ { print $2; exit }' "${sums}")"
+          payload="$(awk '$2 ~ /\.tar$/ { print $2; exit }' "${sums}")"
+          {
+            printf '## Pre-publish check - %s\n\n' "${TAG}"
+            printf '| item | value |\n'
+            printf '| --- | --- |\n'
+            printf '| release title | `%s` |\n' "${TITLE}"
+            printf '| image kind check | `%s` |\n' "${KIND}"
+            printf '| dry run | `%s` |\n' "${DRY_RUN}"
+            if [ -n "${image}" ]; then
+              printf '| image | `%s` `%s` |\n' "${image}" "$(digest_of "${image}")"
+            fi
+            if [ -n "${payload}" ]; then
+              printf '| payload | `%s` `%s` |\n' "${payload}" "$(digest_of "${payload}")"
+            fi
+            printf '| upstream version | `%s` |\n' "${UPSTREAM_VERSION}"
+            printf '| upstream rootfs sha256 | `%s` |\n' "${ROOTFS_SHA}"
+            printf '| upstream kernel sha256 | `%s` |\n' "${KERNEL_SHA}"
+            printf '| platform version | `%s` |\n' "${PLATFORM_VERSION}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Publish the GitHub Release
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          TITLE: ${{ steps.title.outputs.release_title }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          RELEASE_DIR: ${{ runner.temp }}/ci/release
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The stage verdict rides with the notes, so a reader of the release page learns
+          # which run proved it without opening the Actions tab.
+          printf 'Verified by CI run %s: S1 to S5 all passed, image kind=boot, release preflight passed.\n' "${RUN_URL}" \
+            >>"${RELEASE_DIR}/release-notes.md"
+          if [ "${DRY_RUN}" = "true" ]; then
+            # A rehearsal still uploads and checks the bytes; it only refuses to publish.
+            # It is repeatable: a draft left behind by an earlier attempt is replaced, a
+            # published release never is.
+            echo "dry run: creating ${TAG} as a draft release"
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              is_draft="$(gh release view "${TAG}" --json isDraft --jq .isDraft)"
+              [ "${is_draft}" = "true" ] || {
+                echo "refusing to rehearse over the published release ${TAG}" >&2
+                exit 1
+              }
+              # No --cleanup-tag: the tag is the release identity and the merge just
+              # created it; a rehearsal replaces the draft, never the tag.
+              gh release delete "${TAG}" --yes
+            fi
+            gh release create "${TAG}" \
+              --draft \
+              --title "${TITLE}" \
+              --notes-file "${RELEASE_DIR}/release-notes.md" \
+              "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS"
+          elif gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} exists, uploading the artifacts again"
+            gh release upload "${TAG}" "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar \
+              "${RELEASE_DIR}/SHA256SUMS" --clobber
+          else
+            gh release create "${TAG}" \
+              --title "${TITLE}" \
+              --notes-file "${RELEASE_DIR}/release-notes.md" \
+              "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS"
+          fi
+          url="$(gh release view "${TAG}" --json url --jq .url 2>/dev/null || true)"
+          printf 'release_url=%s\n' "${url}" >>"${GITHUB_OUTPUT}"
+
+      - name: Record the release in the run summary
+        run: |
+          {
+            printf '## Release %s\n\n' "${{ inputs.tag }}"
+            printf '| Artifact | SHA256 |\n| --- | --- |\n'
+            awk '{ printf "| `%s` | `%s` |\n", $2, $1 }' "${{ runner.temp }}/ci/release/SHA256SUMS"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Unmount the image
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_IMAGE_LOOP:-}" ]; then
+            sudo umount "${CI_IMAGE_ROOT}" 2>/dev/null || true
+            sudo losetup -d "${CI_IMAGE_LOOP}" 2>/dev/null || true
+          fi
+          exit 0
