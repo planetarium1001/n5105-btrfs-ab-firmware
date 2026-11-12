@@ -314,6 +314,34 @@ assert_eq "$(json_get "$manifest" "bootloader:menu_sha256")" \
   "ac-4 menu_sha256 is the digest of the menu inside boot.tar"
 
 # =========================================================================== #
+# ac-3b: the provenance the esp stage measured reaches the manifest
+#
+# ci-assemble.yml passes CI_BOOT_SOURCE_IMAGE/CI_BOOT_SOURCE_SHA256 from the esp step, and
+# the composite had to learn to publish those two keys for that to mean anything. Without
+# this case the wiring could be missing entirely and every assertion above would still pass,
+# because the fallback (a name derived from CI_UPSTREAM_VERSION, digest null) looks fine.
+# =========================================================================== #
+
+prov_ci="$tmp/ci-prov"
+mkdir -p "$prov_ci"
+prov_image="immortalwrt-25.12.2-x86-64-generic-squashfs-combined-efi.img.gz"
+prov_sha="$(python3 -c 'import hashlib;print(hashlib.sha256(b"combined-efi bytes").hexdigest())')"
+run_assemble "$prov_ci" "$tmp/out-prov.env" CI_BOOT_SRC="$tmp/esp" \
+  CI_BOOT_SOURCE_IMAGE="$prov_image" CI_BOOT_SOURCE_SHA256="$prov_sha" \
+  >"$tmp/assemble-prov.log" 2>&1
+status=$?
+assert_eq "$status" "0" "ac-3b the stage builds with the provenance the esp stage measured"
+[ "$status" = "0" ] || show_log "$tmp/assemble-prov.log"
+assert_eq "$(json_get "$prov_ci/assemble/payload/manifest.json" "bootloader:source_image")" \
+  "$prov_image" "ac-3b the manifest records the image the loader came out of"
+assert_eq "$(json_get "$prov_ci/assemble/payload/manifest.json" "bootloader:source_sha256")" \
+  "$prov_sha" "ac-3b the manifest records the verified digest instead of null"
+# Without the inputs the digest stays null and is never invented, which is what the wiring
+# above exists to prevent in the published payload.
+assert_eq "$(json_get "$manifest" "bootloader:source_sha256")" "None" \
+  "ac-3b a build without the provenance inputs records no digest rather than a guess"
+
+# =========================================================================== #
 # ac-5: the member list the workflow passes on
 # =========================================================================== #
 

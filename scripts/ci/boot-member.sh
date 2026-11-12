@@ -52,7 +52,10 @@ ci_boot_member_menu() {
     # the path is simply wrong would ship a menu nobody asked for, and CI would only notice
     # by reading the payload - the same shape of silent substitution this fragment exists to
     # remove. CI_BOOTLOADER_CFG has always behaved this way; these two now match it.
-    if [ -n "${CI_GRUB_OUTPUT:-}" ]; then
+    # CI_GRUB_OUTPUT is what an earlier stage *left behind*; it only counts when nobody named
+    # a menu. Reading it unconditionally made it beat CI_BOOTLOADER_CFG, which is the one the
+    # caller chose, and that inversion shipped a menu nobody asked for.
+    if [ -z "${menu}" ] && [ -n "${CI_GRUB_OUTPUT:-}" ]; then
         [ -f "${CI_GRUB_OUTPUT}" ] || ci_die "CI_GRUB_OUTPUT names no menu: ${CI_GRUB_OUTPUT}"
         menu="${CI_GRUB_OUTPUT}"
     fi

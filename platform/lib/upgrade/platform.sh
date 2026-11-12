@@ -178,7 +178,8 @@ ab_packages_record() {
 #   2. refuse outright when the ESP is not in a state worth writing to (`esp=dirty`;
 #      `esp=unreadable`), because that is exactly when FAT writes go wrong;
 #   3. back the current bytes up on the writable partition (the only place that survives a
-#      broken ESP) - never overwriting an older backup of the same version;
+#      broken ESP); the backup of a version is rebuilt from what the ESP carries at the start
+#      of every attempt, so it always describes the state this run may have to undo;
 #   4. stage on the ESP, verify the staged bytes against the manifest *before* replacing
 #      anything;
 #   5. write through `<file>.new` + rename, keeping the replaced file as `<file>.prev` so a
@@ -271,12 +272,21 @@ _upgrade_boot_restore() {
     # with an in-place `cp` would open the very window this whole stage exists to close.
     _stage_restore="${_stage}"
     _stage="${_backup}"
+    _restored=0
     while read -r _want _rel; do
         [ -n "${_rel}" ] || continue
         [ -f "${_backup}/${_rel}" ] || { _stage="${_stage_restore}"; return 1; }
         _upgrade_boot_file "${_rel}" "${_want}" || { _stage="${_stage_restore}"; return 1; }
+        _restored=$((_restored + 1))
     done <"${_backup}/SHA256SUMS"
     _stage="${_stage_restore}"
+    # A backup with no entries restores nothing. That happens when the ESP carried neither
+    # the loader nor the menu before this run, which is a legal state (a machine whose ESP
+    # was wiped), and it used to make this function return success: the caller then logged
+    # "the ESP carries <digest> again" and ab-upgrade reported 74, "refused before writing
+    # anything", while the ESP was in fact carrying unverified bytes this run wrote. Nothing
+    # was restored, so nothing verified: say so and let the caller report a failed rollback.
+    [ "${_restored}" -gt 0 ] || return 1
     sync
     return 0
 }
@@ -322,6 +332,10 @@ _upgrade_boot_file() {
     if [ -f "${_bf_file}" ]; then
         cp "${_bf_file}" "${_bf_prev}" 2>/dev/null \
             || _upgrade_log "upgrade: could not keep ${_bf_rel}.prev (no room on the ESP?)"
+        # `.prev` is the copy a machine with a torn loader is rescued from, and this is the
+        # only window in which it can be lost: the rename below replaces the file it was
+        # copied from, so the copy has to be on the medium before that happens.
+        sync
     fi
     mv -f "${_bf_new}" "${_bf_file}" || {
         rm -f "${_bf_new}" 2>/dev/null || true

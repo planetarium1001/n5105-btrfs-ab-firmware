@@ -24,8 +24,9 @@
 #   CI_BOOT_SRC              ESP tree the bootloader member comes from (default:
 #                            $CI_TMP_ROOT/esp, what the esp stage produces). A payload
 #                            without it leaves an updated machine on the GRUB it was
-#                            flashed with, so this stage requires it unless
-#                            CI_REQUIRE_BOOTLOADER=0 says otherwise.
+#                            flashed with, so this stage fails without one; the check below
+#                            has no opt-out, and CI_REQUIRE_BOOTLOADER is exported to 1
+#                            rather than left to the caller.
 #   CI_BOOTLOADER_CFG        menu to ship; default: ${CI_GRUB_OUTPUT}, else
 #                            $CI_TMP_ROOT/disk/grub.cfg (what the image stage renders),
 #                            else rendered from scripts/ci/grub.cfg.in

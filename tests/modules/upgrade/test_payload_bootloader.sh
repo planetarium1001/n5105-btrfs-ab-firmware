@@ -167,10 +167,15 @@ assert_contains "$(cat "$tmp/build-require.log")" "CI_REQUIRE_BOOTLOADER=1" \
 # red while this suite was green.
 # =========================================================================== #
 
-# A menu the checker accepts: the one the self-rendering build above produced.
+# A menu the checker accepts, taken from the self-rendering build above and then made
+# *distinguishable*: a straight copy would make "the member ships the external menu byte for
+# byte" compare a file with itself, which stays green even when the external branch is dead.
+# (The first version of this test did exactly that; the audit's mutation experiment caught
+# it - rendering the menu instead of using this one left all 114 assertions green.)
 menu_ok="$tmp/menu-ok/grub.cfg"
 mkdir -p "$tmp/menu-ok"
 cp "$build/payload/work/render/grub.cfg" "$menu_ok"
+printf '\n# menu rendered by the image stage, not by the payload\n' >>"$menu_ok"
 
 # --- the menu the image stage rendered, found by convention -----------------
 external="$tmp/ci-external"
@@ -683,6 +688,27 @@ assert_eq "$(shasum -a 256 "$esp/EFI/BOOT/BOOTX64.EFI" | cut -d' ' -f1)" "$rollb
   "ac-3d the ESP carries the bootloader it had before the failed install"
 assert_eq "$(shasum -a 256 "$esp/ab/state.json" | cut -d' ' -f1)" "$rollback_state" \
   "ac-3d and the slot state is unchanged"
+
+# --- ac-3o an empty backup is not a successful restore --------------------
+# `_upgrade_boot_backup` records nothing when the ESP carried neither the loader nor the menu
+# (a wiped ESP is a legal state), and the restore used to walk zero entries and return
+# success. The install then logged "the ESP carries <digest> again" and ab-upgrade answered
+# 74, "refused before writing anything", while the ESP was carrying bytes this run wrote and
+# never verified - the one signal an operator uses to decide whether to reflash. The rollback
+# has to say it failed instead.
+esp_empty="$tmp/esp-empty"
+mkdir -p "$esp_empty/ab/log"
+cp "$esp/ab/state.json" "$esp_empty/ab/state.json"
+out="$(run_install "$good" STUB_FAIL_BTRFS=create AB_ESP="$esp_empty" \
+  AB_PACKAGES_FILE="$esp_empty/ab/packages")"
+rc=$?
+assert_ok "ac-3o a rollback with nothing to restore fails the install" test "$rc" -ne 0
+assert_contains "$out" "FAILED TO ROLL BACK" \
+  "ac-3o the rollback admits it could not restore anything"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'rolled the ESP bootloader back')" "0" \
+  "ac-3o and does not claim the ESP was rolled back"
+assert_file_exists "$esp_empty/EFI/BOOT/BOOTX64.EFI" \
+  "ac-3o the bytes the failed run wrote are still there, and now reported as uncertain"
 
 # --- ac-3e a dirty ESP is not written to -----------------------------------
 # esp=dirty is the one state in which a FAT write goes wrong and `df` lies; the upgrade
