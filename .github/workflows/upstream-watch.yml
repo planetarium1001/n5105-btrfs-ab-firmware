@@ -407,6 +407,9 @@ jobs:
     needs: [detect, merge]
     permissions:
       contents: write
+      # release-publish.yml's job reads the build artifacts through the API, so the caller
+      # has to grant it; a called job may not request more than its caller allows.
+      actions: read
     uses: ./.github/workflows/release-publish.yml
     with:
       tag: ${{ needs.detect.outputs.version }}
