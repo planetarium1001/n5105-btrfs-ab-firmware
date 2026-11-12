@@ -102,12 +102,23 @@ stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.
 健康机器上 `ab-slot status` 只打印一行：
 
 ```
-slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid
+slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid boot=ok esp=ok packages=unknown packages_reason=unknown
 ```
 
-`p4=ok` 表示可写分区已挂载，`data`、`docker`、`swap` 是平台层挂载在它上面的三个子卷。`next=a` 是 GRUB
-下次会启动的槽，从 `boot/grub/ab-slot.cfg` 读回；想知道"重启会发生什么"就看这一个字段。如果 `p4` 显示
-`p4=degraded`，先读下面的降级小节，再做别的事。
+字段顺序就是 `ab-slot` 打印的顺序，每个字段都是一个 token：
+
+| 字段 | 说的是什么 |
+| --- | --- |
+| `p4=` | `ok` 表示可写分区已挂载，`degraded` 表示没挂上 |
+| `data=`、`docker=`、`swap=` | 平台层挂载在 p4 上的三个子卷，各自 `ok` 或 `missing` |
+| `next=` | GRUB 下次会启动的槽，从 `boot/grub/ab-slot.cfg` 读回；想知道"重启会发生什么"就看这一个字段 |
+| `disk=`、`method=` | 这台机器是哪块盘，以及这个结论是怎么得出的 |
+| `boot=` | 这次启动是怎么起来的，取本次启动的环日志：`degraded` 表示可写层是 tmpfs、写下去活不过重启；`unknown` 表示没有可读的环日志 |
+| `esp=` | initramfs 对它挂载的那个 ESP 的判定：`ok`、`dirty`、`unreadable`，没有任何记录时是 `unknown` |
+| `packages=`、`packages_reason=` | 上一次升级留下的包元数据判定；从没升级过的盘上两者都是 `unknown`，这是诚实的说法，不是好的说法 |
+
+如果 `p4` 显示 `p4=degraded`，先读下面的降级小节，再做别的事。`packages=` 在下面有单独一节：它说的是
+`apk` 能不能给这个槽正在跑的内核装模块。
 
 种子失败时启动照样完成，原因留在控制台上：`stage=net-seed result=fail reason=board-detect`、
 `reason=config-generate`、`reason=config-generate-empty` 或 `reason=no-ethernet`。要先进机器、不等排障，就手工给一个口配地址——这条不留存，正是它的用处：
@@ -267,8 +278,8 @@ ab-slot log --upgrade
 ```
 
 `--check` 只校验、什么都不写，所以坏载荷在动非活动槽之前就被发现。真正写入时 `ab-upgrade` 再校验一遍：manifest 形状、逐成员摘要、initramfs 里所有模块是否来自同一次内核构建、可写分区余量、
-以及冲突报告。拒绝时退出状态为 74 且什么都不写。成功后状态里另一个槽变成 `pending`，`ab-slot status` 的
-`next=` 也会指向它，下次启动会试它：
+载荷带的引导器、以及冲突报告。拒绝时退出状态为 74 且什么都不写。成功后状态里另一个槽变成 `pending`，
+`ab-slot status` 的 `next=` 也会指向它，下次启动会试它：
 
 * 启动后对新槽跑健康检查；
 * 全部探针通过则提交该槽，机器留在新槽上；
@@ -283,6 +294,147 @@ ab-slot log --upgrade
 少了这个文件机器会一直启动旧槽，升级永远试不到。
 
 载荷和你都改动过的文件会列在 `ab-slot conflicts` 里。它们从不阻断升级：载荷照样写入新文件，报告告诉你该看哪几个。
+
+### 选项
+
+选项可以出现在命令行任何位置：`ab-upgrade --no-bootloader /root/n5105-ab-<upstream>-upgrade.tar`
+与 `ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar --no-bootloader` 是同一条命令。给两个位置参数，
+或者 `--bootloader` 与 `--no-bootloader` 同时给，都是用法错误，退出 2，还没读任何东西就结束。
+
+| 选项 | 什么时候用 | 代价是什么 |
+| --- | --- | --- |
+| （不带） | 每一次普通升级 | 载荷带引导器成员就写 ESP 的加载器与菜单；没带就只装系统，并打印 `bootloader absent-in-payload` |
+| `--bootloader` | 这个载荷本该带引导器，你要把这条要求变成强制 | 载荷没有引导器成员就以 `74` 拒绝，token 是 `payload-without-bootloader`，而不是"不带引导器装上去" |
+| `--no-bootloader` | ESP 是 `dirty` 或 `unreadable`，而你需要先把新系统装上去；或者你想先看看纯系统层面的变化 | 完全不碰 ESP（`bootloader skipped-by-flag`），所以带坏加载器的载荷也照样装。写引导器是机器唯一无法自愈的操作，正因如此必须留一条绕过去的路 |
+| `--force` | 重装同一个版本，用来修一个槽 | 跳过 `74 payload-already-installed` 这道闸，于是留在机器上的载荷可以拿你正在试的槽去覆盖健康槽 |
+| `--check` | 每次安装之前 | 只校验、什么都不写：不写槽、不写 `ab/state.json`、ESP 上也不放冲突报告。引导器的规则同样跑（成员在不在、manifest 块全不全、两个摘要、ESP 余量、`esp=` 健康度），所以校验过了而安装会拒绝的情况不存在 |
+
+### 退出码
+
+| 退出码 | 含义 | 之后盘上是什么状态 |
+| --- | --- | --- |
+| `0` | 装好了，或 `--check` 校验通过 | 非活动槽已暂存并标记待验证，`next=` 指向它，运行中的槽没被动过 |
+| `1` | 校验通过之后某个执行步骤失败 | 槽可能写了一半；这次运行写过的引导器会先从 `@boot-backup/<version>` 回滚。连这次回滚都失败时，ESP 可能已经带着新加载器而槽还是旧的那个，所以它必须以失败而不是拒绝的形式离开 |
+| `74` | 写之前就被拒绝 | 槽里什么都没写，`ab/state.json` 也没变；被拒绝的是载荷，或机器的状态 |
+
+每次拒绝都打印一行，并镜像到控制台：`74` 是 `ab-upgrade: refused, reason=<token>`，`1` 是
+`ab-upgrade: failed, reason=<token>`。`ab-slot log --upgrade` 打印的是 ESP 上的 `ab/log/upgrade.log`，
+而那个文件没有任何东西替你写，想把这次运行留在盘上就自己接住输出：
+
+```sh
+{ ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar 2>&1; echo "exit=$?"; } | tee /boot/ab/log/upgrade.log
+```
+
+花括号是关键：写成 `ab-upgrade ... | tee` 时，`$?` 是 `tee` 的状态，不是升级的状态。
+
+`bootloader-*` 这一族拒绝**全都退出 74**，因为引导器那一段跑在动槽之前：槽和 `ab/state.json`
+与之前一模一样。真机上值得认得的几个：
+
+| token | 含义 | 该怎么办 |
+| --- | --- | --- |
+| `payload-without-bootloader` | 给了 `--bootloader`，而载荷里没有引导器成员 | 换一个与选项相称的载荷，或者去掉这个选项 |
+| `bootloader-digest-mismatch` | 成员里的加载器不是 manifest 描述的那个 | 载荷坏了：用 `SHA256SUMS` 验一遍再重新下载 |
+| `bootloader-no-space` | ESP 装不下加载器、它的暂存副本和 `.prev` 副本 | 给 ESP 腾空间，或者用 `--no-bootloader` |
+| `bootloader-esp-dirty` | initramfs 判定这次启动时 ESP 是脏的 | 在那上面写 FAT 就是把一台能用的机器换成一台没验证过的机器；`--no-bootloader` 是文档给出的绕法 |
+| `bootloader-esp-unreadable` | initramfs 读不了这个 ESP | 先查分区，再用 `--no-bootloader` |
+
+`74` 是对槽和状态文件的承诺，不是对 ESP 的承诺。写入已经开始时，`ab-upgrade` 会先从
+`@boot-backup/<version>` 把 ESP 恢复回去再拒绝；如果连恢复都失败，日志里是
+`upgrade: RESTORE ALSO FAILED, the ESP bootloader may be damaged`，下面的救援小节就是为这种情况写的。
+`bootloader-rollback-failed` 是这一族里唯一退出 `1` 而不是 `74` 的，因为它意味着 ESP 可能已经带着新加载器、
+而槽还是旧的那个。
+
+这些 token 住在两个文件里。在仓库检出里，这一条就能把整族列出来：
+
+```sh
+grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade/platform.sh | sort -u
+```
+
+`bootloader-esp-` 是个前缀而不是 token：它后面那两个是 `bootloader-esp-dirty` 与 `bootloader-esp-unreadable`。
+
+### 救援：ESP 上的引导器被写坏
+
+引导器有两份副本，这是设计，放在两个地方各有各的理由：
+
+| 位置 | 是什么 |
+| --- | --- |
+| `/boot/EFI/BOOT/BOOTX64.EFI.prev` 与 `/boot/boot/grub/grub.cfg.prev` | 上一次写入之前 ESP 上的字节，就放在新文件旁边，因此可写分区挂不上时也够得着 |
+| `/mnt/p4/@boot-backup/<version>/` 加 `SHA256SUMS` | 两个文件加它们的摘要，放在可写分区上，补齐 `.prev` 可能缺的那份 |
+
+`.prev` 是这么来的：写入在 rename 覆盖之前先把现有文件复制一份，那是取旧副本唯一还来得及的窗口。ESP 没地方
+放这份副本时，日志会说 `could not keep ...prev (no room on the ESP?)`，写入照常进行——这就是 p4 上的备份
+在每次尝试开头都重建的原因：它描述的永远是这次尝试可能要撤销的那个状态。`ab-upgrade` 只保留最近两份备份。
+
+在机器上自救：GRUB 菜单里的 recovery 项用已提交槽加只读可写层启动，进去以后 ESP 就挂在 `/boot`。
+
+```sh
+esp=/boot
+ls -l "$esp/EFI/BOOT/BOOTX64.EFI.prev" "$esp/boot/grub/grub.cfg.prev"
+cp "$esp/EFI/BOOT/BOOTX64.EFI.prev" "$esp/EFI/BOOT/BOOTX64.EFI"
+cp "$esp/boot/grub/grub.cfg.prev" "$esp/boot/grub/grub.cfg"
+backup="$(ls -1dt /mnt/p4/@boot-backup/*/ | head -n 1)"
+cd "$esp" && sha256sum -c "${backup}SHA256SUMS"
+sync
+```
+
+`sha256sum -c` 那一行才是关键：它拿 ESP 上的两个文件与"动它们之前"记下的摘要比对，每个文件打印一个 `OK`。
+别的输出都说明 `.prev` 不是记录里描述的那一份，那就改从 `@boot-backup/<version>/` 恢复，而不是从 `.prev`。
+
+同一套步骤也可以把盘接到另一台 Linux 上做。下面这些节点名是这台机器的，USB 适配器可能把盘枚举成
+别的名字，所以先确认：`blkid -L ESP` 打印的是文件系统 label 为 `ESP` 的那个分区的节点，p4 则是同一块盘
+的第四个分区：
+
+```sh
+sudo blkid -L ESP                             # 要挂到 /mnt/esp 的那个节点
+sudo mkdir -p /mnt/esp /mnt/p4
+sudo mount /dev/nvme0n1p1 /mnt/esp
+sudo mount /dev/nvme0n1p4 /mnt/p4
+sudo cp /mnt/esp/EFI/BOOT/BOOTX64.EFI.prev /mnt/esp/EFI/BOOT/BOOTX64.EFI
+sudo cp /mnt/esp/boot/grub/grub.cfg.prev /mnt/esp/boot/grub/grub.cfg
+backup="$(ls -1dt /mnt/p4/@boot-backup/*/ | head -n 1)"
+cd /mnt/esp && sudo sha256sum -c "${backup}SHA256SUMS"
+sync
+sudo umount /mnt/esp /mnt/p4
+```
+
+然后开机。下次升级之前，把引导器放在一边：`ab-upgrade --check` 只验载荷、什么都不写，`--no-bootloader`
+只换系统，让你刚修好的引导器保持原样。
+
+## 怎么读 packages= 与 packages_reason=
+
+`packages=` 是关于这个槽包元数据的一个词，由上一次升级产出，全程离线，从不运行 `apk`：
+
+| 取值 | 含义 |
+| --- | --- |
+| `aligned` | 可写层的 `world` 钉的就是这个槽跑的内核，`distfeeds` 指的就是这个槽跑的 release。给这个内核装模块的 `apk add` 能用 |
+| `limited` | 不是。机器照样启动、照常运行，但在元数据修好之前，装与本内核匹配的包会失败 |
+| `unknown` | 没有记录，或记录讲的是另一个槽，或记录读不出来。绝不报成 `aligned`，因为这个字段存在的意义就是不让没有证据的话被当成结论 |
+
+`packages_reason=` 说的是为什么。它就是对齐器发布在 ESP 的 `ab/packages` 里的那个 token，一行
+`packages=<state> reason=<token> version=<ver> kernel=<id> slot=<a|b>`。值得认得的 token：
+
+| token | 含义 |
+| --- | --- |
+| `none` | 已对齐，没什么可解释的 |
+| `other-slot` | 记录讲的是升级瞄准的那个槽，不是这次启动跑的槽。`ab-upgrade` 之后、试新槽的那次重启之前，这是正常状态 |
+| `packages-lib-missing` | 新的平台层里没有对齐器，于是没有任何东西被对齐 |
+| `world-unwritable`、`distfeeds-unwritable` | 可写层里 `/etc/apk/world` 或 `distfeeds.list` 的重写失败 |
+| `world-not-verified`、`distfeeds-not-verified` | 重写写下去了但读回来不是想要的值，于是原件被恢复 |
+
+`aligned` 说的是元数据，不是网络。对齐是有意做成离线、文件级的，从不运行 `apk`，所以一台没插网线就升级的
+机器同样可以是 `aligned`，而一台网络完美的机器同样可以是 `limited`。`limited` 既不阻断升级也不阻断启动：
+槽照样起来，只是在 `world` 与 `distfeeds` 修好之前装不了与本内核匹配的模块。
+
+把这两个字段直接从状态行里读出来，再读一眼记录本身：
+
+```sh
+ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(boot|esp|packages|packages_reason)='
+cat /boot/ab/packages
+```
+
+`ab-slot` 对同一个判定还会打印一句人话，写报告时引这一句：`ab-slot: packages limited, package metadata is limited (<reason>): installing packages for this kernel needs it fixed first`。
+
+
 
 ## 掉电演练
 
@@ -420,9 +572,12 @@ ab-slot log --prev
 
 每次失败都会在日志里留一个 `reason=` 记号，和 CI 判据行用的是同一套记号，所以机器上的现象与构建结果可以直接对照，不用猜。
 
-## 本次发布：0.0.7
+## 本次发布：0.0.8
 
-`VERSION` 是 `0.0.7`，也是第一个首次启动会自己写出网络配置的发布。按发布说明的口径，这一版的内容是：
+`VERSION` 是 `0.0.8`。`0.0.8` 改的是更新这条路而不是启动这条路：载荷现在自带 GRUB 与 slot 菜单，
+升级后的机器引导的是载荷带来的那个引导器，而不是刷机时那一个；`ab-upgrade` 用
+`--bootloader` / `--no-bootloader` 让你决定这次写不写它。下面这段首启自动生成网络配置是 `0.0.7`
+引入的，至今未变。`0.0.7` 那一版的内容，仍然是现在这一版的内容：
 
 * **上游同款的首启生成。** `ab-net-seed` 在 `S16`、早于 `S20network`；当 `/etc/config/network` 不存在时，它调用
   `/bin/board_detect` 与 `/bin/config_generate`——就是官方 ImmortalWrt 镜像从 preinit 里跑的那两个程序，而本镜像的 A/B initramfs 替掉了那段 preinit。因此 `system` 里的主机名与时区是上游的。

@@ -48,7 +48,7 @@ value in a file of its own:
 |---|---|---|---|
 | `ab/state.json` | `ab-slot` (temp file, `sync`, rename) | initramfs, `ab-boot`, `ab-commit`, `ab-upgrade`, `ab-slot` | the truth: `committed`, `pending`, layers |
 | `boot/grub/ab-slot.cfg` | `ab-slot` in `pending`/`commit`/`abandon`/`rollback`, `ab-boot` on every boot, and the boot initramfs on its failure path | GRUB, through `source` | the hint: which entry the next boot runs, and where a failed try falls back to |
-| `boot/grub/grub.cfg` | the image build, once | GRUB | the menu and the build-time default; never rewritten at runtime |
+| `boot/grub/grub.cfg` | the image build, once; an upgrade, from the payload's `boot.tar` | GRUB | the menu and the build-time default; no boot, commit or rollback rewrites it, while an upgrade replaces the whole file and keeps the old one as `grub.cfg.prev` |
 
 `boot/grub/ab-slot.cfg` holds exactly two GRUB commands, in this order:
 
@@ -215,7 +215,7 @@ Directory `/boot/ab/log/`, total budget about 350 KiB.
 | `boot-0.log` | current boot | rotated on each boot |
 | `boot-1.log` | previous boot | — |
 | `boot-2.log` | boot before that | removed when exceeded |
-| `upgrade.log` | most recent update | overwritten by the next update |
+| `upgrade.log` | an update's own output, if the run was saved into it; `ab-upgrade` writes nothing there itself | the next saved update overwrites it |
 | `conflicts.log` | most recent conflict report | overwritten by the next update |
 
 - 32 KiB per file; overflow is truncated with a `TRUNCATED=1` marker

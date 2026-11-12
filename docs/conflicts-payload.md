@@ -50,18 +50,79 @@ File-level conflict detection therefore covers non-uci user files only.
 
 ## Payload contract
 
-| Member | Source | Size |
+| Member | Source | Measured size |
 |---|---|---|
-| `rootfs.tar.gz` | official mirror | 10.1 MiB |
-| `kernel.bin` | official mirror | 7.35 MiB |
-| `initramfs.cpio.gz` | this project | about 2 MiB |
-| `platform.tar` | this project | under 1 MiB |
-| `manifest.json` | this project | under 4 KiB |
+| `rootfs.tar.gz` | official mirror | 10 587 455 B (10.1 MiB) |
+| `kernel.bin` | official mirror | 7 709 696 B (7.35 MiB) |
+| `initramfs.cpio.gz` | this project | 3 056 055 B (2.9 MiB) |
+| `platform.tar` | this project | 1 484 800 B (1.42 MiB) |
+| `boot.tar` | this project | 655 360 B (640 KiB) |
+| `manifest.json` | this project | 1 396 B (1.4 KiB) |
 
-The update payload is about 20 MiB. The full disk image is used for first installation only.
+The six members add up to 23 494 762 B; the payload tar that carries them is 23 500 800 B
+(22.41 MiB), and the difference is tar's block padding. An update payload is therefore just
+over 20 MiB, and the full disk image is used for first installation only.
 
-`manifest.json` records size and sha256 for every member, together with `format` and the
-`rootfs` version.
+Those sizes are measured, not estimated: they are the members of the published `v0.0.8`
+payload, and `tar -tvf n5105-ab-<upstream>-upgrade.tar` on your own copy prints the same
+list. Sizes change from release to release, the shape does not.
+
+`manifest.json` records size and sha256 for every member, together with `format`, the
+`rootfs` version, the `platform` version and the `kernel` package id. Its `bootloader`
+block is described in the next section.
+
+## The bootloader member
+
+`boot.tar` is what lets an update bring its own bootloader forward. It carries two files
+and no other content:
+
+| Path in `boot.tar` | What it is |
+|---|---|
+| `EFI/BOOT/BOOTX64.EFI` | the upstream standalone GRUB EFI binary, byte identical to the one the ESP gets |
+| `boot/grub/grub.cfg` | this project's slot menu, rendered from `scripts/ci/grub.cfg.in` by `scripts/ci/grub-render.sh` and shipped only when it passes the five rendering rules |
+
+The manifest describes those bytes in a `bootloader` block, so an updater never has to
+guess what it is about to write:
+
+| Field | Meaning | Who acts on it |
+|---|---|---|
+| `member` | the tar member that carries them, `boot.tar` | `ab-upgrade` |
+| `loader` | the loader's path inside that member | `ab-upgrade`, which looks for exactly that file |
+| `menu` | the menu's path inside that member | `ab-upgrade`, the same way |
+| `loader_bytes` | the loader's size in bytes | the ESP headroom rule: `loader_bytes / 1024 + 4096` KiB has to be free, and `--check` uses the same number as the write |
+| `loader_sha256` | digest of the loader | the fact the device trusts: compared with the bytes on the ESP before anything is replaced, and again afterwards |
+| `menu_sha256` | digest of the menu | the same, for `boot/grub/grub.cfg` |
+| `grub_version` | the GRUB release string, read out of the loader binary itself (the token after `GNU GRUB  version`), `unknown` when it cannot be read | nobody: it is the readable evidence beside the digest, never the decision |
+| `source_image` | the upstream image the loader came out of | nobody at run time; it is the provenance a release records |
+| `source_sha256` | digest of that image | the same |
+
+A build with no boot source produces no `boot.tar` and writes `"bootloader": null`. That is
+a legal payload - a machine whose ESP is fine keeps the loader it runs - and `ab-upgrade`
+says so on the console (`bootloader absent-in-payload`) instead of installing silently.
+Marking a build as one that has to carry a bootloader is `CI_REQUIRE_BOOTLOADER=1`, which
+turns a missing boot source into a build failure.
+
+**The member is defined once, in `scripts/ci/boot-member.sh`.** That fragment is sourced by
+`scripts/ci/payload-build.sh`, which builds the payload the S5 test installs, and by
+`scripts/ci/assemble.sh`, which builds the payload a release publishes. Both call
+`ci_boot_member_stage`, and both take the manifest block from it.
+
+Sharing is not tidiness, it is the fix for a defect that happened: when only the test
+payload carried `boot.tar`, the published payload still left an updated machine booting the
+GRUB it was flashed with. The defect looked fixed because CI exercised the other builder. A
+member fixed in one builder and not in the other is a member that is still broken where it
+matters, so there is one definition instead of two. The release assembly also fails the
+build when the fragment returns no member, and that check has no opt-out.
+
+To check the identity of a payload by hand, without a device in the loop, run this from
+the repository root:
+
+```sh
+mkdir -p /tmp/payload
+tar -xf n5105-ab-<upstream>-upgrade.tar -C /tmp/payload boot.tar manifest.json
+tar -xf /tmp/payload/boot.tar -C /tmp/payload
+bash scripts/ci/grub-render.sh --check-loader /tmp/payload/EFI/BOOT/BOOTX64.EFI /tmp/payload/manifest.json
+```
 
 ## Validation order
 

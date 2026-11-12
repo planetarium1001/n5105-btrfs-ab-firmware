@@ -6,11 +6,14 @@
 #   set fallback=<committed slot>
 #   set default=<pending slot, or the committed slot>
 #
-# The menu below is written once at build time and never rewritten. The runtime
-# override is sourced after every menuentry exists, because GRUB stops reading this
-# file at the first error: if the override is missing, truncated or malformed, the
-# entries and the committed default *and fallback* above it are already in place and
-# the machine still boots.
+# The menu below is rendered once, here, at build time. Afterwards nothing edits it: no
+# boot, no commit and no rollback touches the entries, the default or the fallback. The
+# one other writer is an upgrade, which replaces the whole file from the payload's
+# boot.tar through `<file>.new` + rename and leaves the menu it replaced behind as
+# grub.cfg.prev. The runtime override is sourced after every menuentry exists, because
+# GRUB stops reading this file at the first error: if the override is missing, truncated
+# or malformed, the entries and the committed default *and fallback* above it are already
+# in place and the machine still boots.
 #
 # There is no environment block here on purpose. The GRUB in the ESP is a standalone
 # EFI binary with its modules built in and no `env` module, so `load_env` and
