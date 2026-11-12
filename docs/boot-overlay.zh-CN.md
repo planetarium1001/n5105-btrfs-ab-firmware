@@ -174,7 +174,7 @@ overlayfs 会合并目录，procd 从合并视图读取 `/etc/init.d/*`，钩子
 
 ## 选槽：谁写引导提示
 
-`boot/grub/grub.cfg` 在构建期渲染一次，运行期永不改写：整份菜单写到一半掉电是起不来的机器，而提示写坏最多损失一次启动。
+`boot/grub/grub.cfg` 在构建期渲染一次，之后启动、提交、回滚都不改写它：整份菜单写到一半掉电是起不来的机器，而提示写坏最多损失一次启动。另一个写者是升级，而且它是整文件替换而不是就地编辑：载荷的 `boot.tar` 带着新渲染的菜单，`ab-upgrade` 用 `<file>.new` + rename 换上去，被换掉的菜单留成 `grub.cfg.prev`。上面那个理由仍然成立，因为从来没有谁把半份菜单写进那个决定机器能不能起来的文件。
 
 - 真相是 ESP 上的 `ab/state.json`；`committed` 与 `pending` 只经 `ab-slot` 的原子 rename 改变
 - 提示文件是 `boot/grub/ab-slot.cfg`，两条 GRUB 命令：**先** `set fallback=<已提交槽>`，**后** `set default=<待试槽，或已提交槽>`

@@ -44,7 +44,7 @@ p1 上的 `ab/state.json`，原子写入（临时文件、`sync`、rename）：
 |---|---|---|---|
 | `ab/state.json` | `ab-slot`（临时文件、`sync`、rename） | initramfs、`ab-boot`、`ab-commit`、`ab-upgrade`、`ab-slot` | 真相：`committed`、`pending`、各槽可写层 |
 | `boot/grub/ab-slot.cfg` | `ab-slot` 的 `pending`/`commit`/`abandon`/`rollback`、每次启动的 `ab-boot`、以及 boot initramfs 的失败路径 | GRUB，经 `source` | 提示：下一次启动跑哪个菜单项，以及失败的尝试回退到哪 |
-| `boot/grub/grub.cfg` | 镜像构建时一次 | GRUB | 菜单与构建期默认项；运行期永不改写 |
+| `boot/grub/grub.cfg` | 镜像构建时一次；一次升级（来自载荷的 `boot.tar`） | GRUB | 菜单与构建期默认项；启动、提交、回滚都不改写它，升级则整文件替换，旧的留成 `grub.cfg.prev` |
 
 `boot/grub/ab-slot.cfg` 只有两条 GRUB 命令，顺序固定：
 
@@ -182,7 +182,7 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 | `boot-0.log` | 本次启动 | 每次启动轮转 |
 | `boot-1.log` | 上次启动 | — |
 | `boot-2.log` | 上上次启动 | 超出即删除 |
-| `upgrade.log` | 最近一次更新 | 被下次更新覆盖 |
+| `upgrade.log` | 某次更新自己的输出，前提是那次运行被存了进去；`ab-upgrade` 自己不写它 | 下次存进去的更新会覆盖它 |
 | `conflicts.log` | 最近一次冲突报告 | 被下次更新覆盖 |
 
 - 单文件 32 KiB，超出截断并写入 `TRUNCATED=1` 标记

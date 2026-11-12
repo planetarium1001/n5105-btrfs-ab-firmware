@@ -135,14 +135,24 @@ changes and an upgrade's configuration intact.
 `ab-slot status` prints exactly one line on a healthy machine:
 
 ```
-slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid
+slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid boot=ok esp=ok packages=unknown packages_reason=unknown
 ```
 
-`p4=ok` means the writable partition is mounted; `data`, `docker` and `swap` report the
-three subvolumes the platform layer mounts on it. `next=a` is the slot GRUB will boot
-next, read back from `boot/grub/ab-slot.cfg`; it is the one line to look at when you
-want to know what a reboot would do. If `p4` says `degraded`, read the degraded section
-below before you do anything else.
+The field order is the order `ab-slot` prints them in, and every field is one token:
+
+| Field | What it says |
+| --- | --- |
+| `p4=` | `ok` when the writable partition is mounted, `degraded` when it is not |
+| `data=`, `docker=`, `swap=` | the three subvolumes the platform layer mounts on p4, each `ok` or `missing` |
+| `next=` | the slot GRUB will boot next, read back from `boot/grub/ab-slot.cfg`; it is the one field to look at when you want to know what a reboot would do |
+| `disk=`, `method=` | which disk this machine is, and how that was established |
+| `boot=` | how this boot started, from this boot's ring log: `degraded` means the writable layer is a tmpfs and writes will not survive a reboot, `unknown` means no ring log was readable |
+| `esp=` | the initramfs' verdict on the ESP it mounted: `ok`, `dirty`, `unreadable`, or `unknown` when nothing recorded one |
+| `packages=`, `packages_reason=` | the package-metadata verdict the last upgrade left; both read `unknown` on a disk that has never been updated, which is honest rather than good |
+
+If `p4` says `degraded`, read the degraded section below before you do anything else.
+`packages=` has a section of its own further down: it is the field that says whether
+`apk` can install a module for the kernel this slot runs.
 
 When the seed fails, the boot still finishes and the console carries the reason:
 `stage=net-seed result=fail reason=board-detect`, `reason=config-generate`,
@@ -354,9 +364,10 @@ ab-slot log --upgrade
 `--check` validates the payload and writes nothing, so a bad download is found before the
 inactive slot is touched. `ab-upgrade` validates again while it writes: manifest shape,
 per-member digests, that every module inside the initramfs comes from one kernel build, free
-space on the writable partition and the conflict report. A refusal exits with status 74 and
-writes nothing. On success the state shows the other slot as `pending`, `ab-slot status`
-reports the new slot as `next=<slot>`, and the next boot tries it:
+space on the writable partition, the bootloader the payload carries and the conflict report.
+A refusal exits with status 74 and writes nothing. On success the state shows the other slot
+as `pending`, `ab-slot status` reports the new slot as `next=<slot>`, and the next boot tries
+it:
 
 * the boot runs the health check on the new slot;
 * if every probe passes, the slot is committed and the machine stays on it;
@@ -380,6 +391,167 @@ booting the old slot and the update would never be tried.
 Files that both the payload and you changed are listed in `ab-slot conflicts`. They
 never block the update: the payload copies the new file, the report tells you which
 ones to look at.
+
+### The options
+
+Flags may appear anywhere on the command line:
+`ab-upgrade --no-bootloader /root/n5105-ab-<upstream>-upgrade.tar` and
+`ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar --no-bootloader` are the same command. Two
+positional arguments, or `--bootloader` together with `--no-bootloader`, is a usage error and
+exits 2 before anything is read.
+
+| Option | When to use it | What it costs |
+| --- | --- | --- |
+| (no flag) | every ordinary update | writes the ESP's loader and menu when the payload carries a bootloader member; when it does not, installs the system and prints `bootloader absent-in-payload` |
+| `--bootloader` | the payload is supposed to carry a bootloader and you want that enforced | a payload without one is refused with `74`, reason `payload-without-bootloader`, instead of being installed without it |
+| `--no-bootloader` | the ESP is `dirty` or `unreadable` and you need the new system anyway, or you want to look at a system-only change first | the ESP is never touched (`bootloader skipped-by-flag`), so a payload carrying a bad loader installs anyway. The bootloader write is the one operation a machine cannot undo by itself, which is why a way past it has to exist |
+| `--force` | repairing a slot by reinstalling the version it already runs | the `74 payload-already-installed` guard is skipped, so a payload left lying on the machine can rewrite the healthy slot from the slot you are testing |
+| `--check` | before every install | validates and writes nothing: no slot, no `ab/state.json`, no conflict report on the ESP. The bootloader rules run too (member present, manifest block complete, both digests, ESP headroom, `esp=` health), so a check cannot pass where the install would refuse |
+
+### Exit status
+
+| Exit | Meaning | What is on the disk afterwards |
+| --- | --- | --- |
+| `0` | installed, or validated with `--check` | the inactive slot is staged and pending, `next=` points at it, the running slot is untouched |
+| `1` | an execution step failed after validation passed | the slot may be half written, and a bootloader write this run performed is rolled back from `@boot-backup/<version>` first. When even that rollback fails, the ESP may carry the new loader while the slot is still the old one, which is why this leaves as a failure and not as a refusal |
+| `74` | refused before anything was written | nothing in the slot and nothing in `ab/state.json`; the payload, or the state of the machine, was refused |
+
+Every refusal prints one line and mirrors it to the console. The line is
+`ab-upgrade: refused, reason=<token>` for `74`, and `ab-upgrade: failed, reason=<token>` for
+`1`. `ab-slot log --upgrade` prints the ESP's `ab/log/upgrade.log`, and nothing fills that
+file in for you, so keep the run's output if you want it on the disk:
+
+```sh
+{ ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar 2>&1; echo "exit=$?"; } | tee /boot/ab/log/upgrade.log
+```
+
+The braces are the point: in `ab-upgrade ... | tee`, `$?` is `tee`'s status, not the
+upgrade's.
+
+Every `bootloader-*` refusal exits `74`, because the bootloader stage runs before the slot is
+touched: the slot and `ab/state.json` are exactly as they were. The reasons worth recognising
+on the device:
+
+| Reason | What it means | What to do |
+| --- | --- | --- |
+| `payload-without-bootloader` | `--bootloader` was given and the payload carries no bootloader member | use the payload the flag describes, or drop the flag |
+| `bootloader-digest-mismatch` | the loader inside the member is not the one the manifest describes | the payload is damaged: verify it against `SHA256SUMS` and download it again |
+| `bootloader-no-space` | the ESP cannot take the loader plus its staging copy and its `.prev` copy | free space on the ESP, or use `--no-bootloader` |
+| `bootloader-esp-dirty` | the initramfs judged the ESP dirty this boot | writing FAT there is how a working machine becomes an untested one; `--no-bootloader` is the documented way past it |
+| `bootloader-esp-unreadable` | the initramfs could not read the ESP | check the partition, then `--no-bootloader` |
+
+`74` is a promise about the slot and the state file, not about the ESP. When a write had
+already started, `ab-upgrade` restores the ESP from `@boot-backup/<version>` before it
+refuses; if that restore also fails, the log says `upgrade: RESTORE ALSO FAILED, the ESP
+bootloader may be damaged` and the rescue below is the way out. `bootloader-rollback-failed`
+is the one reason in this family that exits `1` rather than `74`, because it means the ESP may
+carry the new loader while the slot is still the old one.
+
+The tokens live in two files. From a repository checkout, this lists the whole family:
+
+```sh
+grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade/platform.sh | sort -u
+```
+
+`bootloader-esp-` is a prefix, not a token: the two behind it are `bootloader-esp-dirty` and
+`bootloader-esp-unreadable`.
+
+### Rescuing a torn bootloader
+
+Two copies of the bootloader exist by design, in two places for two reasons:
+
+| Where | What it is |
+| --- | --- |
+| `/boot/EFI/BOOT/BOOTX64.EFI.prev` and `/boot/boot/grub/grub.cfg.prev` | the bytes that were on the ESP just before the last write, kept next to the new file so they are reachable even when the writable partition cannot be mounted |
+| `/mnt/p4/@boot-backup/<version>/` with `SHA256SUMS` | both files plus their digests, on the writable partition, complete with what `.prev` may be missing |
+
+`.prev` exists because the write copies the file aside before it renames the new one over it,
+which is the only window in which the old copy can still be taken. If the ESP had no room for
+that copy, the log says `could not keep ...prev (no room on the ESP?)` and the write goes ahead
+without it, which is why the backup on p4 is refreshed at the start of every attempt: it always
+describes the state that attempt may have to undo. `ab-upgrade` keeps the two most recent
+backups.
+
+Rescue from the machine itself: the GRUB menu's recovery entry boots the committed slot with
+a read-only writable layer, and there the ESP is mounted at `/boot`.
+
+```sh
+esp=/boot
+ls -l "$esp/EFI/BOOT/BOOTX64.EFI.prev" "$esp/boot/grub/grub.cfg.prev"
+cp "$esp/EFI/BOOT/BOOTX64.EFI.prev" "$esp/EFI/BOOT/BOOTX64.EFI"
+cp "$esp/boot/grub/grub.cfg.prev" "$esp/boot/grub/grub.cfg"
+backup="$(ls -1dt /mnt/p4/@boot-backup/*/ | head -n 1)"
+cd "$esp" && sha256sum -c "${backup}SHA256SUMS"
+sync
+```
+
+The `sha256sum -c` line is the check that matters: it compares both files on the ESP with the
+digests recorded before they were touched, and prints one `OK` per file. Anything else means
+the `.prev` copy is not the one the record describes, so restore from `@boot-backup/<version>/`
+instead of from `.prev`.
+
+The same steps from another Linux, with the disk in a USB adapter. The node names below are
+this machine's, and an adapter can enumerate the disk under different ones, so confirm them
+first: `blkid -L ESP` prints the node of the partition whose filesystem label is `ESP`, and
+p4 is the fourth partition of the same disk:
+
+```sh
+sudo blkid -L ESP                             # the node to mount on /mnt/esp
+sudo mkdir -p /mnt/esp /mnt/p4
+sudo mount /dev/nvme0n1p1 /mnt/esp
+sudo mount /dev/nvme0n1p4 /mnt/p4
+sudo cp /mnt/esp/EFI/BOOT/BOOTX64.EFI.prev /mnt/esp/EFI/BOOT/BOOTX64.EFI
+sudo cp /mnt/esp/boot/grub/grub.cfg.prev /mnt/esp/boot/grub/grub.cfg
+backup="$(ls -1dt /mnt/p4/@boot-backup/*/ | head -n 1)"
+cd /mnt/esp && sudo sha256sum -c "${backup}SHA256SUMS"
+sync
+sudo umount /mnt/esp /mnt/p4
+```
+
+Then boot the machine. Before the next update, keep the bootloader out of the way:
+`ab-upgrade --check` validates a payload without writing anything, and `--no-bootloader`
+installs the system and leaves the bootloader you just repaired exactly as it is.
+
+## Reading packages= and packages_reason=
+
+`packages=` is one word about the slot's package metadata, and it is produced by the last
+upgrade, offline, without running `apk`:
+
+| Value | Meaning |
+| --- | --- |
+| `aligned` | the writable layer's `world` file pins the kernel this slot runs, and its `distfeeds` name the release this slot runs. `apk add` of a module built for this kernel will work |
+| `limited` | it does not. The machine boots and runs; installing a package matched to this kernel fails until the metadata is fixed |
+| `unknown` | no record, or a record that describes a different slot, or a record nobody can read. Never reported as `aligned`, because an unverified claim is what this field exists to catch |
+
+`packages_reason=` says why. It is the token the aligner published in `ab/packages` on the
+ESP, one line `packages=<state> reason=<token> version=<ver> kernel=<id> slot=<a|b>`. The
+tokens worth recognising:
+
+| Token | What it means |
+| --- | --- |
+| `none` | aligned, nothing to explain |
+| `other-slot` | the record describes the slot an upgrade was aiming at, not the slot this boot runs. Normal between `ab-upgrade` and the reboot that tries the candidate |
+| `packages-lib-missing` | the new platform layer carries no aligner, so nothing could be aligned |
+| `world-unwritable`, `distfeeds-unwritable` | the rewrite of `/etc/apk/world` or of `distfeeds.list` in the writable layer failed |
+| `world-not-verified`, `distfeeds-not-verified` | the rewrite landed but did not read back as the intended value, so the original was restored |
+
+`aligned` is a statement about metadata, not about the network. The alignment is offline on
+purpose and never runs `apk`, so a machine that upgrades with no cable plugged in is still
+`aligned` - and a machine with a perfect network can still be `limited`. `limited` blocks
+neither the upgrade nor the boot: the slot comes up, it just cannot install a module matched
+to its kernel until `world` and `distfeeds` are fixed.
+
+Read both fields straight off the status line, and read the record itself:
+
+```sh
+ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(boot|esp|packages|packages_reason)='
+cat /boot/ab/packages
+```
+
+`ab-slot` prints one sentence about the same verdict, which is the one to quote in a report:
+`ab-slot: packages limited, package metadata is limited (<reason>): installing packages for
+this kernel needs it fixed first`.
+
 
 ## Power-cut drill
 
@@ -538,10 +710,14 @@ ab-slot log --prev
 Every failure carries a `reason=` token in the log, which is the same token the CI
 judge lines report, so a machine and a build can be compared without guessing.
 
-## This release: 0.0.7
+## This release: 0.0.8
 
-`VERSION` reads `0.0.7`, and this is the first release whose first boot writes its own network
-configuration. The content of the version, in the words of the release notes:
+`VERSION` reads `0.0.8`. What `0.0.8` changed is in the update path, not in the boot: the
+payload now carries its own GRUB and slot menu, so an updated machine boots the loader the
+payload brought instead of the one it was flashed with, and `ab-upgrade` gives you
+`--bootloader` / `--no-bootloader` to decide whether that write happens. The first-boot
+network generation arrived in `0.0.7` and is unchanged. The content of that version, still
+current:
 
 * **First-boot generation, the upstream way.** `ab-net-seed`, at `S16` ahead of `S20network`,
   runs `/bin/board_detect` and `/bin/config_generate` when `/etc/config/network` is absent —

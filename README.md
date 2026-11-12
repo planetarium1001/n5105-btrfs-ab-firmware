@@ -169,10 +169,12 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.7` — the first release whose first boot generates its own network
-configuration, by reusing the upstream `board_detect` and `config_generate` and layering this
-project's defaults on top: `eth1`..`eth3` in the `br-lan` bridge, LAN `192.168.100.1/24`, and a
-WAN side that accepts `22/tcp` and nothing else. The health check from `0.0.6` is unchanged: a
+Current version: `0.0.8`. The first-boot network generation arrived in `0.0.7`, by reusing the
+upstream `board_detect` and `config_generate` and layering this project's defaults on top:
+`eth1`..`eth3` in the `br-lan` bridge, LAN `192.168.100.1/24`, and a WAN side that accepts
+`22/tcp` and nothing else. `0.0.8` keeps that behaviour and changes what an update carries and
+how a release is produced: the payload brings its own GRUB and slot menu, and a new upstream
+base can be released without a human editing the pin. The health check from `0.0.6` is unchanged: a
 slot is committed only after the writable layer, the firewall ruleset and the WAN device have
 been checked, and the abandon path records the decision on the ESP before it announces it. The
 pipeline still builds a real payload, validates it with the same checker the device uses, and a

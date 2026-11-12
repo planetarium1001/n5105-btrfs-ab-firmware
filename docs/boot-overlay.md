@@ -254,9 +254,13 @@ the hooks run normally while `@sys` stays untouched.
 
 ## Slot selection: who writes the boot hint
 
-`boot/grub/grub.cfg` is rendered once at build time and is never rewritten at runtime: a
-truncated FAT write of a whole menu is a machine that does not boot, while a damaged hint
-only costs one boot.
+`boot/grub/grub.cfg` is rendered once at build time, and no boot, commit or rollback rewrites
+it, because a truncated FAT write of a whole menu is a machine that does not boot, while a
+damaged hint only costs one boot. The one other writer is an upgrade, and it replaces the
+whole file rather than editing it: the payload's `boot.tar` carries a freshly rendered menu,
+`ab-upgrade` puts it in place through `<file>.new` + rename, and the menu it replaced stays
+behind as `grub.cfg.prev`. The reason above still holds, because nothing ever writes half a
+menu into the file that boots the machine.
 
 - the truth is `ab/state.json` on the ESP; `committed` and `pending` change only through
   the atomic rename in `ab-slot`
