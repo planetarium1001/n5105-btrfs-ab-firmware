@@ -30,6 +30,11 @@
 #        payload is published
 #   ac-8 both builders source the shared fragment and both call it, so the release payload
 #        and the S5 payload cannot drift again
+#   ac-9 the stage never chmods the tree it is pointed at, so reproducing it locally leaves
+#        the worktree clean
+#   ac-10 a poisoned checker in the checkout is never run (the payload's copy is)
+#   ac-11 a poisoned checker inside platform.tar fails the stage - the mutation that proves
+#        the shipped bytes are the ones that were accepted
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -109,12 +114,16 @@ make_loader "$tmp/esp/EFI/BOOT/BOOTX64.EFI" loader-one
 loader_sha="$(sha_of "$tmp/esp/EFI/BOOT/BOOTX64.EFI")"
 loader_bytes="$(bytes_of "$tmp/esp/EFI/BOOT/BOOTX64.EFI")"
 
-# --- the checkout as the stage sees it, minus the tools of a real machine ---
-# The stage is pointed at a copy of the tree for two reasons. It chmods
-# ${CI_REPO_ROOT}/platform, and it runs the product's checker from
-# ${CI_REPO_ROOT}/platform/usr/sbin with that directory first on PATH, so the ab-slot that
-# would ask a real btrfs about a real partition is replaced in the copy while the checkout
-# keeps the real one.
+# --- two copies of the tree, on purpose ---
+#
+# `${CI_PLATFORM_SRC}` is what ships: it becomes platform.tar inside the payload, so every
+# stub that stands in for something a real machine has (ab-slot asking btrfs about a real
+# partition) has to be in this copy. That is the tree the checker runs out of, because the
+# stage validates a payload with the tools the payload carries.
+#
+# `${CI_REPO_ROOT}` is the checkout. It supplies scripts/ci/grub.cfg.in and nothing the
+# payload is checked with; ac-9 and ac-10 below pin that down, by leaving a poisoned
+# checker in it and proving the stage neither runs it nor chmods it.
 #
 # scripts/ci is copied as well: scripts/ci/grub-render.sh resolves its template as
 # ${CI_REPO_ROOT}/scripts/ci/grub.cfg.in, so a copy without it cannot render the menu the
@@ -209,8 +218,9 @@ fi
 exec /usr/bin/sed "$@"
 STUB
 chmod +x "$tmp/bin"/*
-cp "$tmp/bin/ab-slot" "$tmp/repo-root/platform/usr/sbin/ab-slot"
-chmod +x "$tmp/repo-root/platform/usr/sbin/ab-slot"
+cp -a "$root/platform/." "$tmp/payload-platform/"
+cp "$tmp/bin/ab-slot" "$tmp/payload-platform/usr/sbin/ab-slot"
+chmod +x "$tmp/payload-platform/usr/sbin/ab-slot"
 
 # run_assemble <ci-tmp-root> <outputs-file> [ENV=VALUE...]
 #
@@ -232,7 +242,7 @@ run_assemble() {
     CI_INITRAMFS="$tmp/initramfs.cpio.gz" \
     CI_PLATFORM_VERSION="$platform_version" CI_UPSTREAM_VERSION="$upstream_version" \
     CI_KERNEL_PACKAGE="$kernel_package" \
-    CI_PLATFORM_RUNTIME_DIR="$tmp/runtime" CI_PLATFORM_SRC="$root/platform" \
+    CI_PLATFORM_RUNTIME_DIR="$tmp/runtime" CI_PLATFORM_SRC="$tmp/payload-platform" \
     CI_REPO_ROOT="$tmp/repo-root" CI_OUTPUT_ENV="$outputs" \
     "$@" bash "$assemble"
 }
@@ -258,6 +268,12 @@ assert_file_exists "$payload_dir/manifest.json" "ac-1 the payload carries a mani
 # line means the assembled boot.tar passed them.
 assert_contains "$(cat "$tmp/assemble-1.log")" "ab-upgrade: bootloader ok" \
   "ac-1 the product checker accepted the bootloader member"
+# The checker is the copy inside platform.tar: the log says so, and the path it names is the
+# scratch extraction, never the checkout.
+assert_contains "$(cat "$tmp/assemble-1.log")" "checker: payload platform.tar usr/sbin/ab-upgrade" \
+  "ac-8 the stage validates the payload with the checker the payload carries"
+assert_eq "$(grep -c 'check/platform/usr/sbin' "$tmp/assemble-1.log" || true)" "1" \
+  "ac-8 the checker path is the extraction, named once"
 
 # =========================================================================== #
 # ac-2: the member is in the tar and in the member table
@@ -437,5 +453,57 @@ for builder in "$assemble" "$payload_build"; do
   assert_eq "$(grep -c 'ci_boot_member_stage' "$builder")" "1" \
     "ac-8 ${name} stages the bootloader member through it"
 done
+
+# =========================================================================== #
+# ac-9 / ac-10 / ac-11: the validator is the payload's copy, and only that
+# =========================================================================== #
+
+# ac-9: the checkout keeps git's modes. The stage used to run
+# `ci_platform_modes "${CI_REPO_ROOT}/platform"` so the checker could be read out of it,
+# which left every local reproduction with a dirty worktree.
+assert_eq "$(grep -c 'ci_platform_modes "${CI_REPO_ROOT}/platform"' "$assemble" || true)" "0" \
+  "ac-9 the stage never applies modes to the checkout"
+assert_eq "$([ -x "$tmp/repo-root/platform/usr/sbin/ab-upgrade" ] && echo exec || echo plain)" "plain" \
+  "ac-9 the checkout's ab-upgrade is still not executable after a stage run"
+
+# ac-10: leave a poisoned checker where the stage used to look. Nothing may run it.
+cat >"$tmp/repo-root/platform/usr/sbin/ab-upgrade" <<'POISON'
+#!/bin/sh
+echo "poisoned checkout checker was run" >&2
+exit 9
+POISON
+chmod +x "$tmp/repo-root/platform/usr/sbin/ab-upgrade"
+ci_poison_checkout="$tmp/ci-poison-checkout"
+mkdir -p "$ci_poison_checkout"
+run_assemble "$ci_poison_checkout" "$tmp/out-poison-checkout.env" \
+  CI_BOOT_SRC="$tmp/esp" >"$tmp/assemble-poison-checkout.log" 2>&1
+status=$?
+assert_eq "$status" "0" \
+  "ac-10 a stage run ignores a broken checker in the checkout"
+assert_eq "$(grep -c 'poisoned checkout checker was run' "$tmp/assemble-poison-checkout.log" || true)" "0" \
+  "ac-10 the checkout's checker never runs"
+
+# ac-11: poison the copy that ships. Now the stage has to fail, because that is the copy it
+# validates with - if this stays green, the payload was checked by something other than the
+# bytes a device unpacks.
+cp -a "$tmp/payload-platform" "$tmp/poison-platform"
+cat >"$tmp/poison-platform/usr/sbin/ab-upgrade" <<'POISON'
+#!/bin/sh
+echo "poisoned payload checker was run" >&2
+exit 9
+POISON
+chmod +x "$tmp/poison-platform/usr/sbin/ab-upgrade"
+ci_poison_payload="$tmp/ci-poison-payload"
+mkdir -p "$ci_poison_payload"
+run_assemble "$ci_poison_payload" "$tmp/out-poison-payload.env" \
+  CI_BOOT_SRC="$tmp/esp" CI_PLATFORM_SRC="$tmp/poison-platform" \
+  >"$tmp/assemble-poison-payload.log" 2>&1
+status=$?
+assert_eq "$status" "1" \
+  "ac-11 a payload whose own checker refuses it fails the stage"
+assert_contains "$(cat "$tmp/assemble-poison-payload.log")" "poisoned payload checker was run" \
+  "ac-11 the checker that refused the payload came out of platform.tar"
+assert_contains "$(cat "$tmp/assemble-poison-payload.log")" "does not pass ab-upgrade --check" \
+  "ac-11 the failure names the check, not the extraction"
 
 finish

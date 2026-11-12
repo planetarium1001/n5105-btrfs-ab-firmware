@@ -42,4 +42,3 @@ jobs:
     with:
       tag: ${{ github.ref_name }}
       tag-policy: v
-      title: "N5105 AB firmware {tag}"

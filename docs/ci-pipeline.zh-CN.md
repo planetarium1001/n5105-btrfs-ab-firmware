@@ -221,6 +221,10 @@ gh workflow run ci.yml --ref main -f stage=s3 -f upstream_version=25.12.2
 - 步骤名是祈使句，不带阶段号：上面的 job 已经说明它属于哪个阶段。
 - 不构成闸门的步骤用 ` - advisory` 标明。
 
+上面这些是 [`ci-text-contract.zh-CN.md`](ci-text-contract.zh-CN.md) 的简写版；长度上限、
+固定表头、标题模板与结构指纹都在那一页，并由 `tests/modules/ci/test_ci_text_conventions.sh`
+断言。这一页是地图。
+
 ## 逻辑在哪里
 
 `.github/workflows/` 只做编排：检出、跑一个脚本、上传、收集诊断。所有判断都在 `scripts/ci/`，

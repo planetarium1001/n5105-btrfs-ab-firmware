@@ -8,6 +8,7 @@
 |---|---|
 | [ci-pipeline.zh-CN.md](ci-pipeline.zh-CN.md) | 每个 workflow 文件与何时该跑它、五个阶段（各自证明什么、失败代价）、产物对照表、怎么读一个 run 页面，以及怎么在本地复现一个阶段 |
 | [ci-release-lines.zh-CN.md](ci-release-lines.zh-CN.md) | 两条发布线（`v*` 与裸版本号）、一个 tag 必须证明什么、每夜的上游 watch，以及一次真实发布的复盘 |
+| [ci-text-contract.zh-CN.md](ci-text-contract.zh-CN.md) | CI 对人说的每一句话的 7 条规则：workflow/job/step 标签、input 描述、各类摘要、Issue 与 PR 正文、release 标题——以及让文本改动碰不到运行行为的结构指纹 |
 | [device-matrix.zh-CN.md](device-matrix.zh-CN.md) | 通过 SSH 驱动真机跑版本矩阵：每条断言证明什么、续跑文件、结果三态，以及保住可启动槽的红线 |
 | [partitions.zh-CN.md](partitions.zh-CN.md) | 分区几何、GPT PARTNAME 与文件系统 LABEL 命名、尺寸依据、`mkfs` 与挂载参数、子卷、首启扩容 |
 | [boot-overlay.zh-CN.md](boot-overlay.zh-CN.md) | 引导顺序、层职责、挂载合成与顺序、平台层注入、GRUB 断言、降级启动 |

@@ -99,7 +99,7 @@ jobs:
           } >>"${GITHUB_ENV}"
 
       # The ci-s4/ci-s5 chain, stopped at the disk image. Not fatal: the human gets the shell.
-      - name: Prepare the disk image - resolve, fetch, kmods, ESP, runtime, initramfs, disk
+      - name: Prepare the disk image and every input it needs
         id: prepare
         if: ${{ inputs.stage != 'none' }}
         continue-on-error: true

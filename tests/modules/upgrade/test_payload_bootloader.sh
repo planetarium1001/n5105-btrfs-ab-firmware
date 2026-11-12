@@ -120,6 +120,41 @@ assert_eq "$(shasum -a 256 "$tmp/boot/EFI/BOOT/BOOTX64.EFI" | cut -d' ' -f1)" \
 assert_contains "$(cat "$tmp/boot/boot/grub/grub.cfg")" "n5105-b" \
   "ac-1 the menu is the slot menu, not the upstream single-kernel one"
 
+# ac-4 (L2): the payload names the upstream image its loader came from
+#
+# esp-prepare.sh measures both values; the caller forwards them. ci-s5 used to pass neither, so
+# the S5 test payload's manifest said `source_sha256: null` while a released payload carried
+# the digest - the stand-in proved less than the product it stood in for. Both directions are
+# asserted: given the values it records them, and without them it records nothing rather than
+# inventing a digest.
+assert_eq "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["bootloader"]["source_sha256"])' "$manifest")" \
+  "None" "ac-4 a payload built without a boot source records no source digest"
+assert_eq "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["bootloader"]["source_image"])' "$manifest")" \
+  "immortalwrt-25.12.2-x86-64-generic-squashfs-combined-efi.img.gz" \
+  "ac-4 the source image falls back to the name upstream uses, so a reader can still find it"
+
+printf 'upstream combined EFI image\n' >"$tmp/fixtures/upstream.img.gz"
+boot_source_image="$(basename "$tmp/fixtures/upstream.img.gz")"
+boot_source_sha="$(shasum -a 256 "$tmp/fixtures/upstream.img.gz" | cut -d' ' -f1)"
+PATH="$tmp/fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$tmp/ci-source" CI_LOG_DIR="$tmp/ci-source/logs" \
+  CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_VERSION="0.0.7-test" \
+  CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
+  CI_PAYLOAD_OUT="$tmp/out/payload-source.tar" \
+  CI_BOOT_SRC="$tmp/fixtures/esp" \
+  CI_BOOT_SOURCE_IMAGE="$boot_source_image" \
+  CI_BOOT_SOURCE_SHA256="$boot_source_sha" \
+  bash "$payload_build" >"$tmp/build-source.log" 2>&1
+assert_eq "$?" "0" "ac-4 a payload builds when the caller passes the boot source"
+mkdir -p "$tmp/unpacked-source"
+tar -xf "$tmp/out/payload-source.tar" -C "$tmp/unpacked-source"
+manifest_source="$tmp/unpacked-source/manifest.json"
+assert_eq "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["bootloader"]["source_sha256"])' "$manifest_source")" \
+  "$boot_source_sha" "ac-4 the manifest records the digest the caller measured"
+assert_eq "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["bootloader"]["source_image"])' "$manifest_source")" \
+  "$boot_source_image" "ac-4 the manifest records the image the loader came out of"
+
 # --check-loader: the manifest is the contract for the bytes
 assert_eq "$(bash "$grub_render" --check-loader "$tmp/boot/EFI/BOOT/BOOTX64.EFI" "$manifest" >/dev/null 2>&1; echo $?)" \
   "0" "ac-1 the loader matches the manifest's loader_sha256"

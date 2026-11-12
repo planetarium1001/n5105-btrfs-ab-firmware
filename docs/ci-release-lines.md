@@ -24,7 +24,7 @@ release made by the watch is checked the same way as one made by hand.
 | Which upstream is built | the pin in `.github/upstream-pin.conf`; no version input is passed | the release `detect` just found, passed to `ci.yml` as `upstream_version` |
 | Build | `ci.yml`, called with `workflow_call` | `ci.yml`, called with `workflow_call`, in the same run |
 | Publishing entry | `release.yml` calls `release-publish.yml` with `tag-policy: v` | the watch's `publish` job calls it with `tag-policy: bare` |
-| Release title | `N5105 AB firmware {tag}` | `ImmortalWrt N5105 A/B firmware {tag}` |
+| Release title | `N5105 AB firmware {tag}` | `ImmortalWrt N5105 A/B firmware {tag}`; the publisher derives it from `tag-policy`, neither caller passes a title |
 | Assets | `n5105-ab-<upstream>-install.img.gz`, `n5105-ab-<upstream>-upgrade.tar`, `SHA256SUMS` | the same three |
 | Where a failure lands | the run on the tag goes red; nothing is published and the tag stays | one Issue titled `[auto-release] <version>`, labelled `auto-release` |
 

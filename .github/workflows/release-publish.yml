@@ -36,10 +36,10 @@ on:
         type: string
         default: bare
       title:
-        description: "Release title template; {tag} is replaced with the tag minus any leading v"
+        description: "Release title override; empty derives it from tag-policy. {tag} is the tag without a leading v"
         required: false
         type: string
-        default: "{tag}"
+        default: ""
       platform_version:
         description: "Platform version; empty reads the repository VERSION file"
         required: false
@@ -240,17 +240,27 @@ jobs:
             --platform-version "${PLATFORM_VERSION}" \
             2>&1 | tee -a "${CI_LOG_DIR}/release-preflight.log"
 
+      # One template, one owner. The two lines publish different things - our own milestone
+      # against a new ImmortalWrt base - so the title is derived here from the flag that
+      # already separates them, instead of being spelled again at each call site.
       - name: Render the release title
         id: title
         env:
           TITLE_TEMPLATE: ${{ inputs.title }}
+          TAG_POLICY: ${{ inputs.tag-policy }}
           BARE_VERSION: ${{ steps.versions.outputs.bare_version }}
         run: |
           set -euo pipefail
+          if [ -z "${TITLE_TEMPLATE}" ]; then
+            case "${TAG_POLICY}" in
+              v) TITLE_TEMPLATE='N5105 AB firmware {tag}' ;;
+              *) TITLE_TEMPLATE='ImmortalWrt N5105 A/B firmware {tag}' ;;
+            esac
+          fi
           title="${TITLE_TEMPLATE//\{tag\}/${BARE_VERSION}}"
           [ -n "${title}" ] || { echo "the release title rendered empty" >&2; exit 1; }
           printf 'release_title=%s\n' "${title}" >>"${GITHUB_OUTPUT}"
-          echo "release title: ${title}"
+          echo "release title: ${title} (policy ${TAG_POLICY})"
 
       - name: Render the release artifacts
         id: release
@@ -298,7 +308,7 @@ jobs:
           payload="$(awk '$2 ~ /\.tar$/ { print $2; exit }' "${sums}")"
           {
             printf '## Pre-publish check - %s\n\n' "${TAG}"
-            printf '| item | value |\n'
+            printf '| field | value |\n'
             printf '| --- | --- |\n'
             printf '| release title | `%s` |\n' "${TITLE}"
             printf '| image kind check | `%s` |\n' "${KIND}"
@@ -326,10 +336,14 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # The stage verdict rides with the notes, so a reader of the release page learns
-          # which run proved it without opening the Actions tab.
-          printf 'Verified by CI run %s: S1 to S5 all passed, image kind=boot, release preflight passed.\n' "${RUN_URL}" \
+          # The notes name the run that proved the release and the two checks this job ran
+          # itself. The stage verdicts stay in that run's report: a sentence here that claimed
+          # "five stages passed" would keep claiming it for a run that proved one.
+          printf 'Verified by CI run %s: the image is the production build (kind=boot) and the\n' "${RUN_URL}" \
             >>"${RELEASE_DIR}/release-notes.md"
+          printf 'release preflight passed on these exact bytes. The stage verdicts are in that\n' \
+            >>"${RELEASE_DIR}/release-notes.md"
+          printf "run's report.\n" >>"${RELEASE_DIR}/release-notes.md"
           if [ "${DRY_RUN}" = "true" ]; then
             # A rehearsal still uploads and checks the bytes; it only refuses to publish.
             # It is repeatable: a draft left behind by an earlier attempt is replaced, a
@@ -354,6 +368,13 @@ jobs:
             echo "release ${TAG} exists, uploading the artifacts again"
             gh release upload "${TAG}" "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar \
               "${RELEASE_DIR}/SHA256SUMS" --clobber
+            # Uploading over a draft leaves it a draft: the run goes green and nothing is
+            # published, which is the worst outcome available. A published release is left
+            # alone, so a re-run is idempotent in both directions.
+            if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft)" = "true" ]; then
+              echo "release ${TAG} was a draft, publishing it"
+              gh release edit "${TAG}" --draft=false
+            fi
           else
             gh release create "${TAG}" \
               --title "${TITLE}" \
@@ -365,10 +386,17 @@ jobs:
 
       - name: Record the release in the run summary
         run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/ci/release"
           {
             printf '## Release %s\n\n' "${{ inputs.tag }}"
-            printf '| Artifact | SHA256 |\n| --- | --- |\n'
-            awk '{ printf "| `%s` | `%s` |\n", $2, $1 }' "${{ runner.temp }}/ci/release/SHA256SUMS"
+            # The size sits next to the digest because it is the first thing a reader who is
+            # about to download the file wants, and the notes table already carries it.
+            printf '| artifact | size | sha256 |\n| --- | --- | --- |\n'
+            while read -r digest name; do
+              printf '| `%s` | %s bytes | `%s` |\n' "${name}" \
+                "$(wc -c <"${release_dir}/${name}" | tr -d ' ')" "${digest}"
+            done <"${release_dir}/SHA256SUMS"
           } >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Unmount the image

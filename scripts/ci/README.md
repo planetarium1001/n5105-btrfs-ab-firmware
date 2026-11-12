@@ -574,14 +574,17 @@ platform layer without a working tool cannot pass.
 
 `assemble` used to publish a manifest that admitted which members were missing. It now
 builds the real payload — upstream rootfs and kernel, the boot initramfs, and the
-platform layer with the btrfs tooling — and then hands the tar to
-`platform/usr/sbin/ab-upgrade --check`. That checker is the only definition of a valid
-payload: manifest shape, member digests, one kernel build across the initramfs modules,
-free space, conflict report. A payload that passes here is one the device would accept,
+platform layer with the btrfs tooling — then unpacks the payload's own `platform.tar` and
+hands the tar to *that* `usr/sbin/ab-upgrade --check`. The shipped copy is the one that
+decides, so the bytes a device will unpack are the bytes that were accepted. The checker is
+the only definition of a valid payload: manifest shape, member digests, one kernel build
+across the initramfs modules, free space, conflict report. A payload that passes here is one the device would accept,
 and there is no second copy of the rules to drift.
 
-The stage needs a mounted writable partition because the checker reads `p4` from
-`/proc/mounts`; it mounts a 64 MiB tmpfs for that and unmounts it afterwards.
+The stage needs a mounted writable partition because the checker asks btrfs about `p4` and
+the scratch state names the writable layer it must find; it creates a 256 MiB sparse image,
+formats it btrfs, mounts it and unmounts it afterwards. A tmpfs is not enough: it has no
+subvolumes to name.
 
 ### Conflicts: what was wrong
 

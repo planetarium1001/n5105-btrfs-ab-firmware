@@ -1,0 +1,2401 @@
+# CI structure fingerprint - docs/ci-text-contract.md, rule 7.
+# Structure only: keys, action pins, identifiers and judge tokens. A prose
+# change must leave every line below byte-identical.
+# Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
+#   bash tests/modules/ci/test_ci_text_conventions.sh
+# reason: title default moves into the publisher (derived from tag-policy) and ci-s5 forwards CI_BOOT_SOURCE_* so the S5 payload records its boot source (L2)
+judge .github/workflows/ci-s1.yml S1-RESULT=
+judge .github/workflows/ci-s2.yml S2-RESULT=
+judge .github/workflows/ci-s3.yml S3-RESULT=
+judge .github/workflows/release-publish.yml S1-RESULT=
+judge scripts/ci/ab-phase.sh S4-RESULT=
+judge scripts/ci/image-identity.sh S1-RESULT=
+judge scripts/ci/release.sh S2-RESULT=
+judge scripts/ci/release.sh S3-RESULT=
+judge scripts/ci/release.sh S4-RESULT=
+judge scripts/ci/release.sh S5-RESULT=
+judge scripts/ci/s5-phase.sh S5-RESULT=
+judge scripts/ci/stage-summary.sh S2-RESULT=
+sh-flag scripts/ci/ab-fixtures.sh --abandon
+sh-flag scripts/ci/ab-fixtures.sh --auto-upgrade
+sh-flag scripts/ci/ab-fixtures.sh --break-p4
+sh-flag scripts/ci/ab-fixtures.sh --break-slot
+sh-flag scripts/ci/ab-fixtures.sh --cat
+sh-flag scripts/ci/ab-fixtures.sh --find
+sh-flag scripts/ci/ab-fixtures.sh --grow-tail
+sh-flag scripts/ci/ab-fixtures.sh --network
+sh-flag scripts/ci/ab-fixtures.sh --orphan-layer
+sh-flag scripts/ci/ab-fixtures.sh --partscan
+sh-flag scripts/ci/ab-fixtures.sh --payload
+sh-flag scripts/ci/ab-fixtures.sh --pending
+sh-flag scripts/ci/ab-fixtures.sh --repair-slot
+sh-flag scripts/ci/ab-fixtures.sh --show
+sh-flag scripts/ci/ab-fixtures.sh --user-banner
+sh-flag scripts/ci/ab-phase.sh --expect-committed
+sh-flag scripts/ci/ab-phase.sh --expect-log
+sh-flag scripts/ci/ab-phase.sh --expect-pending
+sh-flag scripts/ci/ab-phase.sh --find
+sh-flag scripts/ci/ab-phase.sh --partscan
+sh-flag scripts/ci/ab-phase.sh --phase
+sh-flag scripts/ci/ab-phase.sh --show
+sh-flag scripts/ci/ab-phase.sh --slot
+sh-flag scripts/ci/apk-crosscheck.sh --allow-untrusted
+sh-flag scripts/ci/apk-crosscheck.sh --bind
+sh-flag scripts/ci/apk-crosscheck.sh --no-cache
+sh-flag scripts/ci/apk-crosscheck.sh --numeric-owner
+sh-flag scripts/ci/apk-crosscheck.sh --repository
+sh-flag scripts/ci/apk-crosscheck.sh --version
+sh-flag scripts/ci/assemble.sh --check
+sh-flag scripts/ci/assemble.sh --group
+sh-flag scripts/ci/assemble.sh --numeric-owner
+sh-flag scripts/ci/assemble.sh --owner
+sh-flag scripts/ci/boot-member.sh --check
+sh-flag scripts/ci/boot-member.sh --group
+sh-flag scripts/ci/boot-member.sh --numeric-owner
+sh-flag scripts/ci/boot-member.sh --owner
+sh-flag scripts/ci/diagnostics.sh --version
+sh-flag scripts/ci/disk.sh --find
+sh-flag scripts/ci/disk.sh --group
+sh-flag scripts/ci/disk.sh --numeric-owner
+sh-flag scripts/ci/disk.sh --owner
+sh-flag scripts/ci/disk.sh --partscan
+sh-flag scripts/ci/disk.sh --show
+sh-flag scripts/ci/disk.sh --wipe
+sh-flag scripts/ci/esp-prepare.sh --find
+sh-flag scripts/ci/esp-prepare.sh --partscan
+sh-flag scripts/ci/esp-prepare.sh --show
+sh-flag scripts/ci/grub-render.sh --check
+sh-flag scripts/ci/grub-render.sh --check-loader
+sh-flag scripts/ci/grub-render.sh --find
+sh-flag scripts/ci/grub-render.sh --id
+sh-flag scripts/ci/grub-render.sh --partscan
+sh-flag scripts/ci/grub-render.sh --show
+sh-flag scripts/ci/grub-render.sh --verify-esp
+sh-flag scripts/ci/heartbeat-tag.sh --dry-run
+sh-flag scripts/ci/heartbeat-tag.sh --format
+sh-flag scripts/ci/heartbeat-tag.sh --git-dir
+sh-flag scripts/ci/heartbeat-tag.sh --help
+sh-flag scripts/ci/heartbeat-tag.sh --now
+sh-flag scripts/ci/heartbeat-tag.sh --quiet
+sh-flag scripts/ci/heartbeat-tag.sh --verify
+sh-flag scripts/ci/image-verify.sh --check-initrd
+sh-flag scripts/ci/image-verify.sh --find
+sh-flag scripts/ci/image-verify.sh --no-dereference
+sh-flag scripts/ci/image-verify.sh --partscan
+sh-flag scripts/ci/image-verify.sh --show
+sh-flag scripts/ci/initramfs-tools.sh --apk-dir
+sh-flag scripts/ci/initramfs-tools.sh --base-url
+sh-flag scripts/ci/initramfs-tools.sh --lock
+sh-flag scripts/ci/initramfs-tools.sh --stage
+sh-flag scripts/ci/initramfs-tools.sh --toolset
+sh-flag scripts/ci/initramfs-tools.sh --upstream-version
+sh-flag scripts/ci/initramfs-tools.sh --work
+sh-flag scripts/ci/initramfs-tools.sh --write-lock
+sh-flag scripts/ci/initramfs.sh --help
+sh-flag scripts/ci/initramfs.sh --null
+sh-flag scripts/ci/initramfs.sh --stage
+sh-flag scripts/ci/initramfs.sh --toolset
+sh-flag scripts/ci/kmods.sh --json-out
+sh-flag scripts/ci/kmods.sh --kver
+sh-flag scripts/ci/kmods.sh --out
+sh-flag scripts/ci/kmods.sh --write-lock
+sh-flag scripts/ci/lib.sh --connect-timeout
+sh-flag scripts/ci/lib.sh --fail
+sh-flag scripts/ci/lib.sh --location
+sh-flag scripts/ci/lib.sh --max-time
+sh-flag scripts/ci/lib.sh --output
+sh-flag scripts/ci/lib.sh --retry
+sh-flag scripts/ci/lib.sh --retry-connrefused
+sh-flag scripts/ci/lib.sh --retry-delay
+sh-flag scripts/ci/lib.sh --show-error
+sh-flag scripts/ci/lib.sh --silent
+sh-flag scripts/ci/matrix-select.sh --count
+sh-flag scripts/ci/matrix-select.sh --help
+sh-flag scripts/ci/matrix-select.sh --index
+sh-flag scripts/ci/matrix-select.sh --version
+sh-flag scripts/ci/payload-build.sh --group
+sh-flag scripts/ci/payload-build.sh --numeric-owner
+sh-flag scripts/ci/payload-build.sh --owner
+sh-flag scripts/ci/platform-runtime.sh --apk-name
+sh-flag scripts/ci/platform-runtime.sh --ignore-failed-read
+sh-flag scripts/ci/platform-runtime.sh --library-path
+sh-flag scripts/ci/platform-runtime.sh --manifest
+sh-flag scripts/ci/platform-runtime.sh --out
+sh-flag scripts/ci/platform-runtime.sh --version
+sh-flag scripts/ci/platform-runtime.sh --write-lock
+sh-flag scripts/ci/qemu-smoke.sh --rootdir
+sh-flag scripts/ci/release-preflight.sh --help
+sh-flag scripts/ci/release-preflight.sh --image-dir
+sh-flag scripts/ci/release-preflight.sh --payload-manifest
+sh-flag scripts/ci/release-preflight.sh --payload-tar
+sh-flag scripts/ci/release-preflight.sh --platform-version
+sh-flag scripts/ci/release-preflight.sh --tag
+sh-flag scripts/ci/release-preflight.sh --tag-policy
+sh-flag scripts/ci/release-preflight.sh --version-file
+sh-flag scripts/ci/report.sh --log-failed
+sh-flag scripts/ci/s5-phase.sh --find
+sh-flag scripts/ci/s5-phase.sh --layer
+sh-flag scripts/ci/s5-phase.sh --partscan
+sh-flag scripts/ci/s5-phase.sh --phase
+sh-flag scripts/ci/s5-phase.sh --serial
+sh-flag scripts/ci/s5-phase.sh --show
+sh-flag scripts/ci/s5-phase.sh --slot
+sh-flag scripts/ci/s5-phase.sh --version
+sh-flag scripts/ci/stage-summary.sh --artifact
+sh-flag scripts/ci/stage-summary.sh --artifact-file
+sh-flag scripts/ci/stage-summary.sh --help
+sh-flag scripts/ci/stage-summary.sh --judge-line
+sh-flag scripts/ci/stage-summary.sh --judge-log
+sh-flag scripts/ci/stage-summary.sh --log-failed
+sh-flag scripts/ci/stage-summary.sh --next-fail
+sh-flag scripts/ci/stage-summary.sh --next-ok
+sh-flag scripts/ci/stage-summary.sh --note
+sh-flag scripts/ci/stage-summary.sh --result
+sh-flag scripts/ci/stage-summary.sh --stage
+sh-flag scripts/ci/upstream-watch.sh --help
+sh-flag scripts/ci/upstream-watch.sh --out
+sh-flag scripts/ci/verify.sh --severity
+sh-flag scripts/ci/verify.sh --version
+sh-fn scripts/ci/ab-fixtures.sh break_p4
+sh-fn scripts/ci/ab-fixtures.sh break_slot
+sh-fn scripts/ci/ab-fixtures.sh cat_esp_file
+sh-fn scripts/ci/ab-fixtures.sh cleanup
+sh-fn scripts/ci/ab-fixtures.sh ensure_platform_bin
+sh-fn scripts/ci/ab-fixtures.sh grow_tail
+sh-fn scripts/ci/ab-fixtures.sh install_auto_upgrade
+sh-fn scripts/ci/ab-fixtures.sh mount_one
+sh-fn scripts/ci/ab-fixtures.sh mount_one_ro
+sh-fn scripts/ci/ab-fixtures.sh on_error
+sh-fn scripts/ci/ab-fixtures.sh orphan_layer
+sh-fn scripts/ci/ab-fixtures.sh repair_slot
+sh-fn scripts/ci/ab-fixtures.sh show_state
+sh-fn scripts/ci/ab-fixtures.sh slot_tree
+sh-fn scripts/ci/ab-fixtures.sh state_ab_slot
+sh-fn scripts/ci/ab-fixtures.sh unmount_part
+sh-fn scripts/ci/ab-fixtures.sh write_network_config
+sh-fn scripts/ci/ab-fixtures.sh write_payload
+sh-fn scripts/ci/ab-fixtures.sh write_user_banner
+sh-fn scripts/ci/ab-phase.sh cleanup
+sh-fn scripts/ci/ab-phase.sh fail_phase
+sh-fn scripts/ci/ab-phase.sh on_error
+sh-fn scripts/ci/apk-crosscheck.sh cleanup
+sh-fn scripts/ci/apk-crosscheck.sh emit
+sh-fn scripts/ci/assemble.sh assemble_member
+sh-fn scripts/ci/assemble.sh cleanup_p4
+sh-fn scripts/ci/assemble.sh on_error
+sh-fn scripts/ci/boot-member.sh ci_boot_member_menu
+sh-fn scripts/ci/boot-member.sh ci_boot_member_stage
+sh-fn scripts/ci/boot-member.sh ci_boot_member_version
+sh-fn scripts/ci/boot-restart.sh boot_restart_count
+sh-fn scripts/ci/boot-restart.sh boot_restart_counts
+sh-fn scripts/ci/boot-restart.sh boot_restart_verdict
+sh-fn scripts/ci/diagnostics.sh collect_context
+sh-fn scripts/ci/diagnostics.sh collect_disk_usage
+sh-fn scripts/ci/diagnostics.sh collect_logs
+sh-fn scripts/ci/diagnostics.sh collect_tree
+sh-fn scripts/ci/diagnostics.sh section
+sh-fn scripts/ci/disk.sh cleanup
+sh-fn scripts/ci/disk.sh mount_part
+sh-fn scripts/ci/disk.sh on_error
+sh-fn scripts/ci/disk.sh partuuid
+sh-fn scripts/ci/disk.sh populate_slot
+sh-fn scripts/ci/disk.sh unmount_part
+sh-fn scripts/ci/esp-prepare.sh cleanup
+sh-fn scripts/ci/esp-prepare.sh on_error
+sh-fn scripts/ci/fetch.sh fetch_member
+sh-fn scripts/ci/grub-render.sh check_grub
+sh-fn scripts/ci/grub-render.sh on_error
+sh-fn scripts/ci/grub-render.sh slot_cfg_check
+sh-fn scripts/ci/heartbeat-tag.sh note_baseline
+sh-fn scripts/ci/heartbeat-tag.sh to_epoch
+sh-fn scripts/ci/heartbeat-tag.sh usage
+sh-fn scripts/ci/image-identity.sh ii_image_json
+sh-fn scripts/ci/image-identity.sh ii_kind_known
+sh-fn scripts/ci/image-identity.sh ii_refuse_probe
+sh-fn scripts/ci/image-verify.sh assert_no_ci_hooks
+sh-fn scripts/ci/image-verify.sh assert_subvolumes
+sh-fn scripts/ci/image-verify.sh ci_hook_members
+sh-fn scripts/ci/image-verify.sh cleanup
+sh-fn scripts/ci/image-verify.sh note
+sh-fn scripts/ci/image-verify.sh on_error
+sh-fn scripts/ci/image-verify.sh part_name
+sh-fn scripts/ci/image-verify.sh subvolumes
+sh-fn scripts/ci/initramfs-tools.sh warn_derived_lock
+sh-fn scripts/ci/initramfs.sh on_error
+sh-fn scripts/ci/initramfs.sh require_musl_only
+sh-fn scripts/ci/initramfs.sh require_toolset_programs
+sh-fn scripts/ci/initramfs.sh tools_field
+sh-fn scripts/ci/kmods.sh lock_die
+sh-fn scripts/ci/kmods.sh locked_lines
+sh-fn scripts/ci/kmods.sh resolved_lines
+sh-fn scripts/ci/kmods.sh warn_derived_lock
+sh-fn scripts/ci/lib.sh ci_die
+sh-fn scripts/ci/lib.sh ci_download
+sh-fn scripts/ci/lib.sh ci_emit_output
+sh-fn scripts/ci/lib.sh ci_file_size
+sh-fn scripts/ci/lib.sh ci_hash_manifest
+sh-fn scripts/ci/lib.sh ci_have
+sh-fn scripts/ci/lib.sh ci_load_env_file
+sh-fn scripts/ci/lib.sh ci_log
+sh-fn scripts/ci/lib.sh ci_lookup_sha256
+sh-fn scripts/ci/lib.sh ci_match
+sh-fn scripts/ci/lib.sh ci_platform_modes
+sh-fn scripts/ci/lib.sh ci_platform_startlinks
+sh-fn scripts/ci/lib.sh ci_render_net_defaults
+sh-fn scripts/ci/lib.sh ci_render_release
+sh-fn scripts/ci/lib.sh ci_require_cmd
+sh-fn scripts/ci/lib.sh ci_require_var
+sh-fn scripts/ci/lib.sh ci_sha256
+sh-fn scripts/ci/lib.sh ci_sha256_text
+sh-fn scripts/ci/lib.sh ci_stage_init
+sh-fn scripts/ci/lib.sh ci_upstream_pin_file
+sh-fn scripts/ci/lib.sh ci_upstream_pin_read
+sh-fn scripts/ci/lib.sh ci_warn
+sh-fn scripts/ci/lib.sh ci_write_upstream_pin
+sh-fn scripts/ci/matrix-select.sh formal_releases_desc
+sh-fn scripts/ci/matrix-select.sh usage
+sh-fn scripts/ci/payload-build.sh on_error
+sh-fn scripts/ci/platform-runtime.sh extract_package
+sh-fn scripts/ci/platform-runtime.sh find_btrfs_image
+sh-fn scripts/ci/platform-runtime.sh lock_die
+sh-fn scripts/ci/platform-runtime.sh provided_by_rootfs
+sh-fn scripts/ci/platform-runtime.sh resolve_package
+sh-fn scripts/ci/platform-runtime.sh warn_derived_lock
+sh-fn scripts/ci/release-preflight.sh fatal
+sh-fn scripts/ci/release-preflight.sh json_record
+sh-fn scripts/ci/release-preflight.sh manifest_has_member
+sh-fn scripts/ci/release-preflight.sh manifest_record
+sh-fn scripts/ci/release-preflight.sh on_error
+sh-fn scripts/ci/release-preflight.sh payload_member
+sh-fn scripts/ci/release-preflight.sh record
+sh-fn scripts/ci/release-preflight.sh record_field
+sh-fn scripts/ci/release-preflight.sh usage
+sh-fn scripts/ci/release.sh on_error
+sh-fn scripts/ci/report.sh human_bytes
+sh-fn scripts/ci/report.sh report_row
+sh-fn scripts/ci/report.sh result_cell
+sh-fn scripts/ci/resolve.sh resolve_latest_version
+sh-fn scripts/ci/s5-phase.sh cleanup
+sh-fn scripts/ci/s5-phase.sh fail_phase
+sh-fn scripts/ci/s5-phase.sh mount_esp
+sh-fn scripts/ci/stage-summary.sh judge_from_log
+sh-fn scripts/ci/stage-summary.sh run_url
+sh-fn scripts/ci/stage-summary.sh sha256_prefix
+sh-fn scripts/ci/stage-summary.sh stage_job
+sh-fn scripts/ci/stage-summary.sh stage_prefix
+sh-fn scripts/ci/stage-summary.sh stage_repro
+sh-fn scripts/ci/stage-summary.sh take_value
+sh-fn scripts/ci/stage-summary.sh usage
+sh-fn scripts/ci/stage-summary.sh verdict_word
+sh-fn scripts/ci/upstream-watch.sh detect_cmd
+sh-fn scripts/ci/upstream-watch.sh formal_releases_desc
+sh-fn scripts/ci/upstream-watch.sh issue_body_cmd
+sh-fn scripts/ci/upstream-watch.sh parse_out_arg
+sh-fn scripts/ci/upstream-watch.sh pin_cmd
+sh-fn scripts/ci/upstream-watch.sh pr_body_cmd
+sh-fn scripts/ci/upstream-watch.sh require_formal_version
+sh-fn scripts/ci/upstream-watch.sh usage
+sh-var scripts/ci/ab-fixtures.sh AB_CMD
+sh-var scripts/ci/ab-fixtures.sh AB_ESP
+sh-var scripts/ci/ab-fixtures.sh AB_PARTITIONS_LIB
+sh-var scripts/ci/ab-fixtures.sh AB_SLOT_CFG_LIB
+sh-var scripts/ci/ab-fixtures.sh CI_IMAGE
+sh-var scripts/ci/ab-fixtures.sh CI_OVERLAY_NAME
+sh-var scripts/ci/ab-fixtures.sh CI_REPO_ROOT
+sh-var scripts/ci/ab-fixtures.sh CI_SCRIPT_DIR
+sh-var scripts/ci/ab-fixtures.sh CI_TMP_ROOT
+sh-var scripts/ci/ab-fixtures.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/ab-phase.sh CI_DIAG_DIR
+sh-var scripts/ci/ab-phase.sh CI_IMAGE
+sh-var scripts/ci/ab-phase.sh CI_SCRIPT_DIR
+sh-var scripts/ci/ab-phase.sh CI_TMP_ROOT
+sh-var scripts/ci/apk-crosscheck.sh CI_FETCH_DIR
+sh-var scripts/ci/apk-crosscheck.sh CI_KMODS_DIR
+sh-var scripts/ci/apk-crosscheck.sh CI_LOCKFILE
+sh-var scripts/ci/apk-crosscheck.sh CI_LOG_DIR
+sh-var scripts/ci/apk-crosscheck.sh CI_REFERENCE_ROOT
+sh-var scripts/ci/apk-crosscheck.sh CI_REPO_ROOT
+sh-var scripts/ci/apk-crosscheck.sh CI_SCRIPT_DIR
+sh-var scripts/ci/apk-crosscheck.sh CI_TMP_ROOT
+sh-var scripts/ci/apk-crosscheck.sh CI_UPSTREAM_BASE_URL
+sh-var scripts/ci/assemble.sh AB_ESP
+sh-var scripts/ci/assemble.sh AB_LIB
+sh-var scripts/ci/assemble.sh AB_P4
+sh-var scripts/ci/assemble.sh AB_SLOTS_ROOT
+sh-var scripts/ci/assemble.sh CI_ASSEMBLE_DIR
+sh-var scripts/ci/assemble.sh CI_BOOTLOADER_CFG
+sh-var scripts/ci/assemble.sh CI_BOOT_BLOCK
+sh-var scripts/ci/assemble.sh CI_BOOT_MEMBER
+sh-var scripts/ci/assemble.sh CI_BOOT_SRC
+sh-var scripts/ci/assemble.sh CI_FETCH_DIR
+sh-var scripts/ci/assemble.sh CI_GRUB_OUTPUT
+sh-var scripts/ci/assemble.sh CI_INITRAMFS
+sh-var scripts/ci/assemble.sh CI_KERNEL_PACKAGE
+sh-var scripts/ci/assemble.sh CI_PLATFORM_RUNTIME_DIR
+sh-var scripts/ci/assemble.sh CI_PLATFORM_SRC
+sh-var scripts/ci/assemble.sh CI_PLATFORM_VERSION
+sh-var scripts/ci/assemble.sh CI_REPO_ROOT
+sh-var scripts/ci/assemble.sh CI_REQUIRE_BOOTLOADER
+sh-var scripts/ci/assemble.sh CI_SCRIPT_DIR
+sh-var scripts/ci/assemble.sh CI_TMP_ROOT
+sh-var scripts/ci/assemble.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/boot-member.sh CI_BOOTLOADER_CFG
+sh-var scripts/ci/boot-member.sh CI_BOOTLOADER_VERSION
+sh-var scripts/ci/boot-member.sh CI_BOOT_BLOCK
+sh-var scripts/ci/boot-member.sh CI_BOOT_GRUB_VERSION
+sh-var scripts/ci/boot-member.sh CI_BOOT_MEMBER
+sh-var scripts/ci/boot-member.sh CI_BOOT_SOURCE_IMAGE
+sh-var scripts/ci/boot-member.sh CI_BOOT_SOURCE_SHA256
+sh-var scripts/ci/boot-member.sh CI_BOOT_SRC
+sh-var scripts/ci/boot-member.sh CI_GRUB_OUTPUT
+sh-var scripts/ci/boot-member.sh CI_REQUIRE_BOOTLOADER
+sh-var scripts/ci/boot-member.sh CI_SCRIPT_DIR
+sh-var scripts/ci/boot-member.sh CI_TMP_ROOT
+sh-var scripts/ci/boot-member.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/diagnostics.sh CI_DIAG_DIR
+sh-var scripts/ci/diagnostics.sh CI_LOG_DIR
+sh-var scripts/ci/diagnostics.sh CI_REPO_ROOT
+sh-var scripts/ci/diagnostics.sh CI_SCRIPT_DIR
+sh-var scripts/ci/diagnostics.sh CI_TMP_ROOT
+sh-var scripts/ci/disk.sh CI_AB_SLOT_CFG_SOURCE
+sh-var scripts/ci/disk.sh CI_ALLOW_PROBE_INIT
+sh-var scripts/ci/disk.sh CI_COMMITTED_SLOT
+sh-var scripts/ci/disk.sh CI_DISK_DIR
+sh-var scripts/ci/disk.sh CI_DISK_OUT
+sh-var scripts/ci/disk.sh CI_ESP_DIR
+sh-var scripts/ci/disk.sh CI_FETCH_DIR
+sh-var scripts/ci/disk.sh CI_GRUB_OUTPUT
+sh-var scripts/ci/disk.sh CI_GRUB_TEMPLATE
+sh-var scripts/ci/disk.sh CI_INITRAMFS
+sh-var scripts/ci/disk.sh CI_INITRAMFS_KIND
+sh-var scripts/ci/disk.sh CI_OUTPUT_ENV
+sh-var scripts/ci/disk.sh CI_OVERLAY_NAME
+sh-var scripts/ci/disk.sh CI_PLATFORM_LIMIT_BYTES
+sh-var scripts/ci/disk.sh CI_PLATFORM_RUNTIME_DIR
+sh-var scripts/ci/disk.sh CI_PLATFORM_SRC
+sh-var scripts/ci/disk.sh CI_PLATFORM_VERSION
+sh-var scripts/ci/disk.sh CI_REPO_ROOT
+sh-var scripts/ci/disk.sh CI_SCRIPT_DIR
+sh-var scripts/ci/disk.sh CI_TMP_ROOT
+sh-var scripts/ci/disk.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/esp-prepare.sh CI_ESP_CACHE
+sh-var scripts/ci/esp-prepare.sh CI_ESP_DIR
+sh-var scripts/ci/esp-prepare.sh CI_SCRIPT_DIR
+sh-var scripts/ci/esp-prepare.sh CI_SHA256_RE
+sh-var scripts/ci/esp-prepare.sh CI_TMP_ROOT
+sh-var scripts/ci/esp-prepare.sh CI_UPSTREAM_BASE_URL
+sh-var scripts/ci/esp-prepare.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/fetch.sh CI_BTRFS_KMOD_NAME
+sh-var scripts/ci/fetch.sh CI_BTRFS_KMOD_SHA256
+sh-var scripts/ci/fetch.sh CI_FETCH_DIR
+sh-var scripts/ci/fetch.sh CI_KERNEL_NAME
+sh-var scripts/ci/fetch.sh CI_KERNEL_PACKAGE
+sh-var scripts/ci/fetch.sh CI_KERNEL_SHA256
+sh-var scripts/ci/fetch.sh CI_KMODS_DIR
+sh-var scripts/ci/fetch.sh CI_RESOLVE_ENV
+sh-var scripts/ci/fetch.sh CI_ROOTFS_NAME
+sh-var scripts/ci/fetch.sh CI_ROOTFS_SHA256
+sh-var scripts/ci/fetch.sh CI_SCRIPT_DIR
+sh-var scripts/ci/fetch.sh CI_TMP_ROOT
+sh-var scripts/ci/fetch.sh CI_UPSTREAM_BASE_URL
+sh-var scripts/ci/fetch.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/grub-render.sh AB_SLOT_CFG_PATH
+sh-var scripts/ci/grub-render.sh AB_SLOT_CFG_REASON
+sh-var scripts/ci/grub-render.sh CI_COMMITTED_SLOT
+sh-var scripts/ci/grub-render.sh CI_GRUB_OUTPUT
+sh-var scripts/ci/grub-render.sh CI_GRUB_TEMPLATE
+sh-var scripts/ci/grub-render.sh CI_GRUB_TIMEOUT
+sh-var scripts/ci/grub-render.sh CI_REPO_ROOT
+sh-var scripts/ci/grub-render.sh CI_SCRIPT_DIR
+sh-var scripts/ci/grub-render.sh CI_SLOT_CFG_OUT
+sh-var scripts/ci/grub-render.sh CI_SLOT_CFG_PATH
+sh-var scripts/ci/grub-render.sh CI_TMP_ROOT
+sh-var scripts/ci/heartbeat-tag.sh CI_HEARTBEAT_INTERVAL_DAYS
+sh-var scripts/ci/heartbeat-tag.sh CI_HEARTBEAT_USER_EMAIL
+sh-var scripts/ci/heartbeat-tag.sh CI_HEARTBEAT_USER_NAME
+sh-var scripts/ci/heartbeat-tag.sh CI_OUTPUT_ENV
+sh-var scripts/ci/heartbeat-tag.sh CI_REPO_ROOT
+sh-var scripts/ci/heartbeat-tag.sh CI_SCRIPT_DIR
+sh-var scripts/ci/heartbeat-tag.sh CI_TMP_ROOT
+sh-var scripts/ci/image-identity.sh CI_ALLOW_PROBE_INIT
+sh-var scripts/ci/image-identity.sh CI_INITRAMFS_KIND
+sh-var scripts/ci/image-verify.sh AB_CI_HOOKS
+sh-var scripts/ci/image-verify.sh CI_DISK_DIR
+sh-var scripts/ci/image-verify.sh CI_ESP_DIR
+sh-var scripts/ci/image-verify.sh CI_EXPECT_OUT
+sh-var scripts/ci/image-verify.sh CI_IMAGE
+sh-var scripts/ci/image-verify.sh CI_INITRAMFS_KIND
+sh-var scripts/ci/image-verify.sh CI_MEMBER_PREFIX
+sh-var scripts/ci/image-verify.sh CI_OVERLAY_NAME
+sh-var scripts/ci/image-verify.sh CI_SAMPLES
+sh-var scripts/ci/image-verify.sh CI_SCRIPT_DIR
+sh-var scripts/ci/image-verify.sh CI_STAGE
+sh-var scripts/ci/image-verify.sh CI_TMP_ROOT
+sh-var scripts/ci/image-verify.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/initramfs-tools.sh CI_APK_DIR
+sh-var scripts/ci/initramfs-tools.sh CI_APK_TOOLS
+sh-var scripts/ci/initramfs-tools.sh CI_APK_TOOLS_LOCK
+sh-var scripts/ci/initramfs-tools.sh CI_APK_TOOLS_SUMMARY
+sh-var scripts/ci/initramfs-tools.sh CI_INITRAMFS_STAGE
+sh-var scripts/ci/initramfs-tools.sh CI_INITRAMFS_TOOLSET
+sh-var scripts/ci/initramfs-tools.sh CI_LOCK_STRICT
+sh-var scripts/ci/initramfs-tools.sh CI_REPO_ROOT
+sh-var scripts/ci/initramfs-tools.sh CI_SCRIPT_DIR
+sh-var scripts/ci/initramfs-tools.sh CI_TMP_ROOT
+sh-var scripts/ci/initramfs-tools.sh CI_UPSTREAM_BASE
+sh-var scripts/ci/initramfs-tools.sh CI_UPSTREAM_BASE_URL
+sh-var scripts/ci/initramfs-tools.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/initramfs-tools.sh CI_UPSTREAM_VERSION_PIN
+sh-var scripts/ci/initramfs.sh CI_APK_TOOLS_SUMMARY
+sh-var scripts/ci/initramfs.sh CI_EXTRA_FILES
+sh-var scripts/ci/initramfs.sh CI_INITRAMFS_LIB_DIR
+sh-var scripts/ci/initramfs.sh CI_INITRAMFS_OUT
+sh-var scripts/ci/initramfs.sh CI_INITRAMFS_SHARED_LIBS
+sh-var scripts/ci/initramfs.sh CI_INITRAMFS_TOOLSET
+sh-var scripts/ci/initramfs.sh CI_INIT_SCRIPT
+sh-var scripts/ci/initramfs.sh CI_KERNEL_VERSION
+sh-var scripts/ci/initramfs.sh CI_KMODS_OUT
+sh-var scripts/ci/initramfs.sh CI_REPO_ROOT
+sh-var scripts/ci/initramfs.sh CI_SCRIPT_DIR
+sh-var scripts/ci/initramfs.sh CI_TMP_ROOT
+sh-var scripts/ci/kmods.sh CI_KMODS_CLOSURE
+sh-var scripts/ci/kmods.sh CI_KMODS_DIR
+sh-var scripts/ci/kmods.sh CI_KMODS_OUT
+sh-var scripts/ci/kmods.sh CI_LOCKFILE
+sh-var scripts/ci/kmods.sh CI_LOCK_STRICT
+sh-var scripts/ci/kmods.sh CI_REPO_ROOT
+sh-var scripts/ci/kmods.sh CI_SCRIPT_DIR
+sh-var scripts/ci/kmods.sh CI_TMP_ROOT
+sh-var scripts/ci/kmods.sh CI_UPSTREAM_BASE_URL
+sh-var scripts/ci/kmods.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/lib.sh CI_KMODS_DIR_RE
+sh-var scripts/ci/lib.sh CI_LIB_DIR
+sh-var scripts/ci/lib.sh CI_LIB_LOADED
+sh-var scripts/ci/lib.sh CI_LOG_DIR
+sh-var scripts/ci/lib.sh CI_NET_
+sh-var scripts/ci/lib.sh CI_NET_DEFAULTS_TEMPLATE
+sh-var scripts/ci/lib.sh CI_NET_LAN_ADDR
+sh-var scripts/ci/lib.sh CI_NET_LAN_DEVS
+sh-var scripts/ci/lib.sh CI_NET_LAN_PREFIX
+sh-var scripts/ci/lib.sh CI_NET_WAN_DEV
+sh-var scripts/ci/lib.sh CI_NET_WAN_SSH
+sh-var scripts/ci/lib.sh CI_OUTPUT_ENV
+sh-var scripts/ci/lib.sh CI_REPO_ROOT
+sh-var scripts/ci/lib.sh CI_SHA256_RE
+sh-var scripts/ci/lib.sh CI_STAGE
+sh-var scripts/ci/lib.sh CI_TMP_ROOT
+sh-var scripts/ci/lib.sh CI_TOOLS
+sh-var scripts/ci/lib.sh CI_TOOLS_VERSION
+sh-var scripts/ci/lib.sh CI_UPSTREAM_BASE
+sh-var scripts/ci/lib.sh CI_UPSTREAM_PIN_DEFAULT
+sh-var scripts/ci/lib.sh CI_UPSTREAM_PIN_FILE
+sh-var scripts/ci/lib.sh CI_UPSTREAM_TARGET
+sh-var scripts/ci/lib.sh CI_UPSTREAM_VERSION_PIN
+sh-var scripts/ci/lib.sh CI_VERSION_RE
+sh-var scripts/ci/matrix-select.sh CI_MIN_UPSTREAM_MAJOR
+sh-var scripts/ci/matrix-select.sh CI_OUTPUT_ENV
+sh-var scripts/ci/matrix-select.sh CI_SCRIPT_DIR
+sh-var scripts/ci/matrix-select.sh CI_TMP_ROOT
+sh-var scripts/ci/matrix-select.sh CI_UPSTREAM_BASE
+sh-var scripts/ci/matrix-select.sh CI_UPSTREAM_INDEX
+sh-var scripts/ci/matrix-select.sh CI_VERSION_RE
+sh-var scripts/ci/matrix-select.sh CI_WORK_DIR
+sh-var scripts/ci/payload-build.sh CI_BOOTLOADER_CFG
+sh-var scripts/ci/payload-build.sh CI_BOOTLOADER_VERSION
+sh-var scripts/ci/payload-build.sh CI_BOOT_BLOCK
+sh-var scripts/ci/payload-build.sh CI_BOOT_GRUB_VERSION
+sh-var scripts/ci/payload-build.sh CI_BOOT_MEMBER
+sh-var scripts/ci/payload-build.sh CI_BOOT_SOURCE_IMAGE
+sh-var scripts/ci/payload-build.sh CI_BOOT_SOURCE_SHA256
+sh-var scripts/ci/payload-build.sh CI_BOOT_SRC
+sh-var scripts/ci/payload-build.sh CI_FETCH_DIR
+sh-var scripts/ci/payload-build.sh CI_GRUB_OUTPUT
+sh-var scripts/ci/payload-build.sh CI_INITRAMFS
+sh-var scripts/ci/payload-build.sh CI_PAYLOAD_OUT
+sh-var scripts/ci/payload-build.sh CI_PAYLOAD_VERSION
+sh-var scripts/ci/payload-build.sh CI_PLATFORM_RUNTIME_DIR
+sh-var scripts/ci/payload-build.sh CI_PLATFORM_SRC
+sh-var scripts/ci/payload-build.sh CI_PLATFORM_VERSION
+sh-var scripts/ci/payload-build.sh CI_REPO_ROOT
+sh-var scripts/ci/payload-build.sh CI_REQUIRE_BOOTLOADER
+sh-var scripts/ci/payload-build.sh CI_SCRIPT_DIR
+sh-var scripts/ci/payload-build.sh CI_TMP_ROOT
+sh-var scripts/ci/payload-build.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/platform-runtime.sh CI_LOCK_STRICT
+sh-var scripts/ci/platform-runtime.sh CI_PLATFORM_RUNTIME_OUT
+sh-var scripts/ci/platform-runtime.sh CI_REPO_ROOT
+sh-var scripts/ci/platform-runtime.sh CI_ROOTFS_TAR
+sh-var scripts/ci/platform-runtime.sh CI_RUNTIME_LIMIT_MIB
+sh-var scripts/ci/platform-runtime.sh CI_RUNTIME_LOCKFILE
+sh-var scripts/ci/platform-runtime.sh CI_SCRIPT_DIR
+sh-var scripts/ci/platform-runtime.sh CI_TMP_ROOT
+sh-var scripts/ci/platform-runtime.sh CI_UPSTREAM_BASE_URL
+sh-var scripts/ci/platform-runtime.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/qemu-smoke.sh CI_INITRAMFS
+sh-var scripts/ci/qemu-smoke.sh CI_JUDGE_PREFIX
+sh-var scripts/ci/qemu-smoke.sh CI_KERNEL
+sh-var scripts/ci/qemu-smoke.sh CI_LOG_DIR
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_APPEND_EXTRA
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_BOOT_PATTERN
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_CASE
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_DIR
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_DISK
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_INIT
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_MAX_REBOOTS
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_MEM
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_MODE
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_REBOOT_PATTERN
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_STOP_PATTERN
+sh-var scripts/ci/qemu-smoke.sh CI_QEMU_TIMEOUT
+sh-var scripts/ci/qemu-smoke.sh CI_S1_CASE
+sh-var scripts/ci/qemu-smoke.sh CI_SCRIPT_DIR
+sh-var scripts/ci/qemu-smoke.sh CI_TMP_ROOT
+sh-var scripts/ci/release-preflight.sh CI_SCRIPT_DIR
+sh-var scripts/ci/release-preflight.sh CI_TMP_ROOT
+sh-var scripts/ci/release-preflight.sh CI_VERSION_RE
+sh-var scripts/ci/release.sh CI_IMAGE
+sh-var scripts/ci/release.sh CI_IMAGE_GZ
+sh-var scripts/ci/release.sh CI_PAYLOAD
+sh-var scripts/ci/release.sh CI_PLATFORM_VERSION
+sh-var scripts/ci/release.sh CI_RELEASE_DIR
+sh-var scripts/ci/release.sh CI_RELEASE_TAG
+sh-var scripts/ci/release.sh CI_S5_LINE
+sh-var scripts/ci/release.sh CI_SCRIPT_DIR
+sh-var scripts/ci/release.sh CI_TMP_ROOT
+sh-var scripts/ci/release.sh CI_UPSTREAM_KERNEL_SHA256
+sh-var scripts/ci/release.sh CI_UPSTREAM_ROOTFS_SHA256
+sh-var scripts/ci/release.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/report.sh CI_ASSEMBLE_RESULT
+sh-var scripts/ci/report.sh CI_CACHE_HIT
+sh-var scripts/ci/report.sh CI_CACHE_KEY
+sh-var scripts/ci/report.sh CI_DESIGN_CHECKS_STATUS
+sh-var scripts/ci/report.sh CI_DESIGN_PROBLEMS
+sh-var scripts/ci/report.sh CI_FETCH_RESULT
+sh-var scripts/ci/report.sh CI_FETCH_TOTAL_BYTES
+sh-var scripts/ci/report.sh CI_JOBS_JSON
+sh-var scripts/ci/report.sh CI_KERNEL_PACKAGE
+sh-var scripts/ci/report.sh CI_KMODS_DIR
+sh-var scripts/ci/report.sh CI_PAYLOAD_MANIFEST_SHA256
+sh-var scripts/ci/report.sh CI_PAYLOAD_MEMBERS
+sh-var scripts/ci/report.sh CI_PAYLOAD_TOTAL_BYTES
+sh-var scripts/ci/report.sh CI_REF
+sh-var scripts/ci/report.sh CI_REQUESTED_STAGE
+sh-var scripts/ci/report.sh CI_RESOLVE_RESULT
+sh-var scripts/ci/report.sh CI_S1_APK_CROSSCHECK
+sh-var scripts/ci/report.sh CI_S1_BOOT_SECONDS
+sh-var scripts/ci/report.sh CI_S1_LINE
+sh-var scripts/ci/report.sh CI_S1_MODULES
+sh-var scripts/ci/report.sh CI_S1_RESULT
+sh-var scripts/ci/report.sh CI_S1_UEFI_LINE
+sh-var scripts/ci/report.sh CI_S2_HOST_CHECKS
+sh-var scripts/ci/report.sh CI_S2_IMAGE_BYTES
+sh-var scripts/ci/report.sh CI_S2_IMAGE_GZ_BYTES
+sh-var scripts/ci/report.sh CI_S2_LINE
+sh-var scripts/ci/report.sh CI_S2_RESULT
+sh-var scripts/ci/report.sh CI_S2_ROOTFS_FILES
+sh-var scripts/ci/report.sh CI_S3_LINE
+sh-var scripts/ci/report.sh CI_S3_LINE_BOOT2
+sh-var scripts/ci/report.sh CI_S3_RESULT
+sh-var scripts/ci/report.sh CI_S3_SLOT
+sh-var scripts/ci/report.sh CI_S3_UPPER
+sh-var scripts/ci/report.sh CI_S4_COMMITTED_FINAL
+sh-var scripts/ci/report.sh CI_S4_LINE_ABANDON_B
+sh-var scripts/ci/report.sh CI_S4_LINE_COMMIT_A
+sh-var scripts/ci/report.sh CI_S4_LINE_COMMIT_B
+sh-var scripts/ci/report.sh CI_S4_LINE_ROLLBACK
+sh-var scripts/ci/report.sh CI_S4_NEXT_SLOT_FINAL
+sh-var scripts/ci/report.sh CI_S4_RESULT
+sh-var scripts/ci/report.sh CI_S5_CONFLICTS
+sh-var scripts/ci/report.sh CI_S5_DEGRADED_LINE
+sh-var scripts/ci/report.sh CI_S5_LINE
+sh-var scripts/ci/report.sh CI_S5_RECLAIMED
+sh-var scripts/ci/report.sh CI_S5_RESULT
+sh-var scripts/ci/report.sh CI_S5_UPGRADE_LINE
+sh-var scripts/ci/report.sh CI_SCRIPT_DIR
+sh-var scripts/ci/report.sh CI_SHA
+sh-var scripts/ci/report.sh CI_SHELLCHECK_STATUS
+sh-var scripts/ci/report.sh CI_TMP_ROOT
+sh-var scripts/ci/report.sh CI_TRIGGER
+sh-var scripts/ci/report.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/report.sh CI_VERIFY_RESULT
+sh-var scripts/ci/report.sh CI_VERIFY_STATUS
+sh-var scripts/ci/report.sh CI_VERSION_SOURCE
+sh-var scripts/ci/resolve.sh CI_KMODS_DIR_RE
+sh-var scripts/ci/resolve.sh CI_OUTPUT_ENV
+sh-var scripts/ci/resolve.sh CI_REPO_ROOT
+sh-var scripts/ci/resolve.sh CI_SCRIPT_DIR
+sh-var scripts/ci/resolve.sh CI_SHA256_RE
+sh-var scripts/ci/resolve.sh CI_TMP_ROOT
+sh-var scripts/ci/resolve.sh CI_TOOLS
+sh-var scripts/ci/resolve.sh CI_TOOLS_VERSION
+sh-var scripts/ci/resolve.sh CI_UPSTREAM_BASE
+sh-var scripts/ci/resolve.sh CI_UPSTREAM_TARGET
+sh-var scripts/ci/resolve.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/resolve.sh CI_UPSTREAM_VERSION_PIN
+sh-var scripts/ci/resolve.sh CI_VERSION_RE
+sh-var scripts/ci/resolve.sh CI_WORK_DIR
+sh-var scripts/ci/s5-phase.sh CI_IMAGE
+sh-var scripts/ci/s5-phase.sh CI_SCRIPT_DIR
+sh-var scripts/ci/s5-phase.sh CI_TMP_ROOT
+sh-var scripts/ci/upstream-watch.sh CI_AUTO_FAILED_STAGE
+sh-var scripts/ci/upstream-watch.sh CI_AUTO_REASON
+sh-var scripts/ci/upstream-watch.sh CI_CURRENT_PIN
+sh-var scripts/ci/upstream-watch.sh CI_FORCE_VERSION
+sh-var scripts/ci/upstream-watch.sh CI_LOG_ARTIFACT
+sh-var scripts/ci/upstream-watch.sh CI_MATRIX_CANDIDATES
+sh-var scripts/ci/upstream-watch.sh CI_MATRIX_GAPS
+sh-var scripts/ci/upstream-watch.sh CI_MIN_UPSTREAM_MAJOR
+sh-var scripts/ci/upstream-watch.sh CI_OUTPUT_ENV
+sh-var scripts/ci/upstream-watch.sh CI_PINNED_VERSION
+sh-var scripts/ci/upstream-watch.sh CI_PREVIOUS_PIN
+sh-var scripts/ci/upstream-watch.sh CI_RUN_URL
+sh-var scripts/ci/upstream-watch.sh CI_SCRIPT_DIR
+sh-var scripts/ci/upstream-watch.sh CI_TMP_ROOT
+sh-var scripts/ci/upstream-watch.sh CI_UPSTREAM_BASE
+sh-var scripts/ci/upstream-watch.sh CI_UPSTREAM_INDEX
+sh-var scripts/ci/upstream-watch.sh CI_UPSTREAM_PIN_FILE
+sh-var scripts/ci/upstream-watch.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/upstream-watch.sh CI_VERSION_RE
+sh-var scripts/ci/upstream-watch.sh CI_WORK_DIR
+sh-var scripts/ci/verify.sh CI_ACTIONLINT_BIN
+sh-var scripts/ci/verify.sh CI_LOG_DIR
+sh-var scripts/ci/verify.sh CI_PYTHON
+sh-var scripts/ci/verify.sh CI_REPO_ROOT
+sh-var scripts/ci/verify.sh CI_SCRIPT_DIR
+sh-var scripts/ci/verify.sh CI_STAGE
+sh-var scripts/ci/verify.sh CI_TMP_ROOT
+yaml .github/actions/actionlint/action.yml inputs = 
+yaml .github/actions/actionlint/action.yml inputs.path = 
+yaml .github/actions/actionlint/action.yml inputs.path.default = ".github/workflows"
+yaml .github/actions/actionlint/action.yml inputs.path.required = false
+yaml .github/actions/actionlint/action.yml inputs.sha256 = 
+yaml .github/actions/actionlint/action.yml inputs.sha256.default = "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+yaml .github/actions/actionlint/action.yml inputs.sha256.required = false
+yaml .github/actions/actionlint/action.yml inputs.version = 
+yaml .github/actions/actionlint/action.yml inputs.version.default = "1.7.7"
+yaml .github/actions/actionlint/action.yml inputs.version.required = false
+yaml .github/actions/actionlint/action.yml runs = 
+yaml .github/actions/actionlint/action.yml runs.steps = 
+yaml .github/actions/actionlint/action.yml runs.steps.[0].env = 
+yaml .github/actions/actionlint/action.yml runs.steps.[0].env.ACTIONLINT_SHA256 = ${{ inputs.sha256 }}
+yaml .github/actions/actionlint/action.yml runs.steps.[0].env.ACTIONLINT_VERSION = ${{ inputs.version }}
+yaml .github/actions/actionlint/action.yml runs.steps.[0].shell = bash
+yaml .github/actions/actionlint/action.yml runs.steps.[1].env = 
+yaml .github/actions/actionlint/action.yml runs.steps.[1].env.ACTIONLINT_PATH = ${{ inputs.path }}
+yaml .github/actions/actionlint/action.yml runs.steps.[1].shell = bash
+yaml .github/actions/qemu-boot/action.yml inputs = 
+yaml .github/actions/qemu-boot/action.yml inputs.append-extra = 
+yaml .github/actions/qemu-boot/action.yml inputs.append-extra.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.append-extra.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.case = 
+yaml .github/actions/qemu-boot/action.yml inputs.case.required = true
+yaml .github/actions/qemu-boot/action.yml inputs.image = 
+yaml .github/actions/qemu-boot/action.yml inputs.image.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.image.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.init = 
+yaml .github/actions/qemu-boot/action.yml inputs.init.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.init.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.initramfs = 
+yaml .github/actions/qemu-boot/action.yml inputs.initramfs.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.initramfs.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.judge-prefix = 
+yaml .github/actions/qemu-boot/action.yml inputs.judge-prefix.default = "@default"
+yaml .github/actions/qemu-boot/action.yml inputs.judge-prefix.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.kernel = 
+yaml .github/actions/qemu-boot/action.yml inputs.kernel.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.kernel.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.log = 
+yaml .github/actions/qemu-boot/action.yml inputs.log.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.log.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.mem = 
+yaml .github/actions/qemu-boot/action.yml inputs.mem.default = "1024"
+yaml .github/actions/qemu-boot/action.yml inputs.mem.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.mode = 
+yaml .github/actions/qemu-boot/action.yml inputs.mode.default = kernel
+yaml .github/actions/qemu-boot/action.yml inputs.mode.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.stop-pattern = 
+yaml .github/actions/qemu-boot/action.yml inputs.stop-pattern.default = ""
+yaml .github/actions/qemu-boot/action.yml inputs.stop-pattern.required = false
+yaml .github/actions/qemu-boot/action.yml inputs.timeout = 
+yaml .github/actions/qemu-boot/action.yml inputs.timeout.default = "900"
+yaml .github/actions/qemu-boot/action.yml inputs.timeout.required = false
+yaml .github/actions/qemu-boot/action.yml outputs = 
+yaml .github/actions/qemu-boot/action.yml outputs.boot_seconds = 
+yaml .github/actions/qemu-boot/action.yml outputs.boots = 
+yaml .github/actions/qemu-boot/action.yml outputs.judge_line = 
+yaml .github/actions/qemu-boot/action.yml outputs.qemu_mode = 
+yaml .github/actions/qemu-boot/action.yml outputs.reboots = 
+yaml .github/actions/qemu-boot/action.yml outputs.restart_verdict = 
+yaml .github/actions/qemu-boot/action.yml outputs.serial_log = 
+yaml .github/actions/qemu-boot/action.yml outputs.stopped_on_judge = 
+yaml .github/actions/qemu-boot/action.yml outputs.verdict = 
+yaml .github/actions/qemu-boot/action.yml runs = 
+yaml .github/actions/qemu-boot/action.yml runs.steps = 
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env = 
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_APPEND_EXTRA = ${{ inputs.append-extra }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_CASE = ${{ inputs.case }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_IMAGE = ${{ inputs.image }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_INIT = ${{ inputs.init }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_INITRAMFS = ${{ inputs.initramfs }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_JUDGE_PREFIX = ${{ inputs.judge-prefix }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_KERNEL = ${{ inputs.kernel }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_LOG = ${{ inputs.log }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_MEM = ${{ inputs.mem }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_MODE = ${{ inputs.mode }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_STOP_PATTERN = ${{ inputs.stop-pattern }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].env.IN_TIMEOUT = ${{ inputs.timeout }}
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].id = boot
+yaml .github/actions/qemu-boot/action.yml runs.steps.[0].shell = bash
+yaml .github/actions/run-stage-script/action.yml inputs = 
+yaml .github/actions/run-stage-script/action.yml inputs.args = 
+yaml .github/actions/run-stage-script/action.yml inputs.args.default = ""
+yaml .github/actions/run-stage-script/action.yml inputs.args.required = false
+yaml .github/actions/run-stage-script/action.yml inputs.log = 
+yaml .github/actions/run-stage-script/action.yml inputs.log.default = ""
+yaml .github/actions/run-stage-script/action.yml inputs.log.required = false
+yaml .github/actions/run-stage-script/action.yml inputs.script = 
+yaml .github/actions/run-stage-script/action.yml inputs.script.required = true
+yaml .github/actions/run-stage-script/action.yml outputs = 
+yaml .github/actions/run-stage-script/action.yml outputs.boot_seconds = 
+yaml .github/actions/run-stage-script/action.yml outputs.btrfs_kmod_name = 
+yaml .github/actions/run-stage-script/action.yml outputs.btrfs_kmod_sha256 = 
+yaml .github/actions/run-stage-script/action.yml outputs.cache_hit = 
+yaml .github/actions/run-stage-script/action.yml outputs.cache_key = 
+yaml .github/actions/run-stage-script/action.yml outputs.cache_restore_prefix = 
+yaml .github/actions/run-stage-script/action.yml outputs.committed = 
+yaml .github/actions/run-stage-script/action.yml outputs.conflicts = 
+yaml .github/actions/run-stage-script/action.yml outputs.design_checks_failed = 
+yaml .github/actions/run-stage-script/action.yml outputs.design_checks_problems = 
+yaml .github/actions/run-stage-script/action.yml outputs.design_checks_status = 
+yaml .github/actions/run-stage-script/action.yml outputs.device_line = 
+yaml .github/actions/run-stage-script/action.yml outputs.esp_dir = 
+yaml .github/actions/run-stage-script/action.yml outputs.esp_next_slot = 
+yaml .github/actions/run-stage-script/action.yml outputs.evidence_line = 
+yaml .github/actions/run-stage-script/action.yml outputs.expect_file = 
+yaml .github/actions/run-stage-script/action.yml outputs.fetch_total_bytes = 
+yaml .github/actions/run-stage-script/action.yml outputs.grub_cfg_sha256 = 
+yaml .github/actions/run-stage-script/action.yml outputs.host_checks = 
+yaml .github/actions/run-stage-script/action.yml outputs.image = 
+yaml .github/actions/run-stage-script/action.yml outputs.image_bytes = 
+yaml .github/actions/run-stage-script/action.yml outputs.image_gz = 
+yaml .github/actions/run-stage-script/action.yml outputs.image_gz_bytes = 
+yaml .github/actions/run-stage-script/action.yml outputs.image_gz_path = 
+yaml .github/actions/run-stage-script/action.yml outputs.image_path = 
+yaml .github/actions/run-stage-script/action.yml outputs.initramfs_path = 
+yaml .github/actions/run-stage-script/action.yml outputs.judge_line = 
+yaml .github/actions/run-stage-script/action.yml outputs.kernel_name = 
+yaml .github/actions/run-stage-script/action.yml outputs.kernel_package = 
+yaml .github/actions/run-stage-script/action.yml outputs.kernel_sha = 
+yaml .github/actions/run-stage-script/action.yml outputs.kernel_sha256 = 
+yaml .github/actions/run-stage-script/action.yml outputs.kernel_version = 
+yaml .github/actions/run-stage-script/action.yml outputs.kmods_dir = 
+yaml .github/actions/run-stage-script/action.yml outputs.members = 
+yaml .github/actions/run-stage-script/action.yml outputs.module_count = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_check = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_layer = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_manifest_sha256 = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_members = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_path = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_total_bytes = 
+yaml .github/actions/run-stage-script/action.yml outputs.payload_version = 
+yaml .github/actions/run-stage-script/action.yml outputs.platform_version = 
+yaml .github/actions/run-stage-script/action.yml outputs.python_status = 
+yaml .github/actions/run-stage-script/action.yml outputs.reclaimed = 
+yaml .github/actions/run-stage-script/action.yml outputs.rootfs_files = 
+yaml .github/actions/run-stage-script/action.yml outputs.rootfs_name = 
+yaml .github/actions/run-stage-script/action.yml outputs.rootfs_sha = 
+yaml .github/actions/run-stage-script/action.yml outputs.rootfs_sha256 = 
+yaml .github/actions/run-stage-script/action.yml outputs.runtime_packages = 
+yaml .github/actions/run-stage-script/action.yml outputs.serial_log = 
+yaml .github/actions/run-stage-script/action.yml outputs.shellcheck_status = 
+yaml .github/actions/run-stage-script/action.yml outputs.slot = 
+yaml .github/actions/run-stage-script/action.yml outputs.source_image = 
+yaml .github/actions/run-stage-script/action.yml outputs.source_sha256 = 
+yaml .github/actions/run-stage-script/action.yml outputs.syntax_status = 
+yaml .github/actions/run-stage-script/action.yml outputs.tag = 
+yaml .github/actions/run-stage-script/action.yml outputs.tests_status = 
+yaml .github/actions/run-stage-script/action.yml outputs.upper = 
+yaml .github/actions/run-stage-script/action.yml outputs.upstream_base_url = 
+yaml .github/actions/run-stage-script/action.yml outputs.upstream_version = 
+yaml .github/actions/run-stage-script/action.yml outputs.verdict = 
+yaml .github/actions/run-stage-script/action.yml outputs.verified_checks = 
+yaml .github/actions/run-stage-script/action.yml outputs.verify_status = 
+yaml .github/actions/run-stage-script/action.yml outputs.version_source = 
+yaml .github/actions/run-stage-script/action.yml runs = 
+yaml .github/actions/run-stage-script/action.yml runs.steps = 
+yaml .github/actions/run-stage-script/action.yml runs.steps.[0].env = 
+yaml .github/actions/run-stage-script/action.yml runs.steps.[0].env.CI_STAGE_ARGS = ${{ inputs.args }}
+yaml .github/actions/run-stage-script/action.yml runs.steps.[0].env.CI_STAGE_LOG = ${{ inputs.log }}
+yaml .github/actions/run-stage-script/action.yml runs.steps.[0].env.CI_STAGE_SCRIPT = ${{ inputs.script }}
+yaml .github/actions/run-stage-script/action.yml runs.steps.[0].id = run
+yaml .github/actions/run-stage-script/action.yml runs.steps.[0].shell = bash
+yaml .github/actions/setup-ci/action.yml inputs = 
+yaml .github/actions/setup-ci/action.yml inputs.apt = 
+yaml .github/actions/setup-ci/action.yml inputs.apt.default = ""
+yaml .github/actions/setup-ci/action.yml inputs.apt.required = false
+yaml .github/actions/setup-ci/action.yml inputs.download-upstream = 
+yaml .github/actions/setup-ci/action.yml inputs.download-upstream.default = "false"
+yaml .github/actions/setup-ci/action.yml inputs.download-upstream.required = false
+yaml .github/actions/setup-ci/action.yml runs = 
+yaml .github/actions/setup-ci/action.yml runs.steps = 
+yaml .github/actions/setup-ci/action.yml runs.steps.[0].env = 
+yaml .github/actions/setup-ci/action.yml runs.steps.[0].env.APT_PACKAGES = ${{ inputs.apt }}
+yaml .github/actions/setup-ci/action.yml runs.steps.[0].if = inputs.apt != ''
+yaml .github/actions/setup-ci/action.yml runs.steps.[0].shell = bash
+yaml .github/actions/setup-ci/action.yml runs.steps.[1].shell = bash
+yaml .github/actions/setup-ci/action.yml runs.steps.[2].if = inputs.download-upstream == 'true'
+yaml .github/actions/setup-ci/action.yml runs.steps.[2].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/actions/setup-ci/action.yml runs.steps.[2].with = 
+yaml .github/actions/setup-ci/action.yml runs.steps.[2].with.name = upstream-files
+yaml .github/actions/setup-ci/action.yml runs.steps.[2].with.path = ${{ runner.temp }}/ci/fetch
+yaml .github/actions/stage-evidence/action.yml inputs = 
+yaml .github/actions/stage-evidence/action.yml inputs.diag-args = 
+yaml .github/actions/stage-evidence/action.yml inputs.diag-args.default = ""
+yaml .github/actions/stage-evidence/action.yml inputs.diag-args.required = false
+yaml .github/actions/stage-evidence/action.yml inputs.diagnostics = 
+yaml .github/actions/stage-evidence/action.yml inputs.diagnostics.default = "true"
+yaml .github/actions/stage-evidence/action.yml inputs.diagnostics.required = false
+yaml .github/actions/stage-evidence/action.yml inputs.if-no-files-found = 
+yaml .github/actions/stage-evidence/action.yml inputs.if-no-files-found.default = ignore
+yaml .github/actions/stage-evidence/action.yml inputs.if-no-files-found.required = false
+yaml .github/actions/stage-evidence/action.yml inputs.logs-name = 
+yaml .github/actions/stage-evidence/action.yml inputs.logs-name.default = ""
+yaml .github/actions/stage-evidence/action.yml inputs.logs-name.required = false
+yaml .github/actions/stage-evidence/action.yml inputs.logs-paths = 
+yaml .github/actions/stage-evidence/action.yml inputs.logs-paths.default = ""
+yaml .github/actions/stage-evidence/action.yml inputs.logs-paths.required = false
+yaml .github/actions/stage-evidence/action.yml inputs.name = 
+yaml .github/actions/stage-evidence/action.yml inputs.name.required = true
+yaml .github/actions/stage-evidence/action.yml inputs.paths = 
+yaml .github/actions/stage-evidence/action.yml inputs.paths.required = true
+yaml .github/actions/stage-evidence/action.yml inputs.retention-days = 
+yaml .github/actions/stage-evidence/action.yml inputs.retention-days.default = "7"
+yaml .github/actions/stage-evidence/action.yml inputs.retention-days.required = false
+yaml .github/actions/stage-evidence/action.yml inputs.stage = 
+yaml .github/actions/stage-evidence/action.yml inputs.stage.required = true
+yaml .github/actions/stage-evidence/action.yml runs = 
+yaml .github/actions/stage-evidence/action.yml runs.steps = 
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].continue-on-error = true
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].env = 
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].env.CI_DIAG_DIR = ${{ runner.temp }}/ci/diagnostics
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].env.DIAG_ARGS = ${{ inputs.diag-args }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].env.DIAG_STAGE = ${{ inputs.stage }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].if = inputs.diagnostics == 'true'
+yaml .github/actions/stage-evidence/action.yml runs.steps.[0].shell = bash
+yaml .github/actions/stage-evidence/action.yml runs.steps.[1].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/actions/stage-evidence/action.yml runs.steps.[1].with = 
+yaml .github/actions/stage-evidence/action.yml runs.steps.[1].with.if-no-files-found = ${{ inputs.if-no-files-found }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[1].with.name = ${{ inputs.name }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[1].with.path = ${{ inputs.paths }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[1].with.retention-days = ${{ inputs.retention-days }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].if = inputs.logs-name != 'none'
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].with = 
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].with.if-no-files-found = ${{ inputs.if-no-files-found }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].with.name = ${{ inputs.logs-name || format('logs-{0}', inputs.stage) }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].with.path = ${{ inputs.logs-paths || format('{0}/ci/diagnostics/summary.txt', runner.temp) }}
+yaml .github/actions/stage-evidence/action.yml runs.steps.[2].with.retention-days = ${{ inputs.retention-days }}
+yaml .github/actions/stage-summary/action.yml inputs = 
+yaml .github/actions/stage-summary/action.yml inputs.artifact = 
+yaml .github/actions/stage-summary/action.yml inputs.artifact-file = 
+yaml .github/actions/stage-summary/action.yml inputs.artifact-file.default = ""
+yaml .github/actions/stage-summary/action.yml inputs.artifact-file.required = false
+yaml .github/actions/stage-summary/action.yml inputs.artifact.default = ""
+yaml .github/actions/stage-summary/action.yml inputs.artifact.required = false
+yaml .github/actions/stage-summary/action.yml inputs.note = 
+yaml .github/actions/stage-summary/action.yml inputs.note.default = ""
+yaml .github/actions/stage-summary/action.yml inputs.note.required = false
+yaml .github/actions/stage-summary/action.yml inputs.result = 
+yaml .github/actions/stage-summary/action.yml inputs.result.required = true
+yaml .github/actions/stage-summary/action.yml inputs.stage = 
+yaml .github/actions/stage-summary/action.yml inputs.stage.required = true
+yaml .github/actions/stage-summary/action.yml runs = 
+yaml .github/actions/stage-summary/action.yml runs.steps = 
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].env = 
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_ARTIFACT = ${{ inputs.artifact }}
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_ARTIFACT_FILE = ${{ inputs.artifact-file }}
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_NOTE = ${{ inputs.note }}
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_RESULT = ${{ inputs.result }}
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_STAGE = ${{ inputs.stage }}
+yaml .github/actions/stage-summary/action.yml runs.steps.[0].shell = bash
+yaml .github/workflows/ci-assemble.yml jobs = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env.AB_CI_HOOKS = ${{ vars.AB_CI_HOOKS }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.artifact_name = payload-upgrade
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.payload_check = ${{ steps.assemble.outputs.payload_check }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.payload_manifest_sha256 = ${{ steps.assemble.outputs.payload_manifest_sha256 }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.payload_members = ${{ steps.assemble.outputs.payload_members }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.payload_path = ${{ steps.assemble.outputs.payload_path }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.payload_sha256 = ${{ steps.assemble.outputs.payload_manifest_sha256 }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.outputs.payload_total_bytes = ${{ steps.assemble.outputs.payload_total_bytes }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.runs-on = ubuntu-latest
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[10].continue-on-error = true
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[10].env = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[10].env.CI_DIAG_DIR = ${{ runner.temp }}/ci/diagnostics
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[10].if = always()
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].if = always()
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].with = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].with.if-no-files-found = ignore
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].with.name = logs-assemble
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].with.path = |
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[11].with.retention-days = 7
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[2].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[2].with = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[2].with.name = upstream-files
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[2].with.path = ${{ runner.temp }}/ci/fetch
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[4].id = kmods
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[4].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[4].with = {script: kmods.sh}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[5].id = runtime
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[5].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[5].with = {script: platform-runtime.sh, log: runtime.log}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[6].id = esp
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[6].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[6].with = {script: esp-prepare.sh, log: esp.log}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[7].env = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[7].env.CI_INITRAMFS_OUT = ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[7].env.CI_INIT_SCRIPT = ${{ github.workspace }}/initramfs/boot/init
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[7].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[7].id = initramfs
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].env = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].env.CI_BOOT_SOURCE_IMAGE = ${{ steps.esp.outputs.source_image }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].env.CI_BOOT_SOURCE_SHA256 = ${{ steps.esp.outputs.source_sha256 }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].env.CI_BOOT_SRC = ${{ steps.esp.outputs.esp_dir }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].env.CI_INITRAMFS = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[8].id = assemble
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[9].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[9].with = 
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[9].with.if-no-files-found = error
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[9].with.name = payload-upgrade
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[9].with.path = |
+yaml .github/workflows/ci-assemble.yml jobs.assemble.steps.[9].with.retention-days = 7
+yaml .github/workflows/ci-assemble.yml jobs.assemble.timeout-minutes = 35
+yaml .github/workflows/ci-assemble.yml on = 
+yaml .github/workflows/ci-assemble.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-assemble.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-assemble.yml on.workflow_call.outputs.artifact_name = {description:<text>, value: "${{ jobs.assemble.outputs.artifact_name }}"}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.outputs.payload_manifest_sha256 = {description:<text>, value: "${{ jobs.assemble.outputs.payload_manifest_sha256 }}"}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.outputs.payload_members = {description:<text>, value: "${{ jobs.assemble.outputs.payload_members }}"}
+yaml .github/workflows/ci-assemble.yml on.workflow_call.outputs.payload_total_bytes = {description:<text>, value: "${{ jobs.assemble.outputs.payload_total_bytes }}"}
+yaml .github/workflows/ci-assemble.yml permissions = 
+yaml .github/workflows/ci-debug.yml concurrency = 
+yaml .github/workflows/ci-debug.yml concurrency.cancel-in-progress = true
+yaml .github/workflows/ci-debug.yml concurrency.group = ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+yaml .github/workflows/ci-debug.yml jobs = 
+yaml .github/workflows/ci-debug.yml jobs.debug.runs-on = ubuntu-latest
+yaml .github/workflows/ci-debug.yml jobs.debug.steps = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[0].with = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[10].if = ${{ always() }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].id = session
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].if = ${{ !cancelled() }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].timeout-minutes = 10
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].uses = owenthereal/action-upterm@6c2d60e09009f59cb4c45c88767c78701f14d121
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].with = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].with.detached = true
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].with.full-access = true
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].with.limit-access-to-actor = true
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[11].with.wait-timeout-minutes = 5
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[12].if = ${{ always() }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].if = ${{ always() && env.CI_DEBUG_SSH_READY == '1' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].with = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].with.if-no-files-found = error
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].with.name = debug-session
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].with.path = ${{ runner.temp }}/ci/session-ssh.txt
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[13].with.retention-days = 1
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[14].if = ${{ !cancelled() && env.CI_DEBUG_SSH_READY == '1' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[14].timeout-minutes = 150
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[5].continue-on-error = true
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[5].id = prepare
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[5].if = ${{ inputs.stage != 'none' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].continue-on-error = true
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].env = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].env.CI_IMAGE = ${{ steps.prepare.outputs.image }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].env.CI_INITRAMFS = ${{ steps.prepare.outputs.initramfs }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].env.STAGE_INPUT = ${{ inputs.stage }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[6].if = ${{ inputs.stage == 's4' || inputs.stage == 's5' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].continue-on-error = true
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.BOOT_TIMEOUT = ${{ inputs.boot_timeout }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.CI_INITRAMFS = ${{ steps.prepare.outputs.initramfs }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.CI_JUDGE_PREFIX = ""
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.CI_KERNEL = ${{ steps.prepare.outputs.kernel }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.CI_QEMU_DISK = ${{ steps.prepare.outputs.image }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.CI_QEMU_MODE = uefi-disk
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].env.STAGE_INPUT = ${{ inputs.stage }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[7].if = ${{ inputs.stage == 's4' || inputs.stage == 's5' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[8].if = ${{ always() && inputs.stage != 'none' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].if = ${{ always() && inputs.stage != 'none' }}
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].with = 
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].with.if-no-files-found = warn
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].with.name = debug-${{ inputs.stage }}-logs
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].with.path = ${{ runner.temp }}/ci/logs
+yaml .github/workflows/ci-debug.yml jobs.debug.steps.[9].with.retention-days = 7
+yaml .github/workflows/ci-debug.yml jobs.debug.timeout-minutes = 290
+yaml .github/workflows/ci-debug.yml on = 
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs = 
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.boot_timeout = 
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.boot_timeout.default = "1200"
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.boot_timeout.type = string
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.stage = 
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.stage.default = build-disk
+yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.stage.type = choice
+yaml .github/workflows/ci-debug.yml permissions = 
+yaml .github/workflows/ci-fetch.yml jobs = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_BTRFS_KMOD_NAME = ${{ inputs.btrfs_kmod_name }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_BTRFS_KMOD_SHA256 = ${{ inputs.btrfs_kmod_sha256 }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_KERNEL_NAME = ${{ inputs.kernel_name }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_KERNEL_SHA256 = ${{ inputs.kernel_sha256 }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_ROOTFS_NAME = ${{ inputs.rootfs_name }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_ROOTFS_SHA256 = ${{ inputs.rootfs_sha256 }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.outputs = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.outputs.artifact_name = upstream-files
+yaml .github/workflows/ci-fetch.yml jobs.fetch.outputs.cache_hit = ${{ steps.fetch.outputs.cache_hit }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.outputs.fetch_total_bytes = ${{ steps.fetch.outputs.fetch_total_bytes }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.outputs.members = ${{ steps.fetch.outputs.members }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.runs-on = ubuntu-latest
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[2].id = cache
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[2].uses = actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[2].with = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[2].with.key = ${{ inputs.cache_key }}
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[2].with.path = ${{ runner.temp }}/ci/fetch/upstream
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[2].with.restore-keys = |
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[3].id = fetch
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[4].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[4].with = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[4].with.if-no-files-found = error
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[4].with.name = upstream-files
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[4].with.path = ${{ runner.temp }}/ci/fetch
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[4].with.retention-days = 7
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[5].continue-on-error = true
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[5].env = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[5].env.CI_DIAG_DIR = ${{ runner.temp }}/ci/diagnostics
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[5].if = always()
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].if = always()
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].with = 
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].with.if-no-files-found = ignore
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].with.name = logs-fetch
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].with.path = |
+yaml .github/workflows/ci-fetch.yml jobs.fetch.steps.[6].with.retention-days = 7
+yaml .github/workflows/ci-fetch.yml jobs.fetch.timeout-minutes = 20
+yaml .github/workflows/ci-fetch.yml on = 
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.btrfs_kmod_name = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.btrfs_kmod_sha256 = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.cache_key = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.cache_restore_prefix = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.kernel_name = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.kernel_sha256 = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.rootfs_name = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.rootfs_sha256 = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.artifact_name = {description:<text>, value: "${{ jobs.fetch.outputs.artifact_name }}"}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.cache_hit = {description:<text>, value: "${{ jobs.fetch.outputs.cache_hit }}"}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.fetch_total_bytes = {description:<text>, value: "${{ jobs.fetch.outputs.fetch_total_bytes }}"}
+yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.members = {description:<text>, value: "${{ jobs.fetch.outputs.members }}"}
+yaml .github/workflows/ci-fetch.yml permissions = 
+yaml .github/workflows/ci-report.yml jobs = 
+yaml .github/workflows/ci-report.yml jobs.report.env = 
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_ASSEMBLE_RESULT = ${{ inputs.assemble_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_CACHE_HIT = ${{ inputs.cache_hit }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_CACHE_KEY = ${{ inputs.cache_key }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_DESIGN_CHECKS_STATUS = ${{ inputs.design_checks_status }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_DESIGN_PROBLEMS = ${{ inputs.design_checks_problems }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_FETCH_RESULT = ${{ inputs.fetch_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_FETCH_TOTAL_BYTES = ${{ inputs.fetch_total_bytes }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_PAYLOAD_MANIFEST_SHA256 = ${{ inputs.payload_manifest_sha256 }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_PAYLOAD_MEMBERS = ${{ inputs.payload_members }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_PAYLOAD_TOTAL_BYTES = ${{ inputs.payload_total_bytes }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_REF = ${{ inputs.ref }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_REQUESTED_STAGE = ${{ inputs.stage }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_RESOLVE_RESULT = ${{ inputs.resolve_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S1_APK_CROSSCHECK = ${{ inputs.s1_apk_crosscheck }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S1_BOOT_SECONDS = ${{ inputs.s1_boot_seconds }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S1_LINE = ${{ inputs.s1_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S1_MODULES = ${{ inputs.s1_modules }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S1_RESULT = ${{ inputs.s1_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S1_UEFI_LINE = ${{ inputs.s1_uefi_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S2_HOST_CHECKS = ${{ inputs.s2_host_checks }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S2_IMAGE_BYTES = ${{ inputs.s2_image_bytes }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S2_IMAGE_GZ_BYTES = ${{ inputs.s2_image_gz_bytes }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S2_LINE = ${{ inputs.s2_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S2_RESULT = ${{ inputs.s2_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S2_ROOTFS_FILES = ${{ inputs.s2_rootfs_files }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S3_LINE = ${{ inputs.s3_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S3_LINE_BOOT2 = ${{ inputs.s3_line_boot2 }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S3_RESULT = ${{ inputs.s3_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S3_SLOT = ${{ inputs.s3_slot }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S3_UPPER = ${{ inputs.s3_upper }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_COMMITTED_FINAL = ${{ inputs.s4_committed_final }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_LINE_ABANDON_B = ${{ inputs.s4_line_abandon_b }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_LINE_COMMIT_A = ${{ inputs.s4_line_commit_a }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_LINE_COMMIT_B = ${{ inputs.s4_line_commit_b }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_LINE_ROLLBACK = ${{ inputs.s4_line_rollback }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_NEXT_SLOT_FINAL = ${{ inputs.s4_next_slot_final }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S4_RESULT = ${{ inputs.s4_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S5_CONFLICTS = ${{ inputs.s5_conflicts }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S5_DEGRADED_LINE = ${{ inputs.s5_degraded_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S5_LINE = ${{ inputs.s5_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S5_RECLAIMED = ${{ inputs.s5_reclaimed }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S5_RESULT = ${{ inputs.s5_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_S5_UPGRADE_LINE = ${{ inputs.s5_upgrade_line }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_SHA = ${{ inputs.sha }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_SHELLCHECK_STATUS = ${{ inputs.shellcheck_status }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_TRIGGER = ${{ inputs.trigger }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_VERIFY_RESULT = ${{ inputs.verify_result }}
+yaml .github/workflows/ci-report.yml jobs.report.env.CI_VERSION_SOURCE = ${{ inputs.version_source }}
+yaml .github/workflows/ci-report.yml jobs.report.permissions = 
+yaml .github/workflows/ci-report.yml jobs.report.runs-on = ubuntu-latest
+yaml .github/workflows/ci-report.yml jobs.report.steps = 
+yaml .github/workflows/ci-report.yml jobs.report.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-report.yml jobs.report.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-report.yml jobs.report.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-report.yml jobs.report.steps.[2].continue-on-error = true
+yaml .github/workflows/ci-report.yml jobs.report.steps.[2].env = 
+yaml .github/workflows/ci-report.yml jobs.report.steps.[2].env.GH_TOKEN = ${{ github.token }}
+yaml .github/workflows/ci-report.yml jobs.report.steps.[3].env = 
+yaml .github/workflows/ci-report.yml jobs.report.steps.[3].env.CI_JOBS_JSON = ${{ runner.temp }}/ci/jobs.json
+yaml .github/workflows/ci-report.yml jobs.report.steps.[4].continue-on-error = true
+yaml .github/workflows/ci-report.yml jobs.report.steps.[4].env = 
+yaml .github/workflows/ci-report.yml jobs.report.steps.[4].env.CI_DIAG_DIR = ${{ runner.temp }}/ci/diagnostics
+yaml .github/workflows/ci-report.yml jobs.report.steps.[4].if = always()
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].if = always()
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].with = 
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].with.if-no-files-found = ignore
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].with.name = logs-report
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].with.path = |
+yaml .github/workflows/ci-report.yml jobs.report.steps.[5].with.retention-days = 7
+yaml .github/workflows/ci-report.yml jobs.report.timeout-minutes = 20
+yaml .github/workflows/ci-report.yml on = 
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.assemble_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.cache_hit = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.cache_key = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.design_checks_problems = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.design_checks_status = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.fetch_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.fetch_total_bytes = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.payload_manifest_sha256 = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.payload_members = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.payload_total_bytes = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.ref = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.resolve_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s1_apk_crosscheck = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s1_boot_seconds = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s1_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s1_modules = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s1_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s1_uefi_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s2_host_checks = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s2_image_bytes = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s2_image_gz_bytes = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s2_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s2_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s2_rootfs_files = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s3_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s3_line_boot2 = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s3_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s3_slot = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s3_upper = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_committed_final = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_line_abandon_b = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_line_commit_a = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_line_commit_b = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_line_rollback = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_next_slot_final = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s4_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s5_conflicts = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s5_degraded_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s5_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s5_reclaimed = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s5_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.s5_upgrade_line = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.sha = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.shellcheck_status = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.stage = {description:<text>, required: false, type: string, default: "all"}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.trigger = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.verify_result = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml on.workflow_call.inputs.version_source = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-report.yml permissions = 
+yaml .github/workflows/ci-resolve.yml jobs = 
+yaml .github/workflows/ci-resolve.yml jobs.resolve.env = 
+yaml .github/workflows/ci-resolve.yml jobs.resolve.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs = 
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.btrfs_kmod_name = ${{ steps.resolve.outputs.btrfs_kmod_name }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.btrfs_kmod_sha256 = ${{ steps.resolve.outputs.btrfs_kmod_sha256 }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.cache_key = ${{ steps.resolve.outputs.cache_key }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.cache_restore_prefix = ${{ steps.resolve.outputs.cache_restore_prefix }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.kernel_name = ${{ steps.resolve.outputs.kernel_name }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.kernel_package = ${{ steps.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.kernel_sha256 = ${{ steps.resolve.outputs.kernel_sha256 }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.kmods_dir = ${{ steps.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.rootfs_name = ${{ steps.resolve.outputs.rootfs_name }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.rootfs_sha256 = ${{ steps.resolve.outputs.rootfs_sha256 }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.upstream_base_url = ${{ steps.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.upstream_version = ${{ steps.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.outputs.version_source = ${{ steps.resolve.outputs.version_source }}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.runs-on = ubuntu-latest
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps = 
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[2].id = resolve
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[2].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[2].with = {script: resolve.sh}
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[3].continue-on-error = true
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[3].env = 
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[3].env.CI_DIAG_DIR = ${{ runner.temp }}/ci/diagnostics
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[3].if = always()
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].if = always()
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].with = 
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].with.if-no-files-found = ignore
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].with.name = logs-resolve
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].with.path = |
+yaml .github/workflows/ci-resolve.yml jobs.resolve.steps.[4].with.retention-days = 7
+yaml .github/workflows/ci-resolve.yml jobs.resolve.timeout-minutes = 10
+yaml .github/workflows/ci-resolve.yml on = 
+yaml .github/workflows/ci-resolve.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-resolve.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.btrfs_kmod_name = {description:<text>, value: "${{ jobs.resolve.outputs.btrfs_kmod_name }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.btrfs_kmod_sha256 = {description:<text>, value: "${{ jobs.resolve.outputs.btrfs_kmod_sha256 }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.cache_key = {description:<text>, value: "${{ jobs.resolve.outputs.cache_key }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.cache_restore_prefix = {description:<text>, value: "${{ jobs.resolve.outputs.cache_restore_prefix }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.kernel_name = {description:<text>, value: "${{ jobs.resolve.outputs.kernel_name }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.kernel_package = {description:<text>, value: "${{ jobs.resolve.outputs.kernel_package }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.kernel_sha256 = {description:<text>, value: "${{ jobs.resolve.outputs.kernel_sha256 }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.kmods_dir = {description:<text>, value: "${{ jobs.resolve.outputs.kmods_dir }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.rootfs_name = {description:<text>, value: "${{ jobs.resolve.outputs.rootfs_name }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.rootfs_sha256 = {description:<text>, value: "${{ jobs.resolve.outputs.rootfs_sha256 }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.upstream_base_url = {description:<text>, value: "${{ jobs.resolve.outputs.upstream_base_url }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.upstream_version = {description:<text>, value: "${{ jobs.resolve.outputs.upstream_version }}"}
+yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.version_source = {description:<text>, value: "${{ jobs.resolve.outputs.version_source }}"}
+yaml .github/workflows/ci-resolve.yml permissions = 
+yaml .github/workflows/ci-s1.yml jobs = 
+yaml .github/workflows/ci-s1.yml jobs.s1.env = 
+yaml .github/workflows/ci-s1.yml jobs.s1.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-s1.yml jobs.s1.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-s1.yml jobs.s1.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-s1.yml jobs.s1.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-s1.yml jobs.s1.outputs = 
+yaml .github/workflows/ci-s1.yml jobs.s1.outputs.apk_crosscheck = ${{ steps.apk_crosscheck.outputs.verdict }}
+yaml .github/workflows/ci-s1.yml jobs.s1.outputs.boot_seconds = ${{ steps.probe.outputs.boot_seconds }}
+yaml .github/workflows/ci-s1.yml jobs.s1.outputs.judge_line = ${{ steps.probe.outputs.judge_line }}
+yaml .github/workflows/ci-s1.yml jobs.s1.outputs.module_count = ${{ steps.kmods.outputs.module_count }}
+yaml .github/workflows/ci-s1.yml jobs.s1.outputs.uefi_line = ${{ steps.probe_uefi.outputs.judge_line }}
+yaml .github/workflows/ci-s1.yml jobs.s1.runs-on = ubuntu-latest
+yaml .github/workflows/ci-s1.yml jobs.s1.steps = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[1].with = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[1].with.apt = qemu-system-x86 ovmf btrfs-progs cpio kmod
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[1].with.download-upstream = "true"
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[2].id = kmods
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[2].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[2].with = {script: kmods.sh}
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[3].env = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[3].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[3].id = initramfs
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[4].id = probe
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[4].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[4].with = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[4].with.case = s1-kernel
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[4].with.initramfs = ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[4].with.log = qemu.log
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].continue-on-error = true
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].id = probe_uefi
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].if = always()
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].with = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].with.case = s1-uefi
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].with.initramfs = ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[5].with.mode = uefi
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[6].continue-on-error = true
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[6].env = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[6].env.CI_REFERENCE_ROOT = ${{ runner.temp }}/ci/rootfs
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[6].id = apk_crosscheck
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[6].if = always()
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[7].if = always()
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[7].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[7].with = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[7].with.name = evidence-s1
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[7].with.paths = |
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[7].with.stage = s1
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].if = always()
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].with = 
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].with.artifact = evidence-s1
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].with.artifact-file = ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s1.yml jobs.s1.steps.[8].with.stage = s1
+yaml .github/workflows/ci-s1.yml jobs.s1.timeout-minutes = 30
+yaml .github/workflows/ci-s1.yml on = 
+yaml .github/workflows/ci-s1.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-s1.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s1.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s1.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s1.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s1.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.apk_crosscheck = {description:<text>, value: "${{ jobs.s1.outputs.apk_crosscheck }}"}
+yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.boot_seconds = {description:<text>, value: "${{ jobs.s1.outputs.boot_seconds }}"}
+yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.judge_line = {description:<text>, value: "${{ jobs.s1.outputs.judge_line }}"}
+yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.module_count = {description:<text>, value: "${{ jobs.s1.outputs.module_count }}"}
+yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.uefi_line = {description:<text>, value: "${{ jobs.s1.outputs.uefi_line }}"}
+yaml .github/workflows/ci-s1.yml permissions = 
+yaml .github/workflows/ci-s2.yml jobs = 
+yaml .github/workflows/ci-s2.yml jobs.s2.env = 
+yaml .github/workflows/ci-s2.yml jobs.s2.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-s2.yml jobs.s2.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-s2.yml jobs.s2.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-s2.yml jobs.s2.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-s2.yml jobs.s2.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-s2.yml jobs.s2.outputs = 
+yaml .github/workflows/ci-s2.yml jobs.s2.outputs.host_checks = ${{ steps.verify.outputs.verified_checks }}
+yaml .github/workflows/ci-s2.yml jobs.s2.outputs.image_bytes = ${{ steps.disk.outputs.image_bytes }}
+yaml .github/workflows/ci-s2.yml jobs.s2.outputs.image_gz_bytes = ${{ steps.disk.outputs.image_gz_bytes }}
+yaml .github/workflows/ci-s2.yml jobs.s2.outputs.judge_line = ${{ steps.probe.outputs.judge_line }}
+yaml .github/workflows/ci-s2.yml jobs.s2.outputs.rootfs_files = ${{ steps.verify.outputs.rootfs_files }}
+yaml .github/workflows/ci-s2.yml jobs.s2.runs-on = ubuntu-latest
+yaml .github/workflows/ci-s2.yml jobs.s2.steps = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].if = always()
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].with = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].with.diag-args = ${{ runner.temp }}/ci/disk
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].with.name = evidence-s2
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].with.paths = |
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[10].with.stage = s2
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].if = always()
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].with = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].with.if-no-files-found = ignore
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].with.name = image-probe
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].with.path = ${{ runner.temp }}/ci/disk/*.img.gz
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[11].with.retention-days = 1
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].if = always()
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].with = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].with.artifact = image-probe
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].with.artifact-file = ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[12].with.stage = s2
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[1].with = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[1].with.apt = btrfs-progs dosfstools gdisk fdisk util-linux e2fsprogs cpio kmod qemu-system-x86 ovmf
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[1].with.download-upstream = "true"
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[2].id = kmods
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[2].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[2].with = {script: kmods.sh}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[3].env = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[3].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[3].id = initramfs
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[4].id = esp
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[4].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[4].with = {script: esp-prepare.sh, log: esp.log}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[5].id = runtime
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[5].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[5].with = {script: platform-runtime.sh, log: runtime.log}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].env = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].env.CI_ALLOW_PROBE_INIT = "1"
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].env.CI_ESP_DIR = ${{ steps.esp.outputs.esp_dir }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].env.CI_INITRAMFS = ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].env.CI_INITRAMFS_KIND = probe
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[6].id = disk
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[7].env = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[7].env.CI_DISK_DIR = ${{ runner.temp }}/ci/disk
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[7].env.CI_EXPECT_OUT = ${{ runner.temp }}/ci/disk/s2-expect.txt
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[7].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[7].env.CI_INITRAMFS_KIND = probe
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[7].id = verify
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[8].env = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[8].env.CI_EXPECT_FILE = ${{ steps.verify.outputs.expect_file }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[8].env.CI_GUEST_SCRIPT = ${{ github.workspace }}/tests/modules/image/guest-assert.sh
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[8].env.CI_INITRAMFS_OUT = ${{ runner.temp }}/ci/initramfs/assert.cpio.gz
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[8].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[8].id = assert_initramfs
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].id = probe
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with = 
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.case = s2
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.init = /s2.sh
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.initramfs = ${{ runner.temp }}/ci/initramfs/assert.cpio.gz
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.judge-prefix = S2-RESULT
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.log = qemu.log
+yaml .github/workflows/ci-s2.yml jobs.s2.steps.[9].with.mem = "1536"
+yaml .github/workflows/ci-s2.yml jobs.s2.timeout-minutes = 40
+yaml .github/workflows/ci-s2.yml on = 
+yaml .github/workflows/ci-s2.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-s2.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s2.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s2.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s2.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s2.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s2.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.host_checks = {description:<text>, value: "${{ jobs.s2.outputs.host_checks }}"}
+yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.image_bytes = {description:<text>, value: "${{ jobs.s2.outputs.image_bytes }}"}
+yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.image_gz_bytes = {description:<text>, value: "${{ jobs.s2.outputs.image_gz_bytes }}"}
+yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.judge_line = {description:<text>, value: "${{ jobs.s2.outputs.judge_line }}"}
+yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.rootfs_files = {description:<text>, value: "${{ jobs.s2.outputs.rootfs_files }}"}
+yaml .github/workflows/ci-s2.yml permissions = 
+yaml .github/workflows/ci-s3.yml jobs = 
+yaml .github/workflows/ci-s3.yml jobs.s3.env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs = 
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs.grub_boot_line = ${{ steps.judge_grub.outputs.device_line }}
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs.judge_line = ${{ steps.boot1.outputs.judge_line }}
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs.judge_line_boot2 = ${{ steps.boot2.outputs.judge_line }}
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs.module_count = ${{ steps.kmods.outputs.module_count }}
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs.slot = ${{ steps.judge.outputs.slot }}
+yaml .github/workflows/ci-s3.yml jobs.s3.outputs.upper = ${{ steps.judge.outputs.upper }}
+yaml .github/workflows/ci-s3.yml jobs.s3.runs-on = ubuntu-latest
+yaml .github/workflows/ci-s3.yml jobs.s3.steps = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].env.JUDGE_LINE = ${{ steps.boot1.outputs.judge_line }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].id = judge
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].id = boot2
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.append-extra = wf.boot=2
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.case = s3-boot2
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.judge-prefix = S3-RESULT
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].id = boot3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.case = s3-grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.judge-prefix = ""
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.mode = uefi-disk
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.stop-pattern = "^ab-boot: stage="
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].env.BOOT1_SLOT = ${{ steps.judge.outputs.slot }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].env.SERIAL = ${{ steps.boot3.outputs.serial_log }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].id = judge_grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.diag-args = ${{ runner.temp }}/ci/qemu
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.name = evidence-s3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.paths = |
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.stage = s3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.if-no-files-found = warn
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.name = image-install
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.path = ${{ runner.temp }}/ci/disk/*.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.retention-days = 7
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.artifact = image-install
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.artifact-file = ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.stage = s3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with.download-upstream = "true"
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[2].id = kmods
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[2].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[2].with = {script: kmods.sh}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[3].id = esp
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[3].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[3].with = {script: esp-prepare.sh, log: esp.log}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[4].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[4].env.CI_INITRAMFS_OUT = ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[4].env.CI_INIT_SCRIPT = ${{ github.workspace }}/initramfs/boot/init
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[4].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[4].id = initramfs
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[5].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[5].env.AB_CI_HOOKS = "1"
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[5].env.CI_INITRAMFS_OUT = ${{ runner.temp }}/ci/initramfs/ci-hooks.cpio.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[5].env.CI_INIT_SCRIPT = ${{ github.workspace }}/initramfs/boot/init
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[5].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[5].id = initramfs_ci
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[6].id = runtime
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[6].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[6].with = {script: platform-runtime.sh, log: runtime.log}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].env.CI_ESP_DIR = ${{ steps.esp.outputs.esp_dir }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].env.CI_INITRAMFS = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].id = disk
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].id = verify0
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].id = boot1
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.append-extra = wf.boot=1
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.case = s3-boot1
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.judge-prefix = S3-RESULT
+yaml .github/workflows/ci-s3.yml jobs.s3.timeout-minutes = 45
+yaml .github/workflows/ci-s3.yml on = 
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.grub_boot_line = {description:<text>, value: "${{ jobs.s3.outputs.grub_boot_line }}"}
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.judge_line = {description:<text>, value: "${{ jobs.s3.outputs.judge_line }}"}
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.judge_line_boot2 = {description:<text>, value: "${{ jobs.s3.outputs.judge_line_boot2 }}"}
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.module_count = {description:<text>, value: "${{ jobs.s3.outputs.module_count }}"}
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.slot = {description:<text>, value: "${{ jobs.s3.outputs.slot }}"}
+yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.upper = {description:<text>, value: "${{ jobs.s3.outputs.upper }}"}
+yaml .github/workflows/ci-s3.yml permissions = 
+yaml .github/workflows/ci-s4.yml jobs = 
+yaml .github/workflows/ci-s4.yml jobs.s4.env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-s4.yml jobs.s4.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-s4.yml jobs.s4.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-s4.yml jobs.s4.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-s4.yml jobs.s4.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs = 
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.committed_final = ${{ steps.phase4.outputs.committed }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.grub_cfg_sha256 = ${{ steps.disk.outputs.grub_cfg_sha256 }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.line_abandon_b = ${{ steps.phase2.outputs.judge_line }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.line_commit_a = ${{ steps.phase1.outputs.judge_line }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.line_commit_b = ${{ steps.phase3.outputs.judge_line }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.line_rollback = ${{ steps.phase4.outputs.judge_line }}
+yaml .github/workflows/ci-s4.yml jobs.s4.outputs.next_slot_final = ${{ steps.verify4.outputs.esp_next_slot }}
+yaml .github/workflows/ci-s4.yml jobs.s4.runs-on = ubuntu-latest
+yaml .github/workflows/ci-s4.yml jobs.s4.steps = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[10].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[10].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[10].id = phase1
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[11].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[11].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[12].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[12].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[12].id = verify1
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[13].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[13].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[14].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[14].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[14].id = verify2
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].id = boot2
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with.case = s4-boot2
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with.judge-prefix = ""
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with.mode = uefi-disk
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[15].with.stop-pattern = '^(ab-commit: abandoned slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[16].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[16].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[16].id = phase2
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[17].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[17].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[17].id = verify3
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[18].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[18].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].id = boot3
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with.case = s4-boot3
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with.judge-prefix = ""
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with.mode = uefi-disk
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[19].with.stop-pattern = '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[1].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[1].with.download-upstream = "true"
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[20].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[20].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[20].id = phase3
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[21].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[21].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[22].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[22].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[22].id = verify4a
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].id = boot4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with.case = s4-boot4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with.judge-prefix = ""
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with.mode = uefi-disk
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[23].with.stop-pattern = '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[24].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[24].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[24].id = phase4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[25].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[25].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[25].id = verify4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].if = always()
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].with.diag-args = ${{ runner.temp }}/ci/qemu
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].with.name = evidence-s4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].with.paths = |
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[26].with.stage = s4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].if = always()
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].with.artifact = evidence-s4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].with.artifact-file = ${{ runner.temp }}/ci/disk/platform.tar
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[27].with.stage = s4
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[2].id = kmods
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[2].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[2].with = {script: kmods.sh}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[3].id = esp
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[3].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[3].with = {script: esp-prepare.sh, log: esp.log}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[4].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[4].env.CI_EXTRA_FILES = ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[4].env.CI_INITRAMFS_OUT = ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[4].env.CI_INIT_SCRIPT = ${{ github.workspace }}/initramfs/boot/init
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[4].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[4].id = initramfs
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[5].id = runtime
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[5].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[5].with = {script: platform-runtime.sh, log: runtime.log}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[6].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[6].env.CI_ESP_DIR = ${{ steps.esp.outputs.esp_dir }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[6].env.CI_INITRAMFS = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[6].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[6].id = disk
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[7].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[7].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[7].id = verify0
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[8].env = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[8].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].id = boot1
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with = 
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with.case = s4-boot1
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with.judge-prefix = ""
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with.mode = uefi-disk
+yaml .github/workflows/ci-s4.yml jobs.s4.steps.[9].with.stop-pattern = '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s4.yml jobs.s4.timeout-minutes = 75
+yaml .github/workflows/ci-s4.yml on = 
+yaml .github/workflows/ci-s4.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-s4.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s4.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s4.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s4.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s4.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.committed_final = {description:<text>, value: "${{ jobs.s4.outputs.committed_final }}"}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.grub_cfg_sha256 = {description:<text>, value: "${{ jobs.s4.outputs.grub_cfg_sha256 }}"}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.line_abandon_b = {description:<text>, value: "${{ jobs.s4.outputs.line_abandon_b }}"}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.line_commit_a = {description:<text>, value: "${{ jobs.s4.outputs.line_commit_a }}"}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.line_commit_b = {description:<text>, value: "${{ jobs.s4.outputs.line_commit_b }}"}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.line_rollback = {description:<text>, value: "${{ jobs.s4.outputs.line_rollback }}"}
+yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.next_slot_final = {description:<text>, value: "${{ jobs.s4.outputs.next_slot_final }}"}
+yaml .github/workflows/ci-s4.yml permissions = 
+yaml .github/workflows/ci-s5.yml jobs = 
+yaml .github/workflows/ci-s5.yml jobs.s5.env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
+yaml .github/workflows/ci-s5.yml jobs.s5.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-s5.yml jobs.s5.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-s5.yml jobs.s5.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
+yaml .github/workflows/ci-s5.yml jobs.s5.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs = 
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.conflicts = ${{ steps.phase3.outputs.conflicts }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.degraded_line = ${{ steps.phase4.outputs.evidence_line }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.judge_line = ${{ steps.phase3.outputs.judge_line }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.payload_version = ${{ steps.payload.outputs.payload_version }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.reclaimed = ${{ steps.phase3.outputs.reclaimed }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.runtime_packages = ${{ steps.runtime.outputs.runtime_packages }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.toolchain_line = ${{ steps.phase1b.outputs.evidence_line }}
+yaml .github/workflows/ci-s5.yml jobs.s5.outputs.upgrade_line = ${{ steps.phase2.outputs.evidence_line }}
+yaml .github/workflows/ci-s5.yml jobs.s5.runs-on = ubuntu-latest
+yaml .github/workflows/ci-s5.yml jobs.s5.steps = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].id = boot1
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with.case = s5-boot1
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with.judge-prefix = ""
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with.mode = uefi-disk
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[10].with.stop-pattern = '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[11].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[11].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[11].id = phase1b
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[12].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[12].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].id = boot2
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.case = s5-boot2
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.judge-prefix = ""
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.mode = uefi-disk
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.stop-pattern = '^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)'
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.timeout = "1200"
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[14].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[14].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[14].id = phase2
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[15].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[15].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[15].id = verify_upgrade
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].id = boot3
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with.case = s5-boot3
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with.judge-prefix = ""
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with.mode = uefi-disk
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[16].with.stop-pattern = '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[17].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[17].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[17].id = phase3
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[18].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[18].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[18].id = verify_commit
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[19].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[19].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[1].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[1].with.download-upstream = "true"
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].id = boot4
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with.case = s5-boot4
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with.judge-prefix = ""
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with.mode = uefi-disk
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[20].with.stop-pattern = '^(ab-boot: running slot|ab-boot: stage=boot result=fail)'
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[21].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[21].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[21].id = phase4
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].if = always()
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].with.diag-args = ${{ runner.temp }}/ci/qemu
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].with.name = evidence-s5
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].with.paths = |
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[22].with.stage = s5
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].if = always()
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].with = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].with.artifact = evidence-s5
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].with.artifact-file = ${{ runner.temp }}/ci/payload/payload.tar
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[23].with.stage = s5
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[2].id = kmods
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[2].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[2].with = {script: kmods.sh}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[3].id = esp
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[3].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[3].with = {script: esp-prepare.sh, log: esp.log}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[4].id = runtime
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[4].uses = ./.github/actions/run-stage-script
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[4].with = {script: platform-runtime.sh, log: runtime.log}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[5].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[5].env.CI_EXTRA_FILES = ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[5].env.CI_INITRAMFS_OUT = ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[5].env.CI_INIT_SCRIPT = ${{ github.workspace }}/initramfs/boot/init
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[5].env.CI_KERNEL_VERSION = ${{ steps.kmods.outputs.kernel_version }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[5].id = initramfs
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[6].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[6].env.CI_ESP_DIR = ${{ steps.esp.outputs.esp_dir }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[6].env.CI_INITRAMFS = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[6].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[6].id = disk
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[7].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[7].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[7].id = verify0
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_BOOT_SOURCE_IMAGE = ${{ steps.esp.outputs.source_image }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_BOOT_SOURCE_SHA256 = ${{ steps.esp.outputs.source_sha256 }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_BOOT_SRC = ${{ steps.esp.outputs.esp_dir }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_INITRAMFS = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].id = payload
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].env.CI_PAYLOAD = ${{ steps.payload.outputs.payload_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.timeout-minutes = 75
+yaml .github/workflows/ci-s5.yml on = 
+yaml .github/workflows/ci-s5.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-s5.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s5.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s5.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s5.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s5.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.conflicts = {description:<text>, value: "${{ jobs.s5.outputs.conflicts }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.degraded_line = {description:<text>, value: "${{ jobs.s5.outputs.degraded_line }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.judge_line = {description:<text>, value: "${{ jobs.s5.outputs.judge_line }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.payload_version = {description:<text>, value: "${{ jobs.s5.outputs.payload_version }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.reclaimed = {description:<text>, value: "${{ jobs.s5.outputs.reclaimed }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.runtime_packages = {description:<text>, value: "${{ jobs.s5.outputs.runtime_packages }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.toolchain_line = {description:<text>, value: "${{ jobs.s5.outputs.toolchain_line }}"}
+yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.upgrade_line = {description:<text>, value: "${{ jobs.s5.outputs.upgrade_line }}"}
+yaml .github/workflows/ci-s5.yml permissions = 
+yaml .github/workflows/ci-verify.yml jobs = 
+yaml .github/workflows/ci-verify.yml jobs.verify.outputs = 
+yaml .github/workflows/ci-verify.yml jobs.verify.outputs.design_checks_problems = ${{ steps.verify.outputs.design_checks_problems }}
+yaml .github/workflows/ci-verify.yml jobs.verify.outputs.design_checks_status = ${{ steps.verify.outputs.design_checks_status }}
+yaml .github/workflows/ci-verify.yml jobs.verify.outputs.shellcheck_status = ${{ steps.verify.outputs.shellcheck_status }}
+yaml .github/workflows/ci-verify.yml jobs.verify.outputs.verify_status = ${{ steps.verify.outputs.verify_status }}
+yaml .github/workflows/ci-verify.yml jobs.verify.permissions = 
+yaml .github/workflows/ci-verify.yml jobs.verify.runs-on = ubuntu-latest
+yaml .github/workflows/ci-verify.yml jobs.verify.steps = 
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[0].with = 
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[1].uses = ./.github/actions/actionlint
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[3].id = verify
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[4].continue-on-error = true
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[4].env = 
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[4].env.CI_DIAG_DIR = ${{ runner.temp }}/ci/diagnostics
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[4].if = always()
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].if = always()
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].with = 
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].with.if-no-files-found = ignore
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].with.name = logs-verify
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].with.path = |
+yaml .github/workflows/ci-verify.yml jobs.verify.steps.[5].with.retention-days = 7
+yaml .github/workflows/ci-verify.yml jobs.verify.timeout-minutes = 30
+yaml .github/workflows/ci-verify.yml on = 
+yaml .github/workflows/ci-verify.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-verify.yml on.workflow_call.outputs.design_checks_problems = 
+yaml .github/workflows/ci-verify.yml on.workflow_call.outputs.design_checks_status = 
+yaml .github/workflows/ci-verify.yml on.workflow_call.outputs.shellcheck_status = 
+yaml .github/workflows/ci-verify.yml on.workflow_call.outputs.verify_status = 
+yaml .github/workflows/ci-verify.yml permissions = 
+yaml .github/workflows/ci.yml concurrency = 
+yaml .github/workflows/ci.yml concurrency.cancel-in-progress = ${{ github.event_name != 'workflow_dispatch' }}
+yaml .github/workflows/ci.yml concurrency.group = ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+yaml .github/workflows/ci.yml jobs = 
+yaml .github/workflows/ci.yml jobs.assemble.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'assemble') }}
+yaml .github/workflows/ci.yml jobs.assemble.needs = [resolve, fetch, versions]
+yaml .github/workflows/ci.yml jobs.assemble.uses = ./.github/workflows/ci-assemble.yml
+yaml .github/workflows/ci.yml jobs.assemble.with = 
+yaml .github/workflows/ci.yml jobs.assemble.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.assemble.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.assemble.with.platform_version = ${{ needs.versions.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.assemble.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.assemble.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.fetch.if = ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage != 'verify') }}
+yaml .github/workflows/ci.yml jobs.fetch.needs = resolve
+yaml .github/workflows/ci.yml jobs.fetch.uses = ./.github/workflows/ci-fetch.yml
+yaml .github/workflows/ci.yml jobs.fetch.with = 
+yaml .github/workflows/ci.yml jobs.fetch.with.btrfs_kmod_name = ${{ needs.resolve.outputs.btrfs_kmod_name }}
+yaml .github/workflows/ci.yml jobs.fetch.with.btrfs_kmod_sha256 = ${{ needs.resolve.outputs.btrfs_kmod_sha256 }}
+yaml .github/workflows/ci.yml jobs.fetch.with.cache_key = ${{ needs.resolve.outputs.cache_key }}
+yaml .github/workflows/ci.yml jobs.fetch.with.cache_restore_prefix = ${{ needs.resolve.outputs.cache_restore_prefix }}
+yaml .github/workflows/ci.yml jobs.fetch.with.kernel_name = ${{ needs.resolve.outputs.kernel_name }}
+yaml .github/workflows/ci.yml jobs.fetch.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.fetch.with.kernel_sha256 = ${{ needs.resolve.outputs.kernel_sha256 }}
+yaml .github/workflows/ci.yml jobs.fetch.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.fetch.with.rootfs_name = ${{ needs.resolve.outputs.rootfs_name }}
+yaml .github/workflows/ci.yml jobs.fetch.with.rootfs_sha256 = ${{ needs.resolve.outputs.rootfs_sha256 }}
+yaml .github/workflows/ci.yml jobs.fetch.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.fetch.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.report.if = ${{ always() }}
+yaml .github/workflows/ci.yml jobs.report.needs = [resolve, fetch, assemble, s1, s2, s3, s4, s5, verify]
+yaml .github/workflows/ci.yml jobs.report.permissions = 
+yaml .github/workflows/ci.yml jobs.report.uses = ./.github/workflows/ci-report.yml
+yaml .github/workflows/ci.yml jobs.report.with = 
+yaml .github/workflows/ci.yml jobs.report.with.assemble_result = ${{ needs.assemble.result }}
+yaml .github/workflows/ci.yml jobs.report.with.cache_hit = ${{ needs.fetch.outputs.cache_hit }}
+yaml .github/workflows/ci.yml jobs.report.with.cache_key = ${{ needs.resolve.outputs.cache_key }}
+yaml .github/workflows/ci.yml jobs.report.with.design_checks_problems = ${{ needs.verify.outputs.design_checks_problems }}
+yaml .github/workflows/ci.yml jobs.report.with.design_checks_status = ${{ needs.verify.outputs.design_checks_status }}
+yaml .github/workflows/ci.yml jobs.report.with.fetch_result = ${{ needs.fetch.result }}
+yaml .github/workflows/ci.yml jobs.report.with.fetch_total_bytes = ${{ needs.fetch.outputs.fetch_total_bytes }}
+yaml .github/workflows/ci.yml jobs.report.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.report.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.report.with.payload_manifest_sha256 = ${{ needs.assemble.outputs.payload_manifest_sha256 }}
+yaml .github/workflows/ci.yml jobs.report.with.payload_members = ${{ needs.assemble.outputs.payload_members }}
+yaml .github/workflows/ci.yml jobs.report.with.payload_total_bytes = ${{ needs.assemble.outputs.payload_total_bytes }}
+yaml .github/workflows/ci.yml jobs.report.with.ref = ${{ github.ref }}
+yaml .github/workflows/ci.yml jobs.report.with.resolve_result = ${{ needs.resolve.result }}
+yaml .github/workflows/ci.yml jobs.report.with.s1_apk_crosscheck = ${{ needs.s1.outputs.apk_crosscheck }}
+yaml .github/workflows/ci.yml jobs.report.with.s1_boot_seconds = ${{ needs.s1.outputs.boot_seconds }}
+yaml .github/workflows/ci.yml jobs.report.with.s1_line = ${{ needs.s1.outputs.judge_line }}
+yaml .github/workflows/ci.yml jobs.report.with.s1_modules = ${{ needs.s1.outputs.module_count }}
+yaml .github/workflows/ci.yml jobs.report.with.s1_result = ${{ needs.s1.result }}
+yaml .github/workflows/ci.yml jobs.report.with.s1_uefi_line = ${{ needs.s1.outputs.uefi_line }}
+yaml .github/workflows/ci.yml jobs.report.with.s2_host_checks = ${{ needs.s2.outputs.host_checks }}
+yaml .github/workflows/ci.yml jobs.report.with.s2_image_bytes = ${{ needs.s2.outputs.image_bytes }}
+yaml .github/workflows/ci.yml jobs.report.with.s2_image_gz_bytes = ${{ needs.s2.outputs.image_gz_bytes }}
+yaml .github/workflows/ci.yml jobs.report.with.s2_line = ${{ needs.s2.outputs.judge_line }}
+yaml .github/workflows/ci.yml jobs.report.with.s2_result = ${{ needs.s2.result }}
+yaml .github/workflows/ci.yml jobs.report.with.s2_rootfs_files = ${{ needs.s2.outputs.rootfs_files }}
+yaml .github/workflows/ci.yml jobs.report.with.s3_line = ${{ needs.s3.outputs.judge_line }}
+yaml .github/workflows/ci.yml jobs.report.with.s3_line_boot2 = ${{ needs.s3.outputs.judge_line_boot2 }}
+yaml .github/workflows/ci.yml jobs.report.with.s3_result = ${{ needs.s3.result }}
+yaml .github/workflows/ci.yml jobs.report.with.s3_slot = ${{ needs.s3.outputs.slot }}
+yaml .github/workflows/ci.yml jobs.report.with.s3_upper = ${{ needs.s3.outputs.upper }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_committed_final = ${{ needs.s4.outputs.committed_final }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_line_abandon_b = ${{ needs.s4.outputs.line_abandon_b }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_line_commit_a = ${{ needs.s4.outputs.line_commit_a }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_line_commit_b = ${{ needs.s4.outputs.line_commit_b }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_line_rollback = ${{ needs.s4.outputs.line_rollback }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_next_slot_final = ${{ needs.s4.outputs.next_slot_final }}
+yaml .github/workflows/ci.yml jobs.report.with.s4_result = ${{ needs.s4.result }}
+yaml .github/workflows/ci.yml jobs.report.with.s5_conflicts = ${{ needs.s5.outputs.conflicts }}
+yaml .github/workflows/ci.yml jobs.report.with.s5_degraded_line = ${{ needs.s5.outputs.degraded_line }}
+yaml .github/workflows/ci.yml jobs.report.with.s5_line = ${{ needs.s5.outputs.judge_line }}
+yaml .github/workflows/ci.yml jobs.report.with.s5_reclaimed = ${{ needs.s5.outputs.reclaimed }}
+yaml .github/workflows/ci.yml jobs.report.with.s5_result = ${{ needs.s5.result }}
+yaml .github/workflows/ci.yml jobs.report.with.s5_upgrade_line = ${{ needs.s5.outputs.upgrade_line }}
+yaml .github/workflows/ci.yml jobs.report.with.sha = ${{ github.sha }}
+yaml .github/workflows/ci.yml jobs.report.with.shellcheck_status = ${{ needs.verify.outputs.shellcheck_status }}
+yaml .github/workflows/ci.yml jobs.report.with.stage = ${{ inputs.stage || 'all' }}
+yaml .github/workflows/ci.yml jobs.report.with.trigger = ${{ github.event_name }}
+yaml .github/workflows/ci.yml jobs.report.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.report.with.verify_result = ${{ needs.verify.result }}
+yaml .github/workflows/ci.yml jobs.report.with.version_source = ${{ needs.resolve.outputs.version_source }}
+yaml .github/workflows/ci.yml jobs.resolve.uses = ./.github/workflows/ci-resolve.yml
+yaml .github/workflows/ci.yml jobs.resolve.with = 
+yaml .github/workflows/ci.yml jobs.resolve.with.upstream_version = ${{ inputs.upstream_version || '' }}
+yaml .github/workflows/ci.yml jobs.s1.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's1') }}
+yaml .github/workflows/ci.yml jobs.s1.needs = [resolve, fetch]
+yaml .github/workflows/ci.yml jobs.s1.uses = ./.github/workflows/ci-s1.yml
+yaml .github/workflows/ci.yml jobs.s1.with = 
+yaml .github/workflows/ci.yml jobs.s1.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.s1.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.s1.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.s1.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.s2.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's2') }}
+yaml .github/workflows/ci.yml jobs.s2.needs = [resolve, fetch, versions]
+yaml .github/workflows/ci.yml jobs.s2.uses = ./.github/workflows/ci-s2.yml
+yaml .github/workflows/ci.yml jobs.s2.with = 
+yaml .github/workflows/ci.yml jobs.s2.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.s2.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.s2.with.platform_version = ${{ needs.versions.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.s2.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.s2.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.s3.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's3') }}
+yaml .github/workflows/ci.yml jobs.s3.needs = [resolve, fetch, versions]
+yaml .github/workflows/ci.yml jobs.s3.uses = ./.github/workflows/ci-s3.yml
+yaml .github/workflows/ci.yml jobs.s3.with = 
+yaml .github/workflows/ci.yml jobs.s3.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.s3.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.s3.with.platform_version = ${{ needs.versions.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.s3.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.s3.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.s4.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's4') }}
+yaml .github/workflows/ci.yml jobs.s4.needs = [resolve, fetch, versions]
+yaml .github/workflows/ci.yml jobs.s4.uses = ./.github/workflows/ci-s4.yml
+yaml .github/workflows/ci.yml jobs.s4.with = 
+yaml .github/workflows/ci.yml jobs.s4.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.s4.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.s4.with.platform_version = ${{ needs.versions.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.s4.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.s4.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.s5.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's5') }}
+yaml .github/workflows/ci.yml jobs.s5.needs = [resolve, fetch, versions]
+yaml .github/workflows/ci.yml jobs.s5.uses = ./.github/workflows/ci-s5.yml
+yaml .github/workflows/ci.yml jobs.s5.with = 
+yaml .github/workflows/ci.yml jobs.s5.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.s5.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.s5.with.platform_version = ${{ needs.versions.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.s5.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.s5.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.verify.if = ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'verify') }}
+yaml .github/workflows/ci.yml jobs.verify.needs = resolve
+yaml .github/workflows/ci.yml jobs.verify.uses = ./.github/workflows/ci-verify.yml
+yaml .github/workflows/ci.yml jobs.versions.outputs = 
+yaml .github/workflows/ci.yml jobs.versions.outputs.platform_version = ${{ steps.read.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.versions.runs-on = ubuntu-latest
+yaml .github/workflows/ci.yml jobs.versions.steps = 
+yaml .github/workflows/ci.yml jobs.versions.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci.yml jobs.versions.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci.yml jobs.versions.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci.yml jobs.versions.steps.[2].id = read
+yaml .github/workflows/ci.yml jobs.versions.timeout-minutes = 5
+yaml .github/workflows/ci.yml on = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.default = ""
+yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.required = false
+yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.type = string
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs = 
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.stage = 
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.stage.default = all
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.stage.type = choice
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.upstream_version = 
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.upstream_version.default = ""
+yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.upstream_version.type = string
+yaml .github/workflows/ci.yml permissions = 
+yaml .github/workflows/release-publish.yml jobs = 
+yaml .github/workflows/release-publish.yml jobs.publish.permissions = 
+yaml .github/workflows/release-publish.yml jobs.publish.runs-on = ubuntu-latest
+yaml .github/workflows/release-publish.yml jobs.publish.steps = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_EXTRA_NOTES = ${{ inputs.extra-notes }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_PAYLOAD = ${{ runner.temp }}/ci/payload/payload.tar
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_RELEASE_TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_UPSTREAM_KERNEL_SHA256 = ${{ steps.versions.outputs.kernel_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_UPSTREAM_ROOTFS_SHA256 = ${{ steps.versions.outputs.rootfs_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].id = release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.KERNEL_SHA = ${{ steps.versions.outputs.kernel_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.KIND = ${{ steps.image_kind.outputs.kind }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.ROOTFS_SHA = ${{ steps.versions.outputs.rootfs_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TITLE = ${{ steps.title.outputs.release_title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.RELEASE_DIR = ${{ runner.temp }}/ci/release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.TITLE = ${{ steps.title.outputs.release_title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].id = publish
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].if = always()
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[1].with = {apt: "cpio"}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].if = ${{ inputs.run-id == '' }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].with = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].with.name = ${{ inputs.image-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].with.path = ${{ runner.temp }}/ci/disk
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].if = ${{ inputs.run-id == '' }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with.name = ${{ inputs.payload-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with.path = ${{ runner.temp }}/ci/payload
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.IMAGE_ARTIFACT = ${{ inputs.image-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.PAYLOAD_ARTIFACT = ${{ inputs.payload-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.RUN_ID = ${{ inputs.run-id }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].if = ${{ inputs.run-id != '' }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.MANIFEST = ${{ runner.temp }}/ci/payload/payload/manifest.json
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.TAG_POLICY = ${{ inputs.tag-policy }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].id = versions
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].id = mount
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].id = image_kind
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.TAG_POLICY = ${{ inputs.tag-policy }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].id = preflight
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.BARE_VERSION = ${{ steps.versions.outputs.bare_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.TAG_POLICY = ${{ inputs.tag-policy }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.TITLE_TEMPLATE = ${{ inputs.title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].id = title
+yaml .github/workflows/release-publish.yml jobs.publish.timeout-minutes = 35
+yaml .github/workflows/release-publish.yml on = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.dry-run = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.dry-run.default = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.dry-run.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.dry-run.type = boolean
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.extra-notes = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.extra-notes.default = ""
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.extra-notes.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.extra-notes.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.image-artifact = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.image-artifact.default = image-install
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.image-artifact.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.image-artifact.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.payload-artifact = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.payload-artifact.default = payload-upgrade
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.payload-artifact.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.payload-artifact.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.platform_version = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.platform_version.default = ""
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.platform_version.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.platform_version.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.run-id = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.run-id.default = ""
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.run-id.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.run-id.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag-policy = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag-policy.default = bare
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag-policy.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag-policy.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag.required = true
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.default = ""
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.type = string
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.upstream_version = 
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.upstream_version.default = ""
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.upstream_version.required = false
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.upstream_version.type = string
+yaml .github/workflows/release-publish.yml permissions = 
+yaml .github/workflows/release.yml jobs = 
+yaml .github/workflows/release.yml jobs.build.permissions = 
+yaml .github/workflows/release.yml jobs.build.uses = ./.github/workflows/ci.yml
+yaml .github/workflows/release.yml jobs.publish.needs = build
+yaml .github/workflows/release.yml jobs.publish.permissions = 
+yaml .github/workflows/release.yml jobs.publish.uses = ./.github/workflows/release-publish.yml
+yaml .github/workflows/release.yml jobs.publish.with = 
+yaml .github/workflows/release.yml jobs.publish.with.tag = ${{ github.ref_name }}
+yaml .github/workflows/release.yml jobs.publish.with.tag-policy = v
+yaml .github/workflows/release.yml on = 
+yaml .github/workflows/release.yml permissions = 
+yaml .github/workflows/upstream-watch.yml jobs = 
+yaml .github/workflows/upstream-watch.yml jobs.build.needs = [detect, bump]
+yaml .github/workflows/upstream-watch.yml jobs.build.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.build.uses = ./.github/workflows/ci.yml
+yaml .github/workflows/upstream-watch.yml jobs.build.with = 
+yaml .github/workflows/upstream-watch.yml jobs.build.with.upstream_version = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.if = ${{ needs.detect.outputs.changed == 'true' }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.needs = detect
+yaml .github/workflows/upstream-watch.yml jobs.bump.outputs = 
+yaml .github/workflows/upstream-watch.yml jobs.bump.outputs.base = ${{ steps.push.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.outputs.branch = ${{ steps.push.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.outputs.pr = ${{ steps.pr.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.bump.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[2].env.BASE_INPUT = ${{ inputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[2].env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[2].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[2].id = push
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.BASE = ${{ steps.push.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.BRANCH = ${{ steps.push.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.CI_MATRIX_CANDIDATES = ${{ needs.detect.outputs.candidates }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.CI_MATRIX_GAPS = ${{ needs.detect.outputs.gaps }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.CI_PREVIOUS_PIN = ${{ needs.detect.outputs.current_pin }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.CI_RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.bump.steps.[3].id = pr
+yaml .github/workflows/upstream-watch.yml jobs.bump.timeout-minutes = 10
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.candidates = ${{ steps.matrix.outputs.candidates }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.changed = ${{ steps.detect.outputs.changed }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.current_pin = ${{ steps.detect.outputs.current_pin }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.gaps = ${{ steps.matrix.outputs.gaps }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.heartbeat = ${{ steps.heartbeat.outputs.action }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.version = ${{ steps.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env.CI_FORCE_VERSION = ${{ inputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].id = detect
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].env.VERSION = ${{ steps.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].id = matrix
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].if = ${{ steps.detect.outputs.changed == 'true' }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].env = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].env.CI_MATRIX_CANDIDATES = ${{ steps.matrix.outputs.candidates }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].id = heartbeat
+yaml .github/workflows/upstream-watch.yml jobs.detect.timeout-minutes = 10
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.if = ${{ needs.detect.outputs.changed != 'true' && needs.detect.outputs.heartbeat == 'would-create' }}
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.needs = detect
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with = 
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-depth = 50
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-tags = true
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.persist-credentials = false
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[2].id = heartbeat
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env.ACTION = ${{ steps.heartbeat.outputs.action }}
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env.TAG = ${{ steps.heartbeat.outputs.tag }}
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.timeout-minutes = 10
+yaml .github/workflows/upstream-watch.yml jobs.issue.if = ${{ failure() || cancelled() }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.needs = [detect, heartbeat, bump, build, locks, merge, publish]
+yaml .github/workflows/upstream-watch.yml jobs.issue.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.issue.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUILD = ${{ needs.build.result }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUMP = ${{ needs.bump.result }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CHANGED = ${{ needs.detect.outputs.changed }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.LOCKS = ${{ needs.locks.result }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.MERGE = ${{ needs.merge.result }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.PR = ${{ needs.bump.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.PUBLISH = ${{ needs.publish.result }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.timeout-minutes = 10
+yaml .github/workflows/upstream-watch.yml jobs.locks.needs = [detect, bump, build]
+yaml .github/workflows/upstream-watch.yml jobs.locks.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[0].with = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[0].with.persist-credentials = false
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[0].with.ref = ${{ needs.bump.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[1].with = {apt: "cpio kmod"}
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[2].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[2].with = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[2].with.name = upstream-files
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[2].with.path = ${{ runner.temp }}/ci/fetch
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[3].env.CI_OUTPUT_ENV = ${{ runner.temp }}/ci/locks/derive.env
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[3].env.CI_ROOTFS_TAR = ${{ runner.temp }}/ci/fetch/upstream/rootfs.tar.gz
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[3].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[3].id = derive
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[4].env = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[4].env.BRANCH = ${{ needs.bump.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[4].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[4].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[4].id = commit
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env = 
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_LOCK_STRICT = "1"
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_OUTPUT_ENV = ${{ runner.temp }}/ci/locks/strict.env
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_ROOTFS_TAR = ${{ runner.temp }}/ci/fetch/upstream/rootfs.tar.gz
+yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.locks.timeout-minutes = 45
+yaml .github/workflows/upstream-watch.yml jobs.merge.needs = [detect, bump, build, locks]
+yaml .github/workflows/upstream-watch.yml jobs.merge.outputs = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.outputs.tag = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[0].with = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[0].with.fetch-depth = 0
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[0].with.persist-credentials = false
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.BASE = ${{ needs.bump.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].id = already
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env.BASE = ${{ needs.bump.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env.BRANCH = ${{ needs.bump.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].if = steps.already.outputs.skip != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env.PR = ${{ needs.bump.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].if = steps.already.outputs.skip != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.BASE = ${{ needs.bump.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.BRANCH = ${{ needs.bump.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.PR = ${{ needs.bump.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].if = steps.already.outputs.skip != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.timeout-minutes = 15
+yaml .github/workflows/upstream-watch.yml jobs.publish.needs = [detect, merge]
+yaml .github/workflows/upstream-watch.yml jobs.publish.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.publish.uses = ./.github/workflows/release-publish.yml
+yaml .github/workflows/upstream-watch.yml jobs.publish.with = 
+yaml .github/workflows/upstream-watch.yml jobs.publish.with.dry-run = ${{ inputs.dry-run }}
+yaml .github/workflows/upstream-watch.yml jobs.publish.with.extra-notes = ${{ needs.detect.outputs.candidates }}
+yaml .github/workflows/upstream-watch.yml jobs.publish.with.tag = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.publish.with.tag-policy = bare
+yaml .github/workflows/upstream-watch.yml on = 
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs = 
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.base = 
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.base.default = "main"
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.base.type = string
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.dry-run = 
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.dry-run.default = false
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.dry-run.type = boolean
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.version = 
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.version.default = ""
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.version.type = string
+yaml .github/workflows/upstream-watch.yml permissions = 

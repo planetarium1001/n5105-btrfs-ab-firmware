@@ -417,4 +417,110 @@ else
   printf '# actionlint is not installed here; ac-8 is enforced by the verify stage\n'
 fi
 
+# --------------------------------------------------------------------------- #
+# ac-4 (L2): the S5 payload records where its bootloader came from
+#
+# The stage built a test payload whose manifest said `source_sha256: null`, because the
+# workflow never passed what esp-prepare had measured. A stand-in payload that cannot say
+# where its loader came from cannot prove the upgrade path a released payload takes, and the
+# release payload does record it - the two must not diverge.
+# --------------------------------------------------------------------------- #
+
+# step_with_id <workflow> <step-id>: the block of the step that declares that id, so the
+# assertion names the step that owns the environment instead of matching anywhere in the file.
+step_with_id() {
+  awk -v want="id: $2" '
+    /^      - / { if (found) exit; block = $0 "\n"; next }
+    { block = block $0 "\n" }
+    index($0, want) { found = 1 }
+    END { if (found) printf "%s", block }
+  ' "$1"
+}
+
+for owner in 'ci-s5.yml:payload' 'ci-assemble.yml:assemble'; do
+  wf=".github/workflows/${owner%%:*}"
+  id="${owner##*:}"
+  block="$(step_with_id "$wf" "$id")"
+  assert_contains "${block}" 'CI_BOOT_SRC: ${{ steps.esp.outputs.esp_dir }}' \
+    "ac-4 ${owner%%:*} hands the payload the boot tree it must not silently invent"
+  for var in CI_BOOT_SOURCE_IMAGE CI_BOOT_SOURCE_SHA256; do
+    assert_contains "${block}" "${var}: \${{ steps.esp.outputs." \
+      "ac-4 ${owner%%:*} records the boot source (${var})"
+  done
+done
+
+# The fragment that writes the block takes both values from the environment without a
+# fallback, which is why an unset one lands as null rather than as a made-up digest - and
+# why passing them is the fix rather than guessing them.
+assert_contains "$(cat scripts/ci/boot-member.sh)" 'source_image="${CI_BOOT_SOURCE_IMAGE:-' \
+  "ac-4 the boot block reads the source image from the caller"
+assert_contains "$(cat scripts/ci/boot-member.sh)" 'source_sha="${CI_BOOT_SOURCE_SHA256:-}"' \
+  "ac-4 the boot block records no digest when the caller passed none"
+
+# --------------------------------------------------------------------------- #
+# ac-8 (L5/L6): the two leftovers the earlier tasks claimed to have closed
+#
+# L5: no third-party action may float on a major tag - what runs with the runner's
+# credentials has to be the commit that was reviewed. L6: the GRUB menu comment has to say
+# both who writes the menu and the one thing that can replace it, because the payload ships
+# a new menu and a comment claiming "written once, never rewritten" contradicts it.
+# --------------------------------------------------------------------------- #
+
+floating=""
+for wf in .github/workflows/*.yml .github/actions/*/action.yml; do
+  bad=$(grep -E '^\s*uses:' "$wf" | sed -E 's/^[[:space:]]*uses:[[:space:]]*//' \
+    | grep -vE '^\./' \
+    | grep -vE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}( # v[0-9].*)?$' || true)
+  if [ -n "$bad" ]; then
+    floating="${floating}${wf}: ${bad}; "
+  fi
+done
+assert_eq "${floating}" "" "ac-8 every third-party action is pinned to a 40-character sha"
+
+grub_template="$(cat scripts/ci/grub.cfg.in)"
+assert_contains "${grub_template}" "rendered once, here, at build time" \
+  "ac-8 the GRUB menu comment says when it is written"
+assert_contains "${grub_template}" "replaces the whole file from the payload's" \
+  "ac-8 the GRUB menu comment names the one writer that can replace it"
+
+# --------------------------------------------------------------------------- #
+# ac-6: esp_next_slot is emitted, declared and read - not a promise
+#
+# It was declared by the composite and read by ci-s4 while nothing produced it, so the report
+# column was permanently empty. Either half missing makes the same silent hole, so all three
+# ends are asserted: the script emits it, the composite declares it, and the caller reads it.
+# --------------------------------------------------------------------------- #
+
+assert_contains "$(cat scripts/ci/grub-render.sh)" 'ci_emit_output "esp_next_slot"' \
+  "ac-6 grub-render.sh emits esp_next_slot when it verifies an ESP"
+assert_contains "$(cat .github/actions/run-stage-script/action.yml)" \
+  'value: ${{ steps.run.outputs.esp_next_slot }}' \
+  "ac-6 the stage-script composite declares esp_next_slot"
+assert_contains "$(cat .github/workflows/ci-s4.yml)" 'steps.verify4.outputs.esp_next_slot' \
+  "ac-6 the S4 stage reads esp_next_slot from the step that emits it"
+assert_contains "$(cat .github/workflows/ci-s4.yml)" \
+  'next_slot_final: ${{ steps.verify4.outputs.esp_next_slot }}' \
+  "ac-6 S4 publishes it as a job output"
+assert_contains "$(cat .github/workflows/ci.yml)" 's4_next_slot_final' \
+  "ac-6 ci.yml forwards it to the report"
+assert_contains "$(cat scripts/ci/report.sh)" 'CI_S4_NEXT_SLOT_FINAL' \
+  "ac-6 the report renders it, so the column is not permanently empty"
+
+# --------------------------------------------------------------------------- #
+# ac-5: the assemble stage leaves the tree it runs from alone
+#
+# It used to chmod `${CI_REPO_ROOT}/platform` so the checker could be read out of the
+# checkout; a local reproduction therefore reported modified file modes in `git status`. The
+# checker now comes out of the payload, so nothing needs the checkout to be executable.
+# --------------------------------------------------------------------------- #
+
+assert_eq "$(grep -c 'ci_platform_modes "${CI_REPO_ROOT}' scripts/ci/assemble.sh || true)" "0" \
+  "ac-5 the assemble stage never applies modes to the checkout"
+assert_eq "$(grep -c 'ci_platform_startlinks "${CI_REPO_ROOT}' scripts/ci/assemble.sh || true)" "0" \
+  "ac-5 the assemble stage never creates rcS links in the checkout"
+assert_contains "$(cat scripts/ci/assemble.sh)" 'check_platform="${check_dir}/platform"' \
+  "ac-5 the checker is unpacked into the stage scratch"
+assert_contains "$(cat scripts/ci/assemble.sh)" 'sh "${check_platform}/usr/sbin/ab-upgrade" --check' \
+  "ac-5 the payload is validated by the copy it carries"
+
 finish

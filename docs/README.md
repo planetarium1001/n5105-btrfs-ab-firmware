@@ -8,6 +8,7 @@ Each document covers one topic. Every number is either measured or has an explic
 |---|---|
 | [ci-pipeline.md](ci-pipeline.md) | Every workflow file and when to run it, the five stages (what each proves and what a failure costs), the artifact map, how to read a run page, and how to reproduce a stage locally |
 | [ci-release-lines.md](ci-release-lines.md) | The two release lines (`v*` and bare upstream versions), what a tag has to prove, the daily upstream watch, and one worked release |
+| [ci-text-contract.md](ci-text-contract.md) | Seven rules for everything the CI says to a human: workflow, job and step labels, input descriptions, the summaries, the issue and pull request bodies, the release title - and the structure fingerprint that keeps a text change from touching what runs |
 | [device-matrix.md](device-matrix.md) | Driving a real machine through the version matrix over SSH: what each assertion proves, the resume file, the result states, and the red line that keeps a bootable slot |
 | [partitions.md](partitions.md) | Partition geometry, GPT PARTNAME and filesystem LABEL naming, sizing rationale, `mkfs` and mount options, subvolumes, first-boot growth |
 | [boot-overlay.md](boot-overlay.md) | Boot sequence, layer responsibilities, mount composition and order, platform-layer injection, GRUB assertions, degraded boot |

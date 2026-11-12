@@ -116,6 +116,40 @@ assert_contains "$publish_text" 'gh release upload "${TAG}"' "ac-6 re-publishing
 assert_contains "$publish_text" '--clobber' "ac-6 re-publishing overwrites instead of failing"
 
 # --------------------------------------------------------------------------- #
+# ac-1: a re-run over a draft publishes it, and a published release stays alone
+# --------------------------------------------------------------------------- #
+
+# Uploading the bytes again is not publishing. The v0.0.8 pre-review found the branch that
+# only does `gh release upload --clobber`: a release left as a draft stays invisible while
+# the run reports success, which is the one failure mode nobody notices in time.
+publish_step=$(step_block "$publish" 'id: publish')
+assert_contains "$publish_step" 'gh release edit "${TAG}" --draft=false' \
+  "ac-1 re-running over a draft publishes the release"
+assert_contains "$publish_step" '--json isDraft --jq .isDraft' \
+  "ac-1 the draft state is read before it is changed"
+
+# Idempotent in the other direction: a published release is never deleted and recreated, so
+# a second automatic run cannot withdraw a release a machine may already have downloaded.
+republish="$(sed -n '/elif gh release view/,/^          fi$/p' "$publish")"
+assert_eq "$(printf '%s\n' "$republish" | grep -c 'gh release delete' || true)" "0" \
+  "ac-1 re-running over a published release never deletes it"
+assert_eq "$(printf '%s\n' "$republish" | grep -c 'gh release edit' || true)" "1" \
+  "ac-1 the exists branch edits the release in exactly one place"
+
+# --------------------------------------------------------------------------- #
+# ac-3: the release notes carry the conclusion, not a fixed claim
+# --------------------------------------------------------------------------- #
+
+# A re-run publishes whatever the tag/CI actually proves; the notes must not assert a stage
+# result the publish job never read.
+assert_eq "$(grep -c 'S1 to S5 all passed' "$publish" || true)" "0" \
+  "ac-3 the notes never claim the five stages passed"
+assert_contains "$publish_step" 'Verified by CI run %s' \
+  "ac-3 the notes still name the run that proved the release"
+assert_contains "$publish_step" "The stage verdicts are in that" \
+  "ac-3 the notes point at the run's report instead of restating its verdict"
+
+# --------------------------------------------------------------------------- #
 # ac-6: dry-run publishes nothing
 # --------------------------------------------------------------------------- #
 
