@@ -21,13 +21,6 @@ name: upstream watch
 # outcome of most days, not a failure.
 
 on:
-  # TEMPORARY REHEARSAL TRIGGER - not part of the deliverable.
-  # GitHub only dispatches or schedules a workflow that exists on the default branch, so
-  # this file cannot be triggered at all while it lives on a work branch. A push trigger on
-  # the work branch is the only way to run it before it is merged; the next commit removes
-  # this block and restores the empty defaults below.
-  push:
-    branches: [wf/20261112-02-upstream-auto-release-main]
   schedule:
     # 20:00 UTC = 04:00 in Beijing: after the upstream mirrors settle for the day and
     # outside the hours anyone here dispatches a build by hand.
@@ -37,18 +30,19 @@ on:
       version:
         description: "Treat this upstream version as the new release (rehearsal only; empty means discover it)"
         type: string
-        default: "25.12.1"
+        default: ""
       dry-run:
         description: "Rehearse: merge into a scratch branch and publish a draft release"
         type: boolean
-        default: true
+        default: false
       base:
         description: "Branch the PR is opened against and merged into"
         type: string
-        default: "auto/dryrun-main"
+        default: "main"
 
-# The workflow-level grant has to cover every permission a job grants, and every
-# permission a called workflow asks for; each job below narrows it again.
+# The workflow-level grant is the floor, not the ceiling: each job asks for exactly what it
+# writes, which is where the audit of this file starts. The comments below record the two
+# platform rules that shaped the graph.
 # GitHub cannot nest concurrency: calling a reusable workflow that itself declares a
 # concurrency group from a workflow that declares one silently drops the call (the job
 # never appears in the run). The pipeline this run builds with is ci.yml, which declares
@@ -56,10 +50,7 @@ on:
 # from the base branch and stops when the release has already happened, so two overlapping
 # runs converge on the same answer instead of merging twice.
 permissions:
-  contents: write
-  actions: read
-  pull-requests: write
-  issues: write
+  contents: read
 
 jobs:
   # What is published has to be what was proved, so every job that writes says what it
@@ -86,7 +77,7 @@ jobs:
       - name: Detect the newest upstream formal release
         id: detect
         env:
-          CI_FORCE_VERSION: ${{ inputs.version || '25.12.1' }}
+          CI_FORCE_VERSION: ${{ inputs.version }}
         run: bash scripts/ci/upstream-watch.sh detect 2>&1 | tee -a "${CI_LOG_DIR}/detect.log"
 
       # The candidates are the new release plus the three formal releases before it. They
@@ -117,8 +108,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The tags have to be here: the script decides from the tag history whether a
+      # heartbeat is due, and actions/checkout is a shallow, tag-less clone by default.
+      # Without `fetch-tags` a month that already has its heartbeat is tagged again and the
+      # push fails on the remote.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: {persist-credentials: false}
+        with:
+          fetch-tags: true
+          fetch-depth: 50
+          persist-credentials: false
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
       - name: Create the heartbeat tag
@@ -165,8 +163,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.detect.outputs.version }}
-          DRY_RUN: ${{ inputs.dry-run || true }}
-          BASE_INPUT: ${{ inputs.base || 'auto/dryrun-main' }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          BASE_INPUT: ${{ inputs.base }}
         run: |
           set -euo pipefail
           base="${BASE_INPUT:-main}"
@@ -433,14 +431,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ needs.bump.outputs.branch }}
           BASE: ${{ needs.bump.outputs.base }}
+          PR: ${{ needs.bump.outputs.pr }}
           VERSION: ${{ needs.detect.outputs.version }}
         run: |
           set -euo pipefail
           case "${VERSION}" in
             v*) echo "refusing to tag ${VERSION}: the automatic line publishes bare versions" >&2; exit 1 ;;
           esac
-          git fetch --no-tags origin "${BASE}"
-          sha="$(git rev-parse "origin/${BASE}")"
+          # The merge commit the API reports, not whatever the base branch happens to point
+          # at by now: a concurrent push must not become the tagged release.
+          sha="$(gh pr view "${PR}" --json mergeCommit --jq '.mergeCommit.oid')"
+          [ -n "${sha}" ] && [ "${sha}" != "null" ] || { echo "the merged pull request reports no merge commit" >&2; exit 1; }
+          git fetch --no-tags origin "${sha}"
           git config user.name "upstream-watch[bot]"
           git config user.email "upstream-watch@users.noreply.github.com"
           git tag -a "${VERSION}" -m "ImmortalWrt ${VERSION} through the N5105 A/B pipeline" "${sha}"
@@ -462,20 +464,19 @@ jobs:
       tag-policy: bare
       title: "ImmortalWrt N5105 A/B firmware {tag}"
       extra-notes: ${{ needs.detect.outputs.candidates }}
-      dry-run: ${{ inputs.dry-run || true }}
+      dry-run: ${{ inputs.dry-run }}
 
   # A red run has to leave one place to look. The title is stable per upstream version, so
   # a second failure updates the issue instead of opening another one.
   issue:
     name: report the failure
-    needs: [detect, bump, build, locks, merge, publish]
+    needs: [detect, heartbeat, bump, build, locks, merge, publish]
     if: ${{ failure() || cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       issues: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: {persist-credentials: false}
@@ -496,7 +497,6 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CI_LOG_ARTIFACT: logs-${{ github.run_id }}
         run: |
           set -euo pipefail
           failed=""

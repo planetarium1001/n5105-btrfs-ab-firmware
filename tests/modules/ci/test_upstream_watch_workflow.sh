@@ -188,6 +188,31 @@ assert_eq "$unpinned" "" "ac-2 every third-party action of the watch is pinned t
 assert_eq "$(grep -cE '(>>? *VERSION|git add +VERSION)' "$watch")" "0" \
   "ac-4 the watch never edits VERSION"
 
+# --------------------------------------------------------------------------- #
+# ac-2: the security and correctness details the shape depends on
+# --------------------------------------------------------------------------- #
+
+# Read by default, write where it writes: a workflow-level write grant is how a job that
+# never needed it ends up able to push.
+assert_contains "$(sed -n '/^permissions:/,/^$/p' "$watch")" "contents: read" \
+  "ac-2 the watch asks for contents: read at workflow level"
+assert_eq "$(grep -c 'permissions:' "$watch" | awk '{print ($1 >= 6) ? "yes" : "no"}')" "yes" \
+  "ac-2 every writing job narrows the grant itself"
+
+# The heartbeat decides from tag history, which a shallow tag-less clone does not have.
+assert_contains "$(job_block heartbeat)" "fetch-tags: true" \
+  "ac-5 the heartbeat job fetches the tags it decides from"
+
+# The tag has to name what the merge produced, not whatever the branch points at now.
+assert_contains "$(job_block merge)" "mergeCommit" \
+  "ac-3 the tag is created on the merge commit the API reports"
+
+# An issue may not advertise an artifact the run never uploads.
+assert_eq "$(grep -c 'upload-artifact' "$watch")" "0" \
+  "ac-3 the watch uploads no artifact of its own"
+assert_eq "$(grep -c 'CI_LOG_ARTIFACT' "$watch")" "0" \
+  "ac-3 the failure issue promises no artifact that does not exist"
+
 if command -v actionlint >/dev/null 2>&1; then
   out=$(actionlint -no-color -shellcheck "" "$watch" 2>&1)
   assert_eq "$out" "" "ac-2 actionlint accepts the watch workflow"

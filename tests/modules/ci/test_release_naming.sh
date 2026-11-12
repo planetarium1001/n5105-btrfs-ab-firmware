@@ -111,7 +111,8 @@ assert_contains "$publish_text" 'if [ "${TAG_POLICY}" = "v" ]; then' \
 
 assert_contains "$publish_text" '--tag-policy "${TAG_POLICY}"' \
   "ac-4 the reusable workflow hands the tag policy to the preflight"
-assert_contains "$(cat scripts/ci/release-preflight.sh 2>/dev/null || true)" "" \
-  "ac-4 release-preflight.sh is present (tag policy is proved there)"
+assert_contains "$(sed -n '/^case "${tag_policy}" in/,/^esac/p' scripts/ci/release-preflight.sh)" \
+  "bare" \
+  "ac-4 the preflight is the place the tag policy is proved, and it knows both policies"
 
 finish

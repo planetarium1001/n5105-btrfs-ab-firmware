@@ -171,6 +171,13 @@ detect_cmd() {
         ci_log "pin already names the newest formal release; no update"
         changed="false"
         version="${current_pin}"
+    elif [ "$(printf '%s\n%s\n' "${latest_formal}" "${current_pin}" | LC_ALL=C sort -V | tail -n 1)" != "${latest_formal}" ]; then
+        # The pin is newer than anything the index offers: a pruned or lagging mirror, or a
+        # pin bumped ahead of the mirror. Adopting it would downgrade the release, so it is
+        # reported and nothing happens.
+        ci_warn "the pin ${current_pin} is newer than the newest formal release ${latest_formal}; not downgrading"
+        changed="false"
+        version="${current_pin}"
     else
         ci_log "new formal release ${latest_formal} (pin ${current_pin})"
         changed="true"

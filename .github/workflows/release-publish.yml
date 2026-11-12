@@ -146,6 +146,14 @@ jobs:
           [ -f "${MANIFEST}" ] || { echo "payload manifest not found: ${MANIFEST}" >&2; exit 1; }
           derived_upstream="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["rootfs"])' "${MANIFEST}")"
           [ -n "${derived_upstream}" ] || { echo "the payload manifest carries no rootfs version" >&2; exit 1; }
+          # The release notes record what was built, so the two upstream digests come from
+          # the manifest the build produced rather than from the caller.
+          rootfs_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["members"]["rootfs.tar.gz"]["sha256"])' "${MANIFEST}")"
+          kernel_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["members"]["kernel.bin"]["sha256"])' "${MANIFEST}")"
+          {
+            printf 'rootfs_sha256=%s\n' "${rootfs_sha}"
+            printf 'kernel_sha256=%s\n' "${kernel_sha}"
+          } >>"${GITHUB_OUTPUT}"
           file_platform="$(tr -d '[:space:]' < VERSION)"
           [ -n "${file_platform}" ] || { echo "VERSION is empty" >&2; exit 1; }
           [ -z "${UPSTREAM_VERSION}" ] || [ "${UPSTREAM_VERSION}" = "${derived_upstream}" ] || {
@@ -250,6 +258,8 @@ jobs:
           CI_PAYLOAD: ${{ runner.temp }}/ci/payload/payload.tar
           CI_PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
           CI_UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
+          CI_UPSTREAM_ROOTFS_SHA256: ${{ steps.versions.outputs.rootfs_sha256 }}
+          CI_UPSTREAM_KERNEL_SHA256: ${{ steps.versions.outputs.kernel_sha256 }}
           CI_RELEASE_TAG: ${{ inputs.tag }}
           CI_EXTRA_NOTES: ${{ inputs.extra-notes }}
         run: |
@@ -273,6 +283,8 @@ jobs:
           TAG: ${{ inputs.tag }}
           UPSTREAM_VERSION: ${{ steps.versions.outputs.upstream_version }}
           PLATFORM_VERSION: ${{ steps.versions.outputs.platform_version }}
+          ROOTFS_SHA: ${{ steps.versions.outputs.rootfs_sha256 }}
+          KERNEL_SHA: ${{ steps.versions.outputs.kernel_sha256 }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
           set -euo pipefail
@@ -298,6 +310,8 @@ jobs:
               printf '| payload | `%s` `%s` |\n' "${payload}" "$(digest_of "${payload}")"
             fi
             printf '| upstream version | `%s` |\n' "${UPSTREAM_VERSION}"
+            printf '| upstream rootfs sha256 | `%s` |\n' "${ROOTFS_SHA}"
+            printf '| upstream kernel sha256 | `%s` |\n' "${KERNEL_SHA}"
             printf '| platform version | `%s` |\n' "${PLATFORM_VERSION}"
           } >>"${GITHUB_STEP_SUMMARY}"
 
@@ -327,7 +341,9 @@ jobs:
                 echo "refusing to rehearse over the published release ${TAG}" >&2
                 exit 1
               }
-              gh release delete "${TAG}" --yes --cleanup-tag
+              # No --cleanup-tag: the tag is the release identity and the merge just
+              # created it; a rehearsal replaces the draft, never the tag.
+              gh release delete "${TAG}" --yes
             fi
             gh release create "${TAG}" \
               --draft \

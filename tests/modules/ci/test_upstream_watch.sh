@@ -212,4 +212,28 @@ watch_run "$pin_readonly" "$tmp/o-usage.env" -- publish
 assert_eq "$watch_status" "1" "ac-1 an unknown subcommand exits non-zero"
 assert_contains "$watch_log" "usage: upstream-watch.sh" "ac-1 an unknown subcommand prints the usage"
 
+# --------------------------------------------------------------------------- #
+# ac-1: a pin newer than the index is not a new release
+#
+# A pruned mirror, a lagging mirror or a pin bumped ahead of it must not turn into a
+# downgrade: "the newest formal release is older than the pin" means nothing happened.
+# --------------------------------------------------------------------------- #
+
+cat >"$tmp/index-older.html" <<'HTML'
+<a href="../">../</a>
+<a href="25.12.1/">25.12.1/</a>
+<a href="25.12.0/">25.12.0/</a>
+<a href="24.10.6/">24.10.6/</a>
+HTML
+printf 'UPSTREAM_VERSION=25.12.2\n' >"$tmp/pin-newer.conf"
+# The pin read-only fixture is not used here: the point is a pin the index cannot reach.
+watch_run "$tmp/pin-newer.conf" "$tmp/o-newer.env" \
+  CI_UPSTREAM_INDEX="$tmp/index-older.html" -- detect
+assert_eq "$watch_status" "0" "ac-1 a pin newer than the index still exits green"
+assert_eq "$(output_of "$tmp/o-newer.env" changed)" "false" \
+  "ac-1 a pin newer than the index reports no change"
+assert_eq "$(output_of "$tmp/o-newer.env" version)" "25.12.2" \
+  "ac-1 the pin is kept, not downgraded"
+assert_contains "$watch_log" "not downgrading" "ac-1 the log says why nothing happened"
+
 finish
