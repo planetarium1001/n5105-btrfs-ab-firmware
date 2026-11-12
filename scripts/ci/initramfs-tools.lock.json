@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "generated_by": "scripts/ci/apk_tools.py lock",
-  "upstream_version": "25.12.2",
+  "upstream_version": "25.12.1",
   "feeds": {
     "base": "packages/x86_64/base",
     "packages": "packages/x86_64/packages",
