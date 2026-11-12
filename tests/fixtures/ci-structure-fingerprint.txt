@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: initial baseline at ac5d65a, before the first text change of the cleanup
+# reason: title default moves into the publisher (derived from tag-policy) and ci-s5 forwards CI_BOOT_SOURCE_* so the S5 payload records its boot source (L2)
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -1874,6 +1874,9 @@ yaml .github/workflows/ci-s5.yml jobs.s5.steps.[7].env =
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[7].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[7].id = verify0
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env = 
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_BOOT_SOURCE_IMAGE = ${{ steps.esp.outputs.source_image }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_BOOT_SOURCE_SHA256 = ${{ steps.esp.outputs.source_sha256 }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_BOOT_SRC = ${{ steps.esp.outputs.esp_dir }}
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_INITRAMFS = ${{ steps.initramfs.outputs.initramfs_path }}
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].env.CI_PLATFORM_RUNTIME_DIR = ${{ runner.temp }}/ci/runtime
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].id = payload
@@ -2156,6 +2159,7 @@ yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.TAG_POLICY
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].id = preflight
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env = 
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.BARE_VERSION = ${{ steps.versions.outputs.bare_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.TAG_POLICY = ${{ inputs.tag-policy }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.TITLE_TEMPLATE = ${{ inputs.title }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].id = title
 yaml .github/workflows/release-publish.yml jobs.publish.timeout-minutes = 35
@@ -2193,7 +2197,7 @@ yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag-policy.ty
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag.required = true
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs.tag.type = string
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title = 
-yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.default = "{tag}"
+yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.default = ""
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.required = false
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs.title.type = string
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs.upstream_version = 
@@ -2210,7 +2214,6 @@ yaml .github/workflows/release.yml jobs.publish.uses = ./.github/workflows/relea
 yaml .github/workflows/release.yml jobs.publish.with = 
 yaml .github/workflows/release.yml jobs.publish.with.tag = ${{ github.ref_name }}
 yaml .github/workflows/release.yml jobs.publish.with.tag-policy = v
-yaml .github/workflows/release.yml jobs.publish.with.title = "N5105 AB firmware {tag}"
 yaml .github/workflows/release.yml on = 
 yaml .github/workflows/release.yml permissions = 
 yaml .github/workflows/upstream-watch.yml jobs = 
@@ -2384,7 +2387,6 @@ yaml .github/workflows/upstream-watch.yml jobs.publish.with.dry-run = ${{ inputs
 yaml .github/workflows/upstream-watch.yml jobs.publish.with.extra-notes = ${{ needs.detect.outputs.candidates }}
 yaml .github/workflows/upstream-watch.yml jobs.publish.with.tag = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.publish.with.tag-policy = bare
-yaml .github/workflows/upstream-watch.yml jobs.publish.with.title = "ImmortalWrt N5105 A/B firmware {tag}"
 yaml .github/workflows/upstream-watch.yml on = 
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs = 
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.base = 
