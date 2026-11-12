@@ -28,14 +28,3 @@ jobs:
     permissions:
       contents: read
 
-  publish:
-    name: publish
-    needs: build
-    permissions:
-      contents: write
-      actions: read
-    uses: ./.github/workflows/release-publish.yml
-    with:
-      tag: ${{ github.ref_name }}
-      tag-policy: v
-      title: "N5105 AB firmware {tag}"
