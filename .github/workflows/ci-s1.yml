@@ -28,10 +28,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
-
 jobs:
   s1:
     name: S1 probe - kernel mounts btrfs

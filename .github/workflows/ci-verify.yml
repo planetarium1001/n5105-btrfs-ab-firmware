@@ -30,10 +30,6 @@ permissions:
 
 # One run per lane: a second automatic run on the same ref cancels the one in flight,
 # while a manual dispatch neither cancels nor is cancelled by anything.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
-
 jobs:
   verify:
     name: static checks

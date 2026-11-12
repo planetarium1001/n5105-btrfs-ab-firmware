@@ -155,16 +155,30 @@ job_timeout() {
   ' "$1"
 }
 
+# is_entry_point <workflow-file>: true when the workflow can start a run on its own. A
+# reusable-only workflow inherits the caller's run, so it must not declare concurrency.
+is_entry_point() {
+  sed -n '/^on:/,/^[a-z]/p' "$1" | grep -qE '^  (push|pull_request|workflow_dispatch):'
+}
+
 GROUP='group: ci-${{ github.workflow }}-${{ github.event_name == '"'"'workflow_dispatch'"'"' && '"'"'manual'"'"' || '"'"'auto'"'"' }}-${{ github.ref }}'
 CANCEL='cancel-in-progress: ${{ github.event_name != '"'"'workflow_dispatch'"'"' }}'
 
+# Concurrency belongs to the entry point. A reusable workflow that declares the same group
+# as its caller is cancelled by its own caller: resolve and report disappeared from the run
+# graph exactly that way, taking every stage down with "skipped".
 for wf in $workflows; do
-  assert_contains "$(cat "$wf")" "$GROUP" "ac-9 $(basename "$wf") scopes its concurrency group by lane"
-  assert_contains "$(cat "$wf")" "$CANCEL" "ac-9 $(basename "$wf") never cancels a manual run"
-  assert_eq "$(grep -c 'cancel-in-progress:' "$wf")" "1" \
-    "ac-9 $(basename "$wf") declares exactly one cancel-in-progress"
-  assert_eq "$(grep -c '^concurrency:' "$wf")" "1" \
-    "ac-9 $(basename "$wf") declares exactly one concurrency block"
+  if is_entry_point "$wf"; then
+    assert_contains "$(cat "$wf")" "$GROUP" "ac-9 $(basename "$wf") scopes its concurrency group by lane"
+    assert_contains "$(cat "$wf")" "$CANCEL" "ac-9 $(basename "$wf") never cancels a manual run"
+    assert_eq "$(grep -c 'cancel-in-progress:' "$wf")" "1" \
+      "ac-9 $(basename "$wf") declares exactly one cancel-in-progress"
+    assert_eq "$(grep -c '^concurrency:' "$wf")" "1" \
+      "ac-9 $(basename "$wf") declares exactly one concurrency block"
+  else
+    assert_eq "$(grep -c '^concurrency:' "$wf")" "0" \
+      "ac-9 $(basename "$wf") is reusable and leaves concurrency to its caller"
+  fi
   # A workflow with no timeout anywhere lets a hung QEMU boot sit on a runner for the
   # six-hour default.
   assert_eq "$(grep -c 'timeout-minutes:' "$wf" | awk '{print ($1 > 0) ? "yes" : "no"}')" "yes" \
