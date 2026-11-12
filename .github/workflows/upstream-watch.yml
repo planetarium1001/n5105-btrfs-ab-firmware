@@ -134,3 +134,98 @@ jobs:
 
   # The automatic change is a branch and a pull request, never a push to main: every
   # automatic change keeps an auditable diff and a rollback point.
+
+  bump:
+    name: open the pin pull request
+    needs: detect
+    if: ${{ needs.detect.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      branch: ${{ steps.push.outputs.branch }}
+      pr: ${{ steps.pr.outputs.pr }}
+      base: ${{ steps.push.outputs.base }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+
+      - name: Bump the pin on the automatic branch
+        id: push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          DRY_RUN: ${{ inputs.dry-run || true }}
+          BASE_INPUT: ${{ inputs.base || 'auto/dryrun-main' }}
+        run: |
+          set -euo pipefail
+          base="${BASE_INPUT:-main}"
+          branch="auto/upstream-${VERSION}"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if [ "${DRY_RUN}" = "true" ]; then
+            # A rehearsal may not merge into a branch anyone builds from.
+            case "${base}" in
+              main|master) echo "a dry run may not open a PR against ${base}: pass --base <scratch branch>" >&2; exit 1 ;;
+            esac
+          fi
+          # The rehearsal target can be missing on the first run.
+          if ! git ls-remote --exit-code --heads origin "${base}" >/dev/null 2>&1; then
+            echo "creating the rehearsal base ${base} from ${GITHUB_SHA}"
+            git push "${remote}" "${GITHUB_SHA}:refs/heads/${base}"
+          fi
+          git config user.name "upstream-watch[bot]"
+          git config user.email "upstream-watch@users.noreply.github.com"
+          git checkout -B "${branch}"
+          # The single write entry for the pin: scripts/ci/lib.sh owns the format.
+          bash scripts/ci/upstream-watch.sh pin "${VERSION}" 2>&1 | tee -a "${CI_LOG_DIR}/pin.log"
+          git add .github/upstream-pin.conf
+          git commit -m "chore(ci): pin upstream ${VERSION}"
+          git push --force-with-lease "${remote}" "HEAD:refs/heads/${branch}"
+          printf 'branch=%s\n' "${branch}" >>"${GITHUB_OUTPUT}"
+          printf 'base=%s\n' "${base}" >>"${GITHUB_OUTPUT}"
+
+      - name: Open the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          BASE: ${{ steps.push.outputs.base }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          # The renderer reads the CI_ names: they are the same keys a local run exports.
+          CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
+          CI_PREVIOUS_PIN: ${{ needs.detect.outputs.current_pin }}
+          CI_MATRIX_CANDIDATES: ${{ needs.detect.outputs.candidates }}
+          CI_MATRIX_GAPS: ${{ needs.detect.outputs.gaps }}
+          CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/upstream-watch.sh pr-body --out "${RUNNER_TEMP}/pr-body.md" 2>&1 | tee -a "${CI_LOG_DIR}/pr.log"
+          # Re-runs reuse the open PR instead of failing on "a pull request already exists".
+          pr="$(gh pr list --head "${BRANCH}" --base "${BASE}" --state open --json number --jq '.[0].number' || true)"
+          if [ -n "${pr}" ] && [ "${pr}" != "null" ]; then
+            gh pr edit "${pr}" --title "chore(ci): pin upstream ${VERSION}" --body-file "${RUNNER_TEMP}/pr-body.md"
+          else
+            gh pr create --head "${BRANCH}" --base "${BASE}" \
+              --title "chore(ci): pin upstream ${VERSION}" \
+              --body-file "${RUNNER_TEMP}/pr-body.md"
+            pr="$(gh pr list --head "${BRANCH}" --base "${BASE}" --state open --json number --jq '.[0].number')"
+          fi
+          [ -n "${pr}" ] && [ "${pr}" != "null" ] || { echo "the pull request was not created" >&2; exit 1; }
+          printf 'pr=%s\n' "${pr}" >>"${GITHUB_OUTPUT}"
+          echo "pull request ${pr} on ${BRANCH} -> ${BASE}"
+
+  # The pipeline the release is published from: the same ci.yml every push runs, in this
+  # same run, with the new upstream release as its input. Nothing here is a second copy of
+  # that graph, and nothing waits for a push or a tag to start it.
+  build:
+    name: build the new upstream release
+    needs: [detect, bump]
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    with:
+      upstream_version: ${{ needs.detect.outputs.version }}
