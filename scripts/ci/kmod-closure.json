@@ -1,8 +1,8 @@
 {
   "generated_by": "scripts/ci/kmods.sh --write-lock",
-  "upstream_version": "25.12.2",
-  "kernel_version": "6.12.103",
-  "kmods_dir": "6.12.103-1-0413601b1c3f0490e17f340fe09229ea",
+  "upstream_version": "25.12.1",
+  "kernel_version": "6.12.94",
+  "kmods_dir": "6.12.94-1-0413601b1c3f0490e17f340fe09229ea",
   "root": "kmod-fs-btrfs",
   "notes": [
     "Members with kind=virtual ship no module: the driver is built into the upstream kernel",
@@ -12,39 +12,39 @@
   "packages": [
     {
       "name": "kmod-crypto-acompress",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "11346fe936079feec2f4fef12cd033319d58ffc047ad28323e0cadeb34b4fc34",
+      "sha256": "7e56e506cacd7b788923ef308574d39317b4ed97ed460c0dc81d4dc89467e2b8",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/crypto_acompress.ko",
+          "path": "/lib/modules/6.12.94/crypto_acompress.ko",
           "size": 16632,
-          "sha256": "d26ca50e63664c1e519db9be59a91e358b0e44cdd6bff9272602560967079764",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "078030e78ed8ee61714a947459269832dc980e0c7badc75b5e84ef901a857a3e",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-crypto-blake2b",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "44acf22f8f99225ae2fae4a0cf79c36d49665860b6b4bdbd50a896447350f2c7",
+      "sha256": "c3419959a545e237c12a6ec6db45b348cfcc4a07651782dbcfb84b9be940bfac",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/blake2b_generic.ko",
+          "path": "/lib/modules/6.12.94/blake2b_generic.ko",
           "size": 18256,
-          "sha256": "dad1808eb01b64835f2a51e18a0b726ef9038cdb0b16f796a743faf2bd91ddd0",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "5761d6f2c55628c140b6589e37f98198e87fc5b07780454e38ef2b68855ab3f6",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-crypto-crc32c",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "virtual",
-      "sha256": "6cc3f4f45a7cbc60295b44bf3d8be342bfbbbdea188caa6d6ce1569824b2a7bc",
+      "sha256": "7563a78c8d61afb052fbfe6d25f427b4db69b6ed2d243a30c76ba0c09ee9c648",
       "provides": [
         "kmod-crypto-crc32c-any"
       ],
@@ -52,9 +52,9 @@
     },
     {
       "name": "kmod-crypto-hash",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "virtual",
-      "sha256": "cca721852b8d2ed4a079317a383b71b7d0fc156671a8efcce54bf556bc724ae3",
+      "sha256": "485ca507703afefd55ac88180cde2fbb7c4f0250407604c8307a86f4aeb1e868",
       "provides": [
         "kmod-crypto-hash-any"
       ],
@@ -62,153 +62,153 @@
     },
     {
       "name": "kmod-crypto-xxhash",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "1663a7d10f0557900ca8e8cae8d0aea350f047278aa7017d15d7d7ba6ead9849",
+      "sha256": "2923793f3b9316deb476314b90cddf156a2c5531adbcd979a1bf72b43166a1b6",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/xxhash_generic.ko",
+          "path": "/lib/modules/6.12.94/xxhash_generic.ko",
           "size": 5472,
-          "sha256": "231b7a574817a1f93952930fd99d5cf17bd50aa593e1f8881d12956531c306eb",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "f4cbf303b7d37a70a3df43f7769fffda1a5ce47ce3674e601b3b693cb292a2b3",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-fs-btrfs",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "3eedbe9ab758138395de85496e75fc7d1ff7b71eaff3e0eb83caaaeb9bbe3e55",
+      "sha256": "5e1d62b0d7a1d9a8b079d67d527d91efb06a4a9f6596ec9b50875deace738606",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/btrfs.ko",
-          "size": 2486416,
-          "sha256": "7ae6445d0966a8cabf30d699891a29d4ab9c6317679b20b41d156958023bff53",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "path": "/lib/modules/6.12.94/btrfs.ko",
+          "size": 2487320,
+          "sha256": "724df7d86dfb0f5fcf38cba828cefc74adbc3ed04099c80659f4bd22f286481b",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-fs-vfat",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "3d176db6f11b282cfdf0ebdd521bded397245f18b22b9e17cc467b5e3c51806c",
+      "sha256": "4663221f038973f9422bd2d45b9d0a0aa454b12983c27b58a1693181076e1157",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/fat.ko",
+          "path": "/lib/modules/6.12.94/fat.ko",
           "size": 110984,
-          "sha256": "05137f0d98166436b0f433e8f03f8ce1133173745212fdb1609180a5b7214126",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "8c0b5be8c8e1ac1226170df467bc76e50adbb9421b12b3b85c38dcd64c556aeb",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/vfat.ko",
+          "path": "/lib/modules/6.12.94/vfat.ko",
           "size": 28152,
-          "sha256": "a4b3d346d0a8bb2b859065050d7207991c2eabc38c830d9dfb9fc8cee05b5c18",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "92ba74a03aa1a131020619429e6889e57c20210ee1bfd46ff8bae899db9ed125",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-lib-crc32c",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "489aac0ec3b79757f53f37142b022e416b413eed91ad090b48f1fdf8262427d2",
+      "sha256": "46755d436750b5bc87db6adc9457cc6a1c3c7581a821c425897ab26fdaa70121",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/libcrc32c.ko",
+          "path": "/lib/modules/6.12.94/libcrc32c.ko",
           "size": 4856,
-          "sha256": "7cbb39f812c08246d022e636bb088df45999d4bba729f7fcec8239855def5dbb",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "6c2a65b609fb8be4a0d5401898faf3608a4152329ac0c82c38c54c2a0eeaf21b",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-lib-lzo",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "917783b7fed2ff5a06788f51be51df63703b63f0b40644e504897064f32a34f9",
+      "sha256": "8872ca78afec8ba21944f93e2e2927262d0d8d26516f2a3ba00b81e357ba5960",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/lzo-rle.ko",
+          "path": "/lib/modules/6.12.94/lzo-rle.ko",
           "size": 6832,
-          "sha256": "e0013ab7c903354c6f5f26ea9c5629155b3ef5ea73716c14c6d68e89864daa38",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "d85d6535c778e51947a3d05d278f547a0ed0c1914d59e889528418ac6eb4798f",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/lzo.ko",
+          "path": "/lib/modules/6.12.94/lzo.ko",
           "size": 6792,
-          "sha256": "a001fd7ac0d3211aeffb45e16100d55de65216605161a4b231bcf09176b59496",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "6552a2144451b75cdd435620acffa3c8d1097aff8eac574885576d9b2d13cd4b",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/lzo_compress.ko",
+          "path": "/lib/modules/6.12.94/lzo_compress.ko",
           "size": 8888,
-          "sha256": "cdd0f591470cac2fe30eb5e2d49ffaee00396b1e528ebc8d1d2db41bd88fb9ea",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "1a99ee94a8062560c66e86ad18105fb09dbb7b16734129351da115f2bf9925b4",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/lzo_decompress.ko",
+          "path": "/lib/modules/6.12.94/lzo_decompress.ko",
           "size": 4992,
-          "sha256": "3a5c9253d0da2ab30daa8d06f696078f4cfbd0da58e6952b39a9641742a2600d",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "7f756cc41820efeb91e180bf365a7580021698671d92ad8f632c3bb45acedcef",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-lib-raid6",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "415c82190c97b65489d30e7c7c7df32c830b663bce621ac0abe35bfd9e48e104",
+      "sha256": "a63adbd2e7e6a8912ab0e3903dab79a547d8984c6436718ad7cf7a493f3db262",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/raid6_pq.ko",
+          "path": "/lib/modules/6.12.94/raid6_pq.ko",
           "size": 116800,
-          "sha256": "59231e699f0ea65fccd7cc79f30170778f6ecef2dacc08cf45723ee3f2db00dc",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "5c4dbbbe54d8b722695b14647214b84ba6dccfb8e202f95c75e7c90d81987ec6",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-lib-xor",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "5ea028d7ae58a4c48de1781faf2623690df92454afa7cd223c685328d36c16fb",
+      "sha256": "d37aa4cc90e2051bb5712b4c6971ea6428d7f844d1d0f895d6243b497a7c1f00",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/xor.ko",
+          "path": "/lib/modules/6.12.94/xor.ko",
           "size": 17888,
-          "sha256": "f9fb4d8f65ea652d9de0a1b15382f7d5f1ad8c05acbfc08558dffd370bf53c8b",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "275c78c0472fe67c2676c042cbfbe0c28edf5ca5895fa4a3272b691730a8eb7c",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-lib-xxhash",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "214bad273352621968a88a5946ed578d9d5ea7487170c96f970f1577805aef46",
+      "sha256": "1c161408ed92bef493ae11aa37a90728b6341306269e6d8770e35afbcced65c7",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/xxhash.ko",
+          "path": "/lib/modules/6.12.94/xxhash.ko",
           "size": 11416,
-          "sha256": "1b56793c24e93fe107695e76a86e8c9c53110db9ffe2bc4171720e262c039550",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "fe6261f164f823594ea2c4f23d908a4048a1dfffa609082e3a81ded6789fb4d2",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-lib-zlib-deflate",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "virtual",
-      "sha256": "0b699ea85995aa2e0c8b86cc79263c09d99f4191ccd7d4067074c1bdde5a84e5",
+      "sha256": "70787f4f7a5eced04dfe5dabd0ca5ec6e2b87d994525fce13c97f7ec3fe5af82",
       "provides": [
         "kmod-lib-zlib-deflate-any"
       ],
@@ -216,9 +216,9 @@
     },
     {
       "name": "kmod-lib-zlib-inflate",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "virtual",
-      "sha256": "abd626355e13de4cda6045da00b1de0896dfab3002a9de513f497adb6c8a4b98",
+      "sha256": "de2ed937801075b4bfc51455277b09eb3b9bf11f1e0f2891a043e1f46d81e16d",
       "provides": [
         "kmod-lib-zlib-inflate-any"
       ],
@@ -226,42 +226,42 @@
     },
     {
       "name": "kmod-lib-zstd",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "350a32bf4cc787c6dd31b9559d3f80c7edd741bb845296f2f8a0cec653014970",
+      "sha256": "6f2c5264a686ec6028f516661edc56c4f4115869f2a086367f8b242613bbbc83",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/zstd.ko",
-          "size": 9304,
-          "sha256": "297536ea33fc8646ffbf5d2e6484ac0d9f63c9de12150471d9b7a370716666ed",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "path": "/lib/modules/6.12.94/zstd.ko",
+          "size": 9296,
+          "sha256": "c99e28daa4701e5e62689a1196ef3c9b5462d6a0d4f7e2c9e2a40b5ae840762b",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/zstd_common.ko",
+          "path": "/lib/modules/6.12.94/zstd_common.ko",
           "size": 28888,
-          "sha256": "45232a4b467ab15088e0543eb6061789d70e52807ba92761ca8e2d18344fa447",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "b3c99efadb3057030f6466dbc0170638db6d713050bc464ddc04659f4e9224b8",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/zstd_compress.ko",
+          "path": "/lib/modules/6.12.94/zstd_compress.ko",
           "size": 474392,
-          "sha256": "44a4ce302c8ef41b2401967fcfc308a8a04944f1012d0fa7a0541e52ae031e33",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "1f172804ed3167d009c5fadebb91df22493e5ca0ac04818695a93d560492d8ee",
+          "vermagic": "6.12.94 SMP mod_unload "
         },
         {
-          "path": "/lib/modules/6.12.103/zstd_decompress.ko",
+          "path": "/lib/modules/6.12.94/zstd_decompress.ko",
           "size": 140008,
-          "sha256": "2b59dbdff332a4061acb512cedab93d2c19e59e7ede9b13057342973123a2836",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "757c4637f883723c9ebcd5c7f83958b67e92b2894a36d5a9e181975c95c6867e",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-nls-base",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "virtual",
-      "sha256": "e7308a06cc77598522a3d01ef9073e9bd0ec9e40239f26cef82f39354d25fe1a",
+      "sha256": "99ab22a409e330018f92c04117fb3c738264a8e476c0a32712f64c8809724ab2",
       "provides": [
         "kmod-nls-base-any"
       ],
@@ -269,31 +269,31 @@
     },
     {
       "name": "kmod-nls-cp437",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "230d02e1b04e7d42e903a1eef354f84baa1aeb40472b695d1c76931313077522",
+      "sha256": "0548f815629acc0e42ae9a81ef6e83e6e2345bcfbabd0493faef480162bc138f",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/nls_cp437.ko",
+          "path": "/lib/modules/6.12.94/nls_cp437.ko",
           "size": 9496,
-          "sha256": "48e3e50556c517b86938cd7449a49351aef9fad197bc91dbbb2f10fc36563d44",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "afa9c4f581da4e01118328a088a71bc7e00f28d54e36e58b8fdcbfc785589b87",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     },
     {
       "name": "kmod-nls-iso8859-1",
-      "version": "6.12.103-r1",
+      "version": "6.12.94-r1",
       "kind": "modules",
-      "sha256": "985416cab16fa31c5d315c70ad2b4020b0526119e59e6b987f9e4ee3bbc4daf4",
+      "sha256": "8d41b844d86ff6b7b877e556ffa8eb67c647ca95b8fbaaede166f98e6e0e5fd7",
       "provides": [],
       "modules": [
         {
-          "path": "/lib/modules/6.12.103/nls_iso8859-1.ko",
+          "path": "/lib/modules/6.12.94/nls_iso8859-1.ko",
           "size": 7832,
-          "sha256": "e7e05e676652f20f772c40eec6d0e5831c32eb6c06ee4e656f578f479aae8a3a",
-          "vermagic": "6.12.103 SMP mod_unload "
+          "sha256": "a86420fa2be3783ff26725fdd6d9ce53384bd86619a3699b4de96e5b1c712322",
+          "vermagic": "6.12.94 SMP mod_unload "
         }
       ]
     }
