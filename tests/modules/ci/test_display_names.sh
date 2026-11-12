@@ -190,7 +190,8 @@ for num in range(1, 6):
         problems.append(f"ci-s{num}.yml: no stage-evidence call")
         continue
     block = call.group(1)
-    if f"name: evidence-s{num}" not in block:
+    # Exact match: a rename to evidence-s2x must not pass as evidence-s2.
+    if not re.search(rf"^\s+name: evidence-s{num}\s*$", block, re.M):
         problems.append(f"ci-s{num}.yml: does not name evidence-s{num}")
     if f"stage: s{num}" not in block:
         problems.append(f"ci-s{num}.yml: the stage-evidence stage is not s{num}")

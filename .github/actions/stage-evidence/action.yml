@@ -58,8 +58,9 @@ runs:
         bash scripts/ci/diagnostics.sh "${DIAG_STAGE}" ${DIAG_ARGS} 2>&1 \
           | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
 
+    # No continue-on-error here on purpose: an evidence upload that fails turns the stage
+    # red in the base tree too, and a silently missing artifact is worse than a red job.
     - name: Upload stage evidence
-      continue-on-error: true
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.name }}
@@ -71,7 +72,6 @@ runs:
     # opens when a stage failed, and it must stay small.
     - name: Upload logs and diagnostics
       if: inputs.logs-name != 'none'
-      continue-on-error: true
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: ${{ inputs.logs-name || format('logs-{0}', inputs.stage) }}

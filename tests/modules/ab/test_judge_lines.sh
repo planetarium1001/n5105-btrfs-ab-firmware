@@ -33,7 +33,9 @@ result_of() { # <line>: the <PREFIX>=<verdict> part
 
 for workflow in ci-s3 ci-s4 ci-s5; do
   body=$(cat "$workflows/${workflow}.yml")
-  assert_eq "$(printf '%s\n' "$body" | grep -c 'CI_QEMU_APPEND_EXTRA: *ab\.slot=')" "0" \
+  # The kernel command line is an input of the qemu-boot composite now, so the assertion has
+  # to read that input: matching the old env spelling would be vacuously true.
+  assert_eq "$(printf '%s\n' "$body" | grep -cE '^\s+append-extra:.*ab\.slot=')" "0" \
     "ac-1 ${workflow} no longer injects ab.slot="
 done
 

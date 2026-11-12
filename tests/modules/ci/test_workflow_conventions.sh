@@ -170,7 +170,14 @@ CANCEL='cancel-in-progress: ${{ github.event_name != '"'"'workflow_dispatch'"'"'
 for wf in $workflows; do
   if is_entry_point "$wf"; then
     assert_contains "$(cat "$wf")" "$GROUP" "ac-9 $(basename "$wf") scopes its concurrency group by lane"
-    assert_contains "$(cat "$wf")" "$CANCEL" "ac-9 $(basename "$wf") never cancels a manual run"
+    # A debug session must replace the previous one: queuing behind a 290-minute keepalive
+    # is the failure mode that entry point exists to avoid, and its group is its own.
+    if [ "$(basename "$wf")" = "ci-debug.yml" ]; then
+      assert_contains "$(cat "$wf")" 'cancel-in-progress: true' \
+        "ac-9 ci-debug.yml replaces its own previous session"
+    else
+      assert_contains "$(cat "$wf")" "$CANCEL" "ac-9 $(basename "$wf") never cancels a manual run"
+    fi
     assert_eq "$(grep -c 'cancel-in-progress:' "$wf")" "1" \
       "ac-9 $(basename "$wf") declares exactly one cancel-in-progress"
     assert_eq "$(grep -c '^concurrency:' "$wf")" "1" \
@@ -196,7 +203,7 @@ assert_contains "$(cat .github/workflows/ci-debug.yml)" 'timeout-minutes: 150' \
   "ac-9 the upterm session keeps its own 150-minute keepalive"
 # ci.yml schedules no runnable job of its own, so its budget has to come from the one job
 # it does run (the version reader). A cap on a reusable-workflow call is not valid YAML.
-_assert_count=$((_ASSERT_COUNT + 1))
+_ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$(job_timeout .github/workflows/ci.yml versions)" = "5" ]; then
   printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-9 the ci.yml version job is capped at 5 minutes"
 else
@@ -225,7 +232,7 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # --------------------------------------------------------------------------- #
 
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
-_assert_count=$((_ASSERT_COUNT + 1))
+_ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le 2288 ]; then
   printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-11 the workflows total $line_total lines (<=2288, baseline 3269)"
 else
@@ -259,14 +266,113 @@ for stage in s1 s2 s3 s4 s5; do
     "ac-11 $stage leaves no credentials in the workspace"
 done
 
-# The artifact names and the judge-line vocabulary are the run page contract: nothing in
-# this refactor is allowed to rename them.
+# The artifact names are the run page contract: nothing in this refactor may rename them,
+# and the publish step has to run even when the stage above it failed (a red stage with no
+# artifact is a stage nobody can triage).
 for stage in s1 s2 s3 s4 s5; do
-  assert_contains "$(cat .github/actions/stage-evidence/action.yml .github/workflows/ci-$stage.yml)" \
-    "evidence-$stage" "ac-11 the artifact evidence-$stage still exists"
+  wf=".github/workflows/ci-$stage.yml"
+  step=$(awk -v want="./.github/actions/stage-evidence" '
+    /^      - / { block = $0 "\n"; next }
+    { block = block $0 "\n" }
+    index($0, want) { found = 1 }
+    found && /^$/ { print block; exit }
+    END { if (found) print block }
+  ' "$wf")
+  assert_contains "$step" "          name: evidence-$stage" \
+    "ac-11 $stage publishes the artifact named exactly evidence-$stage"
+  assert_contains "$step" 'if: always()' \
+    "ac-11 $stage publishes its evidence even when the stage failed"
+  summary_step=$(awk -v want="./.github/actions/stage-summary" '
+    /^      - / { block = $0 "\n"; next }
+    { block = block $0 "\n" }
+    index($0, want) { found = 1 }
+    found && /^$/ { print block; exit }
+    END { if (found) print block }
+  ' "$wf")
+  assert_contains "$summary_step" 'if: always()' \
+    "ac-11 $stage renders its summary even when the stage failed"
 done
 assert_contains "$(cat .github/workflows/ci-fetch.yml .github/actions/setup-ci/action.yml)" \
   'upstream-files' "ac-11 the upstream-files artifact name is unchanged"
+
+# --------------------------------------------------------------------------- #
+# ac-11: the composite contracts close
+#
+# A composite action declares its outputs statically, so an output a workflow reads but the
+# action never declares renders as an empty string at run time - a silent, and exactly the
+# failure mode a refactor into composites invites. Both directions are checked here: every
+# `steps.<id>.outputs.<key>` a workflow reads from a composite is declared, and every input
+# a composite declares is actually forwarded somewhere in its body.
+# --------------------------------------------------------------------------- #
+
+closure=$(python3 - "$root" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+problems = []
+
+
+def step_blocks(text):
+    blocks, current = [], None
+    for line in text.splitlines():
+        if re.match(r"^      - ", line):
+            if current:
+                blocks.append("\n".join(current))
+            current = [line]
+        elif current is not None:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def declared(text, section, stop):
+    if f"{section}:" not in text:
+        return set()
+    body = text.split(f"{section}:", 1)[1].split(f"{stop}:", 1)[0]
+    return set(re.findall(r"^  ([A-Za-z0-9_.-]+):\s*$", body, re.M))
+
+
+actions = {}
+for path in sorted((root / ".github" / "actions").glob("*/action.yml")):
+    text = path.read_text(encoding="utf-8")
+    actions[path.parent.name] = {
+        "outputs": declared(text, "outputs", "runs"),
+        "inputs": declared(text, "inputs", "outputs" if "\noutputs:" in text else "runs"),
+        "body": text.split("runs:", 1)[1] if "runs:" in text else "",
+        "path": path,
+    }
+    for name in sorted(actions[path.parent.name]["inputs"]):
+        if f"inputs.{name}" not in actions[path.parent.name]["body"]:
+            problems.append(f"{path.parent.name}: input {name!r} is never forwarded")
+
+for wf in sorted((root / ".github" / "workflows").glob("ci*.yml")):
+    text = wf.read_text(encoding="utf-8")
+    by_id = {}
+    for block in step_blocks(text):
+        uses = re.search(r"uses: \./\.github/actions/([A-Za-z0-9_.-]+)", block)
+        ident = re.search(r"^        id: ([A-Za-z0-9_]+)$", block, re.M)
+        if not uses:
+            continue
+        if uses.group(1) not in actions:
+            problems.append(f"{wf.name}: uses missing composite {uses.group(1)}")
+            continue
+        if ident:
+            by_id[ident.group(1)] = uses.group(1)
+    for ident, key in re.findall(r"steps\.([A-Za-z0-9_]+)\.outputs\.([A-Za-z0-9_]+)", text):
+        if ident not in by_id:
+            continue
+        if key not in actions[by_id[ident]]["outputs"]:
+            problems.append(
+                f"{wf.name}: steps.{ident}.outputs.{key} is not declared by {by_id[ident]}"
+            )
+
+print("\n".join(sorted(set(problems))))
+PY
+)
+assert_eq "$closure" "" "ac-11 every composite output a workflow reads is declared, and every input is forwarded"
 
 # --------------------------------------------------------------------------- #
 # ac-8 / ac-14: the lint gate is real, and its verdict reaches the run page
@@ -280,11 +386,18 @@ assert_contains "$(cat scripts/ci/verify.sh)" 'actionlint' \
 # A soft skip is exactly the failure mode this acceptance exists to kill.
 assert_eq "$(grep -c 'lint skipped' scripts/ci/verify.sh)" "0" \
   "ac-8 verify.sh no longer skips the lint when the tool is missing"
-assert_contains "$(cat scripts/ci/verify.sh)" 'GITHUB_STEP_SUMMARY' \
+# The four verdicts have to be lines of the step summary, in that exact shape. Matching the
+# bare word anywhere in the file is not enough: comments and log lines contain it too, and
+# deleting the whole summary block used to leave this green.
+# Only the runtime block counts: the file also mentions the variable in its header comment,
+# and matching that comment is how the first version of this assertion stayed green after
+# the whole block was deleted.
+summary_block=$(awk '/^if \[ -n "\$\{GITHUB_STEP_SUMMARY/ { inblock = 1 } inblock { print }' scripts/ci/verify.sh)
+assert_contains "$summary_block" 'GITHUB_STEP_SUMMARY' \
   "ac-14 verify.sh writes its verdicts to the run summary"
 for key in actionlint shellcheck tests design; do
-  assert_contains "$(cat scripts/ci/verify.sh)" "$key:" \
-    "ac-14 the run summary carries a $key line"
+  assert_contains "$summary_block" "- $key: " \
+    "ac-14 the run summary carries a '- $key: ' line"
 done
 
 # When actionlint is installed on the machine running the suite, the workflows have to

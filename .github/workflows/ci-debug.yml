@@ -37,7 +37,10 @@ permissions:
 # One interactive runner per lane and branch.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  # Debug sessions replace each other: queuing a second upterm session behind a 290-minute
+  # one is the failure mode this entry point exists to avoid. The group is its own, so this
+  # still never touches a push or another workflow's run.
+  cancel-in-progress: true
 
 jobs:
   debug:
