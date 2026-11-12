@@ -102,6 +102,7 @@ payload_out="$tmp/out/payload.tar"
 PATH="$fixtures/bin:$PATH" \
   CI_TMP_ROOT="$tmp/ci" CI_LOG_DIR="$tmp/ci/logs" CI_FETCH_DIR="$fixtures/fetch" \
   CI_INITRAMFS="$fixtures/initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
   CI_PLATFORM_RUNTIME_DIR="$fixtures/runtime" CI_PAYLOAD_OUT="$payload_out" \
   CI_EMIT_OUTPUT="$tmp/ci/outputs.env" \
   bash "$payload_build" >"$tmp/build.log" 2>&1
@@ -136,6 +137,7 @@ rm -rf "$tmp/ci2"
 PATH="$fixtures/bin:$PATH" \
   CI_TMP_ROOT="$tmp/ci2" CI_LOG_DIR="$tmp/ci2/logs" CI_FETCH_DIR="$fixtures/fetch" \
   CI_INITRAMFS="$fixtures/initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
   CI_PLATFORM_RUNTIME_DIR="$tmp/no-runtime" CI_PAYLOAD_OUT="$tmp/out/payload2.tar" \
   bash "$payload_build" >"$tmp/build2.log" 2>&1
 assert_eq "$?" "1" "ac-1 a payload without a runtime tree is refused"

@@ -61,6 +61,12 @@ outputs:
   esp_next_slot:
     description: "esp_next_slot"
     value: ${{ steps.run.outputs.esp_next_slot }}
+  source_image:
+    description: "source_image"
+    value: ${{ steps.run.outputs.source_image }}
+  source_sha256:
+    description: "source_sha256"
+    value: ${{ steps.run.outputs.source_sha256 }}
   runtime_packages:
     description: "runtime_packages"
     value: ${{ steps.run.outputs.runtime_packages }}

@@ -17,7 +17,8 @@
 #                       the payload ships without one and says so; CI_REQUIRE_BOOTLOADER=1
 #                       turns that into a hard failure.
 #   CI_BOOTLOADER_CFG   rendered grub.cfg (default: ${CI_GRUB_OUTPUT}, else
-#                       <CI_BOOT_SRC>/boot/grub/grub.cfg, else rendered here)
+#                       $CI_TMP_ROOT/disk/grub.cfg - what the image stage renders, which is
+#                       the path CI takes - else rendered here)
 #   CI_BOOTLOADER_VERSION  GRUB version for the manifest (default: from the esp stage,
 #                       else parsed from the loader, else unknown)
 #   CI_BOOT_SOURCE_IMAGE / CI_BOOT_SOURCE_SHA256  provenance of the boot tree (esp stage)
@@ -28,7 +29,8 @@
 #                       reclamation, and all of them call btrfs. A payload without the
 #                       tooling boots and then cannot commit - which is exactly the
 #                       failure this input exists to prevent.
-#   CI_PLATFORM_VERSION platform version recorded in the rendered release file
+#   CI_PLATFORM_VERSION platform version recorded in the rendered release file (required;
+#                       VERSION is the only source, there is no fallback)
 #   CI_PAYLOAD_VERSION  rootfs version the payload claims (default: upstream + test tag)
 #   CI_PAYLOAD_OUT      output tar path (default: $CI_TMP_ROOT/payload/payload.tar)
 #
@@ -41,6 +43,10 @@ set -euo pipefail
 CI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/lib.sh
 . "${CI_SCRIPT_DIR}/lib.sh"
+# The bootloader member is built by a fragment shared with scripts/ci/assemble.sh: the
+# published payload and this test payload have to carry it the same way.
+# shellcheck source=scripts/ci/boot-member.sh
+. "${CI_SCRIPT_DIR}/boot-member.sh"
 
 on_error() {
     local status=$?
@@ -57,17 +63,13 @@ fetch_dir="${CI_FETCH_DIR:-${CI_TMP_ROOT}/fetch}"
 initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required}"
 platform_src="${CI_PLATFORM_SRC:-${CI_REPO_ROOT}/platform}"
 runtime_tree="${CI_PLATFORM_RUNTIME_DIR:-${CI_TMP_ROOT}/runtime}"
-platform_version="${CI_PLATFORM_VERSION:-0.0.3}"
+# No default on purpose: a fallback here recorded a version the image never had, and the
+# release check that compares image, payload and tag could never match. assemble.sh and
+# disk.sh lost theirs first; this one is the third writer of the same number.
+platform_version="${CI_PLATFORM_VERSION:?CI_PLATFORM_VERSION is required, it is recorded in the payload release file}"
 upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
 payload_version="${CI_PAYLOAD_VERSION:-${upstream_version}-test1}"
 payload_out="${CI_PAYLOAD_OUT:-${CI_TMP_ROOT}/payload/payload.tar}"
-boot_src="${CI_BOOT_SRC:-${CI_TMP_ROOT}/esp}"
-require_bootloader="${CI_REQUIRE_BOOTLOADER:-0}"
-bootloader_version="${CI_BOOTLOADER_VERSION:-}"
-boot_source_image="${CI_BOOT_SOURCE_IMAGE:-immortalwrt-${upstream_version}-x86-64-generic-squashfs-combined-efi.img.gz}"
-boot_source_sha256="${CI_BOOT_SOURCE_SHA256:-}"
-loader=""
-boot_cfg=""
 
 rootfs_tar="${fetch_dir}/upstream/rootfs.tar.gz"
 kernel="${fetch_dir}/upstream/kernel.bin"
@@ -161,68 +163,10 @@ ci_log "payload platform layer carries usr/sbin/btrfs ($(ci_file_size "${work}/c
 # bootloader never changes" is an observation, not a contract, and only a payload member can
 # carry a future change to a machine without a reflash.
 
-boot_dir="${work}/content/boot"
-boot_member=""
-if [ -d "${boot_src}" ]; then
-    loader="$(find "${boot_src}" -type f -iname 'bootx64.efi' | sort | head -n 1)"
-    if [ -z "${loader}" ]; then
-        loader="$(find "${boot_src}" -type f -iname '*.efi' | sort | head -n 1)"
-    fi
-    [ -n "${loader}" ] || ci_die "the boot source ${boot_src} carries no EFI loader"
-
-    # The menu that ships in the payload is ours, rendered from the same template as the
-    # image's, never the upstream one: the upstream menu boots /boot/vmlinuz by PARTUUID
-    # and knows nothing about slots.
-    boot_cfg="${CI_BOOTLOADER_CFG:-}"
-    if [ -z "${boot_cfg}" ] && [ -f "${CI_TMP_ROOT}/disk/grub.cfg" ]; then
-        boot_cfg="${CI_TMP_ROOT}/disk/grub.cfg"
-    fi
-    if [ -z "${boot_cfg}" ]; then
-        mkdir -p "${work}/render"
-        CI_GRUB_OUTPUT="${work}/render/grub.cfg" \
-            bash "${CI_SCRIPT_DIR}/grub-render.sh" >"${work}/render/grub-render.log" 2>&1 \
-            || ci_die "cannot render the bootloader menu for the payload, see ${work}/render/grub-render.log"
-        boot_cfg="${work}/render/grub.cfg"
-    fi
-    [ -f "${boot_cfg}" ] || ci_die "bootloader menu not found: ${boot_cfg}"
-    # The member carries our menu, so it has to satisfy the same five rendering rules as
-    # the image's: a payload that ships a menu the shipped GRUB cannot parse would boot
-    # the committed slot forever.
-    bash "${CI_SCRIPT_DIR}/grub-render.sh" --check "${boot_cfg}" >"${work}/render/grub-check.log" 2>&1 \
-        || ci_die "the bootloader menu for the payload violates the rendering rules, see ${work}/render/grub-check.log"
-
-    mkdir -p "${boot_dir}/EFI/BOOT" "${boot_dir}/boot/grub"
-    cp "${loader}" "${boot_dir}/EFI/BOOT/BOOTX64.EFI"
-    cp "${boot_cfg}" "${boot_dir}/boot/grub/grub.cfg"
-    tar --numeric-owner --owner=0 --group=0 -cf "${work}/stage/boot.tar" -C "${boot_dir}" .
-    boot_member="boot.tar"
-    if [ -z "${bootloader_version}" ]; then
-        bootloader_version="$(python3 - "${boot_dir}/EFI/BOOT/BOOTX64.EFI" <<'PYTHON'
-import re, sys
-MESSAGE = b"GNU GRUB  version"
-TOKEN = re.compile(r"[0-9]+\.[0-9]+(\.[0-9]+)?([~-][0-9A-Za-z.~+-]+)?")
-data = open(sys.argv[1], "rb").read()
-at = data.find(MESSAGE)
-if at < 0:
-    print("unknown")
-    raise SystemExit(0)
-end = data.find(b"\0", at)
-token = ""
-if end >= 0:
-    stop = data.find(b"\0", end + 1)
-    token = data[end + 1:stop if stop >= 0 else end + 32].decode("ascii", "replace")
-print(token if TOKEN.fullmatch(token) else "unknown")
-PYTHON
-)"
-    fi
-    ci_log "payload bootloader: ${loader#"${boot_src}"/} ($(ci_file_size "${loader}") bytes, GRUB ${bootloader_version}) + $(basename "${boot_cfg}")"
-else
-    if [ "${require_bootloader}" = "1" ]; then
-        ci_die "no boot source at ${boot_src} and CI_REQUIRE_BOOTLOADER=1: a payload without the bootloader cannot bring one forward"
-    fi
-    ci_warn "no boot source at ${boot_src}: this payload carries no bootloader, an update will leave the ESP's loader alone"
-    bootloader_version="unknown"
-fi
+ci_boot_member_stage "${work}/stage" "${work}"
+boot_member="${CI_BOOT_MEMBER}"
+bootloader_version="${CI_BOOT_GRUB_VERSION}"
+boot_block="${CI_BOOT_BLOCK}"
 
 # --------------------------------------------------------------------------- #
 # 3. Manifest
@@ -233,15 +177,14 @@ ci_log "writing the manifest"
 # file the payload ships) and, for the bootloader, the identity an updater compares
 # against the ESP's current bytes. `loader_sha256` is what a device trusts;
 # `grub_version` is the readable evidence next to it.
-python3 - "${work}/stage" "${payload_version}" "${boot_member}" \
-    "${bootloader_version}" "${boot_source_image}" "${boot_source_sha256}" \
-    "${loader}" "${boot_cfg}" <<'PYTHON'
+# The bootloader block is built by the shared fragment, not here: scripts/ci/assemble.sh
+# writes the published payload's manifest from the same bytes, and two definitions of
+# "which loader is this" is how the two payloads would drift apart again.
+python3 - "${work}/stage" "${payload_version}" "${boot_block}" <<'PYTHON'
 import hashlib, json, pathlib, sys
 
 stage = pathlib.Path(sys.argv[1])
-version, boot_member = sys.argv[2], sys.argv[3]
-grub_version, source_image, source_sha = sys.argv[4], sys.argv[5], sys.argv[6]
-loader_path, menu_path = sys.argv[7], sys.argv[8]
+version, boot_block = sys.argv[2], sys.argv[3]
 
 
 def digest(path):
@@ -253,20 +196,9 @@ members = {name: digest(stage / name)
            for name in ("initramfs.cpio.gz", "kernel.bin", "platform.tar", "rootfs.tar.gz")}
 
 doc = {"format": "ab-payload/1", "rootfs": version, "members": members, "bootloader": None}
-if boot_member:
-    members[boot_member] = digest(stage / boot_member)
-    loader = digest(loader_path)
-    doc["bootloader"] = {
-        "member": boot_member,
-        "loader": "EFI/BOOT/BOOTX64.EFI",
-        "menu": "boot/grub/grub.cfg",
-        "loader_bytes": loader["size"],
-        "loader_sha256": loader["sha256"],
-        "menu_sha256": digest(menu_path)["sha256"],
-        "grub_version": grub_version,
-        "source_image": source_image or None,
-        "source_sha256": source_sha or None,
-    }
+if boot_block:
+    doc["bootloader"] = json.loads(pathlib.Path(boot_block).read_text(encoding="utf-8"))
+    members[doc["bootloader"]["member"]] = digest(stage / doc["bootloader"]["member"])
 (stage / "manifest.json").write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 print(json.dumps(doc, sort_keys=True))
 PYTHON
@@ -286,8 +218,10 @@ boot_bytes="0"
 if [ -n "${boot_member}" ]; then
     boot_sha="$(ci_sha256 "${work}/stage/boot.tar")"
     boot_bytes="$(ci_file_size "${work}/stage/boot.tar")"
-    loader_sha="$(ci_sha256 "${boot_dir}/EFI/BOOT/BOOTX64.EFI")"
-    menu_sha="$(ci_sha256 "${boot_dir}/boot/grub/grub.cfg")"
+    # Read back out of the block the manifest was written from, so the log line cannot
+    # disagree with the manifest about which loader is in the payload.
+    loader_sha="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["loader_sha256"])' "${boot_block}")"
+    menu_sha="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["menu_sha256"])' "${boot_block}")"
     ci_log "payload bootloader member: ${boot_member} (${boot_bytes} bytes, sha256 ${boot_sha}), loader sha256 ${loader_sha}, menu sha256 ${menu_sha}"
     ci_emit_output "payload_bootloader" "${boot_member}"
     ci_emit_output "payload_bootloader_sha256" "${loader_sha}"

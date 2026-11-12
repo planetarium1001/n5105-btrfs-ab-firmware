@@ -89,6 +89,7 @@ payload_out="$tmp/out/payload.tar"
 PATH="$tmp/fixtures/bin:$PATH" \
   CI_TMP_ROOT="$build" CI_LOG_DIR="$build/logs" CI_FETCH_DIR="$tmp/fixtures/fetch" \
   CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
   CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" CI_PAYLOAD_OUT="$payload_out" \
   CI_EMIT_OUTPUT="$build/outputs.env" CI_BOOT_SRC="$tmp/fixtures/esp" \
   bash "$payload_build" >"$tmp/build.log" 2>&1
@@ -133,6 +134,7 @@ assert_eq "$(bash "$grub_render" --check-loader "$tmp/boot/EFI/BOOT/BOOTX64.EFI"
 PATH="$tmp/fixtures/bin:$PATH" \
   CI_TMP_ROOT="$tmp/ci-noboot" CI_LOG_DIR="$tmp/ci-noboot/logs" \
   CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
   CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
   CI_PAYLOAD_OUT="$tmp/out/payload-noboot.tar" \
   bash "$payload_build" >"$tmp/build-noboot.log" 2>&1
@@ -145,12 +147,112 @@ assert_eq "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["boo
 PATH="$tmp/fixtures/bin:$PATH" \
   CI_TMP_ROOT="$tmp/ci-require" CI_LOG_DIR="$tmp/ci-require/logs" \
   CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
   CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
   CI_PAYLOAD_OUT="$tmp/out/payload-require.tar" CI_REQUIRE_BOOTLOADER=1 \
   bash "$payload_build" >"$tmp/build-require.log" 2>&1
 assert_eq "$?" "1" "ac-1 CI_REQUIRE_BOOTLOADER=1 refuses a payload without one"
 assert_contains "$(cat "$tmp/build-require.log")" "CI_REQUIRE_BOOTLOADER=1" \
   "ac-1 the refusal names the switch that asked for it"
+
+# =========================================================================== #
+# ac-1: where the shipped menu comes from - every branch, not just the rendering one
+#
+# CI does not let the payload stage render its own menu: the image stage renders
+# $CI_TMP_ROOT/disk/grub.cfg first and the payload stage is pointed at it. That branch was
+# never exercised here, and it was broken in the one way the self-rendering branch could not
+# show: `<work>/render` only existed inside the branch that rendered, so the redirect of the
+# menu check's log failed and the `||` reported "the menu violates the rendering rules" -
+# a message that sends the reader to the menu instead of to the missing directory. S5 stayed
+# red while this suite was green.
+# =========================================================================== #
+
+# A menu the checker accepts: the one the self-rendering build above produced.
+menu_ok="$tmp/menu-ok/grub.cfg"
+mkdir -p "$tmp/menu-ok"
+cp "$build/payload/work/render/grub.cfg" "$menu_ok"
+
+# --- the menu the image stage rendered, found by convention -----------------
+external="$tmp/ci-external"
+mkdir -p "$external/disk"
+cp "$menu_ok" "$external/disk/grub.cfg"
+PATH="$tmp/fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$external" CI_LOG_DIR="$external/logs" \
+  CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
+  CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
+  CI_PAYLOAD_OUT="$tmp/out/payload-external.tar" CI_BOOT_SRC="$tmp/fixtures/esp" \
+  bash "$payload_build" >"$tmp/build-external.log" 2>&1
+assert_eq "$?" "0" "ac-1 a payload builds with the image stage disk/grub.cfg"
+assert_contains "$(cat "$tmp/build-external.log")" "boot.tar" \
+  "ac-1 the external-menu build still reports the bootloader member"
+assert_file_exists "$external/payload/work/render/grub-check.log" \
+  "ac-1 the render directory exists even when the menu came from outside"
+assert_eq "$(grep -c 'no such file' "$tmp/build-external.log")" "0" \
+  "ac-1 the external-menu build never reports a missing file"
+mkdir -p "$tmp/external-unpacked"
+tar -xf "$tmp/out/payload-external.tar" -C "$tmp/external-unpacked"
+mkdir -p "$tmp/external-boot"
+tar -xf "$tmp/external-unpacked/boot.tar" -C "$tmp/external-boot"
+assert_eq "$(shasum -a 256 "$tmp/external-boot/boot/grub/grub.cfg" | cut -d' ' -f1)" \
+  "$(shasum -a 256 "$menu_ok" | cut -d' ' -f1)" \
+  "ac-1 the member ships the external menu byte for byte instead of rendering another one"
+
+# --- the menu named outright -----------------------------------------------
+cfg_build="$tmp/ci-cfg"
+PATH="$tmp/fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$cfg_build" CI_LOG_DIR="$cfg_build/logs" \
+  CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
+  CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
+  CI_PAYLOAD_OUT="$tmp/out/payload-cfg.tar" CI_BOOT_SRC="$tmp/fixtures/esp" \
+  CI_BOOTLOADER_CFG="$menu_ok" \
+  bash "$payload_build" >"$tmp/build-cfg.log" 2>&1
+assert_eq "$?" "0" "ac-1 a payload builds from CI_BOOTLOADER_CFG"
+assert_file_exists "$cfg_build/payload/work/render/grub-check.log" \
+  "ac-1 CI_BOOTLOADER_CFG builds write the check log in the same directory"
+
+# --- an external menu that really does violate the rules --------------------
+# The failure has to be the checker's, so the log it was written to has to exist: that is
+# the difference between "the menu is wrong" and "the log could not be created".
+bad_menu="$tmp/menu-bad/grub.cfg"
+mkdir -p "$tmp/menu-bad"
+# A menu that satisfies every rule but the last: an unreplaced placeholder. Starting from
+# the accepted menu keeps the failure the checker reports the one under test (rule 5).
+cp "$menu_ok" "$bad_menu"
+printf '\n# @UNREPLACED@\n' >>"$bad_menu"
+bad="$tmp/ci-bad-menu"
+PATH="$tmp/fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$bad" CI_LOG_DIR="$bad/logs" \
+  CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
+  CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
+  CI_PAYLOAD_OUT="$tmp/out/payload-bad-menu.tar" CI_BOOT_SRC="$tmp/fixtures/esp" \
+  CI_BOOTLOADER_CFG="$bad_menu" \
+  bash "$payload_build" >"$tmp/build-bad-menu.log" 2>&1
+assert_eq "$?" "1" "ac-1 a menu that breaks the rendering rules fails the build"
+assert_contains "$(cat "$tmp/build-bad-menu.log")" "violates the rendering rules" \
+  "ac-1 the failure says the menu broke the rules"
+assert_file_exists "$bad/payload/work/render/grub-check.log" \
+  "ac-1 and the log the checker wrote to exists, so the message is the checker's"
+assert_contains "$(cat "$bad/payload/work/render/grub-check.log")" "rule 5" \
+  "ac-1 the log carries the rule the checker found, not a shell redirection error"
+
+# --- the platform version has no fallback ----------------------------------
+# assemble.sh and disk.sh lost theirs first; a value invented here would end up in the
+# rendered release file, which is the number the payload is judged by.
+no_version=$(env -u CI_PLATFORM_VERSION \
+  PATH="$tmp/fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$tmp/ci-no-version" CI_LOG_DIR="$tmp/ci-no-version/logs" \
+  CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
+  CI_PAYLOAD_OUT="$tmp/out/payload-no-version.tar" CI_BOOT_SRC="$tmp/fixtures/esp" \
+  bash "$payload_build" 2>&1)
+assert_eq "$?" "1" "ac-1 payload-build.sh refuses to run without CI_PLATFORM_VERSION"
+assert_contains "$no_version" "CI_PLATFORM_VERSION is required" \
+  "ac-1 the refusal names the missing platform version"
+assert_eq "$(grep -c ':-0\.0\.' "$payload_build")" "0" \
+  "ac-1 payload-build.sh carries no platform version fallback"
 
 # =========================================================================== #
 # ac-2: the write path

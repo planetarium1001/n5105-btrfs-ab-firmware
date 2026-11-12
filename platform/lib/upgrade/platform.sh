@@ -254,12 +254,17 @@ _upgrade_boot_backup() {
     return 0
 }
 
-# _upgrade_boot_restore [backup-dir]: put the recorded bytes back and verify every one of
-# them. Without an argument it uses the backup this run wrote (${_upgrade_boot_backup}).
+# _upgrade_boot_restore: put the recorded bytes back and verify every one of them.
+#
+# It restores the backup this run wrote, named by ${_upgrade_boot_backup}, and takes no
+# argument: the backup to restore is always the one taken a few lines earlier in the same
+# run, so an argument would only be a way to restore some other run's bytes - which nothing
+# needs and which ShellCheck flags as a parameter no caller ever passes (SC2120).
+#
 # It calls _upgrade_boot_file, which is defined further down: POSIX sh resolves functions at
 # call time, and both are only ever called after the whole file has been sourced.
 _upgrade_boot_restore() {
-    _backup="${1:-${_upgrade_boot_backup}}"
+    _backup="${_upgrade_boot_backup}"
     [ -n "${_backup}" ] || return 1
     [ -f "${_backup}/SHA256SUMS" ] || return 1
     # The restore goes through the same staged write as the install: putting bytes back
