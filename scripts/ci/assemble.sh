@@ -206,11 +206,17 @@ manifest_sha256="$(ci_sha256 "${payload_dir}/manifest.json")"
 ci_log "payload ${payload_tar} (${payload_total_bytes} bytes, sha256 $(ci_sha256 "${payload_tar}"))"
 
 # --------------------------------------------------------------------------- #
-# 4. Validation by the product's own checker
+# 4. Validation by the product's own checker, taken from the payload
 #
 # ab-upgrade --check is the definition of a valid payload. It runs in the same shell
 # dialect it uses on the target, against a scratch ESP and a scratch writable
 # partition, so a payload that fails here would fail on the device too.
+#
+# The copy that runs is the one inside platform.tar, unpacked into a scratch tree: the
+# bytes a device will unpack are the bytes that accepted the payload. Running the working
+# tree's copy instead proved that the two agree at build time, not that the shipped copy
+# ever passed - and it needed the checkout to be chmodded, which left the repository dirty
+# for anyone reproducing this stage locally.
 # --------------------------------------------------------------------------- #
 
 check_dir="${assemble_dir}/check"
@@ -256,17 +262,20 @@ fi
 [ "${p4_mounted}" = "true" ] ||
     ci_die "cannot mount a scratch writable partition, the payload check needs one"
 
-# The checker runs straight out of the checkout, where the tools are stored without the
-# executable bit, so the same mode rule the image build uses is applied first.
-ci_platform_modes "${CI_REPO_ROOT}/platform" || true
-ci_platform_startlinks "${CI_REPO_ROOT}/platform" || true
+check_platform="${check_dir}/platform"
+rm -rf "${check_platform}"
+mkdir -p "${check_platform}"
+tar -xf "${payload_dir}/platform.tar" -C "${check_platform}"
+[ -f "${check_platform}/usr/sbin/ab-upgrade" ] ||
+    ci_die "the platform layer in the payload carries no ab-upgrade, so the shipped bytes cannot be validated"
+ci_log "checker: payload platform.tar usr/sbin/ab-upgrade, not the working tree"
 
 check_output="${assemble_dir}/payload-check.log"
-if ! PATH="${CI_REPO_ROOT}/platform/usr/sbin:${PATH}" \
+if ! PATH="${check_platform}/usr/sbin:${PATH}" \
     AB_ESP="${check_dir}/esp" AB_P4="${check_dir}/p4" \
     AB_SLOTS_ROOT="${check_dir}/slots" \
-    AB_LIB="${CI_REPO_ROOT}/platform/lib/upgrade/platform.sh" \
-    sh "${CI_REPO_ROOT}/platform/usr/sbin/ab-upgrade" --check "${payload_tar}" \
+    AB_LIB="${check_platform}/lib/upgrade/platform.sh" \
+    sh "${check_platform}/usr/sbin/ab-upgrade" --check "${payload_tar}" \
     >"${check_output}" 2>&1; then
     sed 's/^/[assemble]   /' "${check_output}" >&2 || true
     ci_die "the payload does not pass ab-upgrade --check, see ${check_output}"
