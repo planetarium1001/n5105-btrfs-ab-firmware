@@ -248,6 +248,11 @@ line and the automatic upstream line - is in [`ci-release-lines.md`](ci-release-
   which stage they belong to.
 - A step that does not gate the stage says so with ` - advisory`.
 
+Those rules are the short form of [`ci-text-contract.md`](ci-text-contract.md), which is also
+where the length caps, the fixed table headers, the title templates and the structure
+fingerprint live. That page is asserted by `tests/modules/ci/test_ci_text_conventions.sh`;
+this one is the map.
+
 ## Where the logic lives
 
 `.github/workflows/` only orchestrates: check out, run one script, upload, collect

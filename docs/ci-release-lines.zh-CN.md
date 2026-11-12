@@ -21,7 +21,7 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 | 构建哪个上游 | `.github/upstream-pin.conf` 里的 pin；不传版本输入 | `detect` 刚发现的版本，作为 `upstream_version` 传给 `ci.yml` |
 | 构建 | `ci.yml`，以 `workflow_call` 调用 | `ci.yml`，以 `workflow_call` 调用，且在同一次 run 里 |
 | 发布入口 | `release.yml` 以 `tag-policy: v` 调 `release-publish.yml` | watch 的 `publish` job 以 `tag-policy: bare` 调它 |
-| release 标题 | `N5105 AB firmware {tag}` | `ImmortalWrt N5105 A/B firmware {tag}` |
+| release 标题 | `N5105 AB firmware {tag}` | `ImmortalWrt N5105 A/B firmware {tag}`；由 publisher 按 `tag-policy` 派生，两个调用点都不传标题 |
 | 资产 | `n5105-ab-<upstream>-install.img.gz`、`n5105-ab-<upstream>-upgrade.tar`、`SHA256SUMS` | 同样三个 |
 | 失败落在哪 | tag 上的 run 变红；什么都没发布，tag 留着 | 一个标题 `[auto-release] <version>`、label `auto-release` 的 Issue |
 
