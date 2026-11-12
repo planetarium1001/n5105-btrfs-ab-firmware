@@ -168,8 +168,8 @@ watch_run "$pin_readonly" "$tmp/o-none.env" \
 assert_eq "$watch_status" "0" "ac-1 pr-body renders"
 assert_file_exists "$tmp/pr.md" "ac-1 pr-body writes the file named by --out"
 pr_body="$(cat "$tmp/pr.md")"
-assert_contains "$pr_body" '上游 25.13.0（pin 25.12.2 → 25.13.0）' \
-  "ac-1 the PR title carries the version and the pin before/after"
+assert_contains "$pr_body" '# Upstream 25.13.0 (pin 25.12.2 -> 25.13.0)' \
+  "ac-1 the PR heading carries the version and the pin before/after"
 assert_contains "$pr_body" '.github/upstream-pin.conf' "ac-1 the PR body lists the pin change"
 for lock in scripts/ci/kmod-closure.json scripts/ci/runtime-closure.json \
   scripts/ci/initramfs-tools.lock.json; do
@@ -177,18 +177,18 @@ for lock in scripts/ci/kmod-closure.json scripts/ci/runtime-closure.json \
 done
 assert_contains "$pr_body" '`25.13.0 25.12.2 25.12.1 25.12.0`' \
   "ac-1 the PR body carries the matrix candidates"
-assert_contains "$pr_body" '缺口：1' "ac-1 the PR body carries the matrix gap"
+assert_contains "$pr_body" 'Gap: 1' "ac-1 the PR body carries the matrix gap"
 assert_contains "$pr_body" 'https://github.com/example/repo/actions/runs/42' \
   "ac-1 the PR body carries the run link"
-assert_contains "$pr_body" '本 PR 由每日 cron 自动创建' \
-  "ac-1 the PR body says the daily cron opened it"
+assert_contains "$pr_body" 'Created by the daily upstream-watch run' \
+  "ac-1 the PR body says the daily watch opened it"
 
 watch_run "$pin_readonly" "$tmp/o-nogap.env" \
   CI_UPSTREAM_VERSION=25.13.0 CI_PREVIOUS_PIN=25.12.2 \
   CI_MATRIX_CANDIDATES="25.13.0 25.12.2 25.12.1 25.12.0" CI_MATRIX_GAPS=0 \
   -- pr-body --out "$tmp/pr-nogap.md"
-assert_contains "$(cat "$tmp/pr-nogap.md")" '缺口：无' \
-  "ac-1 a full matrix renders the gap as 无"
+assert_contains "$(cat "$tmp/pr-nogap.md")" 'Gap: none' \
+  "ac-1 a full matrix renders the gap as none"
 
 watch_run "$pin_readonly" "$tmp/o-issue.env" \
   CI_UPSTREAM_VERSION=25.13.0 CI_AUTO_FAILED_STAGE=s5 \
@@ -203,7 +203,7 @@ assert_contains "$issue_body" 'S5-RESULT=fail reason=qemu-timeout' "ac-1 the iss
 assert_contains "$issue_body" 'https://github.com/example/repo/actions/runs/42' \
   "ac-1 the issue carries the run link"
 assert_contains "$issue_body" '`evidence-s5`' "ac-1 the issue names the log artifact"
-assert_contains "$issue_body" '未合并、未打 tag、未发布' \
+assert_contains "$issue_body" 'Nothing was merged, tagged or published' \
   "ac-1 the issue states that nothing was merged, tagged or published"
 
 # An unknown subcommand has to be a usage error, not a silent no-op: a typo in the

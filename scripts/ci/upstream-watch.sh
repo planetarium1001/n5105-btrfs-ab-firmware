@@ -265,76 +265,89 @@ pr_body_cmd() {
         previous_pin="$(ci_upstream_pin_read)"
     fi
     candidates="${CI_MATRIX_CANDIDATES:-}"
-    [ -n "${candidates}" ] || candidates="无（索引里没有更早的正式版）"
+    [ -n "${candidates}" ] || candidates="none (the index lists no earlier formal release)"
     gap="${CI_MATRIX_GAPS:-}"
     case "${gap}" in
-        "" | 0) gap="无" ;;
+        "" | 0) gap="none" ;;
     esac
-    run_url="${CI_RUN_URL:-未记录}"
+    run_url="${CI_RUN_URL:-not recorded}"
 
     {
-        printf '# 上游 %s（pin %s → %s）\n' "${version}" "${previous_pin}" "${version}"
+        printf '# Upstream %s (pin %s -> %s)\n' "${version}" "${previous_pin}" "${version}"
         printf '\n'
-        printf '本 PR 由每日 cron 自动创建：`upstream-watch.yml` 在同一个 run 里构建、复验、合并、\n'
-        printf '打 tag 并发布，人工只负责事后 review 这次 squash 提交。\n'
+        printf 'Created by the daily upstream-watch run, which built this commit, merged it, tagged it\n'
+        printf 'and published the release in the same run. Review the squash commit afterwards;\n'
+        printf 'nothing waits on you.\n'
         printf '\n'
-        printf '## 改动\n'
+        printf '## Changes\n'
         printf '\n'
-        printf '| 文件 | 本次写入 |\n'
+        printf '| file | written this run |\n'
         printf '| --- | --- |\n'
-        printf '| `.github/upstream-pin.conf` | `UPSTREAM_VERSION=%s` → `UPSTREAM_VERSION=%s` |\n' \
+        printf '| `.github/upstream-pin.conf` | `UPSTREAM_VERSION=%s` -> `UPSTREAM_VERSION=%s` |\n' \
             "${previous_pin}" "${version}"
-        printf '| `scripts/ci/kmod-closure.json` | 派生为 upstream `%s` 的 kmod 闭包 |\n' "${version}"
-        printf '| `scripts/ci/runtime-closure.json` | 派生为 upstream `%s` 的运行时闭包 |\n' "${version}"
-        printf '| `scripts/ci/initramfs-tools.lock.json` | 派生为 upstream `%s` 的 initramfs-tools 锁 |\n' "${version}"
+        printf '| `scripts/ci/kmod-closure.json` | kernel module closure, derived for `%s` |\n' \
+            "${version}"
+        printf '| `scripts/ci/runtime-closure.json` | runtime closure, derived for `%s` |\n' \
+            "${version}"
+        printf '| `scripts/ci/initramfs-tools.lock.json` | initramfs-tools lock, derived for `%s` |\n' \
+            "${version}"
         printf '\n'
-        printf '改动集合只有上面四个文件。`merge` 阶段的 diff 守卫对越界改动直接失败，所以\n'
-        printf '构建所用的输入和合并进去的输入是同一份。\n'
+        printf 'Exactly these four files change. The `merge` job fails on any diff outside them, so\n'
+        printf 'the inputs that were built are the inputs that were merged.\n'
         printf '\n'
-        printf '## 矩阵候选\n'
+        printf '## Matrix candidates\n'
         printf '\n'
         printf '`%s`\n' "${candidates}"
         printf '\n'
-        printf '缺口：%s\n' "${gap}"
+        printf 'Gap: %s\n' "${gap}"
         printf '\n'
-        printf '## 运行\n'
+        printf '## Run\n'
         printf '\n'
-        printf -- '- run: %s\n' "${run_url}"
+        printf '%s\n' "${run_url}"
         printf '\n'
-        printf '## 回滚\n'
+        printf '## Rollback\n'
         printf '\n'
-        printf '删除 `auto/upstream-%s` 分支并 revert 这次 squash 提交即可回到上一个 pin；\n' "${version}"
-        printf 'tag 与 release 按版本号删除即可撤销发布。\n'
+        printf 'Revert the squash commit to restore the previous pin; the `auto/upstream-%s`\n' \
+            "${version}"
+        printf 'branch can be deleted.\n'
     } >"${out}"
     ci_log "pr body: ${out}"
 }
 
 issue_body_cmd() {
-    local out version stage reason run_url artifact
+    local out version stage reason run_url artifact pin
     out="$(parse_out_arg issue-body "$@")"
     version="${CI_UPSTREAM_VERSION:-${CI_PINNED_VERSION:-}}"
     if [ -z "${version}" ]; then
         version="$(ci_upstream_pin_read)"
     fi
-    stage="${CI_AUTO_FAILED_STAGE:-unknown stage}"
-    reason="${CI_AUTO_REASON:-见 run 日志}"
-    run_url="${CI_RUN_URL:-未记录}"
+    stage="${CI_AUTO_FAILED_STAGE:-unknown}"
+    reason="${CI_AUTO_REASON:-see the run log}"
+    run_url="${CI_RUN_URL:-not recorded}"
     artifact="${CI_LOG_ARTIFACT:-ci-logs}"
+    pin="$(ci_upstream_pin_read)"
 
+    # No heading: the issue title is `[auto-release] <version>` and is also the key that
+    # keeps one issue per version, so repeating the version here would say it twice.
     {
-        printf '# [auto-release] 上游 %s 自动发布失败\n' "${version}"
+        printf 'The daily run detected upstream `%s` (pin `%s`) and could not finish.\n' \
+            "${version}" "${pin}"
+        printf 'Nothing was merged, tagged or published.\n'
         printf '\n'
-        printf '| 项 | 值 |\n'
+        printf '| field | value |\n'
         printf '| --- | --- |\n'
-        printf '| 上游版本 | `%s` |\n' "${version}"
-        printf '| 失败 job | `%s` |\n' "${stage}"
-        printf '| 原因 | %s |\n' "${reason}"
+        printf '| stage | `%s` |\n' "${stage}"
+        printf '| reason | %s |\n' "${reason}"
         printf '| run | %s |\n' "${run_url}"
-        printf '| 日志 artifact | `%s` |\n' "${artifact}"
+        printf '| artifact | `%s` |\n' "${artifact}"
         printf '\n'
-        printf '本次 run 已经停止：**未合并、未打 tag、未发布**。分支 `auto/upstream-%s` 与 PR\n' "${version}"
-        printf '保持打开，pin 未改动，下一天的 cron 会重新检测同一个版本；修好失败的 stage 后，\n'
-        printf '同一条 Issue（标题固定）会被下一次失败更新，而不是每天新增一条。\n'
+        printf '## Next\n'
+        printf '\n'
+        printf '1. Open the run and read the failing stage log.\n'
+        printf '2. Fix the cause.\n'
+        printf '3. Dispatch upstream-watch with `version: %s`; it resumes from detection.\n' "${version}"
+        printf '\n'
+        printf 'The pin still points at `%s`, so the next scheduled run retries on its own.\n' "${pin}"
     } >"${out}"
     ci_log "issue body: ${out}"
 }

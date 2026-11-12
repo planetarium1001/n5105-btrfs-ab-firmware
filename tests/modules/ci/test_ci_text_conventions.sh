@@ -437,11 +437,25 @@ render_body pr-body "$tmp/pr.md"
 assert_file_exists "$tmp/pr.md" "rule 6 the pull request body renders"
 assert_eq "$(head -n 1 "$tmp/pr.md")" "# Upstream 25.13.0 (pin 25.12.2 -> 25.13.0)" \
   "rule 6 the pull request heading names the version and both sides of the pin"
+assert_contains "$(cat "$tmp/pr.md")" "## Rollback" \
+  "rule 6 the pull request gives the reader the one action that undoes it"
 
 render_body issue-body "$tmp/issue.md"
 assert_file_exists "$tmp/issue.md" "rule 6 the issue body renders"
-assert_eq "$(head -n 1 "$tmp/issue.md")" "# [auto-release] 25.13.0" \
-  "rule 6 the issue title is '[auto-release] <version>', the deduplication key"
+assert_contains "$(cat .github/workflows/upstream-watch.yml)" \
+  'title="[auto-release] ${VERSION:-unknown}"' \
+  "rule 6 the issue title is '[auto-release] <version>', the key that keeps one issue per version"
+assert_eq "$(grep -c '^# ' "$tmp/issue.md" || true)" "0" \
+  "rule 6 the issue body carries no heading: the title already says the version once"
+assert_eq "$(head -n 1 "$tmp/issue.md")" \
+  'The daily run detected upstream `25.13.0` (pin `25.12.2`) and could not finish.' \
+  "rule 6 the issue body opens with what happened, in one sentence"
+assert_contains "$(cat "$tmp/issue.md")" "Nothing was merged, tagged or published." \
+  "rule 6 the issue body states the consequence, not the procedure"
+assert_contains "$(cat "$tmp/issue.md")" "## Next" \
+  "rule 6 the issue body ends with what to do next"
+assert_contains "$(cat "$tmp/issue.md")" "| field | value |" \
+  "rule 6 the issue facts are a key-value table"
 
 # One release template, in one place. The default belongs to the publisher; a call site that
 # spells the template again is the same decision made twice, and the two drift.

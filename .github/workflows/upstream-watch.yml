@@ -1,4 +1,4 @@
-name: upstream watch
+name: Firmware CI - upstream watch
 
 # The daily upstream watch: one run that discovers a new upstream formal release, builds it
 # through the ordinary pipeline, moves the pin, merges and publishes - and proves nothing
@@ -509,7 +509,7 @@ jobs:
           failed="${failed# }"
           [ -n "${failed}" ] || failed="detect"
           title="[auto-release] ${VERSION:-unknown}"
-          CI_AUTO_FAILED_STAGE="${failed}" CI_AUTO_REASON="run 的 ${failed} job 失败，见 run 页面与日志" \
+          CI_AUTO_FAILED_STAGE="${failed}" CI_AUTO_REASON="${failed} failed; see the run page and the log" \
             bash scripts/ci/upstream-watch.sh issue-body --out "${RUNNER_TEMP}/issue.md" 2>&1 \
             | tee -a "${CI_LOG_DIR}/issue.log"
           {
@@ -529,7 +529,7 @@ jobs:
           fi
           {
             printf '## Automatic upstream release failed\n\n'
-            printf '| item | value |\n| --- | --- |\n'
+            printf '| field | value |\n| --- | --- |\n'
             printf '| version | `%s` |\n' "${VERSION:-unknown}"
             printf '| failed jobs | `%s` |\n' "${failed}"
             printf '| run | %s |\n' "${RUN_URL}"
