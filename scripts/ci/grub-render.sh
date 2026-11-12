@@ -30,6 +30,11 @@
 # uses to prove each rule actually rejects a broken file, and to prove the runtime
 # file format is checked too.
 #
+# `--check-loader FILE [MANIFEST]` proves that the EFI loader about to be written (or the
+# one already on an ESP) is the loader the payload manifest claims: size and sha256 both
+# have to agree, and a manifest without a bootloader block is reported as such instead of
+# being treated as "nothing to compare".
+#
 # `--verify-esp IMAGE` mounts the ESP of a ready image and proves that GRUB can boot
 # it: the EFI loader, the menu, grub-script-check on the menu, the loader really
 # carries the `source` command the menu depends on, and the runtime file agrees with
@@ -216,6 +221,37 @@ check_grub() {
     fi
     ci_log "grub configuration satisfies all five rendering rules: ${file}"
 }
+
+# --check-loader mode: the manifest's bootloader identity against real bytes.
+if [ "${1:-}" = "--check-loader" ]; then
+    loader_file="${2:-}"
+    manifest_file="${3:-}"
+    [ -n "${loader_file}" ] || ci_die "--check-loader needs the EFI loader to check"
+    [ -f "${loader_file}" ] || ci_die "--check-loader: no such loader: ${loader_file}"
+    [ -n "${manifest_file}" ] || ci_die "--check-loader needs a payload manifest"
+    [ -f "${manifest_file}" ] || ci_die "--check-loader: no such manifest: ${manifest_file}"
+    # The manifest is written by json.dumps with sort_keys, so both values are readable
+    # with one sed per field; a manifest without the block is a refusal, not a pass.
+    squeezed="$(tr -d ' \t\r\n' <"${manifest_file}")"
+    case "${squeezed}" in
+        *'"bootloader":{'*) : ;;
+        *) ci_die "--check-loader: ${manifest_file} carries no bootloader block" ;;
+    esac
+    want_sha="$(printf '%s' "${squeezed}" | sed -n 's/.*"loader_sha256":"\([0-9a-f]*\)".*/\1/p')"
+    want_bytes="$(printf '%s' "${squeezed}" | sed -n 's/.*"loader_bytes":\([0-9]*\).*/\1/p')"
+    [ -n "${want_sha}" ] || ci_die "--check-loader: the manifest names no loader_sha256"
+    [ -n "${want_bytes}" ] || ci_die "--check-loader: the manifest names no loader_bytes"
+    have_sha="$(ci_sha256 "${loader_file}")"
+    have_bytes="$(ci_file_size "${loader_file}")"
+    [ "${have_bytes}" = "${want_bytes}" ] \
+        || ci_die "the loader is ${have_bytes} bytes, the manifest says ${want_bytes}"
+    [ "${have_sha}" = "${want_sha}" ] \
+        || ci_die "the loader's sha256 is ${have_sha}, the manifest says ${want_sha}"
+    ci_log "loader matches the manifest: ${have_bytes} bytes, sha256 ${have_sha}"
+    ci_emit_output "checked_loader_sha256" "${have_sha}"
+    ci_log "stage grub (check-loader) finished"
+    exit 0
+fi
 
 # --check mode: assertions only, used by the test suite.
 if [ "${1:-}" = "--check" ]; then

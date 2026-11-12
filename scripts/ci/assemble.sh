@@ -21,6 +21,15 @@
 #   CI_PLATFORM_RUNTIME_DIR  btrfs tooling staged by the runtime stage
 #   CI_PLATFORM_SRC          platform layer source tree (default: platform/)
 #   CI_ASSEMBLE_DIR          destination directory (default: $CI_TMP_ROOT/assemble)
+#   CI_BOOT_SRC              ESP tree the bootloader member comes from (default:
+#                            $CI_TMP_ROOT/esp, what the esp stage produces). A payload
+#                            without it leaves an updated machine on the GRUB it was
+#                            flashed with, so this stage fails without one; the check below
+#                            has no opt-out, and CI_REQUIRE_BOOTLOADER is exported to 1
+#                            rather than left to the caller.
+#   CI_BOOTLOADER_CFG        menu to ship; default: ${CI_GRUB_OUTPUT}, else
+#                            $CI_TMP_ROOT/disk/grub.cfg (what the image stage renders),
+#                            else rendered from scripts/ci/grub.cfg.in
 #
 # Outputs: payload_path, payload_dir, manifest_path, payload_manifest_sha256,
 #          payload_members, payload_total_bytes, payload_check
@@ -30,6 +39,11 @@ set -euo pipefail
 CI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/lib.sh
 . "${CI_SCRIPT_DIR}/lib.sh"
+# The bootloader member comes from the fragment scripts/ci/payload-build.sh uses as well:
+# the published payload and the test payload are built by different scripts, and this
+# stage is the one users actually receive, so the two must not drift.
+# shellcheck source=scripts/ci/boot-member.sh
+. "${CI_SCRIPT_DIR}/boot-member.sh"
 
 on_error() {
     local status=$?
@@ -48,6 +62,11 @@ kernel_package="${CI_KERNEL_PACKAGE:?CI_KERNEL_PACKAGE is required}"
 # payload whose image said something else, and nothing noticed. VERSION is read by the
 # versions job in ci.yml and passed down; a local run has to name it too.
 platform_version="${CI_PLATFORM_VERSION:?CI_PLATFORM_VERSION is required, it is recorded in the payload release file}"
+# A release payload always carries the bootloader. The value is exported as 1 unless the
+# caller already set the variable, and the member check further down has no opt-out, so
+# CI_REQUIRE_BOOTLOADER=0 does not switch the requirement off here - it only changes what
+# the fragment reports before that check fails the build.
+export CI_REQUIRE_BOOTLOADER="${CI_REQUIRE_BOOTLOADER:-1}"
 initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required, the payload needs the boot initramfs}"
 runtime_tree="${CI_PLATFORM_RUNTIME_DIR:?CI_PLATFORM_RUNTIME_DIR is required, the payload needs the btrfs tooling}"
 platform_src="${CI_PLATFORM_SRC:-${CI_REPO_ROOT}/platform}"
@@ -116,16 +135,40 @@ tar --numeric-owner --owner=0 --group=0 -cf "${payload_dir}/platform.tar" -C "${
 ci_log "staged platform.tar ($(ci_sha256 "${payload_dir}/platform.tar"), $(ci_file_size "${payload_dir}/platform.tar") bytes)"
 
 # --------------------------------------------------------------------------- #
+# 2b. Bootloader member: the ESP's EFI loader plus our slot menu
+#
+# This is the member this stage used to be missing. The payload replaced kernel, initramfs,
+# platform layer and rootfs but never the bootloader, so a machine that was only ever
+# updated kept the GRUB it was flashed with - and because the S5 test payload carried one,
+# CI looked like it covered the path while the payload people download did not.
+# --------------------------------------------------------------------------- #
+
+ci_boot_member_stage "${payload_dir}" "${assemble_dir}"
+boot_member="${CI_BOOT_MEMBER}"
+boot_block="${CI_BOOT_BLOCK}"
+# The fragment only returns without a member when CI_REQUIRE_BOOTLOADER is off, and that is
+# not a choice this stage offers: it exports 1 above. The check stays because a future
+# caller could unset it, and the message names the boot source, which is the input to look
+# at first (an empty or mistyped CI_BOOT_SRC is the common cause, and a bare "no bootloader
+# member" sends the reader to the wrong place).
+[ -n "${boot_member}" ] ||
+    ci_die "the payload carries no bootloader member (boot source: ${CI_BOOT_SRC:-<unset, default ${CI_TMP_ROOT:-}/esp>}); a release payload must bring one forward"
+
+# --------------------------------------------------------------------------- #
 # 3. Manifest
 # --------------------------------------------------------------------------- #
 
 created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# The bootloader block is written by the shared fragment, never here: the manifest has to
+# name the same loader identity the S5 test payload names, and `ab-upgrade --check` below
+# validates it with the same rules the device uses.
 python3 - "${payload_dir}" "${upstream_version}" "${kernel_package}" \
-    "${platform_version}" "${created_at}" <<'PYTHON'
+    "${platform_version}" "${created_at}" "${boot_block}" <<'PYTHON'
 import hashlib, json, pathlib, sys
 
 payload_dir = pathlib.Path(sys.argv[1])
 version, kernel_package, platform_version, created = sys.argv[2:6]
+boot_block = sys.argv[6]
 members = {}
 for name in ("initramfs.cpio.gz", "kernel.bin", "platform.tar", "rootfs.tar.gz"):
     data = (payload_dir / name).read_bytes()
@@ -137,13 +180,27 @@ doc = {
     "platform": platform_version,
     "created": created,
     "members": members,
+    "bootloader": None,
 }
+if boot_block:
+    doc["bootloader"] = json.loads(pathlib.Path(boot_block).read_text(encoding="utf-8"))
+    member = doc["bootloader"]["member"]
+    data = (payload_dir / member).read_bytes()
+    members[member] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 (payload_dir / "manifest.json").write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
 print(json.dumps(members, indent=2, sort_keys=True))
 PYTHON
 
-tar -cf "${payload_tar}" -C "${payload_dir}" manifest.json rootfs.tar.gz kernel.bin \
-    initramfs.cpio.gz platform.tar
+# The member list is read back out of the manifest instead of being written a second time:
+# two hand-maintained lists of the same set is how the bootloader got left out of one of
+# them in the first place.
+payload_members="manifest.json $(python3 - "${payload_dir}/manifest.json" <<'PYTHON'
+import json, sys
+print(" ".join(sorted(json.load(open(sys.argv[1]))["members"])))
+PYTHON
+)"
+# shellcheck disable=SC2086  # the member list is space separated by construction
+tar -cf "${payload_tar}" -C "${payload_dir}" ${payload_members}
 payload_total_bytes="$(ci_file_size "${payload_tar}")"
 manifest_sha256="$(ci_sha256 "${payload_dir}/manifest.json")"
 ci_log "payload ${payload_tar} (${payload_total_bytes} bytes, sha256 $(ci_sha256 "${payload_tar}"))"
@@ -220,7 +277,9 @@ ci_emit_output "payload_path" "${payload_tar}"
 ci_emit_output "payload_dir" "${payload_dir}"
 ci_emit_output "manifest_path" "${payload_dir}/manifest.json"
 ci_emit_output "payload_manifest_sha256" "${manifest_sha256}"
-ci_emit_output "payload_members" "initramfs.cpio.gz,kernel.bin,platform.tar,rootfs.tar.gz"
+# The manifest is not a member of itself: the list names what a device unpacks.
+member_list="${payload_members#manifest.json }"
+ci_emit_output "payload_members" "${member_list// /,}"
 ci_emit_output "payload_total_bytes" "${payload_total_bytes}"
 ci_emit_output "payload_check" "ok"
 

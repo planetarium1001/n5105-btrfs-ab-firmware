@@ -16,8 +16,8 @@
 #   CI_ESP_DIR            output directory for the ESP tree (default: $CI_TMP_ROOT/esp)
 #   CI_ESP_CACHE          download cache (default: $CI_TMP_ROOT/esp-cache)
 #
-# Outputs: esp_dir, esp_bytes, esp_files, efi_loader, grub_dir, source_image,
-#          source_sha256
+# Outputs: esp_dir, esp_bytes, esp_files, efi_loader, efi_loader_sha256, loader_bytes,
+#          grub_version, grub_dir, source_image, source_sha256
 
 set -euo pipefail
 
@@ -34,7 +34,7 @@ trap on_error ERR
 
 ci_stage_init esp
 
-ci_require_cmd sudo losetup blkid gunzip
+ci_require_cmd sudo losetup blkid gunzip python3
 
 base_url="${CI_UPSTREAM_BASE_URL:?CI_UPSTREAM_BASE_URL is required}"
 version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
@@ -123,19 +123,54 @@ fi
 grub_dir="$(find "${esp_dir}" -type d -iname grub | sort | head -n 1)"
 [ -n "${grub_dir}" ] || grub_dir="$(dirname "${efi_loader}")"
 
+# The loader is the one thing an update may write that a machine cannot boot without, so
+# its identity is measured here and carried into the payload manifest: sha256 is the
+# contract, the GRUB version is the readable evidence. The version is the NUL-terminated
+# token right after GRUB's own "GNU GRUB  version %s" message, because a plain scan for
+# `X.Y` finds unrelated constants too (the shipped binary also carries "1.5"). Anything
+# that cannot be proven is `unknown`, never a guess: the digest decides identity.
+efi_loader_sha="$(ci_sha256 "${efi_loader}")"
+loader_bytes="$(ci_file_size "${efi_loader}")"
+grub_version="$(python3 - "${efi_loader}" <<'PYTHON'
+import re, sys
+
+MESSAGE = b"GNU GRUB  version"
+TOKEN = re.compile(r"[0-9]+\.[0-9]+(\.[0-9]+)?([~-][0-9A-Za-z.~+-]+)?")
+
+data = open(sys.argv[1], "rb").read()
+at = data.find(MESSAGE)
+if at < 0:
+    print("unknown")
+    raise SystemExit(0)
+end = data.find(b"\0", at)
+version = b""
+if end >= 0:
+    stop = data.find(b"\0", end + 1)
+    version = data[end + 1:stop if stop >= 0 else end + 32]
+print(version.decode("ascii", "replace") if TOKEN.fullmatch(version.decode("ascii", "replace")) else "unknown")
+PYTHON
+)" || grub_version="unknown"
+case "${grub_version}" in
+    unknown) ci_warn "cannot prove the GRUB version from ${efi_loader#"${esp_dir}"/}; the digest is what identifies the loader" ;;
+    *) ci_log "GRUB version ${grub_version} (from the loader's own version token)" ;;
+esac
+
 esp_bytes="$(du -sb "${esp_dir}" | cut -f1)"
 esp_files="$(find "${esp_dir}" -type f | wc -l | tr -d ' ')"
 [ "${esp_bytes}" -lt $((64 * 1024 * 1024)) ] \
     || ci_die "ESP content is ${esp_bytes} bytes, over the 64 MiB budget"
 
 ci_log "ESP tree: ${esp_bytes} bytes in ${esp_files} file(s)"
-ci_log "  loader: ${efi_loader#"${esp_dir}"/}"
+ci_log "  loader: ${efi_loader#"${esp_dir}"/} (${loader_bytes} bytes, sha256 ${efi_loader_sha})"
 ci_log "  grub:   ${grub_dir#"${esp_dir}"/} ($(find "${grub_dir}" -type f | wc -l | tr -d ' ') file(s))"
 
 ci_emit_output "esp_dir" "${esp_dir}"
 ci_emit_output "esp_bytes" "${esp_bytes}"
 ci_emit_output "esp_files" "${esp_files}"
 ci_emit_output "efi_loader" "${efi_loader#"${esp_dir}"/}"
+ci_emit_output "efi_loader_sha256" "${efi_loader_sha}"
+ci_emit_output "loader_bytes" "${loader_bytes}"
+ci_emit_output "grub_version" "${grub_version}"
 ci_emit_output "grub_dir" "boot/grub"
 ci_emit_output "source_image" "${image_name}"
 ci_emit_output "source_sha256" "${expected}"

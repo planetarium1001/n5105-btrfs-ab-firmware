@@ -27,7 +27,11 @@ jobs:
   assemble:
     name: assemble payload
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The payload now carries boot.tar, so this job also downloads the upstream combined-efi
+    # image, gunzips it and loop-mounts its FAT partition (3-6 minutes on a warm runner).
+    # 25 minutes covered the kmods unpack, the closure, the initramfs and the payload check
+    # with nothing to spare; the bootloader budget is added rather than taken out of them.
+    timeout-minutes: 35
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
@@ -56,10 +60,13 @@ jobs:
           name: upstream-files
           path: ${{ runner.temp }}/ci/fetch
 
+      # cpio builds the initramfs, kmod reads the module closure, and util-linux is what the
+      # esp stage mounts the upstream image with (losetup and blkid). They are named here
+      # instead of trusted to the runner image, whose package set is not a contract.
       - name: Install tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cpio kmod
+          sudo apt-get install -y --no-install-recommends cpio kmod util-linux
 
       - name: Unpack the btrfs and vfat module closure
         id: kmods
@@ -70,6 +77,14 @@ jobs:
         id: runtime
         uses: ./.github/actions/run-stage-script
         with: {script: platform-runtime.sh, log: runtime.log}
+
+      # The bootloader member comes from the upstream ESP, the same tree the image stages
+      # boot from. Without it assemble.sh has no boot source and fails on purpose: a payload
+      # that skips the loader leaves an updated machine on the GRUB it was flashed with.
+      - name: Prepare the ESP from the upstream bootloader
+        id: esp
+        uses: ./.github/actions/run-stage-script
+        with: {script: esp-prepare.sh, log: esp.log}
 
       # wf.sh always travels with the boot init; the S3 guest assertion only when AB_CI_HOOKS=1.
       - name: Build the boot initramfs
@@ -86,10 +101,16 @@ jobs:
           CI_EXTRA_FILES="${extra}" bash scripts/ci/initramfs.sh 2>&1 \
             | tee -a "${CI_LOG_DIR}/initramfs.log"
 
+      # The bootloader block of the manifest names where the loader came from. esp-prepare
+      # measured both values; without them source_sha256 lands as null and source_image is a
+      # name assembled from CI_UPSTREAM_VERSION rather than the image the loader came out of.
       - name: Assemble payload
         id: assemble
         env:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_BOOT_SRC: ${{ steps.esp.outputs.esp_dir }}
+          CI_BOOT_SOURCE_IMAGE: ${{ steps.esp.outputs.source_image }}
+          CI_BOOT_SOURCE_SHA256: ${{ steps.esp.outputs.source_sha256 }}
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
         run: bash scripts/ci/assemble.sh 2>&1 | tee -a "${CI_LOG_DIR}/assemble.log"
 

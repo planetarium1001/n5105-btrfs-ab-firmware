@@ -126,12 +126,12 @@ write_state a none 1
 slot_cmd next --write >/dev/null 2>&1
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown" \
+  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown packages=unknown packages_reason=unknown" \
   "ac-1 status line reports the documented fields"
 
 status="$(slot_cmd_full status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown" \
+  "slot=a upper=@overlay-25.12.3 generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown packages=unknown packages_reason=unknown" \
   "ac-1 status reports the three mount points of the writable partition"
 
 # Without the identity library the status line says so instead of inventing a device.
@@ -146,7 +146,7 @@ write_state a a 2
 slot_cmd next --write >/dev/null 2>&1
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$status" \
-  "slot=b upper=@overlay-25.12.2 generation=2 committed=a pending=a p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown" \
+  "slot=b upper=@overlay-25.12.2 generation=2 committed=a pending=a p4=ok data=missing docker=missing swap=missing next=a disk=/dev/sda method=partuuid boot=unknown esp=unknown packages=unknown packages_reason=unknown" \
   "ac-1 status follows ab.slot= on the kernel command line"
 printf 'console=ttyS0 ab.slot=a\n' >"$cmdline"
 
@@ -161,8 +161,8 @@ rm -f "$esp/ab/log/boot-0.log"
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$(esp_field "$status")" "unknown" \
   "ac-9 without a ring log the ESP verdict is unknown, never ok"
-assert_matches "$status" 'boot=unknown esp=unknown$' \
-  "ac-9 the esp= field is appended at the end of the status line"
+assert_matches "$status" 'boot=unknown esp=unknown packages=unknown packages_reason=unknown$' \
+  "ac-9 the esp= field is appended after boot=, and the package fields after it"
 
 cat >"$esp/ab/log/boot-0.log" <<'LOG'
 stage=boot slot=a upper=@overlay-25.12.3 rootfs=25.12.3 result=ok
@@ -181,6 +181,51 @@ printf 'stage=esp-health slot=a esp=unrecorded\n' >"$esp/ab/log/boot-0.log"
 status="$(slot_cmd status 2>/dev/null)"
 assert_eq "$(esp_field "$status")" "unknown" \
   "ac-9 an unrecognised token is reported as unknown"
+
+# --- ac-10 the package alignment verdict ------------------------------------
+# Whether the slot can install packages matched to the kernel it runs is a fact the last
+# upgrade recorded; status reports it and refuses to claim it without evidence.
+pkg_field() { printf '%s' "$1" | sed -n 's/.* packages=\([a-z]*\) .*/\1/p'; }
+pkg_reason_field() { printf '%s' "$1" | sed -n 's/.* packages_reason=\([a-z-]*\).*/\1/p'; }
+write_state a none 1
+rm -f "$esp/ab/packages"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "unknown" \
+  "ac-10 without a record the package state is unknown, never aligned"
+assert_eq "$(pkg_reason_field "$status")" "unknown" \
+  "ac-10 and the reason is unknown too"
+
+printf 'packages=aligned reason=none version=25.12.3 kernel=kernel=6.12.103~abc-r1\n' >"$esp/ab/packages"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "aligned" "ac-10 an aligned record is reported as aligned"
+assert_eq "$(pkg_reason_field "$status")" "none" "ac-10 an aligned record has no reason"
+assert_contains "$(slot_cmd status 2>&1)" "packages matched to this kernel" \
+  "ac-10 the human line says what aligned means"
+
+printf 'packages=limited reason=kernel-unknown version=25.12.3 kernel=unknown\n' >"$esp/ab/packages"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "limited" "ac-10 a limited record is reported as limited"
+assert_eq "$(pkg_reason_field "$status")" "kernel-unknown" \
+  "ac-10 the reason travels with the state so it can be acted on"
+assert_contains "$(slot_cmd status 2>&1)" "package metadata is limited" \
+  "ac-10 the human line explains the consequence"
+
+# The record describes the slot an upgrade was aiming at. While the old slot still runs,
+# that verdict says nothing about this boot.
+printf 'packages=aligned reason=none version=25.12.4 kernel=kernel=6.12.87~abc-r1 slot=b\n' >"$esp/ab/packages"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "unknown" \
+  "ac-10 a verdict for the other slot is not reported as this slot's state"
+assert_eq "$(pkg_reason_field "$status")" "other-slot" \
+  "ac-10 and the reason says why"
+printf 'packages=aligned reason=none version=25.12.4 kernel=kernel=6.12.87~abc-r1 slot=a\n' >"$esp/ab/packages"
+assert_eq "$(pkg_field "$(slot_cmd status 2>/dev/null)")" "aligned" \
+  "ac-10 a verdict for the running slot is reported"
+
+# A record written by something else - or cut short - is not a verdict.
+printf 'packages=maybe reason=none\n' >"$esp/ab/packages"
+assert_eq "$(pkg_field "$(slot_cmd status 2>/dev/null)")" "unknown" \
+  "ac-10 an unrecognised state reads as unknown"
 
 # --- ac-2 commit and abandon ------------------------------------------------
 write_state a a 2

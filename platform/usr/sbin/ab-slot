@@ -78,6 +78,8 @@
 #                    (default $AB_ESP/boot/grub/ab-slot.cfg)
 #   AB_SLOT_CFG_LIB  shared writer of that file (default /lib/ab-slot-cfg.sh)
 #   AB_PARTITIONS_LIB  shared partition discovery (default /lib/ab-partitions.sh)
+#   AB_PACKAGES_FILE   the package-alignment verdict the last upgrade published
+#                      (default $AB_ESP/ab/packages)
 
 set -u
 # Keep whatever PATH we were given in front: the running system already supplies
@@ -99,6 +101,7 @@ AB_MOUNTS="${AB_MOUNTS:-/proc/mounts}"
 AB_SLOT_CFG="${AB_SLOT_CFG:-${AB_ESP}/boot/grub/ab-slot.cfg}"
 AB_SLOT_CFG_LIB="${AB_SLOT_CFG_LIB:-/lib/ab-slot-cfg.sh}"
 AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
+AB_PACKAGES_FILE="${AB_PACKAGES_FILE:-${AB_ESP}/ab/packages}"
 STATE="${AB_ESP}/ab/state.json"
 LOGDIR="${AB_ESP}/ab/log"
 LOCKDIR="${AB_ESP}/ab/.lock"
@@ -492,6 +495,57 @@ esp_health_state() {
 	printf 'unknown'
 }
 
+# packages_state: whether the running slot's package metadata describes the version it
+# runs, as the last upgrade published it (platform/lib/upgrade/packages.sh). `aligned`
+# means "world pins this kernel and distfeeds name this release", not "the feeds are
+# reachable": the alignment is offline on purpose, so a machine that upgrades without a
+# network is still aligned. A missing or unreadable record is `unknown`, never `aligned`,
+# for the same reason boot= and esp= refuse to claim a boot nothing recorded.
+packages_state() {
+    _pkg_file="${AB_PACKAGES_FILE}"
+    [ -r "${_pkg_file}" ] || {
+        printf 'unknown'
+        return 0
+    }
+    # The record describes the slot an upgrade was aiming at. Until that slot is committed
+    # and running, its verdict says nothing about this boot, so a record for another slot is
+    # reported as unknown rather than as this slot's state.
+    _pkg_slot="$(sed -n 's/^packages=[a-z]* .* slot=\([ab]\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
+    if [ -n "${_pkg_slot}" ]; then
+        _pkg_running="$(running_slot 2>/dev/null)" || _pkg_running=""
+        [ "${_pkg_slot}" = "${_pkg_running}" ] || {
+            printf 'unknown'
+            return 0
+        }
+    fi
+    _pkg_state="$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
+    case "${_pkg_state}" in
+        aligned | limited) printf '%s' "${_pkg_state}" ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+# packages_reason: why the state is `limited` (a token from the aligner), `none` when the
+# metadata is aligned and `unknown` when there is no record at all.
+packages_reason() {
+    _pkg_file="${AB_PACKAGES_FILE}"
+    [ -r "${_pkg_file}" ] || {
+        printf 'unknown'
+        return 0
+    }
+    _pkg_slot="$(sed -n 's/^packages=[a-z]* .* slot=\([ab]\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
+    if [ -n "${_pkg_slot}" ]; then
+        _pkg_running="$(running_slot 2>/dev/null)" || _pkg_running=""
+        if [ "${_pkg_slot}" != "${_pkg_running}" ]; then
+            printf 'other-slot'
+            return 0
+        fi
+    fi
+    _pkg_reason="$(sed -n 's/^packages=[a-z]* reason=\([^ ]*\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
+    [ -n "${_pkg_reason}" ] || _pkg_reason="unknown"
+    printf '%s' "${_pkg_reason}"
+}
+
 # --------------------------------------------------------------------------- #
 # Subcommands
 # --------------------------------------------------------------------------- #
@@ -511,6 +565,8 @@ cmd_status() {
     _boot_hint=""
     [ "${_boot}" = "degraded" ] && _boot_hint=", the writable layer is a tmpfs and writes will not survive a reboot"
     [ "${_boot}" = "unknown" ] && _boot_hint=", no readable ring log, so nothing here proves it came up clean"
+    _packages="$(packages_state)"
+    _packages_reason="$(packages_reason)"
     _data="$(mount_state "${DATA_MOUNT}")"
     _docker="$(mount_state "${DOCKER_MOUNT}")"
     _swap="$(mount_state "${SWAP_MOUNT}")"
@@ -528,14 +584,25 @@ cmd_status() {
     # esp= is appended after boot=, never inserted: the fields before it are parsed by
     # pattern elsewhere (platform/lib/upgrade/platform.sh takes upper= by regex) and the
     # human line below reads as one sentence about this boot.
-    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s esp=%s\n' \
+    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s esp=%s packages=%s packages_reason=%s\n' \
         "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}" \
-        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}" "${_boot}" "${_esp}"
+        "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}" "${_boot}" "${_esp}" \
+        "${_packages}" "${_packages_reason}"
     say "ab-slot: running slot ${_slot} (${_upper}), generation ${_generation}"
     say "ab-slot: committed ${_committed}, pending ${_pending}, writable layer ${_p4}"
     say "ab-slot: mounts data=${_data} docker=${_docker} swap=${_swap}"
     say "ab-slot: this boot is ${_boot}${_boot_hint}"
     say "ab-slot: the ESP was ${_esp} when the initramfs mounted it"
+    # One sentence the user can act on: "aligned" is what makes `apk add <kmod>` work for
+    # the kernel this slot runs; a limited slot boots fine and cannot install matched
+    # packages.
+    _packages_hint=""
+    case "${_packages}" in
+        aligned) _packages_hint=", packages matched to this kernel" ;;
+        limited) _packages_hint=", package metadata is limited (${_packages_reason}): installing packages for this kernel needs it fixed first" ;;
+        *) _packages_hint=", no upgrade recorded package metadata, so nothing here proves it matches" ;;
+    esac
+    say "ab-slot: packages ${_packages}${_packages_hint}"
     say "ab-slot: the next boot runs slot ${_next}, ${_identity}"
 }
 

@@ -18,9 +18,12 @@ inputs:
     required: false
     default: ""
 
-# A composite action has to declare its outputs statically, so this is a fixed superset:
-# a key its script did not emit renders as an empty string. Adding a script output means
-# adding it here too, which is what the conventions test checks.
+# A composite action has to declare its outputs statically, so this is a fixed list: a key
+# its script did not emit renders as an empty string. The list is not a superset of what the
+# scripts emit - some of esp-prepare.sh's keys (efi_loader, grub_version, esp_bytes, ...) are
+# deliberately not forwarded - so the guarantee runs one way: every `<id>.outputs.<key>` a
+# workflow reads must be declared here, and the conventions test enforces that direction. A
+# script output a workflow is meant to consume has to be added here first.
 outputs:
   kernel_version:
     description: "kernel_version"
@@ -61,6 +64,12 @@ outputs:
   esp_next_slot:
     description: "esp_next_slot"
     value: ${{ steps.run.outputs.esp_next_slot }}
+  source_image:
+    description: "source_image"
+    value: ${{ steps.run.outputs.source_image }}
+  source_sha256:
+    description: "source_sha256"
+    value: ${{ steps.run.outputs.source_sha256 }}
   runtime_packages:
     description: "runtime_packages"
     value: ${{ steps.run.outputs.runtime_packages }}
