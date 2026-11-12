@@ -33,18 +33,20 @@ result_of() { # <line>: the <PREFIX>=<verdict> part
 
 for workflow in ci-s3 ci-s4 ci-s5; do
   body=$(cat "$workflows/${workflow}.yml")
-  assert_eq "$(printf '%s\n' "$body" | grep -c 'CI_QEMU_APPEND_EXTRA: *ab\.slot=')" "0" \
+  # The kernel command line is an input of the qemu-boot composite now, so the assertion has
+  # to read that input: matching the old env spelling would be vacuously true.
+  assert_eq "$(printf '%s\n' "$body" | grep -cE '^\s+append-extra:.*ab\.slot=')" "0" \
     "ac-1 ${workflow} no longer injects ab.slot="
 done
 
 # The stages that have to prove slot selection hand the machine to the firmware.
 for workflow in ci-s4 ci-s5; do
   body=$(cat "$workflows/${workflow}.yml")
-  assert_eq "$(printf '%s\n' "$body" | grep -c 'CI_QEMU_MODE: uefi-disk')" "4" \
+  assert_eq "$(printf '%s\n' "$body" | grep -c 'mode: uefi-disk')" "4" \
     "ac-1 ${workflow} boots every phase through the ESP"
 done
 s3_body=$(cat "$workflows/ci-s3.yml")
-assert_eq "$(printf '%s\n' "$s3_body" | grep -c 'CI_QEMU_MODE: uefi-disk')" "1" \
+assert_eq "$(printf '%s\n' "$s3_body" | grep -c 'mode: uefi-disk')" "1" \
   "ac-1 ci-s3 adds one firmware boot through the ESP"
 
 # Each of those stages has to check the ESP before booting it, and the check has to be
@@ -58,13 +60,16 @@ for workflow in ci-s3 ci-s4 ci-s5; do
     "ac-1 ${workflow} verifies the ESP it boots"
 done
 
+# The QEMU knobs below are the qemu-boot composite's inputs, not job env: the composite is
+# the one place that starts a guest, so the assertions read its call sites.
+#
 # A firmware boot runs the *production* initramfs: there is no /s3.sh and no probe
 # judge line, so a step that waits for one can only time out. The run has to stop on a
 # line our own hooks print, and grade those lines afterwards.
 s3_body_for_judge=$(cat "$workflows/ci-s3.yml")
-assert_eq "$(printf '%s\n' "$s3_body_for_judge" | grep -c 'CI_JUDGE_PREFIX: S3-RESULT')" "2" \
+assert_eq "$(printf '%s\n' "$s3_body_for_judge" | grep -c 'judge-prefix: S3-RESULT')" "2" \
   "ac-1 only the two probe boots expect an S3-RESULT line"
-assert_contains "$s3_body_for_judge" 'CI_QEMU_STOP_PATTERN: "^ab-boot: stage="' \
+assert_contains "$s3_body_for_judge" 'stop-pattern: "^ab-boot: stage="' \
   "ac-1 the GRUB boot stops on our own boot hook's first line"
 assert_contains "$s3_body_for_judge" "grep -qE 'ab-boot: stage=device .*disk=/dev/vda'" \
   "ac-1 the GRUB boot has to prove our initramfs ran, from the serial log"

@@ -1,0 +1,56 @@
+name: Render the stage summary block
+description: >-
+  Folds the stage logs into one judge log and renders the fixed five-column block
+  through scripts/ci/stage-summary.sh, which is the run page a reader lands on. Gated on
+  `if: always()` at the call site: a failed stage renders FAIL with its own judge line,
+  and the step never changes a verdict.
+
+inputs:
+  stage:
+    description: "Stage name, one of s1..s5"
+    required: true
+  result:
+    description: "Job status as GitHub reports it, normally job.status"
+    required: true
+  artifact:
+    description: "Artifact the stage published"
+    required: false
+    default: ""
+  artifact-file:
+    description: "One file from that artifact, for the sha256 column"
+    required: false
+    default: ""
+  note:
+    description: "Free text appended to the block"
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # The renderer itself is exit-0 by contract; the only way this step can fail is a
+    # broken shell guard here, so every optional argument is added without tripping -e.
+    - name: Write stage summary
+      shell: bash
+      env:
+        SUMMARY_STAGE: ${{ inputs.stage }}
+        SUMMARY_RESULT: ${{ inputs.result }}
+        SUMMARY_ARTIFACT: ${{ inputs.artifact }}
+        SUMMARY_ARTIFACT_FILE: ${{ inputs.artifact-file }}
+        SUMMARY_NOTE: ${{ inputs.note }}
+      run: |
+        log_dir="${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+        judge_log="${RUNNER_TEMP}/ci/${SUMMARY_STAGE}-judge.log"
+        mkdir -p "${RUNNER_TEMP}/ci"
+        cat "${log_dir}"/*.log >"${judge_log}" 2>/dev/null || true
+        args=(--stage "${SUMMARY_STAGE}" --result "${SUMMARY_RESULT}" --judge-log "${judge_log}")
+        if [ -n "${SUMMARY_ARTIFACT}" ]; then
+          args+=(--artifact "${SUMMARY_ARTIFACT}")
+        fi
+        if [ -n "${SUMMARY_ARTIFACT_FILE}" ]; then
+          args+=(--artifact-file "${SUMMARY_ARTIFACT_FILE}")
+        fi
+        if [ -n "${SUMMARY_NOTE}" ]; then
+          args+=(--note "${SUMMARY_NOTE}")
+        fi
+        bash scripts/ci/stage-summary.sh "${args[@]}"

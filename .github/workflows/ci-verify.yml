@@ -2,10 +2,12 @@ name: static checks
 
 # Stage 4 - verify.
 #
-# Synchronous, artifact-free checks: shell syntax, ShellCheck (when the runner ships
-# it) and `python3 scripts/check_design.py all`, which turns the thresholds and
-# contracts written in docs/ into executable assertions. The stage runs every check
-# before failing so one run reports all findings.
+# Synchronous, artifact-free checks: shell syntax, actionlint (installed at a pinned
+# release by ./.github/actions/actionlint), ShellCheck (installed on the runner) and
+# `python3 scripts/check_design.py all`, which turns the thresholds and contracts
+# written in docs/ into executable assertions. The stage runs every check before
+# failing so one run reports all findings, and scripts/ci/verify.sh writes one verdict
+# line per check to the run summary.
 
 on:
   workflow_call:
@@ -20,21 +22,21 @@ on:
         description: "Number of reported design problems"
         value: ${{ jobs.verify.outputs.design_checks_problems }}
       shellcheck_status:
-        description: "Result of ShellCheck: ok, fail or skipped"
+        description: "Result of ShellCheck: ok or fail, a missing linter fails the stage"
         value: ${{ jobs.verify.outputs.shellcheck_status }}
 
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: bash
-
+# One run per lane: a second automatic run on the same ref cancels the one in flight,
+# while a manual dispatch neither cancels nor is cancelled by anything.
 jobs:
   verify:
     name: static checks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Downloading the linter, installing ShellCheck and running the whole test suite:
+    # the 10 minutes this job used to allow were not enough for that.
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:
@@ -44,9 +46,21 @@ jobs:
       shellcheck_status: ${{ steps.verify.outputs.shellcheck_status }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      # The linter fails the job here first, before any of the stage output is produced.
+      # It also leaves the pinned binary on PATH, so the stage script below lints with
+      # the version CI installed rather than whatever the runner image ships.
+      - name: Lint the workflows
+        uses: ./.github/actions/actionlint
+
+      # verify.sh treats a missing linter as a stage failure, so the runner has to provide
+      # it explicitly instead of relying on the image. The install is not allowed to fail
+      # softly: a silently absent ShellCheck is exactly what used to hide the check.
+      - name: Install ShellCheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
 
       - name: Run static checks
         id: verify
@@ -65,7 +79,7 @@ jobs:
 
       - name: Upload logs and diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs-verify
           path: |

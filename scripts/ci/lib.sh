@@ -23,13 +23,19 @@ CI_LIB_LOADED=1
 set -euo pipefail
 
 # --------------------------------------------------------------------------- #
-# Pinned inputs
+# Locations
+#
+# The repo root is needed before the pinned inputs are resolved: the upstream pin is
+# read from a tracked file rather than inlined here.
 # --------------------------------------------------------------------------- #
 
-# Upstream ImmortalWrt release consumed when no explicit version is requested.
-# Bumping this value changes the cache key, so cached downloads are never reused
-# across upstream versions.
-CI_UPSTREAM_VERSION_PIN="${CI_UPSTREAM_VERSION_PIN:-25.12.2}"
+CI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CI_REPO_ROOT="${CI_REPO_ROOT:-$(cd "${CI_LIB_DIR}/../.." && pwd)}"
+export CI_REPO_ROOT
+
+# --------------------------------------------------------------------------- #
+# Pinned inputs
+# --------------------------------------------------------------------------- #
 
 # Official mirror root and target path (x86-64, UEFI only).
 CI_UPSTREAM_BASE="${CI_UPSTREAM_BASE:-https://downloads.immortalwrt.org}"
@@ -52,12 +58,76 @@ CI_KMODS_DIR_RE='^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-[0-9a-f]{32}$'
 CI_SHA256_RE='^[0-9a-f]{64}$'
 
 # --------------------------------------------------------------------------- #
-# Locations
+# Upstream pin
+#
+# The pinned upstream release lives in .github/upstream-pin.conf, not in this file:
+# the upstream auto-release workflow (task 20261112-02) has to bump it on a branch
+# that does not own lib.sh, and two branches editing the same line is how a merge
+# conflict turns into a silently stale pin. This file is therefore the only reader
+# and `ci_write_upstream_pin` the only writer.
+#
+# Precedence: explicit CI_UPSTREAM_VERSION_PIN > pin file > CI_UPSTREAM_PIN_DEFAULT.
 # --------------------------------------------------------------------------- #
 
-CI_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CI_REPO_ROOT="${CI_REPO_ROOT:-$(cd "${CI_LIB_DIR}/../.." && pwd)}"
-export CI_REPO_ROOT
+CI_UPSTREAM_PIN_FILE="${CI_UPSTREAM_PIN_FILE:-${CI_REPO_ROOT}/.github/upstream-pin.conf}"
+# Last-resort value, used only when the pin file is missing or unreadable. It is not
+# the pin: CI_UPSTREAM_VERSION_PIN below is what the stage scripts consume.
+CI_UPSTREAM_PIN_DEFAULT="25.12.2"
+
+# ci_upstream_pin_file: where the pin lives (for messages and tests).
+ci_upstream_pin_file() {
+    printf '%s\n' "${CI_UPSTREAM_PIN_FILE}"
+}
+
+# ci_upstream_pin_read: the pin from the file, or the built-in default.
+# An unreadable or malformed file must not produce an empty pin: the fetch stage would
+# then resolve "latest" and quietly build a different release than the one under test.
+ci_upstream_pin_read() {
+    local file="${CI_UPSTREAM_PIN_FILE}" version=""
+    if [ -f "${file}" ]; then
+        version="$(sed -n 's/^[[:space:]]*UPSTREAM_VERSION=//p' "${file}" | tail -n 1)"
+        version="${version%"${version##*[![:space:]]}"}"
+        if ! printf '%s\n' "${version}" | grep -Eq "${CI_VERSION_RE}"; then
+            printf '[ci] WARNING: ignoring invalid upstream pin in %s: %s\n' \
+                "${file}" "${version:-<empty>}" >&2
+            version=""
+        fi
+    fi
+    [ -n "${version}" ] || version="${CI_UPSTREAM_PIN_DEFAULT}"
+    printf '%s\n' "${version}"
+}
+
+# ci_write_upstream_pin <version>: the single write entry for the pin.
+# Rewrites only the UPSTREAM_VERSION line, keeps the explaining comment block, and
+# replaces the file atomically so a parallel reader never sees a half-written pin.
+ci_write_upstream_pin() {
+    local version="${1:-}"
+    [ -n "${version}" ] || ci_die "ci_write_upstream_pin requires a version"
+    ci_match "${version}" "${CI_VERSION_RE}" "upstream pin"
+    local file="${CI_UPSTREAM_PIN_FILE}" dir tmp
+    dir="$(dirname "${file}")"
+    mkdir -p "${dir}"
+    tmp="$(mktemp "${dir}/.upstream-pin.XXXXXX")"
+    if [ -f "${file}" ] && grep -q '^[[:space:]]*UPSTREAM_VERSION=' "${file}"; then
+        sed "s|^[[:space:]]*UPSTREAM_VERSION=.*|UPSTREAM_VERSION=${version}|" "${file}" >"${tmp}"
+    elif [ -f "${file}" ]; then
+        cat "${file}" >"${tmp}"
+        printf 'UPSTREAM_VERSION=%s\n' "${version}" >>"${tmp}"
+    else
+        {
+            printf '# Upstream ImmortalWrt release pinned by the pipeline.\n'
+            printf '# Written by ci_write_upstream_pin (scripts/ci/lib.sh); see that function.\n'
+            printf 'UPSTREAM_VERSION=%s\n' "${version}"
+        } >"${tmp}"
+    fi
+    mv "${tmp}" "${file}"
+    printf '[ci] pinned upstream version: %s\n' "${version}" >&2
+}
+
+# Upstream ImmortalWrt release consumed when no explicit version is requested.
+# Bumping this value changes the cache key, so cached downloads are never reused
+# across upstream versions.
+CI_UPSTREAM_VERSION_PIN="${CI_UPSTREAM_VERSION_PIN:-$(ci_upstream_pin_read)}"
 
 # --------------------------------------------------------------------------- #
 # Logging
