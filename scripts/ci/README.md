@@ -580,8 +580,10 @@ payload: manifest shape, member digests, one kernel build across the initramfs m
 free space, conflict report. A payload that passes here is one the device would accept,
 and there is no second copy of the rules to drift.
 
-The stage needs a mounted writable partition because the checker reads `p4` from
-`/proc/mounts`; it mounts a 64 MiB tmpfs for that and unmounts it afterwards.
+The stage needs a mounted writable partition because the checker asks btrfs about `p4` and
+the scratch state names the writable layer it must find; it creates a 256 MiB sparse image,
+formats it btrfs, mounts it and unmounts it afterwards. A tmpfs is not enough: it has no
+subvolumes to name.
 
 ### Conflicts: what was wrong
 
