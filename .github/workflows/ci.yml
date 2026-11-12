@@ -19,12 +19,6 @@ on:
   # the pin does not name yet, and it must build it with the same stages, in the same run,
   # rather than with a second copy of this graph.
   workflow_call:
-    inputs:
-      upstream_version:
-        description: "Upstream ImmortalWrt version, 'latest', or empty for the pinned default"
-        required: false
-        type: string
-        default: ""
   push:
     branches: [main]
   pull_request:
