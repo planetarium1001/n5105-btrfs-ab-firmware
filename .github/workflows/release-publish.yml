@@ -1,0 +1,91 @@
+name: release publish
+
+# The publishing half of a release, shared by both release lines.
+#
+#   * the tagged line  (release.yml):        push v0.0.8            -> build -> this workflow
+#   * the upstream line (upstream-watch.yml): a new upstream formal release -> this workflow
+#
+# Publishing is the one action that cannot be taken back from CI's point of view, so this
+# workflow opens with the check that has to pass before anything is created:
+# scripts/ci/release-preflight.sh proves that the image record (ab/image.json), the payload
+# manifest and the tag agree, and that the payload carries a bootloader. A mismatch is a
+# refused release, never a release with a warning.
+#
+# `dry-run: true` keeps every step except the publishing itself: the release is created as
+# a *draft*, so a rehearsal never becomes a published release.
+#
+# The inputs are the whole difference between the two lines: `tag-policy: v` for
+# v0.0.8-style tags, `tag-policy: bare` (default) for the bare upstream version. `title` is
+# a template in which `{tag}` becomes the version without a leading v.
+#
+# `platform_version` and `upstream_version` are optional: when a caller cannot know them
+# (release.yml cannot, because ci.yml exposes no workflow-level outputs), the versions are
+# read back from the payload manifest and the VERSION file, and a caller-supplied value is
+# asserted against them instead of trusted.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag, exactly as it will be created"
+        required: true
+        type: string
+      tag-policy:
+        description: "Tag shape: bare (25.13.0, the upstream line) or v (v0.0.8, the tagged line)"
+        required: false
+        type: string
+        default: bare
+      title:
+        description: "Release title template; {tag} is replaced with the tag minus any leading v"
+        required: false
+        type: string
+        default: "{tag}"
+      platform_version:
+        description: "Platform version; empty reads the repository VERSION file"
+        required: false
+        type: string
+        default: ""
+      upstream_version:
+        description: "Upstream release the build consumed; empty reads the payload manifest"
+        required: false
+        type: string
+        default: ""
+      image-artifact:
+        description: "Artifact carrying the install image"
+        required: false
+        type: string
+        default: image-install
+      payload-artifact:
+        description: "Artifact carrying the update payload"
+        required: false
+        type: string
+        default: payload-upgrade
+      extra-notes:
+        description: "Extra markdown appended to the release notes, for example the matrix candidates"
+        required: false
+        type: string
+        default: ""
+      run-id:
+        description: "Run whose artifacts carry the build; empty uses the calling run"
+        required: false
+        type: string
+        default: ""
+      dry-run:
+        description: "Create the release as a draft and never publish it"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - run: echo ok

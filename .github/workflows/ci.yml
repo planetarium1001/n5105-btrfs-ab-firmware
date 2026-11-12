@@ -13,11 +13,6 @@ name: Firmware CI - build and validate
 
 on:
   # release.yml calls this workflow on a tag: a release is built by the stages a push runs.
-  #
-  # upstream_version is an input of the reusable call for the same reason it is an input of
-  # the manual dispatch: the upstream auto-release line (upstream-watch.yml) builds a release
-  # the pin does not name yet, and it must build it with the same stages, in the same run,
-  # rather than with a second copy of this graph.
   workflow_call:
   push:
     branches: [main]
