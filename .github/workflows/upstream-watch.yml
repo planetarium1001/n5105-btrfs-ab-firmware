@@ -231,7 +231,6 @@ jobs:
   # that graph, and nothing waits for a push or a tag to start it.
   build:
     name: build the new upstream release
-    needs: [detect, bump]
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
