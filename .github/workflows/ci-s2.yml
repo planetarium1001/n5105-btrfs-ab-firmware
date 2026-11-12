@@ -2,71 +2,36 @@ name: S2 image
 
 # Stage S2 - four-partition disk image assembly.
 #
-# Builds the installable image from the verified upstream payload and asserts the
-# geometry that docs/partitions.md freezes:
+# Builds the installable image from the verified upstream payload and asserts the geometry
+# docs/partitions.md freezes: p1 ESP (vfat, GRUB), p2/p3 slot-a/slot-b (btrfs, @sys +
+# @platform), p4 data (btrfs, @overlay-<version>, @docker, @swap, @data).
 #
-#   p1 ab-esp / ESP     128 MiB vfat   GRUB, grubenv, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
-#   p2 ab-slot-a / slot-a 128 MiB btrfs  @sys, @platform
-#   p3 ab-slot-b / slot-b 128 MiB btrfs  @sys, @platform
-#   p4 ab-data / data    128 MiB btrfs  @overlay-<version> (upper/, work/), @docker, @swap, @data
-#
-# The ESP reuses the upstream bootloader (EFI/BOOT/BOOTX64.EFI and boot/grub taken
-# from the upstream combined-EFI image), so this stage adds no build dependency.
-#
-# Verification happens twice: on the host against the raw image (fast, precise
-# messages) and inside the guest, where the kernel, the btrfs module and the
-# partition table are read back independently. Only the guest view is gating, and it
-# prints the frozen line:
+# Verification happens twice - on the host against the raw image and inside the guest, which
+# reads the kernel, the btrfs module and the partition table back. Only the guest gates:
 #
 #     S2-RESULT=ok parts=4 images=<bytes>
-#
-# The image is not bootable yet on purpose: S3 builds the real initramfs mount chain
-# and S4 the A/B state machine. Both initrd slots currently carry the S1 probe
-# initramfs so the ESP is complete.
 
 on:
   workflow_call:
     inputs:
-      upstream_version:
-        description: "Resolved upstream version"
-        required: true
-        type: string
-      upstream_base_url:
-        description: "Release directory URL for the target"
-        required: true
-        type: string
-      kmods_dir:
-        description: "Kernel module directory name on the mirror"
-        required: true
-        type: string
-      kernel_package:
-        description: "Kernel package version from the upstream manifest"
-        required: true
-        type: string
-      platform_version:
-        description: "Platform version recorded in the @platform skeleton"
-        required: false
-        type: string
-        default: "0.0.1"
+      upstream_version: {description: "Resolved upstream version", required: true, type: string}
+      upstream_base_url: {description: "Release directory URL for the target", required: true, type: string}
+      kmods_dir: {description: "Kernel module directory name on the mirror", required: true, type: string}
+      kernel_package: {description: "Kernel package version from the upstream manifest", required: true, type: string}
+      platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
     outputs:
-      judge_line:
-        description: "Frozen S2 judge line from the gating guest run"
-        value: ${{ jobs.s2.outputs.judge_line }}
-      image_bytes:
-        description: "Size of the assembled raw image"
-        value: ${{ jobs.s2.outputs.image_bytes }}
-      image_gz_bytes:
-        description: "Size of the compressed image artifact"
-        value: ${{ jobs.s2.outputs.image_gz_bytes }}
-      rootfs_files:
-        description: "Files in @sys, counted by the host verifier"
-        value: ${{ jobs.s2.outputs.rootfs_files }}
-      host_checks:
-        description: "Number of host-side assertions that passed"
-        value: ${{ jobs.s2.outputs.host_checks }}
+      judge_line: {description: "Frozen S2 judge line from the gating guest run", value: "${{ jobs.s2.outputs.judge_line }}"}
+      image_bytes: {description: "Size of the assembled raw image", value: "${{ jobs.s2.outputs.image_bytes }}"}
+      image_gz_bytes: {description: "Size of the compressed image artifact", value: "${{ jobs.s2.outputs.image_gz_bytes }}"}
+      rootfs_files: {description: "Files in @sys, counted by the host verifier", value: "${{ jobs.s2.outputs.rootfs_files }}"}
+      host_checks: {description: "Number of host-side assertions that passed", value: "${{ jobs.s2.outputs.host_checks }}"}
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
@@ -77,8 +42,6 @@ jobs:
     name: S2 image - four partitions
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    permissions:
-      contents: read
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
@@ -93,73 +56,44 @@ jobs:
       host_checks: ${{ steps.verify.outputs.verified_checks }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: ./.github/actions/setup-ci
         with:
-          persist-credentials: false
-
-      - name: Download upstream artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: upstream-files
-          path: ${{ runner.temp }}/ci/fetch
-
-      - name: Install image and QEMU tooling
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            btrfs-progs dosfstools gdisk fdisk util-linux e2fsprogs \
-            cpio kmod qemu-system-x86 ovmf
-          mkfs.btrfs --version
-          mkfs.vfat --help 2>&1 | head -n 1
-          sfdisk --version
-          qemu-system-x86_64 --version | head -n 1
+          download-upstream: "true"
+          apt: btrfs-progs dosfstools gdisk fdisk util-linux e2fsprogs cpio kmod qemu-system-x86 ovmf
 
       - name: Unpack the btrfs module closure
         id: kmods
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: kmods.sh}
 
-      # The ESP needs an initrd in each slot. The production initramfs arrives in S3,
-      # so the probe initramfs stands in for now and keeps the ESP complete.
+      # The ESP needs an initrd per slot; the production one arrives in S3.
       - name: Build the payload initramfs
         id: initramfs
         env:
           CI_KERNEL_VERSION: ${{ steps.kmods.outputs.kernel_version }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+        run: bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR}/initramfs.log"
 
       - name: Prepare the ESP from the upstream bootloader
         id: esp
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/esp.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: esp-prepare.sh, log: esp.log}
 
-      # The platform layer carries btrfs-progs: the upstream rootfs has no btrfs tool,
-      # and reclamation, snapshots and the degraded boot need one inside the guest.
+      # The platform layer carries btrfs-progs: the upstream rootfs has no btrfs tool.
       - name: Resolve the btrfs runtime closure
         id: runtime
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/platform-runtime.sh 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/runtime.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: platform-runtime.sh, log: runtime.log}
 
+      # The S1 probe stands in as initrd: it only answers /dev/vda, hence the image-probe artifact.
       - name: Assemble the disk image
         id: disk
         env:
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
           CI_INITRAMFS: ${{ runner.temp }}/ci/initramfs/initramfs.cpio.gz
           CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
-          # S2 assembles the image before the boot chain exists, so it installs the S1
-          # module-load probe as initrd - and says so out loud, because a probe image
-          # only answers /dev/vda: on any real machine it powers off. The artifact below
-          # is named image-probe for the same reason.
           CI_INITRAMFS_KIND: probe
           CI_ALLOW_PROBE_INIT: "1"
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
+        run: bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR}/disk.log"
 
       - name: Verify the image on the host
         id: verify
@@ -169,12 +103,11 @@ jobs:
           CI_EXPECT_OUT: ${{ runner.temp }}/ci/disk/s2-expect.txt
           # image-verify cross-checks ab/image.json against what the build installed.
           CI_INITRAMFS_KIND: probe
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/image-verify.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/image-verify.log"
+        run: bash scripts/ci/image-verify.sh 2>&1 | tee -a "${CI_LOG_DIR}/image-verify.log"
 
-      # A second initramfs carries the guest assertion and the host-generated
-      # expectations, so the guest recomputes them instead of trusting its input.
+      # The assertion initramfs carries the guest script and the host-generated expectations,
+      # so the guest recomputes them. Tools come from the locked upstream packages: resolving
+      # them with `command -v` is what used to put glibc binaries in a musl image.
       - name: Build the assertion initramfs
         id: assert_initramfs
         env:
@@ -183,87 +116,53 @@ jobs:
           CI_EXPECT_FILE: ${{ steps.verify.outputs.expect_file }}
           CI_GUEST_SCRIPT: ${{ github.workspace }}/tests/modules/image/guest-assert.sh
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          # The assertion initramfs carries the same upstream-built tools as the
-          # production one: btrfs, blkid and sfdisk come from the locked packages
-          # (scripts/ci/initramfs-tools.lock.json, toolset "assert"), never from the
-          # runner. Resolving them with `command -v` on the host is what used to put
-          # glibc binaries in an image that has only the musl loader.
           CI_INITRAMFS_TOOLSET=assert \
             CI_EXTRA_FILES="${CI_GUEST_SCRIPT}:/s2.sh ${CI_EXPECT_FILE}:/s2-expect.txt" \
-            bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/assert-initramfs.log"
+            bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR}/assert-initramfs.log"
 
       - name: Boot the image and assert its geometry
         id: probe
-        env:
-          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ runner.temp }}/ci/initramfs/assert.cpio.gz
-          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
-          CI_QEMU_INIT: /s2.sh
-          CI_JUDGE_PREFIX: S2-RESULT
-          CI_QEMU_CASE: s2
-          CI_QEMU_TIMEOUT: "900"
-          CI_QEMU_MEM: "1536"
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu.log"
-
-      - name: Collect diagnostics
-        if: always()
-        continue-on-error: true
-        env:
-          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}" "${CI_DIAG_DIR}"
-          bash scripts/ci/diagnostics.sh s2 "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/disk" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
-
-      - name: Upload the disk image
-        if: always()
-        # The image is reproducible from the upstream inputs in a few minutes, so it is
-        # only kept for a short window: uploading it on every push would cost about
-        # 80 MB per run for no extra evidence.
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/qemu-boot
         with:
-          name: image-probe
-          path: ${{ runner.temp }}/ci/disk/*.img.gz
-          if-no-files-found: ignore
-          retention-days: 1
+          case: s2
+          initramfs: ${{ runner.temp }}/ci/initramfs/assert.cpio.gz
+          image: ${{ steps.disk.outputs.image_path }}
+          init: /s2.sh
+          judge-prefix: S2-RESULT
+          mem: "1536"
+          log: qemu.log
 
-      - name: Upload stage evidence
+      - name: Collect the stage evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/stage-evidence
         with:
+          stage: s2
           name: evidence-s2
-          path: |
+          diag-args: ${{ runner.temp }}/ci/disk
+          paths: |
             ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/disk/sfdisk-verify.json
             ${{ runner.temp }}/ci/disk/sfdisk.log
             ${{ runner.temp }}/ci/disk/s2-expect.txt
             ${{ runner.temp }}/ci/disk/sys-diff.log
             ${{ runner.temp }}/ci/initramfs/assert.cpio.gz
-          if-no-files-found: ignore
-          retention-days: 7
 
-      - name: Upload logs and diagnostics
+      # Kept for a day: it is reproducible in minutes and costs ~80 MB per run.
+      - name: Upload the disk image
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: logs-s2
-          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
+          name: image-probe
+          path: ${{ runner.temp }}/ci/disk/*.img.gz
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 1
 
-      # The summary block is the run page the user reads: same five columns for every
-      # stage, written even when the stage failed (if: always()).
+      # The five-column block, rendered by bash scripts/ci/stage-summary.sh --stage s2.
       - name: Write stage summary
         if: always()
-        run: |
-          mkdir -p "${RUNNER_TEMP}/ci"
-          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s2-judge.log" 2>/dev/null || true
-          bash scripts/ci/stage-summary.sh \
-            --stage s2 \
-            --result "${{ job.status }}" \
-            --judge-log "${RUNNER_TEMP}/ci/s2-judge.log" \
-            --artifact image-probe \
-            --artifact-file "${RUNNER_TEMP}/ci/disk/n5105-ab-image.img.gz"
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: s2
+          result: ${{ job.status }}
+          artifact: image-probe
+          artifact-file: ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz

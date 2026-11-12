@@ -2,271 +2,71 @@ name: pipeline report
 
 # Stage 5 - report.
 #
-# Renders the pipeline verdict as a job summary and fails the run when a stage that
-# was actually scheduled did not succeed. All inputs are optional strings so a
-# partially scheduled pipeline (stage=fetch, stage=verify, ...) still reports.
+# Renders the pipeline verdict as a job summary and fails the run when a stage that was
+# actually scheduled did not succeed. All inputs are optional strings, so a partially
+# scheduled pipeline (stage=fetch, stage=verify, ...) still reports.
 
 on:
   workflow_call:
     inputs:
-      stage:
-        description: "Requested stage"
-        required: false
-        type: string
-        default: "all"
-      trigger:
-        description: "Workflow trigger, for example push or workflow_dispatch"
-        required: false
-        type: string
-        default: ""
-      ref:
-        description: "Git ref under test"
-        required: false
-        type: string
-        default: ""
-      sha:
-        description: "Commit under test"
-        required: false
-        type: string
-        default: ""
-      resolve_result:
-        description: "Job result of the resolve stage"
-        required: false
-        type: string
-        default: ""
-      fetch_result:
-        description: "Job result of the fetch stage"
-        required: false
-        type: string
-        default: ""
-      assemble_result:
-        description: "Job result of the assemble stage"
-        required: false
-        type: string
-        default: ""
-      verify_result:
-        description: "Job result of the verify stage"
-        required: false
-        type: string
-        default: ""
-      s1_result:
-        description: "Job result of the S1 module-load probe"
-        required: false
-        type: string
-        default: ""
-      s1_line:
-        description: "Frozen S1 judge line printed by the gated boot"
-        required: false
-        type: string
-        default: ""
-      s1_modules:
-        description: "Number of modules loaded by the probe"
-        required: false
-        type: string
-        default: ""
-      s1_boot_seconds:
-        description: "Wall-clock seconds of the gated boot"
-        required: false
-        type: string
-        default: ""
-      s1_uefi_line:
-        description: "Judge line from the informational OVMF boot"
-        required: false
-        type: string
-        default: ""
-      s1_apk_crosscheck:
-        description: "Result of the apk-based closure cross-check"
-        required: false
-        type: string
-        default: ""
-      s2_result:
-        description: "Job result of the S2 image assembly"
-        required: false
-        type: string
-        default: ""
-      s2_line:
-        description: "Frozen S2 judge line from the gating guest run"
-        required: false
-        type: string
-        default: ""
-      s2_image_bytes:
-        description: "Size of the raw disk image"
-        required: false
-        type: string
-        default: ""
-      s2_image_gz_bytes:
-        description: "Size of the compressed disk image artifact"
-        required: false
-        type: string
-        default: ""
-      s2_rootfs_files:
-        description: "Files in @sys as counted by the host verifier"
-        required: false
-        type: string
-        default: ""
-      s2_host_checks:
-        description: "Number of host-side assertions that passed"
-        required: false
-        type: string
-        default: ""
-      s3_result:
-        description: "Job result of the S3 layered boot"
-        required: false
-        type: string
-        default: ""
-      s3_line:
-        description: "Frozen S3 judge line from the first boot"
-        required: false
-        type: string
-        default: ""
-      s3_line_boot2:
-        description: "Frozen S3 judge line from the second boot"
-        required: false
-        type: string
-        default: ""
-      s3_slot:
-        description: "Slot the boot chain selected"
-        required: false
-        type: string
-        default: ""
-      s3_upper:
-        description: "Writable layer the boot chain mounted"
-        required: false
-        type: string
-        default: ""
-      s4_result:
-        description: "Job result of the S4 three-boot state machine run"
-        required: false
-        type: string
-        default: ""
-      s4_line_commit_a:
-        description: "Judge line: commit slot a"
-        required: false
-        type: string
-        default: ""
-      s4_line_abandon_b:
-        description: "Judge line: abandon slot b"
-        required: false
-        type: string
-        default: ""
-      s4_line_commit_b:
-        description: "Judge line: commit slot b"
-        required: false
-        type: string
-        default: ""
-      s4_committed_final:
-        description: "Slot committed after the last S4 boot"
-        required: false
-        type: string
-        default: ""
-      s4_line_rollback:
-        description: "Judge line: rollback back to slot a"
-        required: false
-        type: string
-        default: ""
-      s4_next_slot_final:
-        description: "Slot GRUB would boot after the last S4 phase"
-        required: false
-        type: string
-        default: ""
-      s5_result:
-        description: "Job result of the S5 upgrade run"
-        required: false
-        type: string
-        default: ""
-      s5_line:
-        description: "Frozen S5 judge line"
-        required: false
-        type: string
-        default: ""
-      s5_upgrade_line:
-        description: "Evidence line from the upgrade boot"
-        required: false
-        type: string
-        default: ""
-      s5_degraded_line:
-        description: "Evidence line from the degraded boot"
-        required: false
-        type: string
-        default: ""
-      s5_conflicts:
-        description: "Conflicts reported by the upgrade"
-        required: false
-        type: string
-        default: ""
-      s5_reclaimed:
-        description: "Layers reclaimed during the upgrade boot"
-        required: false
-        type: string
-        default: ""
-      upstream_version:
-        description: "Resolved upstream version"
-        required: false
-        type: string
-        default: ""
-      version_source:
-        description: "Where the upstream version came from"
-        required: false
-        type: string
-        default: ""
-      kernel_package:
-        description: "Resolved kernel package version"
-        required: false
-        type: string
-        default: ""
-      kmods_dir:
-        description: "Kernel module directory name"
-        required: false
-        type: string
-        default: ""
-      cache_key:
-        description: "Cache key used by the fetch stage"
-        required: false
-        type: string
-        default: ""
-      cache_hit:
-        description: "Whether the fetch stage reused cached downloads"
-        required: false
-        type: string
-        default: ""
-      fetch_total_bytes:
-        description: "Total size of the fetched upstream members"
-        required: false
-        type: string
-        default: ""
-      payload_members:
-        description: "Comma separated list of payload members"
-        required: false
-        type: string
-        default: ""
-      payload_total_bytes:
-        description: "Total size of the payload members"
-        required: false
-        type: string
-        default: ""
-      payload_manifest_sha256:
-        description: "sha256 of the payload manifest"
-        required: false
-        type: string
-        default: ""
-      design_checks_status:
-        description: "Result of scripts/check_design.py all"
-        required: false
-        type: string
-        default: ""
-      design_checks_problems:
-        description: "Number of reported design problems"
-        required: false
-        type: string
-        default: ""
-      shellcheck_status:
-        description: "Result of ShellCheck in the verify stage"
-        required: false
-        type: string
-        default: ""
+      stage: {description: "Requested stage", required: false, type: string, default: "all"}
+      trigger: {description: "Workflow trigger, for example push or workflow_dispatch", required: false, type: string, default: ""}
+      ref: {description: "Git ref under test", required: false, type: string, default: ""}
+      sha: {description: "Commit under test", required: false, type: string, default: ""}
+      resolve_result: {description: "Job result of the resolve stage", required: false, type: string, default: ""}
+      fetch_result: {description: "Job result of the fetch stage", required: false, type: string, default: ""}
+      assemble_result: {description: "Job result of the assemble stage", required: false, type: string, default: ""}
+      verify_result: {description: "Job result of the verify stage", required: false, type: string, default: ""}
+      s1_result: {description: "Job result of the S1 module-load probe", required: false, type: string, default: ""}
+      s1_line: {description: "Frozen S1 judge line printed by the gated boot", required: false, type: string, default: ""}
+      s1_modules: {description: "Number of modules loaded by the probe", required: false, type: string, default: ""}
+      s1_boot_seconds: {description: "Wall-clock seconds of the gated boot", required: false, type: string, default: ""}
+      s1_uefi_line: {description: "Judge line from the informational OVMF boot", required: false, type: string, default: ""}
+      s1_apk_crosscheck: {description: "Result of the apk-based closure cross-check", required: false, type: string, default: ""}
+      s2_result: {description: "Job result of the S2 image assembly", required: false, type: string, default: ""}
+      s2_line: {description: "Frozen S2 judge line from the gating guest run", required: false, type: string, default: ""}
+      s2_image_bytes: {description: "Size of the raw disk image", required: false, type: string, default: ""}
+      s2_image_gz_bytes: {description: "Size of the compressed disk image artifact", required: false, type: string, default: ""}
+      s2_rootfs_files: {description: "Files in @sys as counted by the host verifier", required: false, type: string, default: ""}
+      s2_host_checks: {description: "Number of host-side assertions that passed", required: false, type: string, default: ""}
+      s3_result: {description: "Job result of the S3 layered boot", required: false, type: string, default: ""}
+      s3_line: {description: "Frozen S3 judge line from the first boot", required: false, type: string, default: ""}
+      s3_line_boot2: {description: "Frozen S3 judge line from the second boot", required: false, type: string, default: ""}
+      s3_slot: {description: "Slot the boot chain selected", required: false, type: string, default: ""}
+      s3_upper: {description: "Writable layer the boot chain mounted", required: false, type: string, default: ""}
+      s4_result: {description: "Job result of the S4 three-boot state machine run", required: false, type: string, default: ""}
+      s4_line_commit_a: {description: "Judge line: commit slot a", required: false, type: string, default: ""}
+      s4_line_abandon_b: {description: "Judge line: abandon slot b", required: false, type: string, default: ""}
+      s4_line_commit_b: {description: "Judge line: commit slot b", required: false, type: string, default: ""}
+      s4_committed_final: {description: "Slot committed after the last S4 boot", required: false, type: string, default: ""}
+      s4_line_rollback: {description: "Judge line: rollback back to slot a", required: false, type: string, default: ""}
+      s4_next_slot_final: {description: "Slot GRUB would boot after the last S4 phase", required: false, type: string, default: ""}
+      s5_result: {description: "Job result of the S5 upgrade run", required: false, type: string, default: ""}
+      s5_line: {description: "Frozen S5 judge line", required: false, type: string, default: ""}
+      s5_upgrade_line: {description: "Evidence line from the upgrade boot", required: false, type: string, default: ""}
+      s5_degraded_line: {description: "Evidence line from the degraded boot", required: false, type: string, default: ""}
+      s5_conflicts: {description: "Conflicts reported by the upgrade", required: false, type: string, default: ""}
+      s5_reclaimed: {description: "Layers reclaimed during the upgrade boot", required: false, type: string, default: ""}
+      upstream_version: {description: "Resolved upstream version", required: false, type: string, default: ""}
+      version_source: {description: "Where the upstream version came from", required: false, type: string, default: ""}
+      kernel_package: {description: "Resolved kernel package version", required: false, type: string, default: ""}
+      kmods_dir: {description: "Kernel module directory name", required: false, type: string, default: ""}
+      cache_key: {description: "Cache key used by the fetch stage", required: false, type: string, default: ""}
+      cache_hit: {description: "Whether the fetch stage reused cached downloads", required: false, type: string, default: ""}
+      fetch_total_bytes: {description: "Total size of the fetched upstream members", required: false, type: string, default: ""}
+      payload_members: {description: "Comma separated list of payload members", required: false, type: string, default: ""}
+      payload_total_bytes: {description: "Total size of the payload members", required: false, type: string, default: ""}
+      payload_manifest_sha256: {description: "sha256 of the payload manifest", required: false, type: string, default: ""}
+      design_checks_status: {description: "Result of scripts/check_design.py all", required: false, type: string, default: ""}
+      design_checks_problems: {description: "Number of reported design problems", required: false, type: string, default: ""}
+      shellcheck_status: {description: "Result of ShellCheck in the verify stage", required: false, type: string, default: ""}
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
@@ -276,7 +76,7 @@ jobs:
   report:
     name: report
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       # The duration column is read from the Actions API; nothing else needs this scope.
@@ -335,13 +135,8 @@ jobs:
       CI_SHELLCHECK_STATUS: ${{ inputs.shellcheck_status }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        uses: ./.github/actions/setup-ci
 
-      # The duration column cannot be measured from inside a job: only the Actions API
-      # knows when the other jobs started and finished. The call is optional - if it
-      # fails, report.sh renders `n/a` and the run still reports.
       - name: Collect job durations
         continue-on-error: true
         env:
@@ -355,9 +150,7 @@ jobs:
       - name: Write the pipeline summary
         env:
           CI_JOBS_JSON: ${{ runner.temp }}/ci/jobs.json
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/report.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/report.log"
+        run: bash scripts/ci/report.sh 2>&1 | tee -a "${CI_LOG_DIR}/report.log"
 
       - name: Collect diagnostics
         if: always()
@@ -365,12 +158,11 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/diagnostics.sh report 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+          bash scripts/ci/diagnostics.sh report 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs-report
           path: |

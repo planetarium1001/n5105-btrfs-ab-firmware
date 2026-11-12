@@ -2,50 +2,19 @@ name: Firmware CI - debug session
 
 # MANUAL DEBUGGING ENTRY POINT -- NOT A DELIVERY PIPELINE STAGE.
 #
-# Nothing published depends on this file. It is workflow_dispatch only, no other
-# workflow calls it, it grades nothing, and the only thing it publishes is a
-# short-lived diagnostics artifact (debug-<stage>-logs, 7 days) holding the boot
-# logs of the session. The stage
-# workflows ci-s1..ci-s5 and the CI entry point ci.yml stay the only gate; a release
-# is still built and judged by exactly the stages a push runs. scripts/check_design.py
-# ("debug-ssh") fails if this file ever gains a push trigger, a floating action ref or
-# a session without a bound.
+# workflow_dispatch only, called by nothing, grades nothing: it runs the same scripts/ci/
+# chain the stage workflows run (resolve -> fetch -> kmods -> esp-prepare ->
+# platform-runtime -> initramfs -> disk, then optionally the payload, the fixtures and the
+# first boot) and hands the runner to an upterm session. It exists because S4 and S5 grade a
+# boot the guest cannot grade itself, and "the upgraded slot comes up and the health check
+# never finishes" needs eyes on a live runner: on 2026-11-10 one s5 boot ate its whole 900 s
+# budget, and a push-and-wait per hypothesis costs ~10 minutes.
 #
-# Why it exists: S4 and S5 grade a boot the guest cannot grade itself. The failure mode
-# is "the upgraded slot comes up and the health check never finishes", which needs eyes
-# on a live runner, not another push. Measured on run 42815980945 (2026-11-10):
-#   s4 job 5 min 01 s total, its four uefi-disk boots 61/55/57/56 s each
-#   s5 boot 3 ("commit the upgraded slot and reclaim") consumed its whole 900 s
-#   CI_QEMU_TIMEOUT and failed -- one push-and-wait per hypothesis costs ~10 min
-#
-# What it does: installs the tooling the stage workflows install, runs the same
-# scripts/ci/ stages they run (resolve -> fetch -> kmods -> esp-prepare ->
-# platform-runtime -> initramfs -> disk, then optionally the payload, the fixtures and
-# the first boot), and hands the runner to an upterm session. No build logic lives here:
-# every step is a call into scripts/ci/, and the input/output chaining uses the local
-# interface of lib.sh (CI_OUTPUT_ENV writes a KEY=VALUE file, ci_load_env_file exports
-# it as CI_*), so this file cannot drift away from the stage workflows.
-#
-# Pinned on purpose: owenthereal/action-upterm is third-party code that runs with the
-# runner's credentials, so it is pinned to the v2.8.1 commit instead of the floating
-# `main` the action's README suggests (a tag can be moved, a commit cannot). Bumping it
-# means editing the commit and the `# vX.Y.Z` comment on that line; check_design.py
-# rejects a ref that is neither vX.Y.Z nor a full commit sha.
-#
-# Why not tmate, which this workflow used first: tmate's own README states that the public
-# tmate relays were shut down in July 2025 and that tmate "no longer works out of the box".
-# Measured here: `tmate wait tmate-ready` never became ready and every session hung for its
-# full timeout. upterm keeps the property that matters - the guest is authorised by the
-# public SSH keys on the dispatcher's GitHub profile - and is maintained.
-#
-# Session bounds: the session step itself is bounded to 10 minutes, the keep-alive step to
-# 150 with a self-stop at 140, and the job to 240, which is well inside GitHub's 6-hour cap.
-# check_design.py requires the keep-alive bound to exist and to contain its own stop
-# condition, because a bound that moves into a shell literal nobody checks is no bound.
+# scripts/check_design.py ("debug-ssh") fails if this file ever gains a push trigger, a
+# floating action ref or a session without a bound.
 
 on:
-  # workflow_dispatch must stay the only trigger. A push or pull_request trigger would
-  # hand every contributor a path to an interactive shell on a repository runner.
+  # workflow_dispatch only: anything else hands every contributor an interactive shell.
   workflow_dispatch:
     inputs:
       stage:
@@ -65,36 +34,33 @@ on:
 permissions:
   contents: read
 
+# One interactive runner per lane and branch.
 concurrency:
-  # One interactive runner per branch. A second dispatch cancels the first, so a
-  # session left open by accident cannot sit on a runner for its whole bound.
-  group: ci-debug-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
     shell: bash
 
-env:
-  # The stage workflows default this to 0.0.2 for s4/s5; match them.
-  #
-  # Nothing else belongs at this level: the scratch layout below is built from
-  # `runner.temp`, and GitHub only exposes the `runner` context inside a step. A
-  # workflow-level `${{ runner.temp }}` is not a warning, it is a parse error -- the
-  # whole file stops being dispatchable ("Unrecognized named-value: 'runner'"), which
-  # is how this entry point spent its first life looking usable and never running.
-  CI_PLATFORM_VERSION: "0.0.2"
-
 jobs:
   debug:
     name: debug session
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # The keep-alive step below holds the runner (150 min); the job cap sits above it.
+    timeout-minutes: 290
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      # The platform version has one source: VERSION. Empty is a failure, never a default.
+      - name: Read the platform version
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          [ -n "${version}" ] || { echo "::error::VERSION is empty"; exit 1; }
+          printf 'CI_PLATFORM_VERSION=%s\n' "${version}" >>"${GITHUB_ENV}"
 
       - name: Install the image, QEMU and loopback tooling
         run: |
@@ -106,10 +72,7 @@ jobs:
           qemu-system-x86_64 --version | head -n 1
           losetup --version | head -n 1
 
-      # Facts first: the human on the other end needs to know what this machine can do
-      # before trusting a boot budget. /dev/kvm is expected to be absent on a standard
-      # runner, and the pipeline runs `-accel tcg` either way
-      # (scripts/ci/qemu-smoke.sh), so this step records and never asserts.
+      # Facts first: /dev/kvm is absent on a standard runner and QEMU runs -accel tcg anyway.
       - name: Report the runner
         run: |
           uname -srm
@@ -124,27 +87,19 @@ jobs:
           df -h "${RUNNER_TEMP}" | tail -n 1
           sudo -n true && echo "passwordless sudo: yes" || echo "passwordless sudo: NO"
 
-      # The scratch layout is built from `runner.temp`, and the `runner` context is only
-      # available inside a step: writing it here, through $GITHUB_ENV, is what makes it
-      # visible to every step below AND to the interactive shell. A workflow-level
-      # expression is not a warning but a parse error -- GitHub answers "Unrecognized
-      # named-value: 'runner'" and refuses to dispatch the whole file, which is how an
-      # earlier version of this workflow went dead while still looking present.
+      # A workflow-level `${{ runner.temp }}` is a parse error: it is exported here, in a step.
       - name: Export the scratch layout
         run: |
           {
             printf 'CI_TMP_ROOT=%s\n' "${RUNNER_TEMP}/ci"
             printf 'CI_LOG_DIR=%s\n' "${RUNNER_TEMP}/ci/logs"
-            # The defaults of fetch.sh, initramfs.sh and disk.sh, so the first boot below
-            # and the human in the session use the files the prepare produced.
+            # The defaults of fetch.sh, initramfs.sh and disk.sh.
             printf 'CI_DEBUG_KERNEL=%s\n' "${RUNNER_TEMP}/ci/fetch/upstream/kernel.bin"
             printf 'CI_DEBUG_INITRAMFS=%s\n' "${RUNNER_TEMP}/ci/initramfs/boot.cpio.gz"
             printf 'CI_DEBUG_IMAGE=%s\n' "${RUNNER_TEMP}/ci/disk/n5105-ab-image.img"
           } >>"${GITHUB_ENV}"
 
-      # The chain ci-s4/ci-s5 run, stopped at the disk image: everything after that is
-      # what the session is for. A failure here is not fatal -- the human gets the shell
-      # anyway, which is the whole point of a debug entry point.
+      # The ci-s4/ci-s5 chain, stopped at the disk image. Not fatal: the human gets the shell.
       - name: Prepare the disk image - resolve, fetch, kmods, ESP, runtime, initramfs, disk
         id: prepare
         if: ${{ inputs.stage != 'none' }}
@@ -160,11 +115,7 @@ jobs:
             bash scripts/ci/resolve.sh 2>&1 | tee -a "${log}"
           ci_load_env_file "${CI_TMP_ROOT}/resolve.env"
 
-          # The resolved inputs have to survive this step: the stage scripts read the
-          # CI_* names, and $GITHUB_ENV is the only channel that reaches the steps below
-          # (ci_load_env_file exports into the current shell only). This is the same
-          # lowercase-to-CI_ mapping the loader does, written out because there is no
-          # Actions equivalent of "export for the rest of the job".
+          # $GITHUB_ENV is the only channel that reaches the steps below.
           while IFS='=' read -r key value; do
             [ -n "${key}" ] || continue
             printf 'CI_%s=%s\n' "$(printf '%s' "${key}" | tr '[:lower:]' '[:upper:]')" "${value}" \
@@ -183,8 +134,7 @@ jobs:
 
           bash scripts/ci/platform-runtime.sh 2>&1 | tee -a "${log}"
 
-          # Same kernel, initramfs and extra files the stage workflows hand to
-          # initramfs.sh, so the boot path under debug is the one under test.
+          # Same kernel, initramfs and extra files the stage workflows hand to initramfs.sh.
           CI_KERNEL_VERSION="${CI_KERNEL_VERSION:?kmods did not report a kernel version}" \
             CI_INITRAMFS_OUT="${CI_DEBUG_INITRAMFS}" \
             CI_INIT_SCRIPT="${GITHUB_WORKSPACE}/initramfs/boot/init" \
@@ -200,8 +150,7 @@ jobs:
             bash scripts/ci/disk.sh 2>&1 | tee -a "${log}"
           ci_load_env_file "${CI_TMP_ROOT}/disk.env"
 
-          # The same preflight the stage workflows gate on: a session where the ESP does
-          # not boot through GRUB would waste the human's time.
+          # The same preflight the stage workflows gate on.
           bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE_PATH:?disk.sh did not report an image}" 2>&1 \
             | tee -a "${log}"
 
@@ -218,10 +167,7 @@ jobs:
             printf 'logs: `%s`\n' "${CI_LOG_DIR}"
           } >>"${GITHUB_STEP_SUMMARY}"
 
-      # s4 starts from a fresh image plus the network fixture; s5 additionally needs the
-      # upgrade payload it installs on boot 2. Everything the fixtures mutate is part of
-      # the state under investigation, so the prepare stops at the first boot and every
-      # later boot is driven by hand inside the session.
+      # s4 adds the network fixture; s5 also the upgrade payload it installs on boot 2.
       - name: Prepare the stage fixtures and payload
         if: ${{ inputs.stage == 's4' || inputs.stage == 's5' }}
         continue-on-error: true
@@ -249,9 +195,7 @@ jobs:
             bash scripts/ci/ab-fixtures.sh --network 2>&1 | tee -a "${log}"
           fi
 
-      # The first gating boot of the chosen stage, run once so the session opens next to
-      # the state that needs looking at. Boot 3 of s5 needed more than its 900 s budget
-      # on 2026-11-10, hence the larger default boot_timeout.
+      # The first gating boot, so the session opens next to the state under investigation.
       - name: Run the first boot of the chosen stage
         if: ${{ inputs.stage == 's4' || inputs.stage == 's5' }}
         continue-on-error: true
@@ -279,43 +223,28 @@ jobs:
             CI_QEMU_TIMEOUT="${boot_timeout}" \
             bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR}/debug-boot1.log"
 
-      # The stop pattern matches the success line and the failure lines alike, so "the
-      # guest stopped on the judge line" says nothing on its own; this entry point used to
-      # keep the serial log to itself, and a session where the health check decided wrongly
-      # looked exactly like one where it decided well. This step is separate from the boot
-      # and gated on `always()` on purpose: under `set -euo pipefail` a failing
-      # qemu-smoke.sh would abort the boot step before any echo, which is precisely the
-      # hang and timeout case the lines are needed for.
+      # Separate from the boot and on always(): a failing qemu-smoke.sh would abort before any echo.
       - name: Print the boot decision
         if: ${{ always() && inputs.stage != 'none' }}
         run: |
           for serial in "${CI_TMP_ROOT:?}"/qemu/serial-*.log; do
             [ -f "${serial}" ] || continue
             printf '\n== %s ==\n' "${serial}"
-            # ab-boot without a narrowing: the growth, p4 and reclamation verdicts are
-            # part of the answer, and s5's own judge line is printed by the guest.
             grep -E '^(probe=|ab-commit:|ab-boot:|S5-UPGRADE-DONE|ab-upgrade)' "${serial}" || true
           done
 
-      # Everything the boot produced, before the session opens. `always()` rather than
-      # `!cancelled()`: a run cancelled while a boot hangs still has the log that says so,
-      # and that is the case this artifact exists for.
+      # `always()`, not `!cancelled()`: a cancelled run still has the log that says why.
       - name: Upload the boot evidence
         if: ${{ always() && inputs.stage != 'none' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: debug-${{ inputs.stage }}-logs
-          # qemu-smoke.sh copies each console to $CI_LOG_DIR/serial-<case>.log, so the
-          # logs directory alone carries them; the raw qemu/ copy is deliberately not
-          # uploaded twice.
+          # qemu-smoke.sh copies each console into the logs directory; no second copy.
           path: ${{ runner.temp }}/ci/logs
           if-no-files-found: warn
           retention-days: 7
 
-
-      # Which relay answers, if any. Advisory, never gating: it is here because the failure
-      # this workflow had - a session that silently never came up - is indistinguishable
-      # from an unreachable relay in the job log.
+      # Advisory only: a session that never came up looks like an unreachable relay here.
       - name: Report whether the relay answers
         if: ${{ always() }}
         run: |
@@ -331,19 +260,9 @@ jobs:
           printf 'relay: %s\n' "${reached:-none answered on port 22 (advisory)}" \
             >>"${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-      # The session itself, over upterm. Not tmate: tmate's own README says the public
-      # tmate relays were shut down in July 2025 and that tmate "no longer works out of the
-      # box", which is exactly what this workflow measured - `tmate wait tmate-ready` never
-      # became ready and every session hung for its whole timeout. upterm is the maintained
-      # replacement and keeps the property that matters here: the guest is authorised by the
-      # public SSH keys on the dispatcher's GitHub profile, so the connection details are
-      # useless to anyone else even though the run log of a public repository is world
-      # readable. `full-access` is deliberate - a guest that may only watch is not a debug
-      # session - and it is only granted because `limit-access-to-actor` is on.
-      #
-      # `detached: true` publishes `ssh-command` / `join-command` / `ssh-config` as step
-      # outputs and returns, so the step after this one can write the string where a person
-      # or a script can read it.
+      # Not tmate: its public relays were shut down in July 2025. upterm authorises the guest
+      # through the dispatcher's GitHub SSH keys, so `full-access` is only granted because
+      # `limit-access-to-actor` is on, and the commit sha is pinned because v2.8.1 can move.
       - name: Open the interactive SSH session
         id: session
         if: ${{ !cancelled() }}
@@ -353,8 +272,7 @@ jobs:
           limit-access-to-actor: true
           full-access: true
           detached: true
-          # In detached mode the post step waits this long for a guest once the regular
-          # steps end; bounded so an unattended session cannot sit on the job cap.
+          # Bounded so an unattended session cannot sit on the job cap.
           wait-timeout-minutes: 5
 
       - name: Publish the connection details
@@ -379,21 +297,12 @@ jobs:
           } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
           if [ -n "${ssh_cmd}" ]; then
             printf 'CI_DEBUG_SSH_READY=1\n' >>"${GITHUB_ENV}"
-            # Also a file, so the session can be read by a script rather than by watching
-            # a live log. The token is not a bearer credential: limit-access-to-actor makes
-            # the relay accept only the dispatcher's own keys, which is why this file holds
-            # nothing else and never the web shell link.
-            # The directory is not guaranteed to exist: `stage=none` never builds a disk,
-            # so nothing has created ${CI_TMP_ROOT} yet, and writing the file used to fail
-            # the step - which failed the whole job and left the artifact missing, even
-            # though the session itself was healthy.
+            # Not a bearer credential: limit-access-to-actor allows only the dispatcher's keys.
             mkdir -p "${CI_TMP_ROOT:?}"
             printf '%s\n' "${ssh_cmd}" >"${CI_TMP_ROOT}/session-ssh.txt"
           else
             printf 'CI_DEBUG_SSH_READY=0\n' >>"${GITHUB_ENV}"
-            # A relay client that came up but never got a session can outlive the step.
-            # Without this the keep-alive below would hold the runner for a session that is
-            # not there.
+            # A relay client without a session would keep the keep-alive below holding on.
             if pgrep -x upterm >/dev/null 2>&1; then
               echo "killing the upterm process left behind by a session that never came up"
               pkill -x upterm || true
@@ -402,17 +311,14 @@ jobs:
 
       - name: Publish the connection string as a file
         if: ${{ always() && env.CI_DEBUG_SSH_READY == '1' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: debug-session
           path: ${{ runner.temp }}/ci/session-ssh.txt
           if-no-files-found: error
           retention-days: 1
 
-      # The runner is held open for the human. Two conditions, both required: a published
-      # session and a live upterm process. The bound is inside the job's own timeout, so the
-      # job cap is never what ends a session, and cancelling the run still frees the runner
-      # (`!cancelled()`), which is what the concurrency group promises.
+      # Held open for the human: a published session AND a live upterm process, inside the job cap.
       - name: Keep the runner alive
         if: ${{ !cancelled() && env.CI_DEBUG_SSH_READY == '1' }}
         timeout-minutes: 150

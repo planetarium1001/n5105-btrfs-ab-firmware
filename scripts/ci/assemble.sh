@@ -15,7 +15,8 @@
 #   CI_FETCH_DIR             directory produced by the fetch stage
 #   CI_UPSTREAM_VERSION      upstream release label
 #   CI_KERNEL_PACKAGE        kernel package version, recorded in the manifest
-#   CI_PLATFORM_VERSION      platform version, recorded in the release file
+#   CI_PLATFORM_VERSION      platform version, recorded in the release file (required;
+#                            VERSION is the only source, there is no fallback)
 #   CI_INITRAMFS             boot initramfs to ship as the payload's initrd
 #   CI_PLATFORM_RUNTIME_DIR  btrfs tooling staged by the runtime stage
 #   CI_PLATFORM_SRC          platform layer source tree (default: platform/)
@@ -43,7 +44,10 @@ ci_require_cmd tar gzip python3
 
 upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
 kernel_package="${CI_KERNEL_PACKAGE:?CI_KERNEL_PACKAGE is required}"
-platform_version="${CI_PLATFORM_VERSION:-0.0.5}"
+# No default on purpose: a fallback here used to record 0.0.5 in the release file of a
+# payload whose image said something else, and nothing noticed. VERSION is read by the
+# versions job in ci.yml and passed down; a local run has to name it too.
+platform_version="${CI_PLATFORM_VERSION:?CI_PLATFORM_VERSION is required, it is recorded in the payload release file}"
 initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required, the payload needs the boot initramfs}"
 runtime_tree="${CI_PLATFORM_RUNTIME_DIR:?CI_PLATFORM_RUNTIME_DIR is required, the payload needs the btrfs tooling}"
 platform_src="${CI_PLATFORM_SRC:-${CI_REPO_ROOT}/platform}"

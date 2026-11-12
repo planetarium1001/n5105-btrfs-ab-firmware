@@ -1,0 +1,80 @@
+name: Publish the stage evidence
+description: >-
+  The unconditional tail every stage used to copy by hand: collect diagnostics, upload
+  the stage evidence artifact and upload the diagnostics summary. The calling step must
+  be `if: always()`, which is why both uploads skip nothing: a failed stage has to leave
+  the logs that explain it behind.
+
+inputs:
+  stage:
+    description: "Stage name, for example s2"
+    required: true
+  name:
+    description: "Evidence artifact name, for example evidence-s2"
+    required: true
+  paths:
+    description: "Newline separated paths carried by the evidence artifact"
+    required: true
+  logs-name:
+    description: "Diagnostics artifact name, empty for logs-<stage>, the word none to skip it"
+    required: false
+    default: ""
+  logs-paths:
+    description: "Paths carried by the diagnostics artifact, empty for the diagnostics summary"
+    required: false
+    default: ""
+  diag-args:
+    description: "Extra arguments for diagnostics.sh, usually the scratch directory to inventory"
+    required: false
+    default: ""
+  diagnostics:
+    description: "Run diagnostics.sh before uploading (false when the job already did)"
+    required: false
+    default: "true"
+  if-no-files-found:
+    description: "Forwarded to upload-artifact for the evidence artifact"
+    required: false
+    default: ignore
+  retention-days:
+    description: "Forwarded to both uploads"
+    required: false
+    default: "7"
+
+runs:
+  using: composite
+  steps:
+    # Never gating: a triage helper that fails the job it is triaging is worse than none.
+    - name: Collect diagnostics
+      if: inputs.diagnostics == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        DIAG_STAGE: ${{ inputs.stage }}
+        DIAG_ARGS: ${{ inputs.diag-args }}
+        CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
+      run: |
+        mkdir -p "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/logs" "${CI_DIAG_DIR}"
+        # shellcheck disable=SC2086  # the extra arguments are a pre-split string
+        bash scripts/ci/diagnostics.sh "${DIAG_STAGE}" ${DIAG_ARGS} 2>&1 \
+          | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+
+    - name: Upload stage evidence
+      continue-on-error: true
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.paths }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+
+    # Kept apart from the evidence on purpose: this artifact is the first thing a reader
+    # opens when a stage failed, and it must stay small.
+    - name: Upload logs and diagnostics
+      if: inputs.logs-name != 'none'
+      continue-on-error: true
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.logs-name || format('logs-{0}', inputs.stage) }}
+        path: ${{ inputs.logs-paths || format('{0}/ci/diagnostics/summary.txt', runner.temp) }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}

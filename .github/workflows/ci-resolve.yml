@@ -2,62 +2,35 @@ name: resolve upstream
 
 # Stage 1 - resolve.
 #
-# Decides which upstream ImmortalWrt release this pipeline consumes and derives the
-# cache key from (upstream version + tool versions + CI script content). Everything
-# downstream is driven by the outputs of this stage, so a version bump or a script
+# Decides which upstream ImmortalWrt release this pipeline consumes and derives the cache key
+# from (upstream version + tool versions + CI script content), so a version bump or a script
 # change invalidates the download cache in exactly one place.
 
 on:
   workflow_call:
     inputs:
-      upstream_version:
-        description: "Upstream ImmortalWrt version, 'latest', or empty for the pinned default"
-        required: false
-        type: string
-        default: ""
+      upstream_version: {description: "Upstream ImmortalWrt version, 'latest', or empty for the pinned default", required: false, type: string, default: ""}
     outputs:
-      upstream_version:
-        description: "Resolved upstream version, for example 25.12.2"
-        value: ${{ jobs.resolve.outputs.upstream_version }}
-      upstream_base_url:
-        description: "Release directory URL for the target"
-        value: ${{ jobs.resolve.outputs.upstream_base_url }}
-      version_source:
-        description: "Where the version came from: pin, input or latest"
-        value: ${{ jobs.resolve.outputs.version_source }}
-      rootfs_name:
-        description: "Upstream rootfs file name"
-        value: ${{ jobs.resolve.outputs.rootfs_name }}
-      kernel_name:
-        description: "Upstream kernel file name"
-        value: ${{ jobs.resolve.outputs.kernel_name }}
-      rootfs_sha256:
-        description: "Expected sha256 of the upstream rootfs"
-        value: ${{ jobs.resolve.outputs.rootfs_sha256 }}
-      kernel_sha256:
-        description: "Expected sha256 of the upstream kernel"
-        value: ${{ jobs.resolve.outputs.kernel_sha256 }}
-      kmods_dir:
-        description: "Kernel module directory name on the mirror"
-        value: ${{ jobs.resolve.outputs.kmods_dir }}
-      btrfs_kmod_name:
-        description: "Upstream btrfs module file name"
-        value: ${{ jobs.resolve.outputs.btrfs_kmod_name }}
-      btrfs_kmod_sha256:
-        description: "Expected sha256 of the btrfs module"
-        value: ${{ jobs.resolve.outputs.btrfs_kmod_sha256 }}
-      kernel_package:
-        description: "Kernel package version from the upstream manifest"
-        value: ${{ jobs.resolve.outputs.kernel_package }}
-      cache_key:
-        description: "Cache key for the upstream downloads"
-        value: ${{ jobs.resolve.outputs.cache_key }}
-      cache_restore_prefix:
-        description: "Restore prefix for partial cache reuse"
-        value: ${{ jobs.resolve.outputs.cache_restore_prefix }}
+      upstream_version: {description: "Resolved upstream version, for example 25.12.2", value: "${{ jobs.resolve.outputs.upstream_version }}"}
+      upstream_base_url: {description: "Release directory URL for the target", value: "${{ jobs.resolve.outputs.upstream_base_url }}"}
+      version_source: {description: "Where the version came from: pin, input or latest", value: "${{ jobs.resolve.outputs.version_source }}"}
+      rootfs_name: {description: "Upstream rootfs file name", value: "${{ jobs.resolve.outputs.rootfs_name }}"}
+      kernel_name: {description: "Upstream kernel file name", value: "${{ jobs.resolve.outputs.kernel_name }}"}
+      rootfs_sha256: {description: "Expected sha256 of the upstream rootfs", value: "${{ jobs.resolve.outputs.rootfs_sha256 }}"}
+      kernel_sha256: {description: "Expected sha256 of the upstream kernel", value: "${{ jobs.resolve.outputs.kernel_sha256 }}"}
+      kmods_dir: {description: "Kernel module directory name on the mirror", value: "${{ jobs.resolve.outputs.kmods_dir }}"}
+      btrfs_kmod_name: {description: "Upstream btrfs module file name", value: "${{ jobs.resolve.outputs.btrfs_kmod_name }}"}
+      btrfs_kmod_sha256: {description: "Expected sha256 of the btrfs module", value: "${{ jobs.resolve.outputs.btrfs_kmod_sha256 }}"}
+      kernel_package: {description: "Kernel package version from the upstream manifest", value: "${{ jobs.resolve.outputs.kernel_package }}"}
+      cache_key: {description: "Cache key for the upstream downloads", value: "${{ jobs.resolve.outputs.cache_key }}"}
+      cache_restore_prefix: {description: "Restore prefix for partial cache reuse", value: "${{ jobs.resolve.outputs.cache_restore_prefix }}"}
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
@@ -68,8 +41,6 @@ jobs:
     name: resolve upstream
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
     outputs:
@@ -88,15 +59,12 @@ jobs:
       cache_restore_prefix: ${{ steps.resolve.outputs.cache_restore_prefix }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        uses: ./.github/actions/setup-ci
 
       - name: Resolve upstream release and cache key
         id: resolve
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/resolve.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/resolve.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: resolve.sh}
 
       - name: Collect diagnostics
         if: always()
@@ -104,12 +72,11 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/diagnostics.sh resolve "${CI_WORK_DIR}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+          bash scripts/ci/diagnostics.sh resolve 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs-resolve
           path: |

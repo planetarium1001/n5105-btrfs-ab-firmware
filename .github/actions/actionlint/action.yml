@@ -1,0 +1,95 @@
+name: actionlint
+
+# Lint the workflow files with a pinned actionlint release.
+#
+# The linter is fetched from the upstream release tarball and checked against the sha256
+# published in that release, instead of pulling a marketplace action: what decides
+# whether a workflow file can even start must not change under a moving tag. Both values
+# are inputs below, so a bump is one reviewed diff.
+#
+# The binary lands in ${RUNNER_TEMP}/bin and that directory is appended to PATH, so the
+# stage script that runs next (scripts/ci/verify.sh) lints with the same pinned binary
+# instead of whatever the runner image happens to ship. Only the linux/amd64 build is
+# fetched, because the stage runs on ubuntu-latest.
+
+description: >-
+  Install actionlint at a pinned version, verify the release tarball against its
+  sha256, and lint the workflow files.
+
+inputs:
+  version:
+    description: "actionlint release to run; the release tag is v<version>"
+    required: false
+    default: "1.7.7"
+  sha256:
+    description: >-
+      sha256 of actionlint_<version>_linux_amd64.tar.gz, as published in
+      actionlint_<version>_checksums.txt of the same release; the download is refused
+      when it does not match
+    required: false
+    default: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+  path:
+    description: "directory holding the workflow files to lint"
+    required: false
+    default: ".github/workflows"
+
+runs:
+  using: composite
+  steps:
+    - name: Install actionlint ${{ inputs.version }}
+      shell: bash
+      env:
+        ACTIONLINT_VERSION: ${{ inputs.version }}
+        ACTIONLINT_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        # Both are set by every runner; the guards keep an unset value from writing the
+        # linter into /bin or the PATH entry into nowhere.
+        : "${RUNNER_TEMP:?RUNNER_TEMP is not set; this action runs inside Actions}"
+        : "${GITHUB_PATH:?GITHUB_PATH is not set; this action runs inside Actions}"
+        # `sha256sum -c` only warns about a line it cannot parse, so a truncated or
+        # mistyped digest would let the download through unverified. Refuse anything
+        # that is not a digest first, then let -c --strict compare it.
+        if [ "${#ACTIONLINT_SHA256}" -ne 64 ] \
+          || [ -n "$(printf '%s' "${ACTIONLINT_SHA256}" | tr -d '0123456789abcdef')" ]; then
+          echo "::error::the sha256 input is not a sha256 digest: '${ACTIONLINT_SHA256}'"
+          exit 1
+        fi
+        bin_dir="${RUNNER_TEMP}/bin"
+        bin="${bin_dir}/actionlint"
+        if [ -x "${bin}" ] && [ "$("${bin}" --version | head -n 1)" = "${ACTIONLINT_VERSION}" ]; then
+          echo "actionlint ${ACTIONLINT_VERSION} is already installed at ${bin}"
+        else
+          archive="${RUNNER_TEMP}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "downloading ${url}"
+          curl -fsSL -o "${archive}" "${url}"
+          printf '%s  %s\n' "${ACTIONLINT_SHA256}" "${archive}" | sha256sum -c --strict -
+          mkdir -p "${bin_dir}"
+          tar -xzf "${archive}" -C "${bin_dir}" actionlint
+          chmod +x "${bin}"
+          rm -f "${archive}"
+          echo "actionlint ${ACTIONLINT_VERSION} installed at ${bin}"
+        fi
+        # Later steps, including scripts/ci/verify.sh, find this exact binary on PATH.
+        printf '%s\n' "${bin_dir}" >>"${GITHUB_PATH}"
+
+    - name: Lint the workflows
+      shell: bash
+      env:
+        ACTIONLINT_PATH: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        files=("${ACTIONLINT_PATH}"/*.yml)
+        if [ "${#files[@]}" -eq 0 ]; then
+          echo "::error::no workflow files found under ${ACTIONLINT_PATH}"
+          exit 1
+        fi
+        echo "linting ${#files[@]} workflow file(s) under ${ACTIONLINT_PATH}"
+        # -shellcheck "" keeps the verdict independent of the runner image: with the
+        # integration on, actionlint turns shellcheck's info-level findings in `run:`
+        # snippets (SC2016 on literally-intended backticks among them) into errors, and
+        # whether shellcheck is installed then decides whether the gate is green. The
+        # stage script lints the repository's shell itself, at warning severity.
+        "${RUNNER_TEMP}/bin/actionlint" -no-color -shellcheck "" "${files[@]}"

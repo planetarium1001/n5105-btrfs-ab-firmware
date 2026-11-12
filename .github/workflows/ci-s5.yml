@@ -2,76 +2,44 @@ name: S5 upgrade
 
 # Stage S5 - upgrade payload, reclamation and the degraded boot.
 #
-# Four boots of one image file, all of them through the ESP: QEMU starts no kernel of
-# its own (CI_QEMU_MODE=uefi-disk), the firmware runs GRUB, and GRUB picks the entry
-# that /boot/grub/ab-slot.cfg names. That is the path a real machine takes, and the
-# one that was never exercised while the harness injected ab.slot= on the kernel
-# command line.
+# Four boots of one image file through the ESP: the firmware runs GRUB, which picks the entry
+# ab-slot.cfg names - the path a real machine takes.
 #
 #   1  fresh install, `ab-slot status` healthy, `p4=ok`
-#   2  `ab-upgrade /payload.tar` installs a test payload into the inactive slot and
-#      marks it pending; the conflict report is written first and never blocks
-#   3  the pending slot boots through GRUB, the health check passes, the slot is
-#      committed and the unreachable layer is reclaimed
+#   2  `ab-upgrade /payload.tar` installs a test payload into the inactive slot and marks it
+#      pending; the conflict report is written first and never blocks
+#   3  the pending slot boots through GRUB, the health check passes, the slot is committed
+#      and the unreachable layer is reclaimed
 #   4  the writable partition is destroyed: the boot must degrade to a tmpfs upper and
 #      still reach userspace
 #
-# Boots 2-4 print their evidence to /dev/console (procd sends hook stdout to syslog,
-# so a hook that wants to be seen must write the console). The grading is done on the
-# host by scripts/ci/s5-phase.sh, which reads the ESP and the writable partition back.
+# Boots 2-4 print their evidence to /dev/console (procd sends hook stdout to syslog, so a hook
+# that wants to be seen must write the console). s5-phase.sh grades on the host.
 
 on:
   workflow_call:
     inputs:
-      upstream_version:
-        description: "Resolved upstream version"
-        required: true
-        type: string
-      upstream_base_url:
-        description: "Release directory URL for the target"
-        required: true
-        type: string
-      kmods_dir:
-        description: "Kernel module directory name on the mirror"
-        required: true
-        type: string
-      kernel_package:
-        description: "Kernel package version from the upstream manifest"
-        required: true
-        type: string
-      platform_version:
-        description: "Platform version recorded in the @platform layer"
-        required: false
-        type: string
-        default: "0.0.4"
+      upstream_version: {description: "Resolved upstream version", required: true, type: string}
+      upstream_base_url: {description: "Release directory URL for the target", required: true, type: string}
+      kmods_dir: {description: "Kernel module directory name on the mirror", required: true, type: string}
+      kernel_package: {description: "Kernel package version from the upstream manifest", required: true, type: string}
+      platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
     outputs:
-      judge_line:
-        description: "Frozen S5 judge line from the commit boot"
-        value: ${{ jobs.s5.outputs.judge_line }}
-      upgrade_line:
-        description: "Evidence line from the upgrade boot"
-        value: ${{ jobs.s5.outputs.upgrade_line }}
-      degraded_line:
-        description: "Evidence line from the degraded boot"
-        value: ${{ jobs.s5.outputs.degraded_line }}
-      toolchain_line:
-        description: "Evidence line: btrfs tool works inside the guest"
-        value: ${{ jobs.s5.outputs.toolchain_line }}
-      runtime_packages:
-        description: "Runtime packages merged into the platform layer"
-        value: ${{ jobs.s5.outputs.runtime_packages }}
-      conflicts:
-        description: "Conflicts reported by the upgrade"
-        value: ${{ jobs.s5.outputs.conflicts }}
-      reclaimed:
-        description: "Layers reclaimed during the upgrade boot"
-        value: ${{ jobs.s5.outputs.reclaimed }}
-      payload_version:
-        description: "Rootfs version the test payload carries"
-        value: ${{ jobs.s5.outputs.payload_version }}
+      judge_line: {description: "Frozen S5 judge line from the commit boot", value: "${{ jobs.s5.outputs.judge_line }}"}
+      upgrade_line: {description: "Evidence line from the upgrade boot", value: "${{ jobs.s5.outputs.upgrade_line }}"}
+      degraded_line: {description: "Evidence line from the degraded boot", value: "${{ jobs.s5.outputs.degraded_line }}"}
+      toolchain_line: {description: "Evidence line: btrfs tool works inside the guest", value: "${{ jobs.s5.outputs.toolchain_line }}"}
+      runtime_packages: {description: "Runtime packages merged into the platform layer", value: "${{ jobs.s5.outputs.runtime_packages }}"}
+      conflicts: {description: "Conflicts reported by the upgrade", value: "${{ jobs.s5.outputs.conflicts }}"}
+      reclaimed: {description: "Layers reclaimed during the upgrade boot", value: "${{ jobs.s5.outputs.reclaimed }}"}
+      payload_version: {description: "Rootfs version the test payload carries", value: "${{ jobs.s5.outputs.payload_version }}"}
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
@@ -82,8 +50,6 @@ jobs:
     name: S5 upgrade - upgrade and reclaim
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    permissions:
-      contents: read
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
@@ -101,45 +67,26 @@ jobs:
       runtime_packages: ${{ steps.runtime.outputs.runtime_packages }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: ./.github/actions/setup-ci
         with:
-          persist-credentials: false
-
-      - name: Download upstream artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: upstream-files
-          path: ${{ runner.temp }}/ci/fetch
-
-      - name: Install image and QEMU tooling
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf \
-            grub-common
-          mkfs.btrfs --version
-          qemu-system-x86_64 --version | head -n 1
+          download-upstream: "true"
+          apt: btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
 
       - name: Unpack the btrfs and vfat module closure
         id: kmods
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/kmods.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/kmods.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: kmods.sh}
 
       - name: Prepare the ESP from the upstream bootloader
         id: esp
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/esp-prepare.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/esp.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: esp-prepare.sh, log: esp.log}
 
-      # btrfs-progs is not in the upstream root filesystem; the platform layer carries
-      # it (and only the libraries the root filesystem does not provide).
+      # btrfs-progs is not in the upstream rootfs; the platform layer carries it.
       - name: Resolve the btrfs runtime closure
         id: runtime
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/platform-runtime.sh 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/runtime.log"
+        uses: ./.github/actions/run-stage-script
+        with: {script: platform-runtime.sh, log: runtime.log}
 
       - name: Build the boot initramfs
         id: initramfs
@@ -148,9 +95,7 @@ jobs:
           CI_INITRAMFS_OUT: ${{ runner.temp }}/ci/initramfs/boot.cpio.gz
           CI_INIT_SCRIPT: ${{ github.workspace }}/initramfs/boot/init
           CI_EXTRA_FILES: ${{ github.workspace }}/initramfs/lib/wf.sh:/lib/wf.sh ${{ github.workspace }}/initramfs/boot/post.sh:/s3-post.sh
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/initramfs.log"
+        run: bash scripts/ci/initramfs.sh 2>&1 | tee -a "${CI_LOG_DIR}/initramfs.log"
 
       - name: Assemble the disk image
         id: disk
@@ -158,224 +103,156 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/disk.log"
+        run: bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR}/disk.log"
 
-      # The boots below hand the machine to the firmware, so prove first that the ESP
-      # is bootable and that its runtime slot file agrees with ab/state.json.
+      # The boots hand the machine to the firmware, so prove the ESP bootable first.
       - name: Preflight - the ESP boots through GRUB
         id: verify0
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-preflight.log"
+        run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-preflight.log"
 
-      # The payload's platform layer has to carry the same btrfs tooling the image ships,
-      # or the upgraded slot comes up and can never commit: this stage is where that
-      # closure goes in.
+      # The payload has to carry the same btrfs tooling the image ships, or the slot can never commit.
       - name: Build the test payload
         id: payload
         env:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/payload-build.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/payload.log"
+        run: bash scripts/ci/payload-build.sh 2>&1 | tee -a "${CI_LOG_DIR}/payload.log"
 
       - name: Fixture - network, user banner, orphan layer and payload
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
           CI_PAYLOAD: ${{ steps.payload.outputs.payload_path }}
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/ab-fixtures.sh \
             --network \
             --user-banner "user banner, edited before the upgrade" \
             --orphan-layer @overlay-25.12.1 \
             --payload "${CI_PAYLOAD}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-1.log"
+            | tee -a "${CI_LOG_DIR}/fixture-1.log"
 
       - name: Boot 1 - fresh install is healthy
         id: boot1
-        env:
-          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
-          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
-          CI_JUDGE_PREFIX: ""
-          CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
-          CI_QEMU_CASE: s5-boot1
-          CI_QEMU_TIMEOUT: "900"
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot1.log"
+        uses: ./.github/actions/qemu-boot
+        with:
+          case: s5-boot1
+          mode: uefi-disk
+          initramfs: ${{ steps.initramfs.outputs.initramfs_path }}
+          image: ${{ steps.disk.outputs.image_path }}
+          judge-prefix: ""
+          stop-pattern: '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
 
       - name: Phase 1b - verify the btrfs tool inside the guest
         id: phase1b
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/s5-phase.sh --phase toolchain \
             --serial "${{ steps.boot1.outputs.serial_log }}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase1b.log"
+            | tee -a "${CI_LOG_DIR}/phase1b.log"
 
       - name: Fixture - run ab-upgrade on the next boot
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/ab-fixtures.sh --auto-upgrade 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-2.log"
+        run: bash scripts/ci/ab-fixtures.sh --auto-upgrade 2>&1 | tee -a "${CI_LOG_DIR}/fixture-2.log"
 
       - name: Boot 2 - install the payload into the inactive slot
         id: boot2
-        env:
-          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
-          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
-          CI_JUDGE_PREFIX: ""
-          CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)"
-          CI_QEMU_CASE: s5-boot2
-          CI_QEMU_TIMEOUT: "1200"
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot2.log"
+        uses: ./.github/actions/qemu-boot
+        with:
+          case: s5-boot2
+          mode: uefi-disk
+          initramfs: ${{ steps.initramfs.outputs.initramfs_path }}
+          image: ${{ steps.disk.outputs.image_path }}
+          judge-prefix: ""
+          stop-pattern: '^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)'
+          timeout: "1200"
 
       - name: Phase 2 - verify the upgrade recorded the new layer
         id: phase2
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/s5-phase.sh --phase upgrade --slot b \
             --version "${{ steps.payload.outputs.payload_version }}" \
             --layer "${{ steps.payload.outputs.payload_layer }}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase2.log"
+            | tee -a "${CI_LOG_DIR}/phase2.log"
 
-      # This is the assertion the old harness replaced with an injected ab.slot=b:
-      # the upgrade marked slot b pending, so the file GRUB sources must name b.
+      # The upgrade marked slot b pending, so the file GRUB sources must name b - no injected ab.slot=.
       - name: Verify the upgrade pointed the next boot at slot b
         id: verify_upgrade
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-upgrade.log"
+        run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-after-upgrade.log"
 
       - name: Boot 3 - commit the upgraded slot and reclaim
         id: boot3
-        env:
-          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
-          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
-          CI_JUDGE_PREFIX: ""
-          CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)"
-          CI_QEMU_CASE: s5-boot3
-          CI_QEMU_TIMEOUT: "900"
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot3.log"
+        uses: ./.github/actions/qemu-boot
+        with:
+          case: s5-boot3
+          mode: uefi-disk
+          initramfs: ${{ steps.initramfs.outputs.initramfs_path }}
+          image: ${{ steps.disk.outputs.image_path }}
+          judge-prefix: ""
+          stop-pattern: '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
 
       - name: Phase 3 - verify the commit, the conflicts and the reclamation
         id: phase3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/s5-phase.sh --phase commit --slot b 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase3.log"
+        run: bash scripts/ci/s5-phase.sh --phase commit --slot b 2>&1 | tee -a "${CI_LOG_DIR}/phase3.log"
 
       - name: Verify the commit left the next boot on slot b
         id: verify_commit
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/grub-after-commit.log"
+        run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-after-commit.log"
 
       - name: Fixture - destroy the writable partition
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/ab-fixtures.sh --break-p4 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fixture-3.log"
+        run: bash scripts/ci/ab-fixtures.sh --break-p4 2>&1 | tee -a "${CI_LOG_DIR}/fixture-3.log"
 
       - name: Boot 4 - a broken writable partition degrades
         id: boot4
-        env:
-          CI_KERNEL: ${{ runner.temp }}/ci/fetch/upstream/kernel.bin
-          CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
-          CI_QEMU_DISK: ${{ steps.disk.outputs.image_path }}
-          CI_JUDGE_PREFIX: ""
-          CI_QEMU_MODE: uefi-disk
-          CI_QEMU_STOP_PATTERN: "^(ab-boot: running slot|ab-boot: stage=boot result=fail)"
-          CI_QEMU_CASE: s5-boot4
-          CI_QEMU_TIMEOUT: "900"
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/qemu-boot4.log"
+        uses: ./.github/actions/qemu-boot
+        with:
+          case: s5-boot4
+          mode: uefi-disk
+          initramfs: ${{ steps.initramfs.outputs.initramfs_path }}
+          image: ${{ steps.disk.outputs.image_path }}
+          judge-prefix: ""
+          stop-pattern: '^(ab-boot: running slot|ab-boot: stage=boot result=fail)'
 
       - name: Phase 4 - verify the degraded boot reached userspace
         id: phase4
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
           bash scripts/ci/s5-phase.sh --phase degraded \
             --serial "${{ steps.boot4.outputs.serial_log }}" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/phase4.log"
+            | tee -a "${CI_LOG_DIR}/phase4.log"
 
-      - name: Collect diagnostics
+      - name: Collect the stage evidence
         if: always()
-        continue-on-error: true
-        env:
-          CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}" "${CI_DIAG_DIR}"
-          bash scripts/ci/diagnostics.sh s5 "${CI_TMP_ROOT:-${RUNNER_TEMP}/ci}/qemu" 2>&1 \
-            | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
-
-      - name: Upload stage evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/stage-evidence
         with:
+          stage: s5
           name: evidence-s5
-          path: |
+          diag-args: ${{ runner.temp }}/ci/qemu
+          paths: |
             ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/payload/payload.tar
             ${{ runner.temp }}/ci/runtime
             ${{ runner.temp }}/ci/s5-phase/esp
-          if-no-files-found: ignore
-          retention-days: 7
 
-      - name: Upload logs and diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-s5
-          path: ${{ runner.temp }}/ci/diagnostics/summary.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-      # The summary block is the run page the user reads: same five columns for every
-      # stage, written even when the stage failed (if: always()).
+      # The five-column block, rendered by bash scripts/ci/stage-summary.sh --stage s5.
       - name: Write stage summary
         if: always()
-        run: |
-          mkdir -p "${RUNNER_TEMP}/ci"
-          cat "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"/*.log >"${RUNNER_TEMP}/ci/s5-judge.log" 2>/dev/null || true
-          bash scripts/ci/stage-summary.sh \
-            --stage s5 \
-            --result "${{ job.status }}" \
-            --judge-log "${RUNNER_TEMP}/ci/s5-judge.log" \
-            --artifact evidence-s5 \
-            --artifact-file "${RUNNER_TEMP}/ci/payload/payload.tar"
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: s5
+          result: ${{ job.status }}
+          artifact: evidence-s5
+          artifact-file: ${{ runner.temp }}/ci/payload/payload.tar

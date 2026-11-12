@@ -595,8 +595,10 @@ assert_eq "$(info_of applets)" "119" "ac-1 the busybox applet table carries 119 
 assert_eq "$(info_of probe_files)" "5" "ac-1 the S1 probe carries only 5 files, not the partition tools"
 assert_eq "$(info_of boot_files)" "15" "ac-1 the boot toolset carries all 15 files"
 
-# ac-2 one release everywhere: the lockfile, the pin in lib.sh and the tool must agree
-pin=$(sed -n 's/^CI_UPSTREAM_VERSION_PIN="\${CI_UPSTREAM_VERSION_PIN:-\(.*\)}"/\1/p' "$root/scripts/ci/lib.sh")
+# ac-2 one release everywhere: the lockfile, the tracked pin and the tool must agree.
+# The pin lives in .github/upstream-pin.conf; scripts/ci/lib.sh only reads it
+# (ci_upstream_pin_read) and ci_write_upstream_pin is its only writer.
+pin=$(sed -n 's/^UPSTREAM_VERSION=//p' "$root/.github/upstream-pin.conf")
 assert_eq "${pin}" "$(info_of upstream_version)" \
   "ac-2 the lockfile pins the same upstream release as CI_UPSTREAM_VERSION_PIN"
 assert_matches "$(info_of upstream_version)" '^[0-9]+\.[0-9]+\.[0-9]+$' \

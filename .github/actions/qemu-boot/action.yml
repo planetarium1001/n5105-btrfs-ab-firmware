@@ -1,0 +1,129 @@
+name: Boot the guest once
+description: >-
+  One scripts/ci/qemu-smoke.sh run, with the harness environment the stage needs. Every
+  stage used to spell this out as seven env lines plus a mkdir and a tee; the defaults
+  below are the harness defaults, so a caller only passes what makes its boot different.
+
+inputs:
+  case:
+    description: "Case label recorded in the guest and in the serial log name"
+    required: true
+  kernel:
+    description: "Kernel image to boot, empty for ${RUNNER_TEMP}/ci/fetch/upstream/kernel.bin"
+    required: false
+    default: ""
+  initramfs:
+    description: "Initramfs to boot, empty for ${RUNNER_TEMP}/ci/initramfs/boot.cpio.gz"
+    required: false
+    default: ""
+  image:
+    description: "Disk image attached as /dev/vda"
+    required: false
+    default: ""
+  mode:
+    description: "kernel boots the kernel directly, uefi-disk hands the machine to the firmware"
+    required: false
+    default: kernel
+  timeout:
+    description: "Wall clock budget for this boot in seconds"
+    required: false
+    default: "900"
+  mem:
+    description: "Guest memory in MiB"
+    required: false
+    default: "1024"
+  init:
+    description: "Path inside the initramfs to run, empty for /init"
+    required: false
+    default: ""
+  stop-pattern:
+    description: "Console pattern that ends the run early"
+    required: false
+    default: ""
+  append-extra:
+    description: "Extra kernel command line words"
+    required: false
+    default: ""
+  judge-prefix:
+    description: "Judge token to grade, @default keeps the harness default (S1-RESULT)"
+    required: false
+    default: "@default"
+  log:
+    description: "Log file name inside the stage log directory, empty for qemu-<case>.log"
+    required: false
+    default: ""
+
+outputs:
+  judge_line:
+    description: "Frozen judge line the boot printed, empty when none was graded"
+    value: ${{ steps.boot.outputs.judge_line }}
+  boot_seconds:
+    description: "Wall clock seconds of the gating boot"
+    value: ${{ steps.boot.outputs.boot_seconds }}
+  serial_log:
+    description: "Path of the serial console log"
+    value: ${{ steps.boot.outputs.serial_log }}
+  verdict:
+    description: "Judge verdict, when the harness published one"
+    value: ${{ steps.boot.outputs.verdict }}
+  stopped_on_judge:
+    description: "Whether the run ended on the judge line instead of the timeout"
+    value: ${{ steps.boot.outputs.stopped_on_judge }}
+  qemu_mode:
+    description: "Boot mode the harness actually used"
+    value: ${{ steps.boot.outputs.qemu_mode }}
+  reboots:
+    description: "Reboots the guest performed before the stop pattern"
+    value: ${{ steps.boot.outputs.reboots }}
+  boots:
+    description: "Boots counted by the restart judgement"
+    value: ${{ steps.boot.outputs.boots }}
+  restart_verdict:
+    description: "Verdict of the restart judgement"
+    value: ${{ steps.boot.outputs.restart_verdict }}
+
+runs:
+  using: composite
+  steps:
+    # CI_JUDGE_PREFIX is read with `-`, not `:-`: an empty value is a decision ("this
+    # boot grades nothing"), an absent one means "use the harness default". A sentinel is
+    # the only way a composite can express "not set", so `@default` means absent here.
+    - name: Boot the guest
+      id: boot
+      shell: bash
+      env:
+        IN_CASE: ${{ inputs.case }}
+        IN_KERNEL: ${{ inputs.kernel }}
+        IN_INITRAMFS: ${{ inputs.initramfs }}
+        IN_IMAGE: ${{ inputs.image }}
+        IN_MODE: ${{ inputs.mode }}
+        IN_TIMEOUT: ${{ inputs.timeout }}
+        IN_MEM: ${{ inputs.mem }}
+        IN_INIT: ${{ inputs.init }}
+        IN_STOP_PATTERN: ${{ inputs.stop-pattern }}
+        IN_APPEND_EXTRA: ${{ inputs.append-extra }}
+        IN_JUDGE_PREFIX: ${{ inputs.judge-prefix }}
+        IN_LOG: ${{ inputs.log }}
+      run: |
+        log_dir="${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
+        mkdir -p "${log_dir}"
+        # The two paths are conventions of the whole tree - setup-ci restores the upstream
+        # files under ci/fetch, and the boot initramfs is always ci/initramfs/boot.cpio.gz -
+        # so a caller only names them when its boot is the exception.
+        export CI_KERNEL="${IN_KERNEL:-${RUNNER_TEMP}/ci/fetch/upstream/kernel.bin}"
+        export CI_INITRAMFS="${IN_INITRAMFS:-${RUNNER_TEMP}/ci/initramfs/boot.cpio.gz}"
+        export CI_QEMU_CASE="${IN_CASE}"
+        export CI_QEMU_MODE="${IN_MODE}"
+        export CI_QEMU_TIMEOUT="${IN_TIMEOUT}"
+        export CI_QEMU_MEM="${IN_MEM}"
+        export CI_QEMU_INIT="${IN_INIT}"
+        export CI_QEMU_STOP_PATTERN="${IN_STOP_PATTERN}"
+        export CI_QEMU_APPEND_EXTRA="${IN_APPEND_EXTRA}"
+        if [ -n "${IN_IMAGE}" ]; then
+          export CI_QEMU_DISK="${IN_IMAGE}"
+        fi
+        if [ "${IN_JUDGE_PREFIX}" != "@default" ]; then
+          export CI_JUDGE_PREFIX="${IN_JUDGE_PREFIX}"
+        fi
+        log="${IN_LOG:-qemu-${IN_CASE}.log}"
+        bash scripts/ci/qemu-smoke.sh 2>&1 | tee -a "${log_dir}/${log}"

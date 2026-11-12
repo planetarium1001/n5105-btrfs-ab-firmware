@@ -2,79 +2,38 @@ name: fetch upstream
 
 # Stage 2 - fetch.
 #
-# Downloads the upstream rootfs, kernel and btrfs module, then verifies every file
-# against the sha256 published in the release's sha256sums. The download directory is
-# cached under a key derived by the resolve stage, so an unchanged upstream version,
-# tool set and CI script set hits the cache and skips the network entirely. Files that
-# do match their expected digest are reused; files that do not are re-downloaded.
+# Downloads the upstream rootfs, kernel and btrfs module and verifies each against the sha256
+# in the release's sha256sums. The download directory is cached under a key derived by the
+# resolve stage, so an unchanged upstream version, tool set and CI script set skips the
+# network; files that match their digest are reused, files that do not are re-downloaded.
 
 on:
   workflow_call:
     inputs:
-      upstream_version:
-        description: "Resolved upstream version"
-        required: true
-        type: string
-      upstream_base_url:
-        description: "Release directory URL for the target"
-        required: true
-        type: string
-      kmods_dir:
-        description: "Kernel module directory name on the mirror"
-        required: true
-        type: string
-      kernel_package:
-        description: "Kernel package version from the upstream manifest"
-        required: true
-        type: string
-      rootfs_name:
-        description: "Upstream rootfs file name"
-        required: true
-        type: string
-      kernel_name:
-        description: "Upstream kernel file name"
-        required: true
-        type: string
-      btrfs_kmod_name:
-        description: "Upstream btrfs module file name"
-        required: true
-        type: string
-      rootfs_sha256:
-        description: "Expected sha256 of the upstream rootfs"
-        required: true
-        type: string
-      kernel_sha256:
-        description: "Expected sha256 of the upstream kernel"
-        required: true
-        type: string
-      btrfs_kmod_sha256:
-        description: "Expected sha256 of the btrfs module"
-        required: true
-        type: string
-      cache_key:
-        description: "Cache key for the upstream downloads"
-        required: true
-        type: string
-      cache_restore_prefix:
-        description: "Restore prefix for partial cache reuse"
-        required: true
-        type: string
+      upstream_version: {description: "Resolved upstream version", required: true, type: string}
+      upstream_base_url: {description: "Release directory URL for the target", required: true, type: string}
+      kmods_dir: {description: "Kernel module directory name on the mirror", required: true, type: string}
+      kernel_package: {description: "Kernel package version from the upstream manifest", required: true, type: string}
+      rootfs_name: {description: "Upstream rootfs file name", required: true, type: string}
+      kernel_name: {description: "Upstream kernel file name", required: true, type: string}
+      btrfs_kmod_name: {description: "Upstream btrfs module file name", required: true, type: string}
+      rootfs_sha256: {description: "Expected sha256 of the upstream rootfs", required: true, type: string}
+      kernel_sha256: {description: "Expected sha256 of the upstream kernel", required: true, type: string}
+      btrfs_kmod_sha256: {description: "Expected sha256 of the btrfs module", required: true, type: string}
+      cache_key: {description: "Cache key for the upstream downloads", required: true, type: string}
+      cache_restore_prefix: {description: "Restore prefix for partial cache reuse", required: true, type: string}
     outputs:
-      cache_hit:
-        description: "true when every member came from the cache"
-        value: ${{ jobs.fetch.outputs.cache_hit }}
-      fetch_total_bytes:
-        description: "Total size of the fetched members"
-        value: ${{ jobs.fetch.outputs.fetch_total_bytes }}
-      members:
-        description: "Comma separated list of fetched members"
-        value: ${{ jobs.fetch.outputs.members }}
-      artifact_name:
-        description: "Name of the artifact that carries the fetched files"
-        value: ${{ jobs.fetch.outputs.artifact_name }}
+      cache_hit: {description: "true when every member came from the cache", value: "${{ jobs.fetch.outputs.cache_hit }}"}
+      fetch_total_bytes: {description: "Total size of the fetched members", value: "${{ jobs.fetch.outputs.fetch_total_bytes }}"}
+      members: {description: "Comma separated list of fetched members", value: "${{ jobs.fetch.outputs.members }}"}
+      artifact_name: {description: "Name of the artifact that carries the fetched files", value: "${{ jobs.fetch.outputs.artifact_name }}"}
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 defaults:
   run:
@@ -85,8 +44,6 @@ jobs:
     name: fetch upstream
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
     env:
       CI_UPSTREAM_VERSION: ${{ inputs.upstream_version }}
       CI_UPSTREAM_BASE_URL: ${{ inputs.upstream_base_url }}
@@ -105,13 +62,11 @@ jobs:
       artifact_name: upstream-files
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+        uses: ./.github/actions/setup-ci
 
       - name: Restore cached upstream downloads
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/ci/fetch/upstream
           key: ${{ inputs.cache_key }}
@@ -120,12 +75,10 @@ jobs:
 
       - name: Fetch and verify upstream artifacts
         id: fetch
-        run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/fetch.sh 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/fetch.log"
+        run: bash scripts/ci/fetch.sh 2>&1 | tee -a "${CI_LOG_DIR}/fetch.log"
 
       - name: Upload upstream artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: upstream-files
           path: ${{ runner.temp }}/ci/fetch
@@ -138,12 +91,11 @@ jobs:
         env:
           CI_DIAG_DIR: ${{ runner.temp }}/ci/diagnostics
         run: |
-          mkdir -p "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}"
-          bash scripts/ci/diagnostics.sh fetch "${CI_FETCH_DIR}" 2>&1 | tee -a "${CI_LOG_DIR:-${RUNNER_TEMP}/ci/logs}/diagnostics.log"
+          bash scripts/ci/diagnostics.sh fetch "${CI_FETCH_DIR}" 2>&1 | tee -a "${CI_LOG_DIR}/diagnostics.log"
 
       - name: Upload logs and diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs-fetch
           path: |

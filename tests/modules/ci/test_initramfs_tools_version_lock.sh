@@ -45,9 +45,10 @@ fixtures="$root/tests/fixtures/apk-tools"
 # The release the fake lockfile pins and the one the matrix build asks for.
 lock_release="25.12.99"
 build_release="25.12.94"
-# The pin the repository ships, read from the one place that defines it: a build that
-# names no release uses exactly this value.
-pin=$(sed -n 's/^CI_UPSTREAM_VERSION_PIN="\${CI_UPSTREAM_VERSION_PIN:-\(.*\)}"/\1/p' "$root/scripts/ci/lib.sh")
+# The pin the repository ships, read from the one place that defines it
+# (.github/upstream-pin.conf, read by ci_upstream_pin_read in scripts/ci/lib.sh): a build
+# that names no release uses exactly this value.
+pin=$(sed -n 's/^UPSTREAM_VERSION=//p' "$root/.github/upstream-pin.conf")
 
 # The lockfile of this test: the fixture release (one real package) under a release name
 # that is not the pin, so a build that names no release has to refuse it.

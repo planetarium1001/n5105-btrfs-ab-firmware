@@ -1,0 +1,65 @@
+name: Set up a CI job
+description: >-
+  The part every stage workflow used to copy by hand: check out the repository without
+  leaving credentials behind, install the runner tooling the stage needs, create the
+  stage log directory, and (optionally) restore the upstream artifacts the fetch stage
+  produced. CI_TMP_ROOT and CI_LOG_DIR are exported to later steps through GITHUB_ENV,
+  so no step has to repeat the scratch layout.
+
+inputs:
+  apt:
+    description: "Space separated apt packages installed before the stage runs"
+    required: false
+    default: ""
+  download-upstream:
+    description: "Download the upstream-files artifact into ${RUNNER_TEMP}/ci/fetch"
+    required: false
+    default: "false"
+  fetch-depth:
+    description: "checkout depth"
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Check out the repository
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    # The version banners are advisory: they say on the run page which toolchain the
+    # stage actually used, and a tool that is absent for this stage prints nothing.
+    - name: Install the stage tooling
+      if: inputs.apt != ''
+      shell: bash
+      env:
+        APT_PACKAGES: ${{ inputs.apt }}
+      run: |
+        sudo apt-get update -qq
+        # shellcheck disable=SC2086  # the package list is a pre-split string
+        sudo apt-get install -y --no-install-recommends ${APT_PACKAGES}
+        for tool in mkfs.btrfs mkfs.vfat sfdisk losetup qemu-system-x86_64 grub-script-check; do
+          command -v "${tool}" >/dev/null 2>&1 || continue
+          "${tool}" --version 2>&1 | head -n 1 || true
+        done
+
+    # The scratch layout is built from runner.temp, and the runner context is only
+    # available inside a step: exporting it here is what makes it visible to every later
+    # step, and to the stage scripts, without a single workflow-level expression.
+    - name: Create the stage log directory
+      shell: bash
+      run: |
+        mkdir -p "${RUNNER_TEMP}/ci/logs"
+        {
+          printf 'CI_TMP_ROOT=%s\n' "${RUNNER_TEMP}/ci"
+          printf 'CI_LOG_DIR=%s\n' "${RUNNER_TEMP}/ci/logs"
+        } >>"${GITHUB_ENV}"
+
+    - name: Download the upstream artifacts
+      if: inputs.download-upstream == 'true'
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: upstream-files
+        path: ${{ runner.temp }}/ci/fetch
