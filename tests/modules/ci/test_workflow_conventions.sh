@@ -483,4 +483,27 @@ assert_contains "${grub_template}" "rendered once, here, at build time" \
 assert_contains "${grub_template}" "replaces the whole file from the payload's" \
   "ac-8 the GRUB menu comment names the one writer that can replace it"
 
+# --------------------------------------------------------------------------- #
+# ac-6: esp_next_slot is emitted, declared and read - not a promise
+#
+# It was declared by the composite and read by ci-s4 while nothing produced it, so the report
+# column was permanently empty. Either half missing makes the same silent hole, so all three
+# ends are asserted: the script emits it, the composite declares it, and the caller reads it.
+# --------------------------------------------------------------------------- #
+
+assert_contains "$(cat scripts/ci/grub-render.sh)" 'ci_emit_output "esp_next_slot"' \
+  "ac-6 grub-render.sh emits esp_next_slot when it verifies an ESP"
+assert_contains "$(cat .github/actions/run-stage-script/action.yml)" \
+  'value: ${{ steps.run.outputs.esp_next_slot }}' \
+  "ac-6 the stage-script composite declares esp_next_slot"
+assert_contains "$(cat .github/workflows/ci-s4.yml)" 'steps.verify4.outputs.esp_next_slot' \
+  "ac-6 the S4 stage reads esp_next_slot from the step that emits it"
+assert_contains "$(cat .github/workflows/ci-s4.yml)" \
+  'next_slot_final: ${{ steps.verify4.outputs.esp_next_slot }}' \
+  "ac-6 S4 publishes it as a job output"
+assert_contains "$(cat .github/workflows/ci.yml)" 's4_next_slot_final' \
+  "ac-6 ci.yml forwards it to the report"
+assert_contains "$(cat scripts/ci/report.sh)" 'CI_S4_NEXT_SLOT_FINAL' \
+  "ac-6 the report renders it, so the column is not permanently empty"
+
 finish
