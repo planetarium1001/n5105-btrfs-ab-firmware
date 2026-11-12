@@ -506,4 +506,21 @@ assert_contains "$(cat .github/workflows/ci.yml)" 's4_next_slot_final' \
 assert_contains "$(cat scripts/ci/report.sh)" 'CI_S4_NEXT_SLOT_FINAL' \
   "ac-6 the report renders it, so the column is not permanently empty"
 
+# --------------------------------------------------------------------------- #
+# ac-5: the assemble stage leaves the tree it runs from alone
+#
+# It used to chmod `${CI_REPO_ROOT}/platform` so the checker could be read out of the
+# checkout; a local reproduction therefore reported modified file modes in `git status`. The
+# checker now comes out of the payload, so nothing needs the checkout to be executable.
+# --------------------------------------------------------------------------- #
+
+assert_eq "$(grep -c 'ci_platform_modes "${CI_REPO_ROOT}' scripts/ci/assemble.sh || true)" "0" \
+  "ac-5 the assemble stage never applies modes to the checkout"
+assert_eq "$(grep -c 'ci_platform_startlinks "${CI_REPO_ROOT}' scripts/ci/assemble.sh || true)" "0" \
+  "ac-5 the assemble stage never creates rcS links in the checkout"
+assert_contains "$(cat scripts/ci/assemble.sh)" 'check_platform="${check_dir}/platform"' \
+  "ac-5 the checker is unpacked into the stage scratch"
+assert_contains "$(cat scripts/ci/assemble.sh)" 'sh "${check_platform}/usr/sbin/ab-upgrade" --check' \
+  "ac-5 the payload is validated by the copy it carries"
+
 finish
