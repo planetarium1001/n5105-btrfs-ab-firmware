@@ -8,9 +8,11 @@ one of them is read under time pressure - by whoever's run just went red, or by 
 deciding whether to trust a release. A label that states its claim the same way every time
 is faster to read than one that states it well once and differently the second time.
 
-This page is that contract: seven rules, and six of them are asserted by
-`tests/modules/ci/test_ci_text_conventions.sh`. The seventh - does the sentence read well -
-needs a person, so it has its own section with the questions to ask.
+This page is that contract: seven rules, and all seven are asserted by
+`tests/modules/ci/test_ci_text_conventions.sh`. Rule 7 is asserted as a structure
+fingerprint, because "did the words change what runs" is a question a diff can answer. The
+one thing no test can answer - does it read well - is in its own section, with the questions
+to ask.
 
 ## Scope
 
@@ -38,8 +40,7 @@ and counts characters above `U+007F`.
 
 ## Rule 2 - A label is not a sentence
 
-A name is a label: no trailing period, no exclamation mark, no trailing space, no leading
-space. Sentence case - first word capitalised, the rest lowercase except proper nouns
+A name is a label: no trailing period, no exclamation mark, no space at either end. Sentence case - first word capitalised, the rest lowercase except proper nouns
 (`GRUB`, `ESP`, `A/B`, `S3`). The same holds for the issue title, the pull request title
 and the release title.
 
@@ -82,8 +83,8 @@ of every job and step name against the two allowed shapes.
 ## Rule 5 - Fixed summary tables
 
 A summary is a table, and the table has the same header wherever it appears. Headers are
-lowercase, and there are five of them - no sixth is needed, so a table that wants one is
-describing something the reader cannot act on:
+lowercase, and there are six of them. A seventh is a sign the table is describing something
+the reader cannot act on:
 
 - `stage | verdict | key line | artifact and sha256 | next command` - the stage summary
   block, one per stage.
@@ -92,13 +93,17 @@ describing something the reader cannot act on:
   inputs, the issue facts.
 - `job | result` - the upstream watch's failure issue.
 - `artifact | size | sha256` - an asset listing: the release hook and the release notes.
+- `file | written this run` - the automatic pull request's change table. It is not a
+  key-value block: one column is a path and the other is what was written to it, so folding
+  it into `field | value` would read like a key-value pair that it is not.
 
 `item` is the tempting spelling for the third one. It is not used: `item` means "one of a
 list", `field` means "one cell of a key-value table", and the pipeline already has a
 `report.sh` that says `field`.
 
-Machine-checked: every header row on the surface must be one of the five, compared for
-both content and case.
+Machine-checked: every printed row that is followed by a divider must equal one of the six
+exactly - content and case, as a whole row - and the number of such rows is pinned, so a scan
+that quietly stops reaching the tables fails instead of passing on an empty list.
 
 ## Rule 6 - Fixed title templates
 
@@ -128,8 +133,11 @@ The conclusion is read from the run, never written as a fixed sentence: a releas
 claims five stages passed when the pipeline was asked for one stage is a false statement in
 the one place a reader cannot re-derive it.
 
-Machine-checked: both bodies are rendered by their real code path and compared line for
-line, and the renderers are grepped for a hardcoded stage claim.
+Machine-checked by running the code, not by restating it: the pull request and issue bodies
+come out of `upstream-watch.sh`, the issue title out of the assignment the issue job uses,
+and both release titles out of the publisher's own render step. The heading is compared
+exactly and the rest as required fragments. The renderers are also grepped for a hardcoded
+stage claim.
 
 ## Rule 7 - Structure is not text
 

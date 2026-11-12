@@ -53,6 +53,8 @@ import re
 import sys
 from pathlib import Path
 
+pathlib_root = Path.cwd()
+
 root = Path(sys.argv[1])
 mode = sys.argv[2]
 
@@ -85,15 +87,23 @@ STAGE_JOB_RE = re.compile(r"^S[1-5] [a-z]+ - .+$")
 PHRASE_JOB_RE = re.compile(r"^[a-z][a-z0-9-]*( [a-z0-9/-]+)*( - .+)?$")
 STAGE_WORKFLOW_RE = re.compile(r"^[a-z][a-z0-9 -]*$")
 
-# Rule 5: the five header rows. `release.sh` and both workflows render key-value blocks, so
-# a header that spells `item | value` is the same table with a second name for `field`.
+# Rule 5: the six header rows. `release.sh` and both workflows render key-value blocks, so a
+# header that spells `item | value` is the same table with a second name for `field`. The
+# sixth is the change table of the automatic pull request: it is not a key-value block (one
+# column is a file, the other what was written to it), and folding it into `field | value`
+# would read like a key-value pair that it is not.
 HEADERS = {
     "| stage | verdict | key line | artifact and sha256 | next command |",
     "| stage | verdict | duration | artifact |",
     "| field | value |",
     "| job | result |",
     "| artifact | size | sha256 |",
+    "| file | written this run |",
 }
+# How many header rows exist on the surface today. The number is the guard against a scan
+# that silently stops reaching the tables - which is exactly how this assertion was empty
+# once. Adding a table means raising it, deliberately.
+HEADER_ROWS_EXPECTED = 11
 PRINTF_RE = re.compile(r"printf '([^']*)'")
 DIVIDER_CELLS = re.compile(r"^\|( *-{3,} *\|)+$")
 
@@ -107,12 +117,13 @@ def rel(path):
 
 
 def label_values():
-    """Every `name:` value that a reader sees, with its file and line."""
+    """Every `name:` value that a reader sees, raw: the whitespace rule needs the trailing
+    spaces, so stripping here would make that rule unreachable."""
     for path in LABELS:
         for number, line in enumerate(lines_of(path), 1):
             match = WORKFLOW_NAME_RE.match(line) or JOB_RE.match(line) or STEP_RE.match(line)
             if match:
-                yield path, number, match.group(1).strip()
+                yield path, number, match.group(1)
 
 
 def triggers_of(path):
@@ -151,13 +162,14 @@ def non_ascii():
 
 def bad_labels():
     problems = []
-    for path, number, value in label_values():
-        if value.startswith("${{"):
+    for path, number, raw in label_values():
+        if raw.strip().startswith("${{"):
             # A composite forwarding its caller's name: the caller's label is the one that
             # has to obey the rule, and it is checked where it is written.
             continue
-        if value != value.strip():
-            problems.append(f"{rel(path)}:{number}: whitespace around {value!r}")
+        if raw != raw.strip():
+            problems.append(f"{rel(path)}:{number}: whitespace around {raw!r}")
+        value = raw.strip()
         if value.endswith((".", "!", ";")):
             problems.append(f"{rel(path)}:{number}: punctuation at the end of {value!r}")
     return problems
@@ -245,12 +257,22 @@ def printed_rows(path):
     for number, line in enumerate(lines_of(path), 1):
         for literal in PRINTF_RE.findall(line):
             for segment in literal.split("\\n"):
-                rows.append((number, segment.strip()))
+                # A literal ends with the escape, so the last segment is always empty. Keeping
+                # it made the divider invisible to the neighbour check below, and the header
+                # that is written as its own printf - which is how nearly every table in this
+                # repository is written - was never compared with anything.
+                if segment.strip():
+                    rows.append((number, segment.strip()))
     return rows
 
 
 def header_rows():
+    """Every printed row that is followed by a divider is a header row, and must be one of
+    the six allowed shapes. A row that carries a format specifier is a data row, not a
+    header; every script in this repository writes the divider on its own line, so a data
+    row followed by a divider would itself be a mistake worth reporting."""
     problems = []
+    seen = []
     for path in WORKFLOWS + ACTIONS + SCRIPTS:
         rows = printed_rows(path)
         for index, (number, segment) in enumerate(rows[:-1]):
@@ -260,8 +282,16 @@ def header_rows():
                 continue
             if not DIVIDER_CELLS.match(rows[index + 1][1]):
                 continue
+            seen.append(segment)
             if segment not in HEADERS:
                 problems.append(f"{rel(path)}:{number}: {segment}")
+    # The scan is only worth having if it reaches the tables: a list that came back empty
+    # would pass the membership test above without comparing anything.
+    if len(seen) != HEADER_ROWS_EXPECTED:
+        problems.append(
+            f"{len(seen)} header rows were found, expected {HEADER_ROWS_EXPECTED}: the scan is "
+            "not reaching the tables (or a table was added without updating HEADER_ROWS_EXPECTED)"
+        )
     return problems
 
 
@@ -347,8 +377,22 @@ def fingerprint():
     return sorted(set(out))
 
 
+def scope():
+    """What the surface scan covers. Printed so the exemption for docs/ is asserted rather
+    than assumed: the Chinese translations live outside this list, which is the only reason
+    rule 1 can require ASCII everywhere it looks."""
+    roots = [".github/workflows", ".github/actions", "scripts/ci"]
+    covered = sorted(
+        root_dir
+        for root_dir in roots
+        if any(str(path).startswith(str(pathlib_root / root_dir)) for path in WORKFLOWS + ACTIONS + SCRIPTS)
+    )
+    return [" ".join(covered)]
+
+
 modes = {
     "non-ascii": non_ascii,
+    "scope": scope,
     "labels": bad_labels,
     "lengths": overlong,
     "workflow-shapes": workflow_shapes,
@@ -370,11 +414,15 @@ PY
 assert_eq "$(text_scan non-ascii)" "" \
   "rule 1 every non-comment line of the CI surface is ASCII"
 
-# The exemption is real, not accidental: the translations are the one place Chinese is
-# allowed, and a rule whose exemption quietly disappeared would be a rule the repository
-# cannot follow.
-assert_file_exists "docs/ci-text-contract.zh-CN.md" "rule 1 the contract has its translation"
-assert_file_exists "docs/ci-pipeline.zh-CN.md" "rule 1 the pipeline page keeps its translation"
+# The exemption is a scope, not a promise: the scan covers the three CI trees and nothing
+# else, so the Chinese translations are outside it by construction. Both halves are asserted -
+# what is scanned, and that the excluded tree really does hold non-ASCII (a rule whose
+# exemption vanished would otherwise be a rule the repository cannot follow).
+assert_eq "$(text_scan scope)" ".github/actions .github/workflows scripts/ci" \
+  "rule 1 the scan covers the CI surface and only the CI surface"
+zh_hits=$(LC_ALL=C grep -c '[^ -~]' docs/ci-text-contract.zh-CN.md 2>/dev/null || true)
+assert_eq "$([ "${zh_hits:-0}" -gt 0 ] && echo yes || echo no)" "yes" \
+  "rule 1 the translation sits outside the scan, and it does carry non-ASCII"
 
 # --------------------------------------------------------------------------- #
 # Rule 2 - a label is not a sentence
@@ -406,7 +454,7 @@ assert_eq "$(text_scan step-shapes)" "" \
 # --------------------------------------------------------------------------- #
 
 assert_eq "$(text_scan headers)" "" \
-  "rule 5 every table header is one of the five, lowercase and in order"
+  "rule 5 every one of the 11 table headers is one of the six allowed rows"
 
 assert_contains "$(cat scripts/ci/stage-summary.sh)" \
   "| stage | verdict | key line | artifact and sha256 | next command |" \
@@ -443,9 +491,16 @@ assert_contains "$(cat "$tmp/pr.md")" "## Rollback" \
 
 render_body issue-body "$tmp/issue.md"
 assert_file_exists "$tmp/issue.md" "rule 6 the issue body renders"
-assert_contains "$(cat .github/workflows/upstream-watch.yml)" \
-  'title="[auto-release] ${VERSION:-unknown}"' \
-  "rule 6 the issue title is '[auto-release] <version>', the key that keeps one issue per version"
+# The title is the issue's deduplication key, so it is measured the way the job builds it: the
+# assignment is taken out of the workflow and evaluated with the version the run knows.
+issue_title_expr="$(grep -m1 -oE 'title="\[auto-release\][^"]*"' .github/workflows/upstream-watch.yml || true)"
+assert_eq "$(VERSION=25.13.0 bash -c "${issue_title_expr}; printf '%s' \"\${title}\"" 2>/dev/null)" \
+  "[auto-release] 25.13.0" \
+  "rule 6 the issue title renders to '[auto-release] <version>', the deduplication key"
+assert_eq "$(grep -c 'select(.title == ' .github/workflows/upstream-watch.yml || true)" "1" \
+  "rule 6 the same string is what the deduplication looks up"
+assert_contains "$(cat .github/workflows/upstream-watch.yml)" '--label auto-release' \
+  "rule 6 the issue carries the label the run page filters on"
 assert_eq "$(grep -c '^# ' "$tmp/issue.md" || true)" "0" \
   "rule 6 the issue body carries no heading: the title already says the version once"
 assert_eq "$(head -n 1 "$tmp/issue.md")" \
@@ -457,6 +512,61 @@ assert_contains "$(cat "$tmp/issue.md")" "## Next" \
   "rule 6 the issue body ends with what to do next"
 assert_contains "$(cat "$tmp/issue.md")" "| field | value |" \
   "rule 6 the issue facts are a key-value table"
+
+# The title is measured by running the publisher's render step, not by restating its rules:
+# a copy of the substitution here would stay green while the workflow drifted, which is
+# exactly what "the assertion proves itself" means. The step is extracted from
+# release-publish.yml and executed with the inputs the job hands it.
+render_step_script() {
+  python3 - "$root" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1]) / ".github" / "workflows" / "release-publish.yml"
+lines = path.read_text(encoding="utf-8").splitlines()
+start = next(
+    (index for index, line in enumerate(lines)
+     if re.match(r"^      - name: Render the release title\s*$", line)),
+    None,
+)
+if start is None:
+    raise SystemExit("release-publish.yml has no render-title step")
+block, in_run = [], False
+for line in lines[start:]:
+    if block and re.match(r"^ {6}- ", line):
+        break
+    if not in_run:
+        if re.match(r"^ {8}run: \|\s*$", line):
+            in_run = True
+        continue
+    block.append(line[10:] if line.startswith(" " * 10) else line.strip())
+print("\n".join(block))
+PY
+}
+
+render_step_script >"$tmp/render-title.sh"
+assert_eq "$(grep -c 'TAG_POLICY' "$tmp/render-title.sh" | awk '{print ($1 > 0) ? "yes" : "no"}')" \
+  "yes" "rule 6 the extracted step is the one that reads the tag policy"
+
+# render_release_title <tag-policy> <bare-version> [template]: the title the publisher would
+# create, produced by the code that creates it.
+render_release_title() {
+  local policy="$1" version="$2" template="${3:-}" out="$tmp/title.out"
+  : >"${out}"
+  TITLE_TEMPLATE="${template}" TAG_POLICY="${policy}" BARE_VERSION="${version}" \
+    GITHUB_OUTPUT="${out}" bash "$tmp/render-title.sh" >/dev/null 2>&1
+  sed -n 's/^release_title=//p' "${out}" | tail -n 1
+}
+
+tagged_title="$(render_release_title v 0.0.8)"
+upstream_title="$(render_release_title bare 25.13.0)"
+assert_eq "${tagged_title}" "${TITLE_TEMPLATE//\{tag\}/0.0.8}" \
+  "rule 6 the publisher renders the tagged line as 'N5105 AB firmware <version>'"
+assert_eq "${upstream_title}" "${UPSTREAM_TITLE_TEMPLATE//\{tag\}/25.13.0}" \
+  "rule 6 the publisher renders the automatic line as 'ImmortalWrt N5105 A/B firmware <version>'"
+assert_eq "$(render_release_title v 0.0.8 'Custom {tag}')" "Custom 0.0.8" \
+  "rule 6 an explicit template still wins over the derived one"
 
 # One template owner. The publisher already reads the tag policy for the preflight, so it
 # derives the title from it; a call site that spells a template again is the same decision
@@ -492,12 +602,12 @@ assert_eq "$(grep -c 'S1 to S5 all passed' .github/workflows/release-publish.yml
 assert_contains "$(cat .github/workflows/release-publish.yml)" "Verified by CI run" \
   "rule 6 the release notes still name the run that proved the release"
 
-# A title is capped at 80 columns and ends without punctuation, measured on the rendered
-# string rather than on the template. Both templates are checked: the automatic line carries
-# the longer one.
-for rendered in "${TITLE_TEMPLATE//\{tag\}/25.13.0}" "${UPSTREAM_TITLE_TEMPLATE//\{tag\}/25.13.0}"; do
+# A title is capped at 80 columns and ends without punctuation - measured on what the
+# publisher rendered above, so a longer template or a stray period fails here even though the
+# constants in this file are unchanged.
+for rendered in "${tagged_title}" "${upstream_title}"; do
   assert_eq "$(printf '%s' "${rendered}" | LC_ALL=C awk '{ print (length($0) <= 80) ? "ok" : "over 80" }')" \
-    "ok" "rule 3 a rendered release title stays inside 80 columns: '${rendered}'"
+    "ok" "rule 3 the rendered release title stays inside 80 columns: '${rendered}'"
   case "${rendered}" in
     *.) tail=period ;;
     *'!' | *':') tail=punctuation ;;

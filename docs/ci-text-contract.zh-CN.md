@@ -7,9 +7,9 @@
 能不能信的人。一个每次都把话说成同一形状的标签，比"第一次说得好、第二次换一种说法"的标签
 快得多。
 
-这一页就是那份契约：7 条规则，其中 6 条由
-`tests/modules/ci/test_ci_text_conventions.sh` 断言。第 7 条——这句话读起来顺不顺——需要人，
-所以它有自己的一节，附上该问的问题。
+这一页就是那份契约：7 条规则，7 条都由 `tests/modules/ci/test_ci_text_conventions.sh` 断言。
+第 7 条以结构指纹的形式断言，因为"改字有没有改到运行行为"是一个 diff 能回答的问题。
+测试回答不了的那件事——读起来顺不顺——单独一节，附上该问的问题。
 
 ## 作用范围
 
@@ -34,7 +34,7 @@
 
 ## 规则 2 - 标签不是句子
 
-名字是标签：结尾不加句点，不用感叹号，前后不留空格。sentence case——首词大写，
+名字是标签：结尾不加句点，不用感叹号，两端不留空格。sentence case——首词大写，
 其余小写，专有名词除外（`GRUB`、`ESP`、`A/B`、`S3`）。Issue 标题、PR 标题、
 release 标题同理。
 
@@ -71,19 +71,22 @@ release 标题同理。
 
 ## 规则 5 - 固定的 summary 表
 
-summary 是一张表，同一张表出现在哪儿都长一样。表头小写，一共只有五种——不需要第六种，
-需要第六种的表在描述读者无法据此行动的东西：
+summary 是一张表，同一张表出现在哪儿都长一样。表头小写，一共六种；出现第七种，
+说明这张表在描述读者无法据此行动的东西：
 
 - `stage | verdict | key line | artifact and sha256 | next command`：每个 stage 的 summary 块。
 - `stage | verdict | duration | artifact`：report 的跨流水线总表。
 - `field | value`：所有键值块——report 事实、pre-publish 检查、release 输入、Issue 事实。
 - `job | result`：上游巡检的失败 Issue。
 - `artifact | size | sha256`：产物清单——release 钩子与 release notes。
+- `file | written this run`：上游巡检那条 PR 的变更表。它不是键值块：一列是路径，另一列是
+  这次写进去什么，硬塞进 `field | value` 会读成一对其实际并非键值的关系。
 
 第三个表头容易被写成 `item`，但不用它：`item` 是"一串里的一项"，`field` 才是"键值表的一格"，
 而且 `report.sh` 已经在说 `field`。
 
-机器判定：面上每个表头行都必须是这五种之一，内容与大小写一起比。
+机器判定：每个"后面跟着分隔行"的打印行必须整行等于六种之一——内容与大小写一起、整行比较；
+并且这种行的**数量**是钉住的，扫描一旦悄悄够不到表格，得到空集就会失败，而不是通过。
 
 ## 规则 6 - 固定的标题模板
 
@@ -110,8 +113,9 @@ release notes 点名证明这次发布的 run，以及那次 run 实际得出的
 绝不写成固定句：流水线只被要求跑一个 stage 时，发布页却宣称五个 stage 全过，
 是在读者唯一无法自行复核的地方说了假话。
 
-机器判定：两份正文都走真实代码路径渲染出来逐行比对；渲染器还要 grep 一遍，
-确认没有硬编码的 stage 结论。
+机器判定靠跑代码，不靠重述：PR 与 Issue 正文来自 `upstream-watch.sh`，Issue 标题来自
+issue job 自己那行赋值，两个 release 标题来自 publisher 自己的渲染步骤。一级标题逐字比，
+其余按必需片段比；渲染器另 grep 一遍，确认没有硬编码的 stage 结论。
 
 ## 规则 7 - 结构与文本分开
 
