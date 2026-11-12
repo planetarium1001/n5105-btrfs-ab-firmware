@@ -47,8 +47,13 @@ on:
         type: string
         default: "auto/dryrun-main"
 
+# The workflow-level grant has to cover every permission a job grants, and every
+# permission a called workflow asks for; each job below narrows it again.
 permissions:
-  contents: read
+  contents: write
+  actions: read
+  pull-requests: write
+  issues: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
@@ -231,7 +236,7 @@ jobs:
   # that graph, and nothing waits for a push or a tag to start it.
   build:
     name: build the new upstream release
-    uses: ./.github/workflows/ci-verify.yml
+    uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       actions: read
