@@ -385,6 +385,54 @@ assert_contains "$err" "image platform_version '9.9.8'" \
   "ac-17 the refusal names the platform version the image records"
 
 # --------------------------------------------------------------------------- #
+# ac-17 (L8): under the v policy the image and the payload name the same upstream
+#
+# The bare policy checks this pairing from both ends - the image equals the tag and the
+# manifest equals the tag, so they equal each other. The v policy has its own pair and had no
+# coverage: the image record could name one upstream release while the payload carried
+# another, and a tagged release would publish anyway. Each side is broken on its own below, so
+# the assertion fails whichever half stops comparing.
+# --------------------------------------------------------------------------- #
+
+make_release "$tmp/v-pair" "$upstream" "$upstream"
+
+# Control: one coherent release, so the two refusals below are caused by the one thing each
+# scenario changes and not by the fixture being broken in some other way.
+repack "$tmp/v-pair" "$upstream"
+run_preflight "$tmp/v-pair" --tag "v$upstream" --tag-policy v \
+  --version-file "$tmp/v-pair/VERSION"
+assert_eq "$code" "0" "ac-17 the v policy accepts an image and a payload that name one upstream"
+
+# Mutation one: the payload carries another upstream release.
+cp -a "$tmp/v-pair" "$tmp/v-pair-rootfs"
+repack "$tmp/v-pair-rootfs" "25.12.9"
+run_preflight "$tmp/v-pair-rootfs" --tag "v$upstream" --tag-policy v \
+  --version-file "$tmp/v-pair-rootfs/VERSION"
+assert_eq "$code" "1" \
+  "ac-17 the v policy refuses a payload whose rootfs is not the image's upstream version"
+assert_contains "$err" "image upstream_version '${upstream}' differs from the payload manifest rootfs '25.12.9'" \
+  "ac-17 the refusal names both sides of the disagreement"
+
+# Mutation two: the image names another upstream release, the payload stays coherent.
+cp -a "$tmp/v-pair" "$tmp/v-pair-image"
+json_edit "$tmp/v-pair-image/image/ab/image.json" set upstream_version 25.12.9
+repack "$tmp/v-pair-image" "$upstream"
+run_preflight "$tmp/v-pair-image" --tag "v$upstream" --tag-policy v \
+  --version-file "$tmp/v-pair-image/VERSION"
+assert_eq "$code" "1" \
+  "ac-17 the v policy refuses an image whose upstream version is not the payload rootfs"
+assert_contains "$err" "image upstream_version '25.12.9' differs from the payload manifest rootfs '${upstream}'" \
+  "ac-17 the refusal names the image side first"
+
+# The check has to be the thing that decides: with both sides equal the same fixtures pass,
+# which is why the two cases above cannot be green because of an unrelated refusal.
+repack "$tmp/v-pair-rootfs" "$upstream"
+run_preflight "$tmp/v-pair-rootfs" --tag "v$upstream" --tag-policy v \
+  --version-file "$tmp/v-pair-rootfs/VERSION"
+assert_eq "$code" "0" \
+  "ac-17 re-packing the payload with the matching rootfs makes the same release pass"
+
+# --------------------------------------------------------------------------- #
 # ac-17: every problem is reported, and the verdict is repeatable
 # --------------------------------------------------------------------------- #
 
