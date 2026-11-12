@@ -93,15 +93,18 @@ summary 是一张表，同一张表出现在哪儿都长一样。表头小写，
 | PR，pin 变更 | `chore(ci): pin upstream <版本>` | `chore(ci): pin upstream 25.13.0` |
 | 自动分支上的提交 | `chore(ci): pin upstream <版本>` | `chore(ci): pin upstream 25.13.0` |
 | PR 正文一级标题 | `# Upstream <版本> (pin <旧> -> <新>)` | `# Upstream 25.13.0 (pin 25.12.2 -> 25.13.0)` |
-| Release，两条线同一个 | `N5105 AB firmware <版本>` | `N5105 AB firmware 0.0.8` |
+| Release 标题 | 由 publisher 按 `tag-policy` 派生：`v` → `N5105 AB firmware <版本>`，`bare` → `ImmortalWrt N5105 A/B firmware <版本>` | `N5105 AB firmware 0.0.8`、`ImmortalWrt N5105 A/B firmware 25.13.0` |
 
 Issue 标题只带版本号，因为它同时是去重键：同一个故障更新同一条 Issue，
 而不是每天新开一条。
 
-一个 release 模板，只在一个地方：默认值归 `release-publish.yml`，调用点只在"这次发布的
-不是本产品"时才传 `title`——目前没有这种调用。上游线发布的是同一套固件换了上游底座，
-所以标题写产品名加 tag 指向的版本；把第二个模板写在调用点上，等于同一个决定做两次，
-而两次迟早会漂。
+模板只有一个主人：`release-publish.yml` 按那条本来就把两条线分开的旗标派生标题，两个调用点
+都不传 `title`。两条线的差别在 trigger、tag 形状和谁拥有 `VERSION`——不在调用点上拼出来的标题；
+后者等于同一个决定做两次，而两次迟早会漂。
+
+标题不同，是因为发布的东西不同。`v` tag 发的是我们自己的里程碑，用固件名。裸版本号换的是
+ImmortalWrt 底座，标题就说清这件事：读者比较两个 release 时，最先需要知道的就是"这个镜像是
+基于哪个上游版本"。
 
 release notes 点名证明这次发布的 run，以及那次 run 实际得出的结论。结论从 run 里读，
 绝不写成固定句：流水线只被要求跑一个 stage 时，发布页却宣称五个 stage 全过，

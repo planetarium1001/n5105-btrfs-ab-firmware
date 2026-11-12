@@ -417,4 +417,44 @@ else
   printf '# actionlint is not installed here; ac-8 is enforced by the verify stage\n'
 fi
 
+# --------------------------------------------------------------------------- #
+# ac-4 (L2): the S5 payload records where its bootloader came from
+#
+# The stage built a test payload whose manifest said `source_sha256: null`, because the
+# workflow never passed what esp-prepare had measured. A stand-in payload that cannot say
+# where its loader came from cannot prove the upgrade path a released payload takes, and the
+# release payload does record it - the two must not diverge.
+# --------------------------------------------------------------------------- #
+
+# step_with_id <workflow> <step-id>: the block of the step that declares that id, so the
+# assertion names the step that owns the environment instead of matching anywhere in the file.
+step_with_id() {
+  awk -v want="id: $2" '
+    /^      - / { if (found) exit; block = $0 "\n"; next }
+    { block = block $0 "\n" }
+    index($0, want) { found = 1 }
+    END { if (found) printf "%s", block }
+  ' "$1"
+}
+
+for owner in 'ci-s5.yml:payload' 'ci-assemble.yml:assemble'; do
+  wf=".github/workflows/${owner%%:*}"
+  id="${owner##*:}"
+  block="$(step_with_id "$wf" "$id")"
+  assert_contains "${block}" 'CI_BOOT_SRC: ${{ steps.esp.outputs.esp_dir }}' \
+    "ac-4 ${owner%%:*} hands the payload the boot tree it must not silently invent"
+  for var in CI_BOOT_SOURCE_IMAGE CI_BOOT_SOURCE_SHA256; do
+    assert_contains "${block}" "${var}: \${{ steps.esp.outputs." \
+      "ac-4 ${owner%%:*} records the boot source (${var})"
+  done
+done
+
+# The fragment that writes the block takes both values from the environment without a
+# fallback, which is why an unset one lands as null rather than as a made-up digest - and
+# why passing them is the fix rather than guessing them.
+assert_contains "$(cat scripts/ci/boot-member.sh)" 'source_image="${CI_BOOT_SOURCE_IMAGE:-' \
+  "ac-4 the boot block reads the source image from the caller"
+assert_contains "$(cat scripts/ci/boot-member.sh)" 'source_sha="${CI_BOOT_SOURCE_SHA256:-}"' \
+  "ac-4 the boot block records no digest when the caller passed none"
+
 finish

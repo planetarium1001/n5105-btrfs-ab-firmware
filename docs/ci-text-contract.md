@@ -108,16 +108,20 @@ both content and case.
 | Pull request, pin bump | `chore(ci): pin upstream <version>` | `chore(ci): pin upstream 25.13.0` |
 | Commit on the automatic branch | `chore(ci): pin upstream <version>` | `chore(ci): pin upstream 25.13.0` |
 | Pull request body heading | `# Upstream <version> (pin <old> -> <new>)` | `# Upstream 25.13.0 (pin 25.12.2 -> 25.13.0)` |
-| Release, both lines | `N5105 AB firmware <version>` | `N5105 AB firmware 0.0.8` |
+| Release title | derived from `tag-policy`: `v` gives `N5105 AB firmware <version>`, `bare` gives `ImmortalWrt N5105 A/B firmware <version>` | `N5105 AB firmware 0.0.8`, `ImmortalWrt N5105 A/B firmware 25.13.0` |
 
 The issue title carries the version and nothing else, because it is also the deduplication
 key: the same failure updates the same issue instead of opening a second one every day.
 
-One release template, in one place: `release-publish.yml` owns the default, and a caller
-passes `title` only when the release is not this product - which no caller does. The
-upstream line publishes a new base of the same firmware, so its title names the product and
-the version the tag names; a second template spelled at the call site is the same decision
-made twice, and the two drift.
+One template owner: `release-publish.yml` derives the title from the flag that already
+separates the two lines, and neither caller passes `title`. The lines differ by trigger, by
+tag shape and by who owns `VERSION` - not by a title spelled at the call site, which would be
+the same decision made twice and would drift.
+
+The titles differ because the releases do. A `v` tag publishes our own milestone and is named
+for the firmware. A bare version publishes a new ImmortalWrt base and says so, because that is
+the fact a reader comparing two releases needs first: which upstream release this image is
+built on.
 
 The release notes name the run that proved the release and the conclusion that run reached.
 The conclusion is read from the run, never written as a fixed sentence: a release page that

@@ -3,10 +3,11 @@
 # ac-4: the automatic release is identified by the system version, and only by it.
 #
 # Why this file exists: the two release lines share one implementation
-# (release-publish.yml) and differ only in their inputs. The naming is the whole product
-# difference - the upstream line publishes "ImmortalWrt N5105 A/B firmware 25.13.0" under a
-# bare 25.13.0 tag, while the tagged line keeps publishing VERSION under v0.0.8 - so the
-# naming rules are asserted here rather than left to the caller's discipline.
+# (release-publish.yml) and differ only in their inputs. They differ by trigger, by tag shape
+# and by who owns VERSION - not by a title spelled at the call site. The publisher derives the
+# title from `tag-policy`: the upstream line publishes "ImmortalWrt N5105 A/B firmware
+# 25.13.0" under a bare 25.13.0 tag, the tagged line publishes "N5105 AB firmware 0.0.8"
+# under v0.0.8. The naming rules are asserted here rather than left to a caller's discipline.
 #
 # The rules that would be violated silently: a v-prefixed tag on the automatic line (it
 # would collide with the tagged line and trigger a second release), and an edit of VERSION
@@ -35,8 +36,6 @@ watch_text=$(cat "$watch")
 # ac-4: the automatic line publishes the bare upstream version
 # --------------------------------------------------------------------------- #
 
-assert_contains "$watch_text" 'title: "ImmortalWrt N5105 A/B firmware {tag}"' \
-  "ac-4 the automatic line publishes under the ImmortalWrt title"
 assert_contains "$watch_text" "      tag-policy: bare" \
   "ac-4 the automatic line asks for a bare version tag"
 assert_contains "$watch_text" 'tag: ${{ needs.detect.outputs.version }}' \
@@ -55,20 +54,35 @@ assert_eq "$(grep -c 'refs/tags/v' "$watch")" "0" \
 # ac-4: the tagged line keeps its own name, through the same implementation
 # --------------------------------------------------------------------------- #
 
-assert_contains "$release_text" 'title: "N5105 AB firmware {tag}"' \
-  "ac-4 the tagged line keeps its existing title convention"
 assert_contains "$release_text" "      tag-policy: v" \
   "ac-4 the tagged line asks for the v tag policy"
 assert_contains "$release_text" 'tag: ${{ github.ref_name }}' \
   "ac-4 the tagged line publishes the tag it was triggered by"
 
 # --------------------------------------------------------------------------- #
-# ac-4: one implementation renders both titles
+# ac-4: one implementation derives both titles from the policy
 # --------------------------------------------------------------------------- #
 
+# The publisher owns the template. It already reads `tag-policy` for the preflight, so it is
+# the one place that knows which line it is publishing for: a title spelled again at a call
+# site would be the same decision made twice, and the two drift.
+title_step="$(sed -n '/- name: Render the release title/,/release_title=%s/p' "$publish")"
+assert_contains "${title_step}" 'TAG_POLICY' \
+  "ac-4 the title is derived from the tag policy, not from the caller"
+assert_contains "${title_step}" "v) TITLE_TEMPLATE='N5105 AB firmware {tag}'" \
+  "ac-4 the tagged line is titled N5105 AB firmware <version>"
+assert_contains "${title_step}" "*) TITLE_TEMPLATE='ImmortalWrt N5105 A/B firmware {tag}'" \
+  "ac-4 the automatic line is titled ImmortalWrt N5105 A/B firmware <version>"
+
+# Neither caller passes a title: the flag they already pass decides it.
+for caller in "$release" "$watch"; do
+  assert_eq "$(grep -cE '^ +title: ' "$caller" || true)" "0" \
+    "ac-4 $caller leaves the release title to the publisher"
+done
+
 assert_contains "$(sed -n '/^      title:$/,/^      platform_version:$/p' "$publish")" \
-  'Release title template; {tag} is replaced with the tag minus any leading v' \
-  "ac-4 the title is a template, and {tag} means the version without a leading v"
+  'empty derives it from tag-policy' \
+  "ac-4 the title input documents that the policy supplies the default"
 assert_contains "$publish_text" 'bare_version=%s' \
   "ac-4 the reusable workflow derives the bare version once"
 assert_contains "$publish_text" 'title="${TITLE_TEMPLATE//\{tag\}/${BARE_VERSION}}"' \

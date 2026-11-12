@@ -462,7 +462,6 @@ jobs:
     with:
       tag: ${{ needs.detect.outputs.version }}
       tag-policy: bare
-      title: "ImmortalWrt N5105 A/B firmware {tag}"
       extra-notes: ${{ needs.detect.outputs.candidates }}
       dry-run: ${{ inputs.dry-run }}
 

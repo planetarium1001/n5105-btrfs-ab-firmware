@@ -35,6 +35,7 @@ FINGERPRINT="tests/fixtures/ci-structure-fingerprint.txt"
 # The one release title template, rendered with a version for the length and punctuation
 # assertions below.
 TITLE_TEMPLATE="N5105 AB firmware {tag}"
+UPSTREAM_TITLE_TEMPLATE="ImmortalWrt N5105 A/B firmware {tag}"
 
 # Writing the baseline needs a reason. Refusing here rather than trusting the convention is
 # what keeps a re-baseline reviewable: the header is the only record of why the structure
@@ -457,19 +458,28 @@ assert_contains "$(cat "$tmp/issue.md")" "## Next" \
 assert_contains "$(cat "$tmp/issue.md")" "| field | value |" \
   "rule 6 the issue facts are a key-value table"
 
-# One release template, in one place. The default belongs to the publisher; a call site that
-# spells the template again is the same decision made twice, and the two drift.
-assert_contains "$(cat .github/workflows/release-publish.yml)" \
-  "default: \"${TITLE_TEMPLATE}\"" \
-  "rule 6 the publisher defaults the title to 'N5105 AB firmware <version>'"
+# One template owner. The publisher already reads the tag policy for the preflight, so it
+# derives the title from it; a call site that spells a template again is the same decision
+# made twice, and the two drift.
+title_step="$(sed -n '/- name: Render the release title/,/release_title=%s/p' \
+  .github/workflows/release-publish.yml)"
+assert_contains "${title_step}" 'TAG_POLICY' \
+  "rule 6 the publisher derives the release title from the tag policy"
+assert_contains "${title_step}" "${TITLE_TEMPLATE}" \
+  "rule 6 the tagged line is titled 'N5105 AB firmware <version>'"
+assert_contains "${title_step}" "${UPSTREAM_TITLE_TEMPLATE}" \
+  "rule 6 the automatic line is titled 'ImmortalWrt N5105 A/B firmware <version>'"
 for caller in release.yml upstream-watch.yml; do
   assert_eq "$(grep -cE '^ +title: ' ".github/workflows/${caller}" || true)" "0" \
     "rule 6 ${caller} leaves the release title to the publisher"
 done
-# A second template for the same product line is the drift this rule exists to stop.
-assert_eq "$(grep -rc 'ImmortalWrt N5105 A/B firmware' .github/ 2>/dev/null \
-  | grep -v ':0$' || true)" "" \
-  "rule 6 one release template for the product, not one per release line"
+# Exactly one file spells each template, so there is nothing to keep in step.
+for template in "${TITLE_TEMPLATE}" "${UPSTREAM_TITLE_TEMPLATE}"; do
+  assert_eq "$(grep -rlF "${template}" .github | wc -l | tr -d ' ')" "1" \
+    "rule 6 the template '${template}' is spelled in exactly one file"
+done
+assert_eq "$(grep -c 'default: "{tag}"' .github/workflows/release-publish.yml || true)" "0" \
+  "rule 6 the release title is never the bare tag"
 
 assert_contains "$(cat .github/workflows/upstream-watch.yml)" \
   'chore(ci): pin upstream ${VERSION}' \
@@ -483,16 +493,18 @@ assert_contains "$(cat .github/workflows/release-publish.yml)" "Verified by CI r
   "rule 6 the release notes still name the run that proved the release"
 
 # A title is capped at 80 columns and ends without punctuation, measured on the rendered
-# string rather than on the template.
-rendered="${TITLE_TEMPLATE//\{tag\}/25.13.0}"
-assert_eq "$(printf '%s' "${rendered}" | LC_ALL=C awk '{ print (length($0) <= 80) ? "ok" : "over 80" }')" \
-  "ok" "rule 3 a rendered release title stays inside 80 columns: '${rendered}'"
-case "${rendered}" in
-  *.) tail=period ;;
-  *'!') tail=bang ;;
-  *) tail=clean ;;
-esac
-assert_eq "${tail}" "clean" "rule 2 '${rendered}' carries no trailing punctuation"
+# string rather than on the template. Both templates are checked: the automatic line carries
+# the longer one.
+for rendered in "${TITLE_TEMPLATE//\{tag\}/25.13.0}" "${UPSTREAM_TITLE_TEMPLATE//\{tag\}/25.13.0}"; do
+  assert_eq "$(printf '%s' "${rendered}" | LC_ALL=C awk '{ print (length($0) <= 80) ? "ok" : "over 80" }')" \
+    "ok" "rule 3 a rendered release title stays inside 80 columns: '${rendered}'"
+  case "${rendered}" in
+    *.) tail=period ;;
+    *'!' | *':') tail=punctuation ;;
+    *) tail=clean ;;
+  esac
+  assert_eq "${tail}" "clean" "rule 2 '${rendered}' carries no trailing punctuation"
+done
 
 # --------------------------------------------------------------------------- #
 # Rule 7 - structure is not text

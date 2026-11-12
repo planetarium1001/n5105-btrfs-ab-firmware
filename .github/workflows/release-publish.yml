@@ -36,10 +36,10 @@ on:
         type: string
         default: bare
       title:
-        description: "Release title template; {tag} is replaced with the tag minus any leading v"
+        description: "Release title override; empty derives it from tag-policy. {tag} is the tag without a leading v"
         required: false
         type: string
-        default: "{tag}"
+        default: ""
       platform_version:
         description: "Platform version; empty reads the repository VERSION file"
         required: false
@@ -240,17 +240,27 @@ jobs:
             --platform-version "${PLATFORM_VERSION}" \
             2>&1 | tee -a "${CI_LOG_DIR}/release-preflight.log"
 
+      # One template, one owner. The two lines publish different things - our own milestone
+      # against a new ImmortalWrt base - so the title is derived here from the flag that
+      # already separates them, instead of being spelled again at each call site.
       - name: Render the release title
         id: title
         env:
           TITLE_TEMPLATE: ${{ inputs.title }}
+          TAG_POLICY: ${{ inputs.tag-policy }}
           BARE_VERSION: ${{ steps.versions.outputs.bare_version }}
         run: |
           set -euo pipefail
+          if [ -z "${TITLE_TEMPLATE}" ]; then
+            case "${TAG_POLICY}" in
+              v) TITLE_TEMPLATE='N5105 AB firmware {tag}' ;;
+              *) TITLE_TEMPLATE='ImmortalWrt N5105 A/B firmware {tag}' ;;
+            esac
+          fi
           title="${TITLE_TEMPLATE//\{tag\}/${BARE_VERSION}}"
           [ -n "${title}" ] || { echo "the release title rendered empty" >&2; exit 1; }
           printf 'release_title=%s\n' "${title}" >>"${GITHUB_OUTPUT}"
-          echo "release title: ${title}"
+          echo "release title: ${title} (policy ${TAG_POLICY})"
 
       - name: Render the release artifacts
         id: release

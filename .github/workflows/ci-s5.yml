@@ -107,10 +107,16 @@ jobs:
         run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-preflight.log"
 
       # The payload has to carry the same btrfs tooling the image ships, or the slot can never commit.
+      # The bootloader block of the manifest names where the loader came from. esp-prepare
+      # measured both values; without them source_sha256 lands as null and the test payload
+      # does not look like the release payload it stands in for.
       - name: Build the test payload
         id: payload
         env:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
+          CI_BOOT_SRC: ${{ steps.esp.outputs.esp_dir }}
+          CI_BOOT_SOURCE_IMAGE: ${{ steps.esp.outputs.source_image }}
+          CI_BOOT_SOURCE_SHA256: ${{ steps.esp.outputs.source_sha256 }}
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
         run: bash scripts/ci/payload-build.sh 2>&1 | tee -a "${CI_LOG_DIR}/payload.log"
 
