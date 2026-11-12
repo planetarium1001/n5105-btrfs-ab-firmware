@@ -282,9 +282,9 @@ jobs:
         env:
           CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
           CI_OUTPUT_ENV: ${{ runner.temp }}/ci/locks/derive.env
-          # The fetch stage stores the rootfs under its role name, not under the
-          # upstream file name.
-          CI_ROOTFS_TAR: ${{ runner.temp }}/ci/fetch/rootfs.tar.gz
+          # The fetch stage stores the rootfs under its payload-contract name, in its
+          # upstream/ subdirectory.
+          CI_ROOTFS_TAR: ${{ runner.temp }}/ci/fetch/upstream/rootfs.tar.gz
         run: |
           set -euo pipefail
           # shellcheck source=scripts/ci/lib.sh
@@ -326,9 +326,9 @@ jobs:
           CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
           CI_LOCK_STRICT: "1"
           CI_OUTPUT_ENV: ${{ runner.temp }}/ci/locks/strict.env
-          # The fetch stage stores the rootfs under its role name, not under the
-          # upstream file name.
-          CI_ROOTFS_TAR: ${{ runner.temp }}/ci/fetch/rootfs.tar.gz
+          # The fetch stage stores the rootfs under its payload-contract name, in its
+          # upstream/ subdirectory.
+          CI_ROOTFS_TAR: ${{ runner.temp }}/ci/fetch/upstream/rootfs.tar.gz
         run: |
           set -euo pipefail
           # shellcheck source=scripts/ci/lib.sh
