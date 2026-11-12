@@ -176,7 +176,7 @@ jobs:
           judge-prefix: ""
           stop-pattern: '^(ab-commit: abandoned slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
 
-      - name: Phase 2 - verify the abandon and the untouched committed slot
+      - name: Phase 2 - verify the abandon and the untouched slot
         id: phase2
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -187,7 +187,7 @@ jobs:
             2>&1 | tee -a "${CI_LOG_DIR}/phase2.log"
 
       # The abandoned slot must not be retried: the file has to be back on the committed one.
-      - name: Verify the abandon moved the next boot back to the committed slot
+      - name: Verify the abandon moved the next boot to slot a
         id: verify3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}

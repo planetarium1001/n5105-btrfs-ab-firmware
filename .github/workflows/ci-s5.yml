@@ -191,7 +191,7 @@ jobs:
           judge-prefix: ""
           stop-pattern: '^(ab-commit: committed slot=|ab-commit: stage=healthcheck-done .*result=fail|ab-commit: stage=commit .*result=fail|ab-boot: stage=boot result=fail)'
 
-      - name: Phase 3 - verify the commit, the conflicts and the reclamation
+      - name: Phase 3 - verify the commit and the reclamation
         id: phase3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
