@@ -183,7 +183,16 @@ jobs:
           bash scripts/ci/upstream-watch.sh pin "${VERSION}" 2>&1 | tee -a "${CI_LOG_DIR}/pin.log"
           git add .github/upstream-pin.conf
           git commit -m "chore(ci): pin upstream ${VERSION}"
-          git push --force-with-lease "${remote}" "HEAD:refs/heads/${branch}"
+          # A re-run replaces the branch it created last time. --force-with-lease needs to
+          # know what it is replacing, and a fresh checkout does not have the remote ref,
+          # so it is fetched first; a branch that does not exist yet is simply pushed.
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            git fetch --no-tags origin "refs/heads/${branch}"
+            git push --force-with-lease="${branch}:refs/remotes/origin/${branch}" \
+              "${remote}" "HEAD:refs/heads/${branch}"
+          else
+            git push "${remote}" "HEAD:refs/heads/${branch}"
+          fi
           printf 'branch=%s\n' "${branch}" >>"${GITHUB_OUTPUT}"
           printf 'base=%s\n' "${base}" >>"${GITHUB_OUTPUT}"
 
