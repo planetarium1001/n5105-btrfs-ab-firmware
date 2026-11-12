@@ -62,8 +62,10 @@ kernel_package="${CI_KERNEL_PACKAGE:?CI_KERNEL_PACKAGE is required}"
 # payload whose image said something else, and nothing noticed. VERSION is read by the
 # versions job in ci.yml and passed down; a local run has to name it too.
 platform_version="${CI_PLATFORM_VERSION:?CI_PLATFORM_VERSION is required, it is recorded in the payload release file}"
-# A release payload carries the bootloader; only a local dry run that has no ESP tree
-# may switch that off, and it has to say so.
+# A release payload always carries the bootloader. The value is exported as 1 unless the
+# caller already set the variable, and the member check further down has no opt-out, so
+# CI_REQUIRE_BOOTLOADER=0 does not switch the requirement off here - it only changes what
+# the fragment reports before that check fails the build.
 export CI_REQUIRE_BOOTLOADER="${CI_REQUIRE_BOOTLOADER:-1}"
 initramfs="${CI_INITRAMFS:?CI_INITRAMFS is required, the payload needs the boot initramfs}"
 runtime_tree="${CI_PLATFORM_RUNTIME_DIR:?CI_PLATFORM_RUNTIME_DIR is required, the payload needs the btrfs tooling}"

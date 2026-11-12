@@ -324,7 +324,9 @@ assert_eq "$(json_get "$manifest" "bootloader:menu_sha256")" \
 
 prov_ci="$tmp/ci-prov"
 mkdir -p "$prov_ci"
-prov_image="immortalwrt-25.12.2-x86-64-generic-squashfs-combined-efi.img.gz"
+# Deliberately not the name boot-member.sh derives from CI_UPSTREAM_VERSION: with the
+# derived name the assertion would pass whether the value was forwarded or invented.
+prov_image="upstream-mirror-copy-25.12.2-uefi.img.gz"
 prov_sha="$(python3 -c 'import hashlib;print(hashlib.sha256(b"combined-efi bytes").hexdigest())')"
 run_assemble "$prov_ci" "$tmp/out-prov.env" CI_BOOT_SRC="$tmp/esp" \
   CI_BOOT_SOURCE_IMAGE="$prov_image" CI_BOOT_SOURCE_SHA256="$prov_sha" \

@@ -217,6 +217,36 @@ assert_eq "$?" "0" "ac-1 a payload builds from CI_BOOTLOADER_CFG"
 assert_file_exists "$cfg_build/payload/work/render/grub-check.log" \
   "ac-1 CI_BOOTLOADER_CFG builds write the check log in the same directory"
 
+# --- the menu the caller named wins over the one a stage left behind --------
+# Both variables set, pointing at different menus: CI_GRUB_OUTPUT is what an earlier stage
+# rendered, CI_BOOTLOADER_CFG is what the caller chose. The fragment read the former
+# unconditionally for one revision and shipped a menu nobody named, so the priority has to
+# be asserted with two distinguishable files rather than assumed.
+menu_other="$tmp/menu-other/grub.cfg"
+mkdir -p "$tmp/menu-other"
+cp "$menu_ok" "$menu_other"
+printf '# rendered by some earlier stage, not the menu this build was told to ship\n' >>"$menu_other"
+both="$tmp/ci-both"
+mkdir -p "$both/disk"
+cp "$menu_other" "$both/disk/grub.cfg"
+PATH="$tmp/fixtures/bin:$PATH" \
+  CI_TMP_ROOT="$both" CI_LOG_DIR="$both/logs" \
+  CI_FETCH_DIR="$tmp/fixtures/fetch" CI_INITRAMFS="$tmp/fixtures/initramfs.cpio.gz" \
+  CI_PLATFORM_VERSION="0.0.7-test" \
+  CI_UPSTREAM_VERSION="25.12.2" CI_PLATFORM_RUNTIME_DIR="$tmp/fixtures/runtime" \
+  CI_PAYLOAD_OUT="$tmp/out/payload-both.tar" CI_BOOT_SRC="$tmp/fixtures/esp" \
+  CI_BOOTLOADER_CFG="$menu_ok" CI_GRUB_OUTPUT="$menu_other" \
+  bash "$payload_build" >"$tmp/build-both.log" 2>&1
+assert_eq "$?" "0" "ac-1 a build with both menu variables set succeeds"
+mkdir -p "$tmp/both" "$tmp/both-boot"
+tar -xf "$tmp/out/payload-both.tar" -C "$tmp/both"
+tar -xf "$tmp/both/boot.tar" -C "$tmp/both-boot"
+assert_eq "$(shasum -a 256 "$tmp/both-boot/boot/grub/grub.cfg" | cut -d' ' -f1)" \
+  "$(shasum -a 256 "$menu_ok" | cut -d' ' -f1)" \
+  "ac-1 CI_BOOTLOADER_CFG wins over CI_GRUB_OUTPUT"
+assert_eq "$(grep -c 'not the menu this build was told to ship' "$tmp/both-boot/boot/grub/grub.cfg")" "0" \
+  "ac-1 the menu the earlier stage rendered is not the one that ships"
+
 # --- an external menu that really does violate the rules --------------------
 # The failure has to be the checker's, so the log it was written to has to exist: that is
 # the difference between "the menu is wrong" and "the log could not be created".
@@ -702,7 +732,7 @@ cp "$esp/ab/state.json" "$esp_empty/ab/state.json"
 out="$(run_install "$good" STUB_FAIL_BTRFS=create AB_ESP="$esp_empty" \
   AB_PACKAGES_FILE="$esp_empty/ab/packages")"
 rc=$?
-assert_ok "ac-3o a rollback with nothing to restore fails the install" test "$rc" -ne 0
+assert_eq "$rc" "1" "ac-3o a rollback with nothing to restore fails the install"
 assert_contains "$out" "FAILED TO ROLL BACK" \
   "ac-3o the rollback admits it could not restore anything"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'rolled the ESP bootloader back')" "0" \
