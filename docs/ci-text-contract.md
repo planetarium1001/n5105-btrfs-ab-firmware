@@ -85,13 +85,17 @@ A summary is a table, and the table has the same header wherever it appears. Hea
 lowercase, and there are five of them - no sixth is needed, so a table that wants one is
 describing something the reader cannot act on:
 
-| Header | Where |
-|---|---|
-| `stage \| verdict \| key line \| artifact and sha256 \| next command` | the stage summary block, one per stage |
-| `stage \| verdict \| duration \| artifact` | the report's table across the pipeline |
-| `field \| value` | every key-value block: report facts, pre-publish check, release inputs, issue facts |
-| `job \| result` | the upstream watch's failure issue |
-| `artifact \| size \| sha256` | an asset listing: release hooks and release notes |
+- `stage | verdict | key line | artifact and sha256 | next command` - the stage summary
+  block, one per stage.
+- `stage | verdict | duration | artifact` - the report's table across the pipeline.
+- `field | value` - every key-value block: report facts, the pre-publish check, the release
+  inputs, the issue facts.
+- `job | result` - the upstream watch's failure issue.
+- `artifact | size | sha256` - an asset listing: the release hook and the release notes.
+
+`item` is the tempting spelling for the third one. It is not used: `item` means "one of a
+list", `field` means "one cell of a key-value table", and the pipeline already has a
+`report.sh` that says `field`.
 
 Machine-checked: every header row on the surface must be one of the five, compared for
 both content and case.
@@ -137,7 +141,10 @@ exactly which key moved.
 
 - Baseline: `ac5d65a`, taken before the first text change of the cleanup, so the file
   describes the pipeline as it was proven by CI, not as it was hoped to be.
-- Regenerate with `CI_TEXT_FINGERPRINT_WRITE=1 bash tests/modules/ci/test_ci_text_conventions.sh`.
+- Regenerate with
+  `CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON='<why>' bash tests/modules/ci/test_ci_text_conventions.sh`.
+  The writer refuses to run without a reason: a baseline whose header says nothing is a
+  baseline nobody can review.
 - Re-baselining is its own commit, with `# reason: <why the structure changed>` filled in
   and the fingerprint diff reviewed. A re-baseline mixed into a text batch hides the one
   thing the file exists to show.
@@ -158,6 +165,9 @@ reads the diff:
 - Is anything said twice? A step summary that repeats the job name is a line to delete.
 - Does a reader who just saw a failure know where to go next? That is what `next command`
   is for, and why it is never empty.
+- Is there an action the reader has to take? Give it one line - `Revert the squash commit to
+  restore the previous pin`. Explaining why the design works this way belongs in `docs/`,
+  never in a body that someone reads once, under pressure.
 
 ## Changing this contract
 

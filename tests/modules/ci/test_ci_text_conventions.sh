@@ -36,6 +36,14 @@ FINGERPRINT="tests/fixtures/ci-structure-fingerprint.txt"
 # assertions below.
 TITLE_TEMPLATE="N5105 AB firmware {tag}"
 
+# Writing the baseline needs a reason. Refusing here rather than trusting the convention is
+# what keeps a re-baseline reviewable: the header is the only record of why the structure
+# moved, and an empty one is a baseline nobody can judge.
+if [ "${CI_TEXT_FINGERPRINT_WRITE:-0}" = "1" ] && [ -z "${CI_TEXT_FINGERPRINT_REASON:-}" ]; then
+  echo "CI_TEXT_FINGERPRINT_REASON is empty: state why the structure changed" >&2
+  exit 2
+fi
+
 # text_scan <mode>: one python pass over the surface, one subcommand per rule, so a failure
 # names the rule and prints `path:line: what` instead of a diff nobody can attribute.
 text_scan() {
@@ -477,6 +485,12 @@ assert_eq "${tail}" "clean" "rule 2 '${rendered}' carries no trailing punctuatio
 # --------------------------------------------------------------------------- #
 
 text_scan fingerprint >"$tmp/fingerprint.txt"
+
+# The refusal above is asserted, not only written down: a writer that accepts an empty
+# reason is the one hole in this rule.
+refusal="$(CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON= bash "${BASH_SOURCE[0]}" 2>&1)"
+assert_contains "${refusal}" "CI_TEXT_FINGERPRINT_REASON is empty" \
+  "rule 7 the writer refuses to re-baseline without a reason"
 
 if [ "${CI_TEXT_FINGERPRINT_WRITE:-0}" = "1" ]; then
   {

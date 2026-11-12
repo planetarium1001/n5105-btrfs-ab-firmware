@@ -74,13 +74,14 @@ release 标题同理。
 summary 是一张表，同一张表出现在哪儿都长一样。表头小写，一共只有五种——不需要第六种，
 需要第六种的表在描述读者无法据此行动的东西：
 
-| 表头 | 出现位置 |
-|---|---|
-| `stage \| verdict \| key line \| artifact and sha256 \| next command` | 每个 stage 的 summary 块 |
-| `stage \| verdict \| duration \| artifact` | report 的跨流水线总表 |
-| `field \| value` | 所有键值块：report 事实、pre-publish 检查、release 输入、Issue 事实 |
-| `job \| result` | 上游巡检的失败 Issue |
-| `artifact \| size \| sha256` | 产物清单：release 钩子与 release notes |
+- `stage | verdict | key line | artifact and sha256 | next command`：每个 stage 的 summary 块。
+- `stage | verdict | duration | artifact`：report 的跨流水线总表。
+- `field | value`：所有键值块——report 事实、pre-publish 检查、release 输入、Issue 事实。
+- `job | result`：上游巡检的失败 Issue。
+- `artifact | size | sha256`：产物清单——release 钩子与 release notes。
+
+第三个表头容易被写成 `item`，但不用它：`item` 是"一串里的一项"，`field` 才是"键值表的一格"，
+而且 `report.sh` 已经在说 `field`。
 
 机器判定：面上每个表头行都必须是这五种之一，内容与大小写一起比。
 
@@ -121,7 +122,9 @@ release notes 点名证明这次发布的 run，以及那次 run 实际得出的
 
 - 基线：`ac5d65a`，取自本轮第一次文本改动之前，因此它描述的是"CI 证明过的流水线"，
   不是"希望它变成的样子"。
-- 重生成：`CI_TEXT_FINGERPRINT_WRITE=1 bash tests/modules/ci/test_ci_text_conventions.sh`。
+- 重生成：
+  `CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON='<为什么>' bash tests/modules/ci/test_ci_text_conventions.sh`。
+  没给理由时写入器直接拒绝执行——头部什么都不说的基线，没人能复核。
 - 重生成自成一个提交，头部写 `# reason: <为什么结构变了>`，并且指纹 diff 要进评审。
   把重生成混进文本批次，正好抹掉这个文件唯一要展示的东西。
 
@@ -138,6 +141,8 @@ release notes 点名证明这次发布的 run，以及那次 run 实际得出的
 - 数字贴着单位吗——`638,976 bytes`、`53.7 MB`；出现时间时，时区写了吗？
 - 有没有话说两遍？重复 job 名的 step summary 就是该删掉的那一行。
 - 刚看到失败的人知道下一步去哪吗？`next command` 就是为这个存在的，所以它永远不为空。
+- 有没有读者当场就要做的动作？给一行动作——`Revert the squash commit to restore the previous
+  pin`。解释"为什么这样设计"属于 `docs/`，不属于一份只看一遍、还赶时间的正文。
 
 ## 怎么改这份契约
 
