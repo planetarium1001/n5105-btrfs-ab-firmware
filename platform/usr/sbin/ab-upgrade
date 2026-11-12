@@ -1,17 +1,31 @@
 #!/bin/sh
 # ab-upgrade - install a payload into the inactive slot.
 #
-#   ab-upgrade <payload.tar>          install and mark the target slot pending
-#   ab-upgrade --check <payload.tar>  validate only, change nothing
+#   ab-upgrade [--bootloader|--no-bootloader] [--force] <payload.tar>
+#       install and mark the target slot pending
+#   ab-upgrade --check [flags] <payload.tar>
+#       validate only, change nothing
 #
 # Payload layout (see docs/conflicts-payload.md):
 #
 #   payload.tar
-#     manifest.json        {"format": ..., "rootfs": "<version>", "members": {...}}
+#     manifest.json        {"format": ..., "rootfs": "<version>", "members": {...},
+#                           "bootloader": {...} | null}
 #     rootfs.tar.gz        upstream root filesystem
 #     kernel.bin           kernel for the target slot
 #     initramfs.cpio.gz    boot initramfs for the target slot
 #     platform.tar         platform layer for the target slot (wf.tar is the old name)
+#     boot.tar             optional: EFI/BOOT/BOOTX64.EFI + boot/grub/grub.cfg
+#
+# Bootloader flags:
+#   (default)        update the ESP's bootloader from the payload when it carries one,
+#                    and say so when it does not
+#   --bootloader     require the payload to carry one: without boot.tar the payload is
+#                    refused with 74 instead of being installed without it
+#   --no-bootloader  never touch the ESP's bootloader (escape hatch: the write is the one
+#                    operation a machine cannot recover from on its own)
+#   --force          install even when the running slot already carries this version
+#                    (default is a 74 refusal; reinstalling is how a slot is repaired)
 #
 # Validation follows the documented order and nothing is written before all of it
 # passes: manifest shape, member digests, the btrfs module vermagic against the
@@ -34,7 +48,7 @@ LIB="${AB_LIB:-/lib/upgrade/platform.sh}"
 LOG_MAX=32768
 
 usage() {
-    printf 'usage: ab-upgrade <payload.tar> | ab-upgrade --check <payload.tar>\n' >&2
+    printf 'usage: ab-upgrade [--bootloader|--no-bootloader] [--force] [--check] <payload.tar>\n' >&2
     exit 2
 }
 
@@ -73,14 +87,56 @@ fail() {
 }
 
 check_mode=0
-case "${1:-}" in
-    --check)
-        check_mode=1
-        shift
-        ;;
-esac
-[ "$#" -ge 1 ] || usage
-payload_tar="$1"
+force_mode=0
+# update (default) | skip. "update" still degrades to "no bootloader in this payload"
+# with a line on the console; "skip" never touches the ESP's bootloader.
+bootloader_mode="update"
+bootloader_required=0
+saw_no_bootloader=0
+# Options are accepted anywhere on the command line. Parsing stops at the first positional
+# argument is how `ab-upgrade payload.tar --no-bootloader` silently wrote the ESP and
+# `ab-upgrade payload.tar --check` really installed: an operator who put the path first got
+# the opposite of what they asked for. Anything after the payload is therefore parsed too,
+# and a second positional argument is a usage error instead of being ignored.
+payload_tar=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check) check_mode=1; shift ;;
+        --bootloader) bootloader_required=1; bootloader_mode="update"; shift ;;
+        --no-bootloader) saw_no_bootloader=1; bootloader_mode="skip"; shift ;;
+        --force) force_mode=1; shift ;;
+        --) shift; break ;;
+        -*) say "ab-upgrade: unknown option ${1}"; usage ;;
+        *)
+            if [ -n "${payload_tar}" ]; then
+                say "ab-upgrade: unexpected argument ${1} (the payload is already ${payload_tar})"
+                usage
+            fi
+            payload_tar="$1"
+            shift
+            ;;
+    esac
+done
+# Everything after `--` is positional.
+while [ "$#" -gt 0 ]; do
+    if [ -n "${payload_tar}" ]; then
+        say "ab-upgrade: unexpected argument ${1} (the payload is already ${payload_tar})"
+        usage
+    fi
+    payload_tar="$1"
+    shift
+done
+[ -n "${payload_tar}" ] || usage
+# Both flags mean opposite things and either order has to be rejected: "carry one, but do
+# not write it" is not a state this tool can be in.
+if [ "${bootloader_required}" = "1" ] && [ "${saw_no_bootloader}" = "1" ]; then
+    say "ab-upgrade: --bootloader and --no-bootloader contradict each other"
+    usage
+fi
+# The adapter reads this; keeping it in one variable means `--no-bootloader` is enforced
+# in one place instead of at every call into the library.
+AB_UPGRADE_BOOTLOADER="${bootloader_mode}"
+export AB_UPGRADE_BOOTLOADER
 [ -f "${payload_tar}" ] || refuse "payload-not-found"
 
 work="/tmp/ab-upgrade.$$"
@@ -110,6 +166,12 @@ case "${format}" in
 esac
 rootfs_version="$(printf '%s' "${squeezed}" | sed -n 's/.*"rootfs":"\([^"]*\)".*/\1/p')"
 [ -n "${rootfs_version}" ] || refuse "manifest-without-rootfs"
+# The version becomes a directory name (the writable layer, the bootloader backup) and a
+# literal in the feeds files, so it is restricted here, once: a `../` would write outside
+# the layer directory and an `&` would be expanded inside a sed replacement.
+case "${rootfs_version}" in
+    .* | *[!A-Za-z0-9._~+-]*) refuse "manifest-rootfs-invalid-${rootfs_version}" ;;
+esac
 
 # --------------------------------------------------------------------------- #
 # 2. Members and digests
@@ -130,14 +192,29 @@ elif [ -f "${work}/wf.tar" ]; then
 fi
 [ -n "${platform_member}" ] || refuse "payload-without-platform-layer"
 
-for member in rootfs.tar.gz kernel.bin initramfs.cpio.gz "${platform_member}"; do
+members="rootfs.tar.gz kernel.bin initramfs.cpio.gz ${platform_member}"
+member_count=4
+# The bootloader is optional in the format and mandatory when the caller says so: a
+# payload from before this member existed still has to install on a machine whose
+# firmware is fine, while `--bootloader` states that this release is supposed to carry
+# one. Either way the member is digest checked like every other one.
+boot_member=""
+if [ -f "${work}/boot.tar" ]; then
+    boot_member="boot.tar"
+    members="${members} boot.tar"
+    member_count=5
+elif [ "${bootloader_required}" = "1" ]; then
+    refuse "payload-without-bootloader"
+fi
+
+for member in ${members}; do
     [ -f "${work}/${member}" ] || refuse "member-missing-${member}"
     want="$(member_sha "${member}")" || refuse "manifest-without-${member}"
     [ -n "${want}" ] || refuse "manifest-without-${member}"
     have="$(sha256sum "${work}/${member}" 2>/dev/null | cut -d' ' -f1)"
     [ "${have}" = "${want}" ] || refuse "digest-mismatch-${member}"
 done
-say "ab-upgrade: manifest ok, ${format}, rootfs ${rootfs_version}, 4 members verified"
+say "ab-upgrade: manifest ok, ${format}, rootfs ${rootfs_version}, ${member_count} members verified"
 
 # --------------------------------------------------------------------------- #
 # 3. The initramfs must be built for the kernel in the payload
@@ -146,8 +223,14 @@ say "ab-upgrade: manifest ok, ${format}, rootfs ${rootfs_version}, 4 members ver
 # The upstream kernel is an EFI stub, so its vermagic sits inside the compressed image
 # and cannot be read here. What can be checked is that the payload is internally
 # consistent: every module in its initramfs must come from one kernel build.
+# The initramfs carries the kernel's modules together with `modules.*` metadata, and
+# that metadata has a `vermagic=` line with nothing after it. Keeping the empty line in
+# the list is what once made the evidence line print "modules agree on " - the check
+# itself was right (two different versions are still refused) but the line was useless
+# to whoever read the log. Empty values are therefore dropped here, before the count:
+# the guarantee is still "every module comes from one build", the evidence names it.
 module_vermagi="$(gzip -dc "${work}/initramfs.cpio.gz" 2>/dev/null \
-    | grep -a -o 'vermagic=[[:print:]]*' | sed 's/^vermagic=//' | sort -u)"
+    | grep -a -o 'vermagic=[[:print:]]*' | sed 's/^vermagic=//' | sed '/^[[:space:]]*$/d' | sort -u)"
 module_count="$(printf '%s\n' "${module_vermagi}" | grep -c . || true)"
 [ "${module_count}" -ge 1 ] || refuse "initramfs-without-module-vermagic"
 [ "${module_count}" -eq 1 ] || refuse "initramfs-mixed-module-vermagic-${module_count}"
@@ -194,8 +277,14 @@ case "${running}" in
 esac
 installed="$(ab-slot rootfs "${running}" 2>/dev/null)"
 if [ "${installed}" = "${rootfs_version}" ]; then
-    say "ab-upgrade: slot ${running} already runs ${rootfs_version}"
-    refuse "payload-already-installed"
+    # Reinstalling the same version is how a damaged slot is repaired, but doing it by
+    # accident rewrites the healthy slot from the slot being tested, so it needs a flag.
+    if [ "${force_mode}" = "1" ]; then
+        say "ab-upgrade: forcing reinstall of ${rootfs_version} into slot ${other} (slot ${running} already runs it)"
+    else
+        say "ab-upgrade: slot ${running} already runs ${rootfs_version}"
+        refuse "payload-already-installed"
+    fi
 fi
 say "ab-upgrade: running slot ${running} on ${installed}, installing ${rootfs_version} into slot ${other}"
 
@@ -284,8 +373,12 @@ printf 'scan checked=%s payload-absent=%s payload-same=%s user-untouched=%s user
     "${scanned}" "${absent_payload}" "${same_payload}" "${untouched}" "${same_user}" "${upper:-none}" >>"${report}"
 printf 'conflicts=%s uci-defaults=%s\n' "${conflicts}" "${uci_defaults}" >>"${report}"
 
-# Publish the report on the ESP with the documented 32 KiB truncation.
-if [ -d "${AB_ESP}/ab" ]; then
+# Publish the report on the ESP with the documented 32 KiB truncation. A dry run publishes
+# nothing: "check only, nothing written" has to be true of the ESP too, and a stale report
+# from a check would look exactly like the report of the last real upgrade.
+if [ "${check_mode}" = "1" ]; then
+    say "ab-upgrade: check mode, the conflict report stays in ${report}"
+elif [ -d "${AB_ESP}/ab" ]; then
     tmp_report="${AB_ESP}/ab/conflicts.log.tmp.$$"
     if [ "$(wc -c <"${report}")" -gt "${LOG_MAX}" ]; then
         tail -c $((LOG_MAX - 512)) "${report}" >"${tmp_report}"
@@ -300,6 +393,40 @@ fi
 say "ab-upgrade: ${conflicts} conflict(s), ${uci_defaults} uci-defaults script(s)"
 
 if [ "${check_mode}" = "1" ]; then
+    # A dry run that accepts a payload the install then refuses is a trap. The bootloader
+    # member is checked here with the same rules the write applies - member, manifest
+    # block, the loader's digest, room on the ESP - and nothing on the ESP is touched.
+    if [ -n "${boot_member}" ]; then
+        my_loader_sha="$(printf '%s' "${squeezed}" | sed -n 's/.*"loader_sha256":"\([0-9a-f]*\)".*/\1/p')"
+        my_loader_bytes="$(printf '%s' "${squeezed}" | sed -n 's/.*"loader_bytes":\([0-9][0-9]*\).*/\1/p')"
+        my_menu_sha="$(printf '%s' "${squeezed}" | sed -n 's/.*"menu_sha256":"\([0-9a-f]*\)".*/\1/p')"
+        [ -n "${my_loader_sha}" ] && [ -n "${my_loader_bytes}" ] && [ -n "${my_menu_sha}" ] \
+            || refuse "bootloader-manifest-incomplete"
+        mkdir -p "${work}/boot-check"
+        tar -xf "${work}/boot.tar" -C "${work}/boot-check" 2>/dev/null || refuse "payload-not-a-tar"
+        [ -f "${work}/boot-check/EFI/BOOT/BOOTX64.EFI" ] || refuse "bootloader-member-incomplete"
+        [ -f "${work}/boot-check/boot/grub/grub.cfg" ] || refuse "bootloader-menu-missing"
+        checked_loader="$(sha256sum "${work}/boot-check/EFI/BOOT/BOOTX64.EFI" 2>/dev/null | cut -d' ' -f1)"
+        [ "${checked_loader}" = "${my_loader_sha}" ] || refuse "bootloader-digest-mismatch"
+        checked_menu="$(sha256sum "${work}/boot-check/boot/grub/grub.cfg" 2>/dev/null | cut -d' ' -f1)"
+        [ "${checked_menu}" = "${my_menu_sha}" ] || refuse "bootloader-menu-mismatch"
+        # The same headroom rule as the write, read the same way, so a dry run and an
+        # install cannot disagree about whether the loader fits.
+        check_avail="$(df -k "${AB_ESP}" 2>/dev/null \
+            | awk 'NR > 1 && $4 ~ /^[0-9]+$/ { print $4; exit }')"
+        [ -n "${check_avail}" ] || refuse "bootloader-space-unknown"
+        # The same margin the write uses, so the two cannot disagree about whether the
+        # loader fits.
+        [ "${check_avail}" -ge "$((my_loader_bytes / 1024 + 4096))" ] || refuse "bootloader-no-space"
+        check_esp="$(printf '%s' "${status_out}" | sed -n 's/.* esp=\([a-z]*\).*/\1/p')"
+        case "${check_esp}" in
+            dirty | unreadable)
+                say "ab-upgrade: the ESP is ${check_esp}, an install would refuse the bootloader write"
+                refuse "bootloader-esp-${check_esp}"
+                ;;
+        esac
+        say "ab-upgrade: bootloader ok (${my_loader_bytes} bytes, 5 member(s) verified)"
+    fi
     say "ab-upgrade: check only, nothing written"
     exit 0
 fi
@@ -308,10 +435,38 @@ fi
 # 6. Copy into the inactive slot
 # --------------------------------------------------------------------------- #
 
+packages_state="unknown"
 platform_upgrade_begin "${work}" "${other}" || refuse "${upgrade_reason}"
-platform_copy_rootfs "${work}" "${other}" || fail "${upgrade_reason}"
-platform_upgrade_end "${other}" "${UPGRADE_NEW_VERSION}" "${UPGRADE_NEW_LAYER}" ||
+# A `bootloader-*` failure means the ESP write was either never started or already rolled
+# back, i.e. nothing changed: that is the documented "refused before anything was written"
+# case (74), not the "an execution step failed" one (1). Everything else keeps exit 1.
+if ! platform_copy_rootfs "${work}" "${other}"; then
+    # The bootloader stage runs before the slot writes, so a failure here may have left the
+    # ESP on the new loader. Putting it back is the difference between "the upgrade failed"
+    # and "the machine changed".
+    # A failed rollback means the ESP may carry the new bootloader while the slot and the
+    # state file are still the old ones: that is not the "refused before anything was
+    # written" case 74 promises, so it has to leave as a failure and say so loudly.
+    if ! upgrade_bootloader_rollback; then
+        say "ab-upgrade: the ESP bootloader may carry this payload while slot ${running} still runs ${installed}"
+        console_say "ab-upgrade: rollback-failed slot=${other} reason=${upgrade_reason}"
+        fail "bootloader-rollback-failed"
+    fi
+    case "${upgrade_reason}" in
+        bootloader-*) refuse "${upgrade_reason}" ;;
+        *) fail "${upgrade_reason}" ;;
+    esac
+fi
+if ! platform_upgrade_end "${other}" "${UPGRADE_NEW_VERSION}" "${UPGRADE_NEW_LAYER}"; then
+    # The slot is written but not announced; the ESP may already carry the new bootloader.
+    # Rolling it back keeps the pair consistent, and the reason says the slot was written.
+    upgrade_bootloader_rollback || say "ab-upgrade: warning: the ESP bootloader could not be rolled back"
     fail "${upgrade_reason}"
+fi
+# One line about what the machine can install afterwards, read back from the file the
+# adapter published rather than remembered from the call.
+packages_state="$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${AB_ESP}/ab/packages" 2>/dev/null | tail -n 1)"
+[ -n "${packages_state}" ] || packages_state="unknown"
 
 # Reclaim layers nothing references any more; a failed gc must not undo the upgrade.
 if ab-slot gc >/tmp/ab-upgrade-gc.log 2>&1; then
@@ -323,5 +478,6 @@ else
 fi
 
 say "ab-upgrade: installed ${rootfs_version} into slot ${other} (${UPGRADE_NEW_LAYER}), ${conflicts} conflict(s), reclaimed ${reclaimed}"
-console_say "ab-upgrade: ok slot=${other} conflicts=${conflicts} reclaimed=${reclaimed}"
+say "ab-upgrade: bootloader ${UPGRADE_BOOTLOADER_STATE:-unchanged}, package meta ${packages_state:-unknown}"
+console_say "ab-upgrade: ok slot=${other} conflicts=${conflicts} reclaimed=${reclaimed} bootloader=${UPGRADE_BOOTLOADER_STATE:-unchanged} packages=${packages_state:-unknown}"
 exit 0
