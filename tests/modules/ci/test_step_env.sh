@@ -87,7 +87,10 @@ for workflow in workflows:
                 continue
             checked += 1
             if by_loader:
-                if workflow.name != "ci-debug.yml":
+                # Only workflows whose stage inputs are resolved at run time may use the
+                # loader: a debug session (ci-debug.yml) and the automatic release line
+                # (upstream-watch.yml, which derives the lockfiles).
+                if workflow.name not in ("ci-debug.yml", "upstream-watch.yml"):
                     loader_elsewhere += 1
                 continue
             missing = [v for v in required[script] if v not in step_env and v not in job_env]
@@ -109,8 +112,9 @@ assert_eq "${checked:-0}" "$(printf '%s\n' "$report" | grep -c '^checked=' >/dev
 assert_eq "$result" "ok" "at least one stage script invocation was found"
 
 # A stage script reached through the loader is wired by construction, but the loader has
-# to be a deliberate choice: ci-debug.yml is the only file allowed to use it, because it is
-# the only workflow whose stage inputs do not exist until resolve.sh has run.
+# to be a deliberate choice: only workflows whose stage inputs do not exist until
+# resolve.sh has run may use it (ci-debug.yml for a debug session, upstream-watch.yml for
+# the lockfile derivation of the automatic release line).
 loader_uses=$(printf '%s\n' "$report" | sed -n 's/^loader_elsewhere=//p')
 assert_eq "${loader_uses:-0}" "0" "no stage workflow relies on the loader instead of env wiring"
 
