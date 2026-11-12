@@ -359,8 +359,12 @@ jobs:
     outputs:
       tag: ${{ needs.detect.outputs.version }}
     steps:
+      # The diff guard compares two branches, which a shallow clone cannot do: without the
+      # full history `git diff base...branch` fails with "no merge base".
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: {persist-credentials: false}
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
 
