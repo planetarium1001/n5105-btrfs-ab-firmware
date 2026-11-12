@@ -75,11 +75,6 @@ on:
         required: false
         type: boolean
         default: false
-    outputs:
-      release-url: {description: "URL of the created release", value: "${{ jobs.publish.outputs.release_url }}"}
-      release-title: {description: "Rendered release title", value: "${{ jobs.publish.outputs.release_title }}"}
-      upstream-version: {description: "Upstream release recorded in the artifacts", value: "${{ jobs.publish.outputs.upstream_version }}"}
-      platform-version: {description: "Platform version recorded in the artifacts", value: "${{ jobs.publish.outputs.platform_version }}"}
 
 permissions:
   contents: read
@@ -92,13 +87,6 @@ jobs:
     permissions:
       contents: write
       actions: read
-    outputs:
-      release_url: ${{ steps.publish.outputs.release_url }}
-      release_title: ${{ steps.title.outputs.release_title }}
-      upstream_version: ${{ steps.versions.outputs.upstream_version }}
-      platform_version: ${{ steps.versions.outputs.platform_version }}
-      image_sha256: ${{ steps.release.outputs.image_gz_sha256 }}
-      payload_sha256: ${{ steps.release.outputs.payload_sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: {persist-credentials: false}
