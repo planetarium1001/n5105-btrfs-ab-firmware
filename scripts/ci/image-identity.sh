@@ -44,17 +44,23 @@ ii_refuse_probe() {
 }
 
 # ii_image_json <kind> <init_script> <platform_version> <upstream_version> <created_at>
+#                <net_wan_ssh>
 # The record the image carries about itself. Kept one line per key so a human can read it
 # from the ESP, and so `grep kind= boot` is a valid check in a workflow.
 ii_image_json() {
     local kind="$1" init_script="$2" platform="$3" upstream="$4" created="$5"
+    # Which WAN SSH default this image carries. It is recorded here, on the ESP, because
+    # the release preflight already mounts the ESP: a check that can be made without a
+    # btrfs mount is a check that will actually run on every publish.
+    local net_wan_ssh="${6:-closed}"
     cat <<JSON
 {
   "kind": "${kind}",
   "init_script": "${init_script}",
   "platform_version": "${platform}",
   "upstream_version": "${upstream}",
-  "created_at": "${created}"
+  "created_at": "${created}",
+  "net_wan_ssh": "${net_wan_ssh}"
 }
 JSON
 }

@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: net: the WAN SSH default is derived from the variant flag
+# reason: ci: the variant gets a preflight and the release reads the image record
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -418,6 +418,7 @@ sh-var scripts/ci/disk.sh CI_GRUB_OUTPUT
 sh-var scripts/ci/disk.sh CI_GRUB_TEMPLATE
 sh-var scripts/ci/disk.sh CI_INITRAMFS
 sh-var scripts/ci/disk.sh CI_INITRAMFS_KIND
+sh-var scripts/ci/disk.sh CI_NET_WAN_SSH
 sh-var scripts/ci/disk.sh CI_OUTPUT_ENV
 sh-var scripts/ci/disk.sh CI_OVERLAY_NAME
 sh-var scripts/ci/disk.sh CI_PLATFORM_LIMIT_BYTES
@@ -1602,14 +1603,14 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.diag-args = ${{ runner.
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.name = evidence-s3
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.paths = |
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.stage = s3
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = always() && !inputs.variant
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = success() && !inputs.variant
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.if-no-files-found = warn
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.name = image-install
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.path = ${{ runner.temp }}/ci/disk/*.img.gz
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.retention-days = 7
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = always() && inputs.variant
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = success() && inputs.variant
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.if-no-files-found = warn
@@ -1655,7 +1656,6 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].id = disk
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].env = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].id = verify0
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].id = boot1
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].uses = ./.github/actions/qemu-boot
@@ -2295,33 +2295,34 @@ yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.BARE_VERS
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TAG_POLICY = ${{ inputs.tag-policy }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TITLE_TEMPLATE = ${{ inputs.title }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].id = title
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_EXTRA_NOTES = ${{ inputs.extra-notes }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_PAYLOAD = ${{ runner.temp }}/ci/payload/payload.tar
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_RELEASE_TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_UPSTREAM_KERNEL_SHA256 = ${{ steps.versions.outputs.kernel_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_UPSTREAM_ROOTFS_SHA256 = ${{ steps.versions.outputs.rootfs_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].id = release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].if = env.CI_VARIANT_IMAGE != ''
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.DRY_RUN = ${{ inputs.dry-run }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.KERNEL_SHA = ${{ steps.versions.outputs.kernel_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.KIND = ${{ steps.image_kind.outputs.kind }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.ROOTFS_SHA = ${{ steps.versions.outputs.rootfs_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.TITLE = ${{ steps.title.outputs.release_title }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_EXTRA_NOTES = ${{ inputs.extra-notes }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_PAYLOAD = ${{ runner.temp }}/ci/payload/payload.tar
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_RELEASE_TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_UPSTREAM_KERNEL_SHA256 = ${{ steps.versions.outputs.kernel_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_UPSTREAM_ROOTFS_SHA256 = ${{ steps.versions.outputs.rootfs_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.CI_UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].id = release
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env = 
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.DRY_RUN = ${{ inputs.dry-run }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.RELEASE_DIR = ${{ runner.temp }}/ci/release
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.KERNEL_SHA = ${{ steps.versions.outputs.kernel_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.KIND = ${{ steps.image_kind.outputs.kind }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.ROOTFS_SHA = ${{ steps.versions.outputs.rootfs_sha256 }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.TAG = ${{ inputs.tag }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.TITLE = ${{ steps.title.outputs.release_title }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].id = publish
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[16].if = always()
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env.RELEASE_DIR = ${{ runner.temp }}/ci/release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].env.TITLE = ${{ steps.title.outputs.release_title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[15].id = publish
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[17].if = always()
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[1].with = {apt: "cpio"}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].if = ${{ inputs.run-id == '' }}

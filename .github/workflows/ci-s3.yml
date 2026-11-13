@@ -126,8 +126,9 @@ jobs:
         run: bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR}/disk.log"
 
       # The third boot hands the machine to the firmware, so prove the ESP is bootable first.
+      # Runs for the convenience image too: it is the only proof that artifact gets, and it
+      # costs a GRUB parse rather than a boot.
       - name: Preflight - the ESP boots through GRUB
-        if: ${{ inputs.boots }}
         id: verify0
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
@@ -237,7 +238,7 @@ jobs:
       # what a person reads in the run page, so it is spelled out rather than assembled
       # from an input (tests/modules/ci/test_display_names.sh holds that vocabulary).
       - name: Upload the install image
-        if: always() && !inputs.variant
+        if: success() && !inputs.variant
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-install
@@ -246,7 +247,7 @@ jobs:
           retention-days: 7
 
       - name: Upload the convenience image
-        if: always() && inputs.variant
+        if: success() && inputs.variant
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-install-wan-ssh

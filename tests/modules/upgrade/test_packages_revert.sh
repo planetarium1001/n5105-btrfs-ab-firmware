@@ -288,4 +288,19 @@ ordered="$(_packages_snapshot_files "$order_layer" | tr '\n' ' ')"
 assert_eq "$ordered" "snapshot-20260101T000000Z.txt snapshot-20260101T000000Z-2.txt snapshot-20260101T000001Z.txt " \
   "the -N suffix of a same-second snapshot sorts after the bare name"
 
+# An `apk` that does not answer like apk-tools is not a version this code can drive.
+cat >"$bin/apk" <<'APK'
+#!/bin/sh
+case "${1:-}" in
+  --version) printf 'busybox-apk 1.0\n' ;;
+  info) printf 'htop-3.3.0-r1\n' ;;
+  *) exit 0 ;;
+esac
+APK
+chmod +x "$bin/apk"
+out="$(slot_run packages upgrade)"
+rc=$?
+assert_eq "$rc" "74" "an apk that is not apk-tools is refused"
+assert_contains "$out" "reason=apk-unsupported" "the refusal names the unsupported tool"
+
 finish

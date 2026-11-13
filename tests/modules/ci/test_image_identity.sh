@@ -68,7 +68,7 @@ fi
 if ii_refuse_probe "" 1; then
     assert_eq "accepted" "refused" "ac-2 an unknown kind is refused"
 fi
-assert_contains "$(ii_image_json boot initrd-a 0.0.8 25.12.2 2026-11-11T00:00:00Z)" '"kind": "boot"' \
+assert_contains "$(ii_image_json boot initrd-a 0.0.8 25.12.2 2026-11-11T00:00:00Z closed)" '"kind": "boot"' \
     "ac-2 the recorded identity names the kind"
 
 # --------------------------------------------------------------------------- #
@@ -117,5 +117,12 @@ assert_contains "$(cat "$root/scripts/ci/ab-fixtures.sh")" "mount_one_ro" \
     "ac-5 the ESP reader mounts read-only"
 assert_contains "$(cat "$root/scripts/ci/ab-fixtures.sh")" "unmount_part() { # <mountpoint>" \
     "ac-5 the ESP reader unmounts without disk.sh's helper"
+
+# The image records which WAN SSH default it carries, so the release preflight can refuse
+# an open image published under the default name without mounting a btrfs filesystem.
+assert_contains "$(ii_image_json boot initrd-a 0.0.8 25.12.2 2026-11-11T00:00:00Z closed)" \
+  '"net_wan_ssh": "closed"' "the image record states the WAN SSH default"
+assert_contains "$(ii_image_json boot initrd-a 0.0.8 25.12.2 2026-11-11T00:00:00Z open)" \
+  '"net_wan_ssh": "open"' "the convenience image records open"
 
 finish

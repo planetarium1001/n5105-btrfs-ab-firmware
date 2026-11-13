@@ -845,6 +845,18 @@ packages_alignment() {
     packages_state
 }
 
+# packages_apk_supported: apk exists *and* answers like apk-tools. The distinction
+# matters: `name=version` installs and `apk info` output are apk-tools shapes, and a
+# different `apk` on PATH would fail later with a message nobody can act on.
+packages_apk_supported() {
+    command -v apk >/dev/null 2>&1 || return 1
+    _apkver=$(apk --version 2>/dev/null | head -n 1)
+    case "${_apkver}" in
+        apk-tools*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 packages_log() {
     mkdir -p "${LOGDIR}" 2>/dev/null || :
     printf '%s packages-upgrade %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"${LOGDIR}/upgrade.log" 2>/dev/null || :
@@ -889,9 +901,9 @@ cmd_packages_upgrade() {
         say "  Next: ab-slot status | grep packages=    then re-run the upgrade that aligned it"
         exit 74
     fi
-    if ! command -v apk >/dev/null 2>&1; then
+    if ! packages_apk_supported; then
         say "ab-slot: refused, reason=apk-unsupported"
-        say "  apk is not available on this system."
+        say "  apk-tools is not available on this system."
         say "  Next: upgrade the slot with ab-upgrade, or manage packages by hand"
         exit 74
     fi
@@ -956,9 +968,9 @@ cmd_packages_revert() {
         say "  Next: ab-slot packages list"
         exit 74
     }
-    if ! command -v apk >/dev/null 2>&1; then
+    if ! packages_apk_supported; then
         say "ab-slot: refused, reason=apk-unsupported"
-        say "  apk is not available on this system."
+        say "  apk-tools is not available on this system."
         say "  Next: upgrade the slot with ab-upgrade, or manage packages by hand"
         exit 74
     fi

@@ -280,6 +280,7 @@ STATE
 sudo chmod 0644 "${p1}/ab/state.json"
 ii_image_json "${initramfs_kind}" "$(basename "${initramfs}")" \
     "${platform_version}" "${upstream_version}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "${CI_NET_WAN_SSH:-closed}" \
     | sudo tee "${p1}/ab/image.json" >/dev/null
 sudo chmod 0644 "${p1}/ab/image.json"
 sudo cp "${kernel}" "${p1}/vmlinuz-a"

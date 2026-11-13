@@ -230,9 +230,18 @@ jobs:
         run: |
           set -euo pipefail
           kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' "${CI_IMAGE_ROOT}/ab/image.json" 2>/dev/null || echo unreadable)"
-          echo "image kind: ${kind}"
+          wan_ssh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("net_wan_ssh","unrecorded"))' "${CI_IMAGE_ROOT}/ab/image.json" 2>/dev/null || echo unrecorded)"
+          echo "image kind: ${kind}, wan ssh: ${wan_ssh}"
           echo "kind=${kind}" >>"${GITHUB_OUTPUT}"
+          echo "wan_ssh=${wan_ssh}" >>"${GITHUB_OUTPUT}"
           [ "${kind}" = "boot" ] || { echo "refusing to publish an image whose kind is '${kind}'" >&2; exit 1; }
+          # The artifact called "install" is the image with no WAN exposure. The record on
+          # the ESP is the cheapest place to catch the one mistake that matters here: an
+          # open image published under the default name.
+          [ "${wan_ssh}" = "closed" ] || {
+            echo "refusing to publish ${CI_IMAGE_GZ} as the default image: it records net_wan_ssh=${wan_ssh}" >&2
+            exit 1
+          }
           sudo cp "${CI_IMAGE_ROOT}/initrd-a" "${RUNNER_TEMP}/ci/initrd-a"
           sudo chmod 0644 "${RUNNER_TEMP}/ci/initrd-a"
           gzip -dc "${RUNNER_TEMP}/ci/initrd-a" | cpio -i --to-stdout init >"${RUNNER_TEMP}/ci/init.head" 2>/dev/null || true
@@ -284,6 +293,28 @@ jobs:
           [ -n "${title}" ] || { echo "the release title rendered empty" >&2; exit 1; }
           printf 'release_title=%s\n' "${title}" >>"${GITHUB_OUTPUT}"
           echo "release title: ${title} (policy ${TAG_POLICY})"
+
+      # The convenience image is the one artifact a reader picks deliberately, so it gets
+      # the same "what is inside" check as the default one - read from its own ESP record
+      # rather than trusting the artifact's name.
+      - name: Verify the convenience image
+        if: env.CI_VARIANT_IMAGE != ''
+        run: |
+          set -euo pipefail
+          [ -f "${CI_VARIANT_IMAGE}" ] || { echo "no convenience image to verify" >&2; exit 1; }
+          loop="$(sudo losetup --find --show --partscan "${CI_VARIANT_IMAGE}")"
+          root="$(mktemp -d)"
+          sudo mount -o ro "${loop}p1" "${root}"
+          record="${root}/ab/image.json"
+          [ -f "${record}" ] || { sudo umount "${root}"; sudo losetup -d "${loop}"; echo "the convenience image carries no ab/image.json" >&2; exit 1; }
+          kind="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' "${record}")"
+          wan_ssh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("net_wan_ssh","unrecorded"))' "${record}")"
+          sudo umount "${root}"
+          sudo losetup -d "${loop}"
+          rmdir "${root}" 2>/dev/null || true
+          echo "convenience image: kind=${kind}, wan ssh: ${wan_ssh}"
+          [ "${kind}" = "boot" ] || { echo "the convenience image is not a boot image (kind=${kind})" >&2; exit 1; }
+          [ "${wan_ssh}" = "open" ] || { echo "the convenience image does not record an open WAN (net_wan_ssh=${wan_ssh})" >&2; exit 1; }
 
       - name: Render the release artifacts
         id: release
