@@ -1,8 +1,9 @@
 # CI pipeline
 
-Fifteen workflow files, four entry points, five stages and a fixed set of artifacts. Eleven
-of the fifteen files are reusable (`workflow_call` only) and can never start a run; the four
-that can are `ci.yml`, `ci-debug.yml`, `release.yml` and `upstream-watch.yml`. Every decision
+Sixteen workflow files, four entry points, five stages on every run plus a cross-version
+stage that only runs on tags, and a fixed set of artifacts. Twelve of the sixteen files are
+reusable (`workflow_call` only) and can never start a run; the four that can are `ci.yml`,
+`ci-debug.yml`, `release.yml` and `upstream-watch.yml`. Every decision
 lives in `scripts/ci/`, so a stage can be reproduced without GitHub. This page is the map:
 which workflow to run, what each stage proves, which file is the one to write to a disk, and
 how to run a stage on your own machine. The stage scripts are documented in
@@ -23,13 +24,14 @@ how to run a stage on your own machine. The stage scripts are documented in
 | `ci-s3.yml` | `workflow_call` only | no | `evidence-s3`, `logs-s3`, `image-install` | never by hand: `ci.yml` calls it |
 | `ci-s4.yml` | `workflow_call` only | no | `evidence-s4`, `logs-s4` | never by hand: `ci.yml` calls it |
 | `ci-s5.yml` | `workflow_call` only | no | `evidence-s5`, `logs-s5` | never by hand: `ci.yml` calls it |
+| `ci-upgrade-cross.yml` | `workflow_call` only | no | `evidence-cross` | never by hand: `release.yml` calls it on a tag |
 | `ci-report.yml` | `workflow_call` only | no | `logs-report`; the run page table and the verdict | never by hand: `ci.yml` calls it |
 | `ci-debug.yml` | `workflow_dispatch` only (`stage`, `boot_timeout`) | no | `debug-session`, `debug-<stage>-logs` | an interactive upterm session on a runner, when a stage needs eyes |
 | `release.yml` | push of a `v*` tag | yes, through `release-publish.yml` | the three release assets | releasing our own version: push a `v*` tag ([the tagged line](ci-release-lines.md)) |
 | `release-publish.yml` | `workflow_call` only (`tag`, `tag-policy`, `title`, `dry-run`, ...) | yes, as a draft with `dry-run: true` | `n5105-ab-<upstream>-install.img.gz`, `n5105-ab-<upstream>-upgrade.tar`, `SHA256SUMS` | never by hand: `release.yml` and `upstream-watch.yml` call it |
 | `upstream-watch.yml` | `schedule` (`0 20 * * *`) and `workflow_dispatch` (`version`, `dry-run`, `base`) | yes, with a bare-version tag | a release named `<upstream version>`, or one `[auto-release]` issue | the daily upstream release, or a rehearsal of it |
 
-- **Reusable and entry point.** Eleven files declare `workflow_call` and nothing else, so
+- **Reusable and entry point.** Twelve files declare `workflow_call` and nothing else, so
   they cannot start a run, and they declare no `concurrency` at all: a called workflow runs
   inside its caller's run, and a nested `concurrency` group silently drops the call (the job
   never appears in the graph). Two of the four entry points declare a group, `ci.yml` and

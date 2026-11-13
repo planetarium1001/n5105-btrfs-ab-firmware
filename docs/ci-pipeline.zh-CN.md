@@ -1,6 +1,7 @@
 # CI 流水线
 
-十五个 workflow 文件、四个入口、五个阶段和一套固定的产物。十五个里有十一个是 reusable
+十六个 workflow 文件、四个入口、每次运行五个阶段（另有一个只在 tag 上跑的跨版本阶段）和一套固定的产物。
+十六个里有十二个是 reusable
 （只有 `workflow_call`），自己永远起不来一次 run；能起 run 的四个是 `ci.yml`、`ci-debug.yml`、
 `release.yml` 和 `upstream-watch.yml`。所有判断都在 `scripts/ci/`，所以一个阶段不依赖 GitHub
 也能复现。这一页是地图：该跑哪个 workflow、每个阶段证明什么、哪个文件才是该写进磁盘的那一个、
@@ -22,13 +23,14 @@
 | `ci-s3.yml` | 仅 `workflow_call` | 否 | `evidence-s3`、`logs-s3`、`image-install` | 不要手跑：由 `ci.yml` 调用 |
 | `ci-s4.yml` | 仅 `workflow_call` | 否 | `evidence-s4`、`logs-s4` | 不要手跑：由 `ci.yml` 调用 |
 | `ci-s5.yml` | 仅 `workflow_call` | 否 | `evidence-s5`、`logs-s5` | 不要手跑：由 `ci.yml` 调用 |
+| `ci-upgrade-cross.yml` | 仅 `workflow_call` | 否 | `evidence-cross` | 不要手跑：`release.yml` 在 tag 上调用它 |
 | `ci-report.yml` | 仅 `workflow_call` | 否 | `logs-report`；run 页面的表和结论 | 不要手跑：由 `ci.yml` 调用 |
 | `ci-debug.yml` | 仅 `workflow_dispatch`（`stage`、`boot_timeout`） | 否 | `debug-session`、`debug-<stage>-logs` | 需要一双眼睛盯着某个阶段时，在 runner 上开 upterm 会话 |
 | `release.yml` | push `v*` tag | 是，经由 `release-publish.yml` | 三个发布资产 | 发我们自己的版本：推一个 `v*` tag（[代码线](ci-release-lines.zh-CN.md)） |
 | `release-publish.yml` | 仅 `workflow_call`（`tag`、`tag-policy`、`title`、`dry-run` 等） | 是；`dry-run: true` 只建成 draft | `n5105-ab-<upstream>-install.img.gz`、`n5105-ab-<upstream>-upgrade.tar`、`SHA256SUMS` | 不要手跑：`release.yml` 与 `upstream-watch.yml` 调用它 |
 | `upstream-watch.yml` | `schedule`（`0 20 * * *`）与 `workflow_dispatch`（`version`、`dry-run`、`base`） | 是，打裸版本号 tag | 一个以 `<upstream version>` 命名的 release，或者一个 `[auto-release]` Issue | 每日上游发布，或对它做彩排 |
 
-- **reusable 与入口。** 十一个文件只声明 `workflow_call`，因此起不了 run，也完全不声明
+- **reusable 与入口。** 十二个文件只声明 `workflow_call`，因此起不了 run，也完全不声明
   `concurrency`：被调用的 workflow 跑在调用者的 run 里，而嵌套的 `concurrency` 组会让这次调用
   静默消失（job 根本不出现在图里）。四个入口里只有两个声明了组：`ci.yml` 与 `ci-debug.yml`；
   `release.yml` 与 `upstream-watch.yml` 一个都不声明，因为它们都调用 `ci.yml`，会被上面这条规则

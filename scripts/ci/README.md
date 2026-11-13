@@ -7,8 +7,10 @@ reproduced locally with the same inputs the workflow passes.
 
 ## Stage map
 
-Five stages, in the order they run. The name is what the job is called on the run page;
-the last two columns say what the stage buys you and what you lose when it fails.
+Five stages run on every push, in the order below; a sixth (`cross`) only runs on a tag,
+because it needs a second upstream release to upgrade from. The name is what the job is
+called on the run page; the last two columns say what the stage buys you and what you
+lose when it fails.
 
 | Stage | Name | What it proves | What breaks when it fails |
 |---|---|---|---|
@@ -17,6 +19,7 @@ the last two columns say what the stage buys you and what you lose when it fails
 | S3 | boot | overlay root composed and switch_root reached, twice | no slot can boot |
 | S4 | slots | commit, abandon, rollback and the health check, four boots | A/B switching is unproven |
 | S5 | upgrade | payload upgrade, degraded boot and reclamation, four boots | updates are unproven |
+| cross | cross-upgrade | the previous release's image upgraded with this release's payload commits | the seam between two releases is unproven (tags only) |
 
 ## Workflows
 
