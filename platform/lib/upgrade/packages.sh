@@ -243,3 +243,116 @@ ab_packages_align() {
     printf '%s\n' "${_packages_log}" >&2
     return 0
 }
+
+# --------------------------------------------------------------------------- #
+# Package snapshots: the record a package-level rollback replays
+#
+# A snapshot is text on the writable layer, in <layer>/apk/snapshots/. It is not a
+# backup of files (ab-backup owns that): it records which versions this machine had, so
+# `ab-slot packages revert` can ask apk for them again. That is why it stays out of the
+# running root - nothing under upper/ changes because of it.
+#
+# The newest AB_APK_SNAPSHOT_KEEP are kept. Retention lives here rather than in the
+# caller so a machine that is upgraded often does not accumulate a directory listing per
+# week on a 128 MiB partition.
+# --------------------------------------------------------------------------- #
+
+AB_APK_SNAPSHOT_KEEP="${AB_APK_SNAPSHOT_KEEP:-3}"
+
+_packages_snapshot_dir() {
+    printf '%s/apk/snapshots' "$1"
+}
+
+# _packages_installed: one `name version` line per installed package.
+#
+# apk prints `name-version` with the version starting at the first dash followed by a
+# digit; names themselves carry dashes (kmod-fs-btrfs), so the split cannot be "last
+# dash" and cannot be "first dash" either.
+_packages_installed() {
+    apk info 2>/dev/null | sed -n 's/^\(.*\)-\([0-9][^-]*\(-r[0-9][^-]*\)\{0,1\}\)$/\1 \2/p'
+}
+
+# ab_packages_snapshot <layer> <upstream> <platform>: write one snapshot, print its path.
+ab_packages_snapshot() {
+    _layer=${1:?ab_packages_snapshot needs a layer}
+    _upstream=${2:?ab_packages_snapshot needs the upstream version}
+    _platform=${3:?ab_packages_snapshot needs the platform version}
+    _dir=$(_packages_snapshot_dir "${_layer}")
+    mkdir -p "${_dir}" || return 1
+
+    _id=$(date -u +%Y%m%dT%H%M%SZ)
+    _file="${_dir}/snapshot-${_id}.txt"
+    _n=1
+    while [ -e "${_file}" ]; do
+        _n=$((_n + 1))
+        _file="${_dir}/snapshot-${_id}-${_n}.txt"
+    done
+
+    {
+        printf 'AB-APK-SNAPSHOT 1\n'
+        printf 'created  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'upstream %s\n' "${_upstream}"
+        printf 'platform %s\n' "${_platform}"
+        if [ -f "${_layer}/upper/etc/apk/world" ]; then
+            while IFS= read -r _entry || [ -n "${_entry}" ]; do
+                [ -n "${_entry}" ] || continue
+                printf 'world    %s\n' "${_entry}"
+            done <"${_layer}/upper/etc/apk/world"
+        fi
+        _packages_installed | while IFS=' ' read -r _name _version; do
+            [ -n "${_name}" ] || continue
+            printf 'pkg      %s %s\n' "${_name}" "${_version}"
+        done
+        printf 'end\n'
+    } >"${_file}" || return 1
+
+    _packages_snapshot_reap "${_layer}"
+    printf '%s\n' "${_file}"
+}
+
+# _packages_snapshot_files <layer>: snapshot files, oldest first.
+_packages_snapshot_files() {
+    _dir=$(_packages_snapshot_dir "$1")
+    [ -d "${_dir}" ] || return 0
+    ls -1 "${_dir}" 2>/dev/null | grep '^snapshot-.*\.txt$' | sort
+}
+
+_packages_snapshot_reap() {
+    _dir=$(_packages_snapshot_dir "$1")
+    _files=$(_packages_snapshot_files "$1")
+    [ -n "${_files}" ] || return 0
+    _count=$(printf '%s\n' "${_files}" | wc -l | tr -d ' ')
+    [ "${_count}" -gt "${AB_APK_SNAPSHOT_KEEP}" ] || return 0
+    _drop=$((_count - AB_APK_SNAPSHOT_KEEP))
+    printf '%s\n' "${_files}" | head -n "${_drop}" | while IFS= read -r _name; do
+        rm -f "${_dir}/${_name}" || :
+    done
+}
+
+# _packages_snapshot_field <file> <key>: one header value, or empty.
+_packages_snapshot_field() {
+    sed -n "s/^$2  *//p" "$1" 2>/dev/null | head -n 1
+}
+
+# ab_packages_list <layer>: the snapshots on this layer, newest first.
+ab_packages_list() {
+    _layer=${1:?ab_packages_list needs a layer}
+    _files=$(_packages_snapshot_files "${_layer}")
+    if [ -z "${_files}" ]; then
+        printf 'snapshot: no snapshots\n'
+        printf '  Next: ab-slot packages snapshot\n'
+        return 0
+    fi
+    _count=$(printf '%s\n' "${_files}" | wc -l | tr -d ' ')
+    printf '%s snapshots kept (newest %s retained)\n' "${_count}" "${AB_APK_SNAPSHOT_KEEP}"
+    printf '%s\n' "${_files}" | sort -r | while IFS= read -r _name; do
+        _path="$(_packages_snapshot_dir "${_layer}")/${_name}"
+        _id=${_name#snapshot-}
+        _id=${_id%.txt}
+        _base=$(_packages_snapshot_field "${_path}" upstream)
+        _platform=$(_packages_snapshot_field "${_path}" platform)
+        _pkgs=$(grep -c '^pkg ' "${_path}" 2>/dev/null || true)
+        printf 'snapshot %s  base %s  platform %s  %s packages\n' \
+            "${_id}" "${_base}" "${_platform}" "${_pkgs:-0}"
+    done
+}
