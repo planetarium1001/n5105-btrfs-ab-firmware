@@ -86,6 +86,252 @@ fail() {
     exit 1
 }
 
+# --- update feed ---------------------------------------------------------------
+# The feed modes answer two questions and then hand the payload to the installer below:
+#   --feed-check   what is out there, and how risky is it to take it
+#   --feed         the same, then download it, verify it, and install it
+#
+# Two libraries do the work (platform/lib/ab-version.sh and ab-feed.sh); this section is
+# the prompt, because every word of it is a contract with the user (docs/update.md).
+# Nothing here writes a slot: `--feed` ends by setting payload_tar and falling through to
+# the same validation and installation path a local `ab-upgrade <payload>` takes.
+AB_VERSION_LIB="${AB_VERSION_LIB:-/lib/ab-version.sh}"
+if [ ! -f "${AB_VERSION_LIB}" ]; then
+    AB_VERSION_LIB="$(dirname "$0")/../../lib/ab-version.sh"
+fi
+AB_FEED_LIB="${AB_FEED_LIB:-/lib/ab-feed.sh}"
+if [ ! -f "${AB_FEED_LIB}" ]; then
+    AB_FEED_LIB="$(dirname "$0")/../../lib/ab-feed.sh"
+fi
+AB_PLATFORM_RELEASE="${AB_PLATFORM_RELEASE:-/etc/platform-release}"
+UPDATE_CONF="${UPDATE_CONF:-/etc/ab/update.conf}"
+
+feed_load_libs() {
+    [ -f "${AB_VERSION_LIB}" ] || fail "feed-library-missing"
+    [ -f "${AB_FEED_LIB}" ] || fail "feed-library-missing"
+    # shellcheck source=platform/lib/ab-version.sh
+    . "${AB_VERSION_LIB}"
+    # shellcheck source=platform/lib/ab-feed.sh
+    . "${AB_FEED_LIB}"
+}
+
+# platform_release_value <key>: PLATFORM_VERSION / UPSTREAM_VERSION, or empty.
+platform_release_value() {
+    [ -f "${AB_PLATFORM_RELEASE}" ] || return 1
+    sed -n "s/^$1=//p" "${AB_PLATFORM_RELEASE}" | head -n 1
+}
+
+# installed_kernel: the kernel package version this slot runs, from the apk database when
+# it is readable, from the release file otherwise. It is shown, never inferred.
+installed_kernel() {
+    _k=$(uname -r 2>/dev/null || :)
+    [ -n "${_k}" ] || _k="unknown"
+    printf '%s' "${_k}"
+}
+
+feed_entry_field() {
+    printf '%s\n' "$1" | cut -d'|' -f"$2"
+}
+
+# feed_confirm <level>: the tiers that only need a yes.
+feed_confirm() {
+    if [ "${yes_mode}" = "1" ]; then
+        return 0
+    fi
+    if [ ! -t 0 ]; then
+        refuse "feed-noninteractive"
+    fi
+    printf 'Proceed? [y/N] ' >&2
+    read -r _answer || _answer=""
+    case "${_answer}" in
+        y | Y | yes | YES) return 0 ;;
+        *) say "ab-upgrade: not confirmed, nothing was written"; exit 0 ;;
+    esac
+}
+
+# feed_show_update <level> <entry>: the three-line identity plus Change/Tested/Risk.
+feed_show_update() {
+    _level=$1 _entry=$2
+    _cand=$(feed_entry_field "${_entry}" 1)
+    _cand_base=$(feed_entry_field "${_entry}" 2)
+    _cand_kernel=$(feed_entry_field "${_entry}" 3)
+    _delta=$(ab_version_delta "${installed_base}" "${_cand_base}")
+    case "${_delta}" in
+        none) _change="NONE" ;;
+        patch\ *) _change="PATCH ×${_delta#patch }" ;;
+        minor\ *) _change="MINOR +${_delta#minor }" ;;
+        major\ *) _change="MAJOR +${_delta#major }" ;;
+        *) _change="UNKNOWN" ;;
+    esac
+    say "Update  base     ${installed_base_show} -> ${_cand_base}"
+    say "        kernel   ${installed_kernel_show} -> ${_cand_kernel}"
+    say "        platform ${installed} -> ${_cand}"
+    case "${_level}" in
+        Z1)
+            if [ "${_change}" = "NONE" ]; then
+                say "  Change  NONE       · platform layer only; base and kernel left as they are"
+                say "  Tested  YES        · same-base update covered in CI"
+                say "  Risk    LOW        · no kernel or package base change"
+            else
+                say "  Change  ${_change}   · the entries above are what this update brings"
+                say "  Tested  YES        · patch range covered in CI"
+                say "  Risk    LOW        · running system replaced; previous slot is the way back"
+            fi
+            ;;
+        Z2)
+            say "  Change  ${_change}   · the entries above are what this update brings"
+            say "  Tested  NO         · span outside the covered range"
+            say "  Risk    LOW        · patches rarely change behaviour, but uncovered"
+            say "Backup    ab-backup --help   (recommended)"
+            ;;
+        Y1)
+            say "  Change  ${_change}   · a new release line; the entries above are what this update brings"
+            say "  Tested  PARTLY     · neighbouring lines built together; one cross-line upgrade in CI"
+            say "  Risk    REAL       · installed packages may need rebuilding for the new base"
+            ;;
+        Y2)
+            say "  Change  ${_change}   · the entries above are what this update brings"
+            say "  Tested  NO         · lines this far apart are not built together"
+            say "  Risk    HIGHER     · compatibility is less certain than a neighbouring line"
+            say "Backup    ab-backup --help   (recommended)"
+            ;;
+        X1)
+            say "  Change  ${_change}   · a new major line; the entries above are what this update brings"
+            say "  Tested  NO         · nothing here crosses a major line"
+            say "  Risk    UNKNOWN    · the package base may not be compatible"
+            say "Backup    ab-backup --help   (recommended)"
+            ;;
+    esac
+}
+
+feed_main() {
+    feed_load_libs
+    ab_feed_config_load "${UPDATE_CONF}" || refuse "${AB_FEED_REASON}"
+    [ -n "${feed_url_override}" ] && AB_FEED_URL="${feed_url_override}"
+
+    installed=$(platform_release_value PLATFORM_VERSION) || installed=""
+    installed_base=$(platform_release_value UPSTREAM_VERSION) || installed_base=""
+    [ -n "${installed}" ] || refuse "platform-release-missing"
+    [ -n "${installed_base}" ] || refuse "platform-release-missing"
+    installed_base_show=${installed_base}
+    installed_kernel_show=$(installed_kernel)
+
+    work="${work:-/tmp/ab-upgrade.$$}"
+    mkdir -p "${work}" || fail "cannot-create-workdir"
+    index_file="${work}/index.txt"
+    ab_feed_fetch "${AB_FEED_URL%/}/index.txt" "${index_file}" || refuse "${AB_FEED_REASON}"
+    entries="${work}/entries.txt"
+    ab_feed_index_parse "${index_file}" "${AB_FEED_CHANNEL}" >"${entries}" || refuse "${AB_FEED_REASON}"
+
+    candidate=$(ab_feed_pick "${entries}" "${installed}")
+    if [ -z "${candidate}" ]; then
+        _newest=$(head -n 1 "${entries}" | cut -d'|' -f1)
+        if [ -n "${_newest}" ] && [ "$(ab_version_cmp "${_newest}" "${installed}")" -lt 0 ]; then
+            _newest_entry=$(head -n 1 "${entries}")
+            _newest_base=$(feed_entry_field "${_newest_entry}" 2)
+            _newest_kernel=$(feed_entry_field "${_newest_entry}" 3)
+            say "platform=${installed} platform_available=${_newest} base=${installed_base} base_available=${_newest_base} kernel=${installed_kernel_show} kernel_available=${_newest_kernel} span=$(ab_version_delta "${installed_base}" "${_newest_base}") level=downgrade status=downgrade"
+            if [ "${feed_check}" = "1" ]; then
+                exit 0
+            fi
+            if [ "${force_mode}" != "1" ]; then
+                say "${_newest} is older than ${installed}"
+                say "Install it anyway? ab-upgrade --feed --force"
+                refuse "feed-would-downgrade"
+            fi
+            candidate=${_newest}
+            entry=${_newest_entry}
+            cand_base=${_newest_base}
+            cand_kernel=${_newest_kernel}
+            level=downgrade
+        else
+            say "${installed} is the newest release (base ${installed_base})"
+            say "status=current"
+            exit 0
+        fi
+    fi
+    entry=$(awk -F'|' -v want="${candidate}" '$1 == want { print; exit }' "${entries}")
+    cand_base=$(feed_entry_field "${entry}" 2)
+    cand_kernel=$(feed_entry_field "${entry}" 3)
+    level=$(ab_version_level "${installed_base}" "${cand_base}")
+    # The level is a statement about the base, so an equal base reads as "current".
+    # Here the platform version still moves, which is the Z1 same-base case.
+    [ "${level}" = "current" ] && level="Z1"
+
+    if [ -n "${AB_FEED_PIN:-}" ]; then
+        _pin_cmp=$(ab_version_cmp "${candidate}" "${AB_FEED_PIN}")
+        if [ "${_pin_cmp}" -gt 0 ]; then
+            say "${candidate} is available, but UPDATE_PIN=${AB_FEED_PIN} holds this machine"
+            if [ "${feed_check}" = "1" ]; then
+                say "platform=${installed} platform_available=${candidate} base=${installed_base} base_available=${cand_base} kernel=${installed_kernel_show} kernel_available=${cand_kernel} span=$(ab_version_delta "${installed_base}" "${cand_base}") level=$(ab_version_level "${installed_base}" "${cand_base}") pin=${AB_FEED_PIN} status=pinned"
+                exit 0
+            fi
+            refuse "feed-pinned"
+        fi
+        _pin_cmp=$(ab_version_cmp "${AB_FEED_PIN}" "${installed}")
+        [ "${_pin_cmp}" -lt 0 ] && say "warning pin-below-installed (UPDATE_PIN=${AB_FEED_PIN}, running ${installed})"
+    fi
+
+    if [ "${route}" = "stepwise" ]; then
+        _step=$(ab_feed_stepwise "${entries}" "${installed}")
+        if [ -z "${_step}" ]; then
+            refuse "feed-no-such-release"
+        fi
+        if [ "${_step}" != "${candidate}" ]; then
+            say "stepwise: installing ${_step} first (${candidate} is the newest)"
+            candidate=${_step}
+            entry=$(awk -F'|' -v want="${candidate}" '$1 == want { print; exit }' "${entries}")
+            cand_base=$(feed_entry_field "${entry}" 2)
+            cand_kernel=$(feed_entry_field "${entry}" 3)
+            level=$(ab_version_level "${installed_base}" "${cand_base}")
+            [ "${level}" = "current" ] && level="Z1"
+        fi
+    fi
+
+    _span=$(ab_version_delta "${installed_base}" "${cand_base}")
+    say "platform=${installed} platform_available=${candidate} base=${installed_base} base_available=${cand_base} kernel=${installed_kernel_show} kernel_available=${cand_kernel} span=${_span} level=${level} status=update"
+
+    if [ "${feed_check}" = "1" ]; then
+        exit 10
+    fi
+
+    case "${level}" in
+        downgrade)
+            if [ "${force_mode}" != "1" ]; then
+                say "${candidate} is older than ${installed}"
+                say "Install it anyway? ab-upgrade --feed --force"
+                refuse "feed-would-downgrade"
+            fi
+            ;;
+    esac
+
+    feed_show_update "${level}" "${entry}"
+    case "${level}" in
+        X1)
+            if [ -z "${route}" ]; then
+                say "Route     --stepwise   install the next release, one at a time   [recommended]"
+                say "          --direct     install the newest release in one step"
+                refuse "feed-route-required"
+            fi
+            feed_confirm "${level}"
+            ;;
+        *)
+            feed_confirm "${level}"
+            ;;
+    esac
+
+    payload_url=$(feed_entry_field "${entry}" 6)
+    payload_size=$(feed_entry_field "${entry}" 4)
+    payload_path="${AB_FEED_DIR:-/tmp/ab-feed}/$(basename "${payload_url}")"
+    mkdir -p "$(dirname "${payload_path}")" || fail "cannot-create-feed-dir"
+    ab_feed_space_ok "$(dirname "${payload_path}")" "${payload_size}" || refuse "${AB_FEED_REASON}"
+    ab_feed_fetch "${payload_url}" "${payload_path}" || refuse "${AB_FEED_REASON}"
+    ab_feed_verify_member "${payload_path}" "${entry}" || refuse "${AB_FEED_REASON}"
+    say "ab-upgrade: ${candidate} verified, installing"
+    payload_tar="${payload_path}"
+}
+
+
 check_mode=0
 force_mode=0
 # update (default) | skip. "update" still degrades to "no bootloader in this payload"
@@ -99,9 +345,24 @@ saw_no_bootloader=0
 # the opposite of what they asked for. Anything after the payload is therefore parsed too,
 # and a second positional argument is a usage error instead of being ignored.
 payload_tar=""
+feed_check=0
+feed_mode=0
+route=""
+yes_mode=0
+feed_url_override=""
+pin_version=""
+unpin_mode=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --check) check_mode=1; shift ;;
+        --feed-check) feed_check=1; shift ;;
+        --feed) feed_mode=1; shift ;;
+        --direct) route="direct"; shift ;;
+        --stepwise) route="stepwise"; shift ;;
+        --yes) yes_mode=1; shift ;;
+        --feed-url) feed_url_override=${2:?--feed-url needs a value}; shift 2 ;;
+        --pin) pin_version=${2:?--pin needs a version}; shift 2 ;;
+        --unpin) unpin_mode=1; shift ;;
         --bootloader) bootloader_required=1; bootloader_mode="update"; shift ;;
         --no-bootloader) saw_no_bootloader=1; bootloader_mode="skip"; shift ;;
         --force) force_mode=1; shift ;;
@@ -126,6 +387,43 @@ while [ "$#" -gt 0 ]; do
     payload_tar="$1"
     shift
 done
+# pin_main: hold this machine on a release. It edits one line of the config file and
+# never talks to the network, so an operator can pin on a machine with no feed at all.
+pin_main() {
+    feed_load_libs
+    [ -f "${UPDATE_CONF}" ] || refuse "no-feed-config"
+    if [ "${pin_version}" != "" ]; then
+        ab_version_valid "${pin_version}" || refuse "pin-invalid-version"
+    fi
+    _tmp="${UPDATE_CONF}.new.$$"
+    awk -v keep="${pin_version}" -v unpin="${unpin_mode}" '
+        /^UPDATE_PIN=/ { next }
+        { print }
+        END {
+            if (unpin != "1" && keep != "") printf "UPDATE_PIN=%s\n", keep
+        }
+    ' "${UPDATE_CONF}" >"${_tmp}" || refuse "pin-write-failed"
+    mv "${_tmp}" "${UPDATE_CONF}" || refuse "pin-write-failed"
+    if [ "${unpin_mode}" = "1" ]; then
+        say "ab-upgrade: pin removed"
+    else
+        say "ab-upgrade: pinned to ${pin_version}"
+    fi
+}
+
+work="${work:-/tmp/ab-upgrade.$$}"
+cleanup() {
+    rm -rf "${work}"
+}
+if [ "${pin_version}" != "" ] || [ "${unpin_mode:-0}" = "1" ]; then
+    pin_main
+    exit 0
+fi
+if [ "${feed_check}" = "1" ] || [ "${feed_mode}" = "1" ]; then
+    trap cleanup EXIT INT TERM
+    feed_main
+    [ "${feed_mode}" = "1" ] || exit 0
+fi
 [ -n "${payload_tar}" ] || usage
 # Both flags mean opposite things and either order has to be rejected: "carry one, but do
 # not write it" is not a state this tool can be in.
