@@ -176,7 +176,6 @@ jobs:
       kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve.outputs.kernel_package }}
       platform_version: ${{ needs.versions.outputs.platform_version }}
-      net_wan_ssh: open
       variant: true
       boots: false
 

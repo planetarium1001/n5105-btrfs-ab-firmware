@@ -14,11 +14,6 @@ name: cross-version upgrade
 on:
   workflow_call:
     inputs:
-      new_version: {description: "This release's upstream version, the payload to install", required: true, type: string}
-      new_base_url: {description: "Release directory URL for the new version", required: false, type: string, default: ""}
-      new_kmods_dir: {description: "Kernel module directory name for the new version", required: false, type: string, default: ""}
-      new_kernel_package: {description: "Kernel package version of this release", required: false, type: string, default: ""}
-      platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
       gaps: {description: "Set by the selector; a non-zero value skips the stage", required: false, type: string, default: ""}
     outputs:
       verdict: {description: "cross-upgrade=ok|fail|skipped line", value: "${{ jobs.cross.outputs.verdict }}"}
@@ -27,10 +22,44 @@ permissions:
   contents: read
 
 jobs:
+  # What this release is built from: VERSION and the pin are the tagged line's own facts,
+  # so the caller does not have to pass them (and cannot pass them wrong).
+  resolve-new:
+    name: resolve this release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      platform_version: ${{ steps.read.outputs.platform_version }}
+      upstream_base_url: ${{ steps.resolve.outputs.upstream_base_url }}
+      kmods_dir: ${{ steps.resolve.outputs.kmods_dir }}
+      kernel_package: ${{ steps.resolve.outputs.kernel_package }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Read the release identity
+        id: read
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^UPSTREAM_VERSION=//p' .github/upstream-pin.conf | head -n 1)"
+          [ -n "${version}" ] || { echo "the pin file has no UPSTREAM_VERSION" >&2; exit 1; }
+          platform_version="$(tr -d ' \n' <VERSION)"
+          printf 'version=%s\n' "${version}" >>"${GITHUB_OUTPUT}"
+          printf 'platform_version=%s\n' "${platform_version}" >>"${GITHUB_OUTPUT}"
+          echo "this release: upstream ${version}, platform ${platform_version}"
+      - name: Resolve the upstream layout
+        id: resolve
+        env:
+          CI_UPSTREAM_VERSION: ${{ steps.read.outputs.version }}
+        run: bash scripts/ci/resolve.sh 2>&1 | tee -a "${RUNNER_TEMP}/resolve-new.log"
+
   # Which release to upgrade from, and which mirror layout it has: both belong to the
   # pipeline, not to the caller, so the caller only says what it is publishing.
   select-previous:
     name: select the previous release
+    needs: [resolve-new]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -45,7 +74,7 @@ jobs:
       - name: Select the previous formal release
         id: pick
         env:
-          CI_UPSTREAM_VERSION: ${{ inputs.new_version }}
+          CI_UPSTREAM_VERSION: ${{ needs.resolve-new.outputs.version }}
         run: |
           set -euo pipefail
           bash scripts/ci/matrix-select.sh --version "${CI_UPSTREAM_VERSION}" --count 1 2>&1 | tee -a "${RUNNER_TEMP}/matrix.log"
@@ -82,7 +111,7 @@ jobs:
 
   old-image:
     name: build the previous image
-    needs: [select-previous, resolve-old]
+    needs: [resolve-new, select-previous, resolve-old]
     if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
     uses: ./.github/workflows/ci-s3.yml
     with:
@@ -90,19 +119,21 @@ jobs:
       upstream_base_url: ${{ needs.resolve-old.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve-old.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve-old.outputs.kernel_package }}
-      platform_version: ${{ inputs.platform_version }}
+      # The platform layer is this project's, not the old release's: the image boots an
+      # older upstream base with the same platform version the tag publishes.
+      platform_version: ${{ needs.resolve-new.outputs.platform_version }}
 
   new-payload:
     name: assemble payload - this release
-    needs: [select-previous]
+    needs: [resolve-new, select-previous]
     if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
     uses: ./.github/workflows/ci-assemble.yml
     with:
-      upstream_version: ${{ inputs.new_version }}
-      upstream_base_url: ${{ inputs.new_base_url }}
-      kmods_dir: ${{ inputs.new_kmods_dir }}
-      kernel_package: ${{ inputs.new_kernel_package }}
-      platform_version: ${{ inputs.platform_version }}
+      upstream_version: ${{ needs.resolve-new.outputs.version }}
+      upstream_base_url: ${{ needs.resolve-new.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve-new.outputs.kmods_dir }}
+      kernel_package: ${{ needs.resolve-new.outputs.kernel_package }}
+      platform_version: ${{ needs.resolve-new.outputs.platform_version }}
 
   cross:
     name: cross-upgrade

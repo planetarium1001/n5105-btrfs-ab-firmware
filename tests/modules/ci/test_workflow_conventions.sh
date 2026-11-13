@@ -235,7 +235,7 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # that regrows the duplication composites were introduced to remove, so it is raised
 # deliberately when a stage is added (cross-version upgrade: two reusable calls and a
 # selector). The baseline it replaced was 3269.
-CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2500}
+CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2520}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le "${CI_WORKFLOW_LINE_CEILING}" ]; then

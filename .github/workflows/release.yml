@@ -38,12 +38,6 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/ci-upgrade-cross.yml
-    with:
-      new_version: ${{ needs.build.outputs.upstream_version }}
-      new_base_url: ""
-      new_kmods_dir: ""
-      new_kernel_package: ""
-      platform_version: ${{ needs.build.outputs.platform_version }}
 
   publish:
     name: publish
