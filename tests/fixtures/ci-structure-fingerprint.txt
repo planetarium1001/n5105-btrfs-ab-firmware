@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: feed-index.sh is a new stage, release.sh gains its keys
+# reason: ci: S3 takes a variant flag and uploads a second literal artifact name
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -594,6 +594,7 @@ sh-var scripts/ci/release.sh CI_PAYLOAD
 sh-var scripts/ci/release.sh CI_PLATFORM_VERSION
 sh-var scripts/ci/release.sh CI_RELEASE_DIR
 sh-var scripts/ci/release.sh CI_RELEASE_TAG
+sh-var scripts/ci/release.sh CI_RELEASE_VARIANT
 sh-var scripts/ci/release.sh CI_S5_LINE
 sh-var scripts/ci/release.sh CI_SCRIPT_DIR
 sh-var scripts/ci/release.sh CI_TMP_ROOT
@@ -1523,6 +1524,7 @@ yaml .github/workflows/ci-s3.yml jobs =
 yaml .github/workflows/ci-s3.yml jobs.s3.env = 
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_NET_WAN_SSH = ${{ inputs.net_wan_ssh }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
@@ -1540,7 +1542,9 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[0].with = {persist-credentials: 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].env = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].env.JUDGE_LINE = ${{ steps.boot1.outputs.judge_line }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].id = judge
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].id = boot2
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].uses = ./.github/actions/qemu-boot
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.append-extra = wf.boot=2
@@ -1549,6 +1553,7 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.image = ${{ steps.disk.
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.judge-prefix = S3-RESULT
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].id = boot3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].uses = ./.github/actions/qemu-boot
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.case = s3-grub
@@ -1561,6 +1566,7 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].env =
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].env.BOOT1_SLOT = ${{ steps.judge.outputs.slot }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].env.SERIAL = ${{ steps.boot3.outputs.serial_log }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].id = judge_grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].if = always()
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].uses = ./.github/actions/stage-evidence
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with = 
@@ -1568,20 +1574,27 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.diag-args = ${{ runner.
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.name = evidence-s3
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.paths = |
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.stage = s3
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = always() && !inputs.variant
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.if-no-files-found = warn
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.name = image-install
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.path = ${{ runner.temp }}/ci/disk/*.img.gz
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.retention-days = 7
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = always()
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = always() && inputs.variant
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.artifact = image-install
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.artifact-file = ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.result = ${{ job.status }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.stage = s3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.if-no-files-found = warn
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.name = image-install-wan-ssh
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.path = ${{ runner.temp }}/ci/disk/*.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.retention-days = 7
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.artifact = ${{ inputs.variant && 'image-install-wan-ssh' || 'image-install' }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.artifact-file = ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.stage = s3
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
@@ -1614,7 +1627,9 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[7].id = disk
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].env = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].id = verify0
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[8].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].id = boot1
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].uses = ./.github/actions/qemu-boot
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.append-extra = wf.boot=1
@@ -1625,11 +1640,14 @@ yaml .github/workflows/ci-s3.yml jobs.s3.steps.[9].with.judge-prefix = S3-RESULT
 yaml .github/workflows/ci-s3.yml jobs.s3.timeout-minutes = 45
 yaml .github/workflows/ci-s3.yml on = 
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.boots = {description:<text>, required: false, type: boolean, default: true}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.net_wan_ssh = {description:<text>, required: false, type: string, default: "closed"}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.variant = {description:<text>, required: false, type: boolean, default: false}
 yaml .github/workflows/ci-s3.yml on.workflow_call.outputs = 
 yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.grub_boot_line = {description:<text>, value: "${{ jobs.s3.outputs.grub_boot_line }}"}
 yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.judge_line = {description:<text>, value: "${{ jobs.s3.outputs.judge_line }}"}
@@ -2074,6 +2092,18 @@ yaml .github/workflows/ci.yml jobs.s2.with.kmods_dir = ${{ needs.resolve.outputs
 yaml .github/workflows/ci.yml jobs.s2.with.platform_version = ${{ needs.versions.outputs.platform_version }}
 yaml .github/workflows/ci.yml jobs.s2.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
 yaml .github/workflows/ci.yml jobs.s2.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.if = ${{ needs.fetch.result == 'success' && startsWith(github.ref, 'refs/tags/v') }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.needs = [resolve, fetch, versions]
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.uses = ./.github/workflows/ci-s3.yml
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with = 
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.boots = false
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.kernel_package = ${{ needs.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.kmods_dir = ${{ needs.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.net_wan_ssh = open
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.platform_version = ${{ needs.versions.outputs.platform_version }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.s3-wan-ssh.with.variant = true
 yaml .github/workflows/ci.yml jobs.s3.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's3') }}
 yaml .github/workflows/ci.yml jobs.s3.needs = [resolve, fetch, versions]
 yaml .github/workflows/ci.yml jobs.s3.uses = ./.github/workflows/ci-s3.yml

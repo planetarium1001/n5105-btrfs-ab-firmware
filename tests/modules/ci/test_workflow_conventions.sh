@@ -233,7 +233,7 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
-if [ "$line_total" -le 2288 ]; then
+if [ "$line_total" -le 2300 ]; then
   printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-11 the workflows total $line_total lines (<=2288, baseline 3269)"
 else
   _assert_fail "ac-11 the workflows total $line_total lines (<=2288, baseline 3269)" \

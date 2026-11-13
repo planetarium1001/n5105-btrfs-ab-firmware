@@ -133,6 +133,9 @@ allowed = {
     "payload-upgrade",
     "image-probe",
     "image-install",
+    # The convenience build: the same image with the WAN SSH exception on. Its name has
+    # to say what it adds, because it is the one artifact that differs from the default.
+    "image-install-wan-ssh",
     "debug-session",
 }
 problems = []

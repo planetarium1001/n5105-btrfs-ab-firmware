@@ -18,6 +18,9 @@ on:
       kmods_dir: {description: "Kernel module directory name on the mirror", required: true, type: string}
       kernel_package: {description: "Kernel package version from the upstream manifest", required: true, type: string}
       platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
+      net_wan_ssh: {description: "closed (default, no WAN exposure) or open (the convenience image)", required: false, type: string, default: "closed"}
+      variant: {description: "Build the convenience image (WAN SSH open) instead of the default one", required: false, type: boolean, default: false}
+      boots: {description: "Run the boot assertions (the convenience variant only needs the image)", required: false, type: boolean, default: true}
     outputs:
       judge_line: {description: "Frozen S3 judge line from the first boot", value: "${{ jobs.s3.outputs.judge_line }}"}
       judge_line_boot2: {description: "Frozen S3 judge line from the second boot", value: "${{ jobs.s3.outputs.judge_line_boot2 }}"}
@@ -40,6 +43,10 @@ jobs:
       CI_KMODS_DIR: ${{ inputs.kmods_dir }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
       CI_PLATFORM_VERSION: ${{ inputs.platform_version }}
+      # Which WAN SSH default this image carries. The cost of getting it wrong is a
+      # machine reachable on 22/tcp from the internet, so the choice is an explicit input
+      # and the shipped default is closed (docs/install.md).
+      CI_NET_WAN_SSH: ${{ inputs.net_wan_ssh }}
     outputs:
       judge_line: ${{ steps.boot1.outputs.judge_line }}
       judge_line_boot2: ${{ steps.boot2.outputs.judge_line }}
@@ -121,12 +128,14 @@ jobs:
 
       # The third boot hands the machine to the firmware, so prove the ESP is bootable first.
       - name: Preflight - the ESP boots through GRUB
+        if: ${{ inputs.boots }}
         id: verify0
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-preflight.log"
 
       - name: Boot 1 - compose the layered root
+        if: ${{ inputs.boots }}
         id: boot1
         uses: ./.github/actions/qemu-boot
         with:
@@ -137,6 +146,7 @@ jobs:
           append-extra: wf.boot=1
 
       - name: Read the slot and layer from the judge line
+        if: ${{ inputs.boots }}
         id: judge
         env:
           JUDGE_LINE: ${{ steps.boot1.outputs.judge_line }}
@@ -151,6 +161,7 @@ jobs:
 
       # Same image, nothing wiped: the first boot's probe must still be there.
       - name: Boot 2 - verify persistence
+        if: ${{ inputs.boots }}
         id: boot2
         uses: ./.github/actions/qemu-boot
         with:
@@ -162,6 +173,7 @@ jobs:
 
       # No probe initramfs here: the run stops on the first line our own boot hook prints.
       - name: Boot 3 - the ESP boots through GRUB
+        if: ${{ inputs.boots }}
         id: boot3
         uses: ./.github/actions/qemu-boot
         with:
@@ -174,6 +186,7 @@ jobs:
 
       # The evidence is the hook's own console output, not a probe-only artefact.
       - name: Assert the GRUB boot reached our boot hook
+        if: ${{ inputs.boots }}
         id: judge_grub
         env:
           SERIAL: ${{ steps.boot3.outputs.serial_log }}
@@ -221,12 +234,23 @@ jobs:
             ${{ runner.temp }}/ci/disk/grub.cfg
             ${{ runner.temp }}/ci/disk/ab-slot.cfg
 
-      # The image this stage booted: production initramfs, both slots, what a release ships.
+      # The image this stage built. Two literal names, one step each: an artifact name is
+      # what a person reads in the run page, so it is spelled out rather than assembled
+      # from an input (tests/modules/ci/test_display_names.sh holds that vocabulary).
       - name: Upload the install image
-        if: always()
+        if: always() && !inputs.variant
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-install
+          path: ${{ runner.temp }}/ci/disk/*.img.gz
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload the convenience image
+        if: always() && inputs.variant
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-install-wan-ssh
           path: ${{ runner.temp }}/ci/disk/*.img.gz
           if-no-files-found: warn
           retention-days: 7
@@ -238,5 +262,5 @@ jobs:
         with:
           stage: s3
           result: ${{ job.status }}
-          artifact: image-install
+          artifact: ${{ inputs.variant && 'image-install-wan-ssh' || 'image-install' }}
           artifact-file: ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
