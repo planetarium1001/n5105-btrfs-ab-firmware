@@ -94,13 +94,26 @@ assert_contains "$(ab_packages_list "$empty_layer" 2>&1)" "no snapshots" \
   "ac-7 a layer without snapshots says so instead of printing nothing"
 
 # --- ac-8: nothing outside the layer is touched ----------------------------
-state="$tmp/ab-state.json"
-printf '{"slot":"a","generation":1}\n' >"$state"
-before="$(shasum -a 256 "$state" | cut -d' ' -f1)"
+# The decoy file proves nothing; the CLI only ever writes ${AB_ESP}/ab/state.json and the
+# GRUB slot file, so those are what is compared, before and after every subcommand.
+real_state="$tmp/esp/ab/state.json"
+[ -f "$real_state" ] || mkdir -p "$tmp/esp/ab"
+printf '{"generation":1,"committed":"a"}\n' >"$real_state"
+slot_cfg="$tmp/esp/boot/grub/ab-slot.cfg"
+mkdir -p "$(dirname "$slot_cfg")"
+printf 'set default="0"\n' >"$slot_cfg"
+before_state="$(shasum -a 256 "$real_state" | cut -d' ' -f1)"
+before_cfg="$(shasum -a 256 "$slot_cfg" | cut -d' ' -f1)"
 ab_packages_snapshot "$layer" 25.12.2 0.0.8 >/dev/null 2>&1 || true
-after="$(shasum -a 256 "$state" | cut -d' ' -f1)"
-assert_eq "$after" "$before" "ac-8 a snapshot does not write the slot state"
+assert_eq "$(shasum -a 256 "$real_state" | cut -d' ' -f1)" "$before_state" \
+  "ac-8 a snapshot does not write the slot state"
+assert_eq "$(shasum -a 256 "$slot_cfg" | cut -d' ' -f1)" "$before_cfg" \
+  "ac-8 a snapshot does not touch the GRUB slot file"
 assert_eq "$(ls "$layer" | sort | tr '\n' ' ')" "apk upper " "ac-8 only the apk directory and the upper exist on the layer"
+
+# The ids the newest-first assertion relies on must exist, or the assertion would pass on
+# two empty strings.
+assert_eq "$(printf '%s\n' "$ids" | grep -c .)" "3" "ac-7 the ids were actually parsed"
 
 # --- ab-slot packages: the CLI ---------------------------------------------
 # A whole machine in a temporary directory: one committed slot, a writable layer with a
@@ -201,7 +214,7 @@ out="$(slot_run packages revert)"
 rc=$?
 assert_eq "$rc" "0" "ac-6 a partial revert is not a failure exit"
 assert_contains "$out" "ok      htop 3.3.0-r1" "ac-6 each successful package is named"
-assert_contains "$out" "failed  nano 8.2-r1 (not in the feed)" "ac-6 each failed package is named with its reason"
+assert_contains "$out" "failed  nano 8.2-r1" "ac-6 each failed package is named"
 assert_contains "$out" "revert result=partial" "ac-6 the summary says partial"
 
 # A revert where every package is still in the feed is a success, not a partial one.
@@ -209,5 +222,70 @@ out="$(APK_FAIL_NANO=0 slot_run packages revert)"
 rc=$?
 assert_eq "$rc" "0" "ac-4 a complete revert exits 0"
 assert_contains "$out" "revert result=ok" "ac-4 the summary says ok"
+
+# --- the failure paths the reviewer found unguarded ------------------------
+
+# An apk that cannot list what is installed must not produce a "0 packages" snapshot:
+# every later revert would then be a silent no-op.
+broken="$tmp/brokenbin"
+mkdir -p "$broken"
+cat >"$broken/apk" <<'APK'
+#!/bin/sh
+case "${1:-}" in
+  info) exit 1 ;;
+  *) exit 0 ;;
+esac
+APK
+chmod +x "$broken/apk"
+broken_layer="$tmp/overlay-broken"
+mkdir -p "$broken_layer/upper/etc/apk"
+printf 'kernel\n' >"$broken_layer/upper/etc/apk/world"
+out="$(PATH="$broken:$PATH" ab_packages_snapshot "$broken_layer" 25.12.2 0.0.8 2>&1)"
+rc=$?
+assert_eq "$rc" "1" "a snapshot refuses to record a package list it could not read"
+assert_eq "$(ls "$broken_layer/apk/snapshots" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "no snapshot file is left behind when apk info fails"
+assert_contains "$out" "apk-info" "the refusal names the apk failure"
+
+# A machine without apk cannot revert, and says which reason it is.
+noapk="$tmp/noapkbin"
+mkdir -p "$noapk"
+for tool in sh sed awk grep cut sort tail head wc cat ls rm mv mkdir date basename dirname printf; do
+  p=$(command -v "$tool" 2>/dev/null) && ln -sf "$p" "$noapk/$tool" 2>/dev/null
+done
+out="$(AB_ESP="$esp" AB_P4="$p4" AB_CMD="$cmdline" AB_PLATFORM_RELEASE="$release" \
+  AB_PACKAGES_LIB="$root/platform/lib/upgrade/packages.sh" AB_BTRFS=true \
+  PATH="$noapk" sh "$root/platform/usr/sbin/ab-slot" packages revert 2>&1)"
+rc=$?
+assert_eq "$rc" "74" "a revert without apk is refused"
+assert_contains "$out" "reason=apk-unsupported" "the refusal names the missing apk"
+
+# When every package fails, the verdict is a failure, not a partial success.
+cat >"$bin/apk" <<'APK'
+#!/bin/sh
+case "${1:-}" in
+  --version) printf 'apk-tools 3.0.0\n' ;;
+  info) printf 'htop-3.3.0-r1\nkernel-6.12.103-r1\nnano-8.2-r1\n' ;;
+  add) exit 1 ;;
+  *) exit 0 ;;
+esac
+APK
+chmod +x "$bin/apk"
+out="$(slot_run packages revert)"
+rc=$?
+assert_eq "$rc" "1" "a revert where nothing could be restored fails"
+assert_contains "$out" "revert result=fail" "the verdict says fail, not partial"
+
+# Files written in the same second are ordered by their -N suffix, which is the later
+# write; plain sort would put them first and reap the newer one.
+order_layer="$tmp/overlay-order"
+mkdir -p "$order_layer/upper/etc/apk" "$order_layer/apk/snapshots"
+printf 'kernel\n' >"$order_layer/upper/etc/apk/world"
+for name in snapshot-20260101T000000Z.txt snapshot-20260101T000000Z-2.txt snapshot-20260101T000001Z.txt; do
+  printf 'AB-APK-SNAPSHOT 1\nupstream 25.12.2\nplatform 0.0.8\nend\n' >"$order_layer/apk/snapshots/$name"
+done
+ordered="$(_packages_snapshot_files "$order_layer" | tr '\n' ' ')"
+assert_eq "$ordered" "snapshot-20260101T000000Z.txt snapshot-20260101T000000Z-2.txt snapshot-20260101T000001Z.txt " \
+  "the -N suffix of a same-second snapshot sorts after the bare name"
 
 finish

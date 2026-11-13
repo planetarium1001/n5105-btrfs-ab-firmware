@@ -325,8 +325,11 @@ A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions,
 world entry, every installed package with its version. The newest three are kept. `revert`
 replays them with `apk add <name>=<version>` and is only allowed on the same base: across
 a base those versions were built against a different kernel and libc, which is what
-`ab-slot rollback` is for. A package the feed no longer carries is reported and the rest
-still go through: `revert result=partial` names each one, and the exit status is 0.
+`ab-slot rollback` is for. A package that cannot be restored is reported and the rest
+still go through: `revert result=partial` names each one and exits 0. When nothing could be
+restored the verdict is `revert result=fail` and the exit status is 1; a snapshot with no
+packages is `revert result=empty`. A `failed` line names a package, not a cause: what apk
+said is in `upgrade.log`.
 
 The two ways back, side by side:
 

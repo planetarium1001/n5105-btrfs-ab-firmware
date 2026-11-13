@@ -299,7 +299,9 @@ ab-slot packages revert          # 按最新一份快照回放版本
 快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本。
 只保留最近三份。`revert` 用 `apk add <name>=<version>` 回放，且只允许在同一个 base 上：跨 base 时
 那些版本是按另一个内核和 libc 构建的，那件事归 `ab-slot rollback` 管。源里已经下架的包会被逐条报出来，
-其余照常回放：`revert result=partial` 会点名每一个，退出码仍是 0。
+其余照常回放：`revert result=partial` 会点名每一个，退出码仍是 0。一个都没回放成功时结论是
+`revert result=fail`，退出码 1；快照里没有包时是 `revert result=empty`。`failed` 行说的是哪个包，
+不是原因：apk 说了什么在 `upgrade.log` 里。
 
 两条回退路径并列：
 

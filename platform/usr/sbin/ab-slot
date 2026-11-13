@@ -918,7 +918,7 @@ cmd_packages_upgrade() {
     fi
     _elapsed=$(( $(date +%s) - _start ))
     if [ "${_rc}" -eq 0 ]; then
-        say "packages-upgrade result=ok upgraded=? elapsed=${_elapsed}s"
+        say "packages-upgrade result=ok elapsed=${_elapsed}s"
         packages_log "result=ok elapsed=${_elapsed}s"
         return 0
     fi
@@ -956,6 +956,12 @@ cmd_packages_revert() {
         say "  Next: ab-slot packages list"
         exit 74
     }
+    if ! command -v apk >/dev/null 2>&1; then
+        say "ab-slot: refused, reason=apk-unsupported"
+        say "  apk is not available on this system."
+        say "  Next: upgrade the slot with ab-upgrade, or manage packages by hand"
+        exit 74
+    fi
     _snap_base=$(_packages_snapshot_field "${_snap}" upstream)
     _run_base=$(packages_release_value UPSTREAM_VERSION) || _run_base=unknown
     if [ "${_snap_base}" != "${_run_base}" ]; then
@@ -973,17 +979,32 @@ cmd_packages_revert() {
         if apk add "${_name}=${_version}" >>"${LOGDIR}/upgrade.log" 2>&1; then
             say "  ok      ${_name} ${_version}"
         else
-            say "  failed  ${_name} ${_version} (not in the feed)"
+            # What apk said is in upgrade.log. Naming a cause here ("not in the feed")
+            # would be a guess: the same line appears for an unreachable source and for a
+            # version the source no longer carries.
+            say "  failed  ${_name} ${_version}"
             _failed=$((_failed + 1))
         fi
     done <<EOF
 $(sed -n 's/^pkg      //p' "${_snap}")
 EOF
+    if [ "${_changed}" -eq 0 ]; then
+        say "revert result=empty (no packages in the snapshot)"
+        packages_log "revert result=empty snapshot=${_to}"
+        exit 1
+    fi
     if [ "${_failed}" -eq 0 ]; then
         say "revert result=ok (${_changed} packages)"
+        packages_log "revert result=ok changed=${_changed} snapshot=${_to}"
         return 0
     fi
+    if [ "${_failed}" -eq "${_changed}" ]; then
+        say "revert result=fail (${_failed} of ${_changed} failed)"
+        packages_log "revert result=fail failed=${_failed} changed=${_changed} snapshot=${_to}"
+        exit 1
+    fi
     say "revert result=partial (${_failed} of ${_changed} failed)"
+    packages_log "revert result=partial failed=${_failed} changed=${_changed} snapshot=${_to}"
     return 0
 }
 

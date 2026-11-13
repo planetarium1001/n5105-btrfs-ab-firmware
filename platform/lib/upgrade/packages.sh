@@ -269,7 +269,8 @@ _packages_snapshot_dir() {
 # digit; names themselves carry dashes (kmod-fs-btrfs), so the split cannot be "last
 # dash" and cannot be "first dash" either.
 _packages_installed() {
-    apk info 2>/dev/null | sed -n 's/^\(.*\)-\([0-9][^-]*\(-r[0-9][^-]*\)\{0,1\}\)$/\1 \2/p'
+    _installed=$(apk info 2>/dev/null) || return 1
+    printf '%s\n' "${_installed}" | sed -n 's/^\(.*\)-\([0-9][^-]*\(-r[0-9][^-]*\)\{0,1\}\)$/\1 \2/p'
 }
 
 # ab_packages_snapshot <layer> <upstream> <platform>: write one snapshot, print its path.
@@ -288,6 +289,15 @@ ab_packages_snapshot() {
         _file="${_dir}/snapshot-${_id}-${_n}.txt"
     done
 
+    _packages=$(_packages_installed) || _packages_fail apk-info-failed || return 1
+    _pkgnum=$(printf '%s\n' "${_packages}" | grep -c . || true)
+    # A world with entries but no readable package list is not an empty machine, it is a
+    # broken apk. Writing "0 packages" here would make every later revert a silent no-op.
+    if [ "${_pkgnum}" -eq 0 ] && [ -s "${_layer}/upper/etc/apk/world" ]; then
+        _packages_fail apk-info-empty
+        return 1
+    fi
+
     {
         printf 'AB-APK-SNAPSHOT 1\n'
         printf 'created  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -299,7 +309,7 @@ ab_packages_snapshot() {
                 printf 'world    %s\n' "${_entry}"
             done <"${_layer}/upper/etc/apk/world"
         fi
-        _packages_installed | while IFS=' ' read -r _name _version; do
+        printf '%s\n' "${_packages}" | while IFS=' ' read -r _name _version; do
             [ -n "${_name}" ] || continue
             printf 'pkg      %s %s\n' "${_name}" "${_version}"
         done
@@ -314,7 +324,23 @@ ab_packages_snapshot() {
 _packages_snapshot_files() {
     _dir=$(_packages_snapshot_dir "$1")
     [ -d "${_dir}" ] || return 0
-    ls -1 "${_dir}" 2>/dev/null | grep '^snapshot-.*\.txt$' | sort
+    # The id has one-second resolution, so two snapshots in the same second are told apart
+    # by a -N suffix. That suffix is the *later* write, which plain `sort` would place
+    # first ("-" < "."); the sort key makes the number the last thing compared.
+    ls -1 "${_dir}" 2>/dev/null | grep '^snapshot-.*\.txt$' | awk '
+        {
+            name = $0
+            id = name
+            sub(/^snapshot-/, "", id)
+            sub(/\.txt$/, "", id)
+            n = 1
+            if (id ~ /-[0-9]+$/) {
+                n = id
+                sub(/^.*-/, "", n)
+                sub(/-[0-9]+$/, "", id)
+            }
+            printf "%s %06d %s\n", id, n, name
+        }' | sort | cut -d' ' -f3
 }
 
 _packages_snapshot_reap() {
