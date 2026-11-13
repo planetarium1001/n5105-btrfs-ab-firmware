@@ -73,6 +73,7 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `payload-build.sh` | s5 | build the test upgrade payload (rootfs, kernel, initramfs, platform layer, manifest) |
 | `release.sh` | release | name, compress, checksum and describe the published artifacts; also renders `index.txt` when the release knows its kernel package |
 | `feed-index.sh` | via `release.sh` | render the `AB-FEED 1` index a machine reads to find this release (`ab-upgrade --feed-check`) |
+| `cross-upgrade.sh` | cross | boot the previous release's image, install this release's payload, grade the commit from the facts it collected |
 | `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
 | `stage-summary.sh` | s1, s2, s3, s4, s5 | render one stage's verdict as a fixed five-column block for the run page |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |

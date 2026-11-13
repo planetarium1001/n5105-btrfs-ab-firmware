@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: release publishes the convenience image as a second asset
+# reason: ci: the cross-version stage selects and builds its own previous release
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -53,6 +53,11 @@ sh-flag scripts/ci/boot-member.sh --check
 sh-flag scripts/ci/boot-member.sh --group
 sh-flag scripts/ci/boot-member.sh --numeric-owner
 sh-flag scripts/ci/boot-member.sh --owner
+sh-flag scripts/ci/cross-upgrade.sh --help
+sh-flag scripts/ci/cross-upgrade.sh --image
+sh-flag scripts/ci/cross-upgrade.sh --inject
+sh-flag scripts/ci/cross-upgrade.sh --out
+sh-flag scripts/ci/cross-upgrade.sh --payload
 sh-flag scripts/ci/diagnostics.sh --version
 sh-flag scripts/ci/disk.sh --find
 sh-flag scripts/ci/disk.sh --group
@@ -202,6 +207,10 @@ sh-fn scripts/ci/boot-member.sh ci_boot_member_version
 sh-fn scripts/ci/boot-restart.sh boot_restart_count
 sh-fn scripts/ci/boot-restart.sh boot_restart_counts
 sh-fn scripts/ci/boot-restart.sh boot_restart_verdict
+sh-fn scripts/ci/cross-upgrade.sh field
+sh-fn scripts/ci/cross-upgrade.sh grade
+sh-fn scripts/ci/cross-upgrade.sh run_stage
+sh-fn scripts/ci/cross-upgrade.sh usage
 sh-fn scripts/ci/diagnostics.sh collect_context
 sh-fn scripts/ci/diagnostics.sh collect_disk_usage
 sh-fn scripts/ci/diagnostics.sh collect_logs
@@ -375,6 +384,14 @@ sh-var scripts/ci/boot-member.sh CI_REQUIRE_BOOTLOADER
 sh-var scripts/ci/boot-member.sh CI_SCRIPT_DIR
 sh-var scripts/ci/boot-member.sh CI_TMP_ROOT
 sh-var scripts/ci/boot-member.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/cross-upgrade.sh CI_CROSS_OUT
+sh-var scripts/ci/cross-upgrade.sh CI_JUDGE_PREFIX
+sh-var scripts/ci/cross-upgrade.sh CI_MIN_UPSTREAM_MAJOR
+sh-var scripts/ci/cross-upgrade.sh CI_PAYLOAD
+sh-var scripts/ci/cross-upgrade.sh CI_QEMU_DISK
+sh-var scripts/ci/cross-upgrade.sh CI_QEMU_MODE
+sh-var scripts/ci/cross-upgrade.sh CI_QEMU_SCRIPT
+sh-var scripts/ci/cross-upgrade.sh CI_SCRIPT_DIR
 sh-var scripts/ci/diagnostics.sh CI_DIAG_DIR
 sh-var scripts/ci/diagnostics.sh CI_LOG_DIR
 sh-var scripts/ci/diagnostics.sh CI_REPO_ROOT
@@ -1955,6 +1972,101 @@ yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.runtime_packages = {de
 yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.toolchain_line = {description:<text>, value: "${{ jobs.s5.outputs.toolchain_line }}"}
 yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.upgrade_line = {description:<text>, value: "${{ jobs.s5.outputs.upgrade_line }}"}
 yaml .github/workflows/ci-s5.yml permissions = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.needs = [select-previous, old-image, new-payload]
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.outputs = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.outputs.verdict = ${{ steps.grade.outputs.verdict }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.runs-on = ubuntu-latest
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[0].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].id = gap
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].if = ${{ needs.select-previous.outputs.has_previous != 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].with.name = image-install
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].with.path = ${{ runner.temp }}/ci/cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with.name = payload-upgrade
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with.path = ${{ runner.temp }}/ci/cross-payload
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].if = always()
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with.diag-args = ${{ runner.temp }}/ci/cross-out
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with.name = evidence-cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with.paths = |
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with.stage = cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].id = grade
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].if = always()
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.if-no-files-found = warn
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.name = evidence-cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.path = ${{ runner.temp }}/ci/cross-out
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.retention-days = 7
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.timeout-minutes = 35
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.needs = [select-previous]
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.uses = ./.github/workflows/ci-assemble.yml
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.with.kernel_package = ${{ inputs.new_kernel_package }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.with.kmods_dir = ${{ inputs.new_kmods_dir }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.with.platform_version = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.with.upstream_base_url = ${{ inputs.new_base_url }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.new-payload.with.upstream_version = ${{ inputs.new_version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.needs = [select-previous, resolve-old]
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.uses = ./.github/workflows/ci-s3.yml
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.with.kernel_package = ${{ needs.resolve-old.outputs.kernel_package }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.with.kmods_dir = ${{ needs.resolve-old.outputs.kmods_dir }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.with.platform_version = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.with.upstream_base_url = ${{ needs.resolve-old.outputs.upstream_base_url }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.old-image.with.upstream_version = ${{ needs.select-previous.outputs.version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.needs = [select-previous]
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.outputs = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.outputs.kernel_package = ${{ steps.resolve.outputs.kernel_package }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.outputs.kmods_dir = ${{ steps.resolve.outputs.kmods_dir }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.outputs.upstream_base_url = ${{ steps.resolve.outputs.upstream_base_url }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.runs-on = ubuntu-latest
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps.[0].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps.[1].env = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps.[1].env.CI_UPSTREAM_VERSION = ${{ needs.select-previous.outputs.version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.steps.[1].id = resolve
+yaml .github/workflows/ci-upgrade-cross.yml jobs.resolve-old.timeout-minutes = 10
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.outputs = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.outputs.gaps = ${{ steps.pick.outputs.gaps }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.outputs.has_previous = ${{ steps.pick.outputs.has_previous }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.outputs.version = ${{ steps.pick.outputs.version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.runs-on = ubuntu-latest
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps.[0].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps.[1].env = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps.[1].env.CI_UPSTREAM_VERSION = ${{ inputs.new_version }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.steps.[1].id = pick
+yaml .github/workflows/ci-upgrade-cross.yml jobs.select-previous.timeout-minutes = 10
+yaml .github/workflows/ci-upgrade-cross.yml on = 
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.gaps = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.new_base_url = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.new_kernel_package = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.new_kmods_dir = {description:<text>, required: false, type: string, default: ""}
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.new_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.outputs.verdict = {description:<text>, value: "${{ jobs.cross.outputs.verdict }}"}
+yaml .github/workflows/ci-upgrade-cross.yml permissions = 
 yaml .github/workflows/ci-verify.yml jobs = 
 yaml .github/workflows/ci-verify.yml jobs.verify.outputs = 
 yaml .github/workflows/ci-verify.yml jobs.verify.outputs.design_checks_problems = ${{ steps.verify.outputs.design_checks_problems }}
@@ -2280,6 +2392,15 @@ yaml .github/workflows/release-publish.yml permissions =
 yaml .github/workflows/release.yml jobs = 
 yaml .github/workflows/release.yml jobs.build.permissions = 
 yaml .github/workflows/release.yml jobs.build.uses = ./.github/workflows/ci.yml
+yaml .github/workflows/release.yml jobs.cross.needs = [build]
+yaml .github/workflows/release.yml jobs.cross.permissions = 
+yaml .github/workflows/release.yml jobs.cross.uses = ./.github/workflows/ci-upgrade-cross.yml
+yaml .github/workflows/release.yml jobs.cross.with = 
+yaml .github/workflows/release.yml jobs.cross.with.new_base_url = ""
+yaml .github/workflows/release.yml jobs.cross.with.new_kernel_package = ""
+yaml .github/workflows/release.yml jobs.cross.with.new_kmods_dir = ""
+yaml .github/workflows/release.yml jobs.cross.with.new_version = ${{ needs.build.outputs.upstream_version }}
+yaml .github/workflows/release.yml jobs.cross.with.platform_version = ${{ needs.build.outputs.platform_version }}
 yaml .github/workflows/release.yml jobs.publish.needs = build
 yaml .github/workflows/release.yml jobs.publish.permissions = 
 yaml .github/workflows/release.yml jobs.publish.uses = ./.github/workflows/release-publish.yml

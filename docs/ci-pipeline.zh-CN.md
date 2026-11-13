@@ -225,6 +225,22 @@ gh workflow run ci.yml --ref main -f stage=s3 -f upstream_version=25.12.2
 固定表头、标题模板与结构指纹都在那一页，并由 `tests/modules/ci/test_ci_text_conventions.sh`
 断言。这一页是地图。
 
+## 跨版本阶段
+
+有一个阶段回答的问题与上面五个不同：不是「这个发布自身是否健全」，而是「它能不能装在上一个
+发布之上」。它只在 tag 上跑。
+
+| 阶段 | job 名 | 证明什么 |
+| --- | --- | --- |
+| cross | `cross-upgrade` | 用上一个正式版构建的镜像，装本发布的 payload，能启动、能提交，且 ESP 上的内核与 initrd 正是 payload 里那两份 |
+
+它很贵——要再用另一个上游发布构建一份镜像——所以 PR 链永远不跑它。选择器（`matrix-select.sh`）
+给出上一个正式版；给不出时（`gaps>0`）阶段报 `cross-upgrade=skipped`，并且这次运行**不算绿**：
+跳过一项证明不等于通过一项证明。
+
+`scripts/ci/cross-upgrade.sh assert --out <dir>` 用五个文件复判一次运行——装机前、装机后与提交后的
+状态行、ESP 摘要、payload 摘要、串口日志——所以不必重跑 QEMU 也能复核结论。
+
 ## 逻辑在哪里
 
 `.github/workflows/` 只做编排：检出、跑一个脚本、上传、收集诊断。所有判断都在 `scripts/ci/`，

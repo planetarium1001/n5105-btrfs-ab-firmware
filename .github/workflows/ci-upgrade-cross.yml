@@ -1,0 +1,183 @@
+name: cross-version upgrade
+
+# The seam between two releases: an image built from the previous formal release, upgraded
+# with this release's payload, in one QEMU run.
+#
+# Every other stage proves something about a single release. This one is the only evidence
+# that an upgrade across versions actually commits - which is what the update prompt means
+# when it tells a user that a patch range is covered (docs/update.md).
+#
+# It is composed from stages that already exist: ci-s3.yml builds the old image, ci-assemble
+# builds the new payload, and scripts/ci/cross-upgrade.sh boots the one and installs the
+# other, then grades the facts. It runs on the tag line only, with a hard 35 minute ceiling.
+
+on:
+  workflow_call:
+    inputs:
+      new_version: {description: "This release's upstream version, the payload to install", required: true, type: string}
+      new_base_url: {description: "Release directory URL for the new version", required: false, type: string, default: ""}
+      new_kmods_dir: {description: "Kernel module directory name for the new version", required: false, type: string, default: ""}
+      new_kernel_package: {description: "Kernel package version of this release", required: false, type: string, default: ""}
+      platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
+      gaps: {description: "Set by the selector; a non-zero value skips the stage", required: false, type: string, default: ""}
+    outputs:
+      verdict: {description: "cross-upgrade=ok|fail|skipped line", value: "${{ jobs.cross.outputs.verdict }}"}
+
+permissions:
+  contents: read
+
+jobs:
+  # Which release to upgrade from, and which mirror layout it has: both belong to the
+  # pipeline, not to the caller, so the caller only says what it is publishing.
+  select-previous:
+    name: select the previous release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      gaps: ${{ steps.pick.outputs.gaps }}
+      has_previous: ${{ steps.pick.outputs.has_previous }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Select the previous formal release
+        id: pick
+        env:
+          CI_UPSTREAM_VERSION: ${{ inputs.new_version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/matrix-select.sh --version "${CI_UPSTREAM_VERSION}" --count 1 2>&1 | tee -a "${RUNNER_TEMP}/matrix.log"
+          env_file="${RUNNER_TEMP}/ci/matrix-select/matrix-select.env"
+          candidates="$(sed -n 's/^candidates=//p' "${env_file}" 2>/dev/null || true)"
+          gaps="$(sed -n 's/^gaps=//p' "${env_file}" 2>/dev/null || true)"
+          previous="$(printf '%s\n' "${candidates}" | awk '{print $2}')"
+          printf 'version=%s\n' "${previous}" >>"${GITHUB_OUTPUT}"
+          printf 'gaps=%s\n' "${gaps:-0}" >>"${GITHUB_OUTPUT}"
+          if [ -n "${previous}" ]; then printf 'has_previous=true\n' >>"${GITHUB_OUTPUT}"
+          else printf 'has_previous=false\n' >>"${GITHUB_OUTPUT}"; fi
+          printf 'previous=%s gaps=%s\n' "${previous:-none}" "${gaps:-0}"
+
+  resolve-old:
+    name: resolve the previous release
+    needs: [select-previous]
+    if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      upstream_base_url: ${{ steps.resolve.outputs.upstream_base_url }}
+      kmods_dir: ${{ steps.resolve.outputs.kmods_dir }}
+      kernel_package: ${{ steps.resolve.outputs.kernel_package }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Resolve the old release
+        id: resolve
+        env:
+          CI_UPSTREAM_VERSION: ${{ needs.select-previous.outputs.version }}
+        run: bash scripts/ci/resolve.sh 2>&1 | tee -a "${RUNNER_TEMP}/resolve.log"
+
+  old-image:
+    name: build the previous image
+    needs: [select-previous, resolve-old]
+    if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+    uses: ./.github/workflows/ci-s3.yml
+    with:
+      upstream_version: ${{ needs.select-previous.outputs.version }}
+      upstream_base_url: ${{ needs.resolve-old.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve-old.outputs.kmods_dir }}
+      kernel_package: ${{ needs.resolve-old.outputs.kernel_package }}
+      platform_version: ${{ inputs.platform_version }}
+
+  new-payload:
+    name: assemble payload - this release
+    needs: [select-previous]
+    if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+    uses: ./.github/workflows/ci-assemble.yml
+    with:
+      upstream_version: ${{ inputs.new_version }}
+      upstream_base_url: ${{ inputs.new_base_url }}
+      kmods_dir: ${{ inputs.new_kmods_dir }}
+      kernel_package: ${{ inputs.new_kernel_package }}
+      platform_version: ${{ inputs.platform_version }}
+
+  cross:
+    name: cross-upgrade
+    needs: [select-previous, old-image, new-payload]
+    runs-on: ubuntu-latest
+    # 35 minutes is the whole stage budget: the two builds above are the expensive part
+    # and they run in their own jobs, so this ceiling is the QEMU run plus its assertions.
+    timeout-minutes: 35
+    outputs:
+      verdict: ${{ steps.grade.outputs.verdict }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Guard - there is no previous release to upgrade from
+        id: gap
+        if: ${{ needs.select-previous.outputs.has_previous != 'true' }}
+        run: |
+          set -euo pipefail
+          printf 'cross-upgrade=skipped reason=no-previous-formal-release gaps=%s\n' "${{ needs.select-previous.outputs.gaps }}" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
+          printf 'verdict=cross-upgrade=skipped\n' >>"${GITHUB_OUTPUT}"
+
+      - name: Download the previous release's image
+        if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-install
+          path: ${{ runner.temp }}/ci/cross
+
+      - name: Download this release's payload
+        if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: payload-upgrade
+          path: ${{ runner.temp }}/ci/cross-payload
+
+      # The facts the verdict was graded from, kept whether the run passed or failed: a
+      # cross-version failure is investigated from these five files, not from the log.
+      - name: Collect the stage evidence
+        if: always()
+        uses: ./.github/actions/stage-evidence
+        with:
+          stage: cross
+          name: evidence-cross
+          diag-args: ${{ runner.temp }}/ci/cross-out
+          paths: |
+            ${{ runner.temp }}/ci/cross-out
+            ${{ runner.temp }}/ci/cross
+            ${{ runner.temp }}/ci/cross-payload
+
+      - name: Install this release over the previous one
+        id: grade
+        if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/ci/cross-out"
+          image="$(find "${RUNNER_TEMP}/ci/cross" -name '*.img.gz' -print -quit)"
+          payload="$(find "${RUNNER_TEMP}/ci/cross-payload" -name '*.tar' -print -quit)"
+          verdict="$(bash scripts/ci/cross-upgrade.sh run \
+            --image "${image}" --payload "${payload}" --out "${out}" | tee -a "${CI_LOG_DIR:-/tmp}/cross.log")"
+          printf '%s\n' "${verdict}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          printf 'verdict=%s\n' "${verdict}" >>"${GITHUB_OUTPUT}"
+          case "${verdict}" in
+            cross-upgrade=ok*) : ;;
+            *) echo "cross-version upgrade did not pass: ${verdict}" >&2; exit 1 ;;
+          esac
+
+      - name: Upload the cross-upgrade facts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: evidence-cross
+          path: ${{ runner.temp }}/ci/cross-out
+          if-no-files-found: warn
+          retention-days: 7

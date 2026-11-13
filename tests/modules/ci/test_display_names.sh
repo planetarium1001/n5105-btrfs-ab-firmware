@@ -136,6 +136,8 @@ allowed = {
     # The convenience build: the same image with the WAN SSH exception on. Its name has
     # to say what it adds, because it is the one artifact that differs from the default.
     "image-install-wan-ssh",
+    # The cross-version stage's facts: status lines, ESP and payload digests, serial log.
+    "evidence-cross",
     "debug-session",
 }
 problems = []

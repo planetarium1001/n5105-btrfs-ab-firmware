@@ -253,6 +253,24 @@ where the length caps, the fixed table headers, the title templates and the stru
 fingerprint live. That page is asserted by `tests/modules/ci/test_ci_text_conventions.sh`;
 this one is the map.
 
+## The cross-version stage
+
+One stage answers a different question from the five above: not "is this release sound"
+but "does this release install over the previous one". It runs on tags only.
+
+| Stage | Job label | What it proves |
+| --- | --- | --- |
+| cross | `cross-upgrade` | An image built from the previous formal release, upgraded with this release's payload, boots, commits, and carries exactly the kernel and initrd the payload shipped |
+
+It is expensive - it builds a second image from another upstream release - so the PR
+chain never runs it. The selector (`matrix-select.sh`) names the previous release; when it
+cannot (`gaps>0`), the stage reports `cross-upgrade=skipped` and the run is not green:
+a skipped proof is not a passed proof.
+
+`scripts/ci/cross-upgrade.sh assert --out <dir>` grades a run from five files - the status
+lines before, during and after, the ESP digests, the payload digests and the serial log -
+so the verdict can be re-checked without re-running QEMU.
+
 ## Where the logic lives
 
 `.github/workflows/` only orchestrates: check out, run one script, upload, collect
