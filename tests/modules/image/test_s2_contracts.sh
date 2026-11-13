@@ -408,8 +408,8 @@ assert_eq "$(printf '%s' "$seed_members" | tr ',' '\n' | grep -c '^etc/config/ne
   "ac-3 the platform tarball does not bake a static /etc/config/network"
 
 seed_conf="$(tar -xOf "$seed_tar" ./etc/net-defaults.conf 2>/dev/null)"
-assert_contains "${seed_conf}" "NET_WAN_SSH=open" \
-  "ac-4 the shipped constants keep the WAN SSH exception open"
+assert_contains "${seed_conf}" "NET_WAN_SSH=closed" \
+  "ac-4 the shipped constants keep the WAN SSH exception closed"
 assert_contains "${seed_conf}" "NET_LAN_ADDR=192.168.100.1" \
   "ac-4 the shipped constants use the project LAN address, not 192.168.1.1"
 assert_contains "${seed_conf}" "NET_WAN_DEV=eth0" \

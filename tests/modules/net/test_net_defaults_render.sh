@@ -30,7 +30,7 @@ assert_contains "$rendered" "NET_WAN_DEV=eth0" "ac-2 the WAN port default is eth
 assert_contains "$rendered" "NET_LAN_DEVS=auto" "ac-2 the LAN ports default to every other port"
 assert_contains "$rendered" "NET_LAN_ADDR=192.168.100.1" "ac-2 the LAN address default is 192.168.100.1"
 assert_contains "$rendered" "NET_LAN_PREFIX=24" "ac-2 the LAN prefix default is /24"
-assert_contains "$rendered" "NET_WAN_SSH=open" "ac-4 the WAN SSH exception is on by default"
+assert_contains "$rendered" "NET_WAN_SSH=closed" "ac-4 the WAN SSH exception is off by default"
 case "$rendered" in
     *@*@*) assert_eq "placeholder" "none" "ac-7 no placeholder survives the render" ;;
     *) assert_eq "none" "none" "ac-7 no placeholder survives the render" ;;
@@ -38,9 +38,9 @@ esac
 
 # The build-time overrides are how a second release line is produced.
 (
-    CI_NET_WAN_SSH=closed CI_NET_LAN_ADDR=10.10.10.1 ci_render_net_defaults "$tmp/alt"
+    CI_NET_WAN_SSH=open CI_NET_LAN_ADDR=10.10.10.1 ci_render_net_defaults "$tmp/alt"
 ) >/dev/null 2>&1
-assert_contains "$(cat "$tmp/alt/etc/net-defaults.conf" 2>/dev/null)" "NET_WAN_SSH=closed" "ac-7 the WAN exception can be switched off from the build"
+assert_contains "$(cat "$tmp/alt/etc/net-defaults.conf" 2>/dev/null)" "NET_WAN_SSH=open" "ac-7 the WAN exception can be switched on from the build"
 assert_contains "$(cat "$tmp/alt/etc/net-defaults.conf" 2>/dev/null)" "NET_LAN_ADDR=10.10.10.1" "ac-7 the LAN address can be overridden from the build"
 
 # A mode that is neither open nor closed is a typo, not a policy.

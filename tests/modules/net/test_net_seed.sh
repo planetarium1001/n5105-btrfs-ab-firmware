@@ -179,6 +179,10 @@ assert_contains "$uci_log" "firewall.@rule[-1].name=allow_ssh_wan" "ac-2 one WAN
 assert_contains "$uci_log" "firewall.@rule[-1].dest_port=22" "ac-4 the rule is tcp/22 only"
 assert_contains "$uci_log" "firewall.@rule[-1].src=wan" "ac-4 the rule is scoped to the WAN zone"
 assert_contains "$uci_log" "delete dropbear.@dropbear[0].Interface" "ac-4 dropbear is unbound"
+assert_contains "$out" "wan-ssh=open port=22 proto=tcp" "ac-4 open mode announces the exception on the console"
+assert_contains "$out" "wan-ssh-close: LuCI -> Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan" "ac-4 open mode names the GUI path out"
+assert_contains "$out" "wan-ssh-close: or uci delete firewall.allow_ssh_wan" "ac-4 open mode names the shell path out"
+assert_contains "$out" "wan-ssh-close: or reflash the closed image" "ac-4 open mode names the reflash path out"
 case "$uci_log" in
     *"input=ACCEPT"*) assert_eq "found" "absent" "ac-4 no zone input is opened" ;;
     *) assert_eq "absent" "absent" "ac-4 no zone input is opened" ;;
@@ -256,7 +260,10 @@ out="$(run_seed "$closed" 2>&1)"
 assert_contains "$out" "result=ok mode=router" "ac-4 closed still comes up in router mode"
 case "$(cat "$closed/stub.log")" in
     *"allow_ssh_wan"*) assert_eq "found" "absent" "ac-4 closed adds no WAN rule" ;;
-    *) assert_eq "absent" "absent" "ac-4 closed adds no WAN rule" ;;
+esac
+case "$out" in
+    *"wan-ssh-close:"*) assert_eq "found" "absent" "ac-4 closed prints no close reminder" ;;
+    *) assert_eq "absent" "absent" "ac-4 closed prints no close reminder" ;;
 esac
 case "$(cat "$closed/stub.log")" in
     *"dropbear"*) assert_eq "touched" "untouched" "ac-4 closed leaves dropbear alone" ;;

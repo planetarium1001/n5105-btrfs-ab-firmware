@@ -50,7 +50,7 @@ ND_WAN_DEV="${ND_WAN_DEV:-eth0}"
 ND_LAN_DEVS="${ND_LAN_DEVS:-auto}"
 ND_LAN_ADDR="${ND_LAN_ADDR:-192.168.100.1}"
 ND_LAN_PREFIX="${ND_LAN_PREFIX:-24}"
-ND_WAN_SSH="${ND_WAN_SSH:-open}"
+ND_WAN_SSH="${ND_WAN_SSH:-closed}"
 
 # nd_say: one line of progress. The init script forwards these to the ring log and to
 # syslog; a test just reads stdout.
@@ -290,7 +290,13 @@ nd_apply_defaults() {
         # the connection the rule above allows, so the binding has to go.
         nd_uci -q delete dropbear.@dropbear[0].Interface || :
         nd_uci commit dropbear
-        nd_say "wan-ssh=open"
+        nd_say "wan-ssh=open port=22 proto=tcp"
+        # The rule is one command away from being gone, and the operator is usually
+        # inside the machine over that very rule the first time they read this. Three
+        # lines, three ways out: the GUI, the shell, and a reflash.
+        nd_say "wan-ssh-close: LuCI -> Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan"
+        nd_say "wan-ssh-close: or uci delete firewall.allow_ssh_wan && uci commit firewall && /etc/init.d/firewall reload"
+        nd_say "wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-install.img.gz)"
     fi
 
     if ! nd_marker_write "${nd_mode}" "${nd_wan_dev:-none}" "${nd_lan_ports}"; then

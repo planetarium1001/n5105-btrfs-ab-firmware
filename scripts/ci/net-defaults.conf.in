@@ -1,13 +1,15 @@
 # Rendered into the platform layer at image and payload staging time by
 # scripts/ci/lib.sh:ci_render_net_defaults. Every value can be overridden from the
 # build environment (CI_NET_*), which is how a second release line with the WAN SSH
-# exception switched off is produced without touching the code.
+# exception switched on is produced without touching the code (docs/install.md).
 #
 # NET_WAN_DEV    the port that becomes the WAN (dhcp client)
 # NET_LAN_DEVS   "auto" = every other physical eth*, or an explicit list
 # NET_LAN_ADDR   the address of br-lan, deliberately not 192.168.1.1
 # NET_LAN_PREFIX prefix length of the LAN subnet
-# NET_WAN_SSH    open = one tcp/22 rule from the WAN, closed = no WAN exposure at all
+# NET_WAN_SSH    closed = no WAN exposure at all (the default, and what upstream
+#                ImmortalWrt does); open = one tcp/22 rule from the WAN, for a machine
+#                that cannot be reached from the LAN. The convenience build sets it.
 NET_WAN_DEV=@NET_WAN_DEV@
 NET_LAN_DEVS=@NET_LAN_DEVS@
 NET_LAN_ADDR=@NET_LAN_ADDR@

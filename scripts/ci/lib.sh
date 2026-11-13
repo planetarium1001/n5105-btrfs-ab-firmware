@@ -370,7 +370,7 @@ ci_render_net_defaults() {
         -e "s|@NET_LAN_DEVS@|${CI_NET_LAN_DEVS:-auto}|g" \
         -e "s|@NET_LAN_ADDR@|${CI_NET_LAN_ADDR:-192.168.100.1}|g" \
         -e "s|@NET_LAN_PREFIX@|${CI_NET_LAN_PREFIX:-24}|g" \
-        -e "s|@NET_WAN_SSH@|${CI_NET_WAN_SSH:-open}|g" \
+        -e "s|@NET_WAN_SSH@|${CI_NET_WAN_SSH:-closed}|g" \
         "${template}" >"${out}" || ci_die "could not render ${out}"
     if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${out}"; then
         ci_die "net-defaults still carries unreplaced placeholders: ${out}"
