@@ -93,4 +93,37 @@ printf 'no-previous-formal-release gaps=3\n' >"$skip/skip"
 assert_contains "$(grade "$skip")" "cross-upgrade=skipped" "ac-5 a missing previous release is skipped"
 assert_contains "$(grade "$skip")" "gaps=3" "ac-5 the skip names the gap"
 
+# --- the guest half's parser ------------------------------------------------
+# The stage reads three status lines out of one serial log. The parser is what decides
+# which line is "before", "pending" and "committed", so it is asserted directly.
+serial="$tmp/serial-full.log"
+cat >"$serial" <<'SERIAL'
+CROSS-STATUS-BEFORE
+slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=none next=a
+CROSS-INSTALL
+ab-upgrade: installed 25.12.4 into slot b
+CROSS-STATUS-PENDING
+slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=b next=b
+CROSS-STATUS-DONE
+CROSS-STATUS-COMMITTED
+slot=b upper=@overlay-25.12.4 generation=2 committed=b pending=none next=b packages=aligned
+CROSS-STATUS-DONE
+SERIAL
+parsed="$tmp/parsed"
+bash "$script" parse --serial "$serial" --out "$parsed" 2>&1 >/dev/null
+assert_file_exists "$parsed/status.before" "the parser finds the status before the install"
+assert_file_exists "$parsed/status.after" "the parser finds the pending status"
+assert_file_exists "$parsed/status.committed" "the parser finds the status after the commit"
+assert_contains "$(cat "$parsed/status.after" 2>/dev/null)" "pending=b" "the pending block is the one with a candidate"
+assert_contains "$(cat "$parsed/status.committed" 2>/dev/null)" "packages=aligned" "the committed block is the last boot's"
+
+# A machine without QEMU says so instead of pretending it ran.
+if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+  assert_eq "qemu" "qemu" "a host with QEMU skips this assertion"
+else
+  assert_contains "$(bash "$script" run --image /nonexistent.img --payload /nonexistent.tar --out "$tmp/run-out" 2>&1)" \
+    "cross-upgrade: skipped reason=qemu-not-available" \
+    "a host without QEMU reports the stage as skipped"
+fi
+
 finish

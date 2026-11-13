@@ -39,6 +39,7 @@ usage: cross-upgrade.sh <subcommand>
 
   run     --image <old.img> --payload <new.tar> --out <dir> [--inject unhealthy]
   assert  --out <dir>
+  parse   --serial <file> --out <dir>    split the status blocks out of a saved serial log
 USAGE
 }
 
@@ -130,27 +131,149 @@ grade() {
     printf 'cross-upgrade=ok slot=%s generation=%s\n' "${_pending}" "${_gen_done:-0}"
 }
 
-# run_stage <image> <payload> <out> [inject]: boot, install, collect.
+# --------------------------------------------------------------------------- #
+# The guest half. It runs in CI, on Linux, with sudo and loop devices; on a laptop it
+# says so instead of pretending.
+#
+# The hook is this stage's own, not ab-fixtures': the three status blocks it prints are
+# exactly the facts `assert` reads, and a shared fixture would have to grow options for
+# a stage that is not S5.
+# --------------------------------------------------------------------------- #
+
+cross_prepare() {
+    _image=$1 _payload=$2 _work=$3
+    _loop=$(sudo losetup --find --show --partscan "${_image}") || return 1
+    _p4="${_loop}p4"
+    _mnt="${_work}/p4"
+    sudo mkdir -p "${_mnt}"
+    sudo mount "${_p4}" "${_mnt}" || { sudo losetup -d "${_loop}"; return 1; }
+    _layer=$(ls -1 "${_mnt}" | grep '^@overlay-' | head -n 1)
+    if [ -z "${_layer}" ]; then
+        sudo umount "${_mnt}"; sudo losetup -d "${_loop}"
+        return 1
+    fi
+    _upper="${_mnt}/${_layer}/upper"
+    sudo mkdir -p "${_upper}/etc"
+    sudo cp "${_payload}" "${_upper}/payload.tar"
+    sudo tee "${_upper}/etc/rc.local" >/dev/null <<'RCLOCAL'
+#!/bin/sh
+# Cross-version fixture. The first boot prints the status, installs the payload and prints
+# it again with the candidate pending; the second boot prints it once more after the
+# commit. Every status line is announced, so the grader never has to guess which boot it
+# is looking at. The hook removes itself, so a third boot says nothing.
+rm -f /etc/rc.local
+if [ -f /payload.tar ]; then
+  echo "CROSS-STATUS-BEFORE" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  echo "CROSS-INSTALL" >/dev/console
+  ab-upgrade /payload.tar >/dev/console 2>&1
+  echo "ab-upgrade: exit=$?" >/dev/console
+  echo "CROSS-STATUS-PENDING" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  rm -f /payload.tar
+else
+  echo "CROSS-STATUS-COMMITTED" >/dev/console
+  ab-slot status >/dev/console 2>&1
+fi
+echo "CROSS-STATUS-DONE" >/dev/console
+exit 0
+RCLOCAL'
+#!/bin/sh
+# Cross-version fixture. Prints the status line three times - before the install, with
+# the candidate pending, and on the next boot after the commit - and removes itself so a
+# later boot does not repeat any of it.
+echo "CROSS-STATUS-BEFORE" >/dev/console
+ab-slot status >/dev/console 2>&1
+if [ -f /payload.tar ]; then
+  echo "CROSS-INSTALL" >/dev/console
+  ab-upgrade /payload.tar >/dev/console 2>&1
+  echo "ab-upgrade: exit=$?" >/dev/console
+  echo "CROSS-STATUS-PENDING" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  rm -f /payload.tar
+fi
+echo "CROSS-STATUS-DONE" >/dev/console
+rm -f /etc/rc.local
+exit 0
+RCLOCAL
+    sudo chmod 0755 "${_upper}/etc/rc.local"
+    sudo sync
+    sudo umount "${_mnt}"
+    sudo losetup -d "${_loop}"
+    CI_CROSS_LOOP=""
+}
+
+# extract_blocks <serial> <out>: split the three status blocks out of the serial log.
+extract_blocks() {
+    _serial=$1 _out=$2
+    awk -v out="${_out}" '
+        /CROSS-STATUS-BEFORE/ { w = "before"; next }
+        /CROSS-STATUS-PENDING/ { w = "after"; next }
+        /CROSS-STATUS-COMMITTED/ { w = "committed"; next }
+        /CROSS-INSTALL/ { w = ""; next }
+        w != "" && /^slot=/ { print > (out "/status." w); w = "" }
+    ' "${_serial}"
+}
+
+# esp_digests <image> <out>: the kernel and initrd actually written to the ESP.
+esp_digests() {
+    _image=$1 _out=$2
+    _loop=$(sudo losetup --find --show --partscan "${_image}") || return 1
+    _mnt=$(mktemp -d)
+    sudo mount "${_loop}p1" "${_mnt}" || { sudo losetup -d "${_loop}"; return 1; }
+    ( cd "${_mnt}" && sha256sum vmlinuz-* initrd-* 2>/dev/null ) >"${_out}"
+    sudo umount "${_mnt}"
+    sudo losetup -d "${_loop}"
+    rmdir "${_mnt}" 2>/dev/null || :
+}
+
+payload_digests() {
+    _payload=$1 _out=$2
+    _dir=$(mktemp -d)
+    tar -xf "${_payload}" -C "${_dir}" kernel.bin initramfs.cpio.gz 2>/dev/null || return 1
+    ( cd "${_dir}" && sha256sum kernel.bin initramfs.cpio.gz ) >"${_out}"
+    rm -rf "${_dir}"
+}
+
 run_stage() {
     _image=${1:?--image is required}
     _payload=${2:?--payload is required}
     _out=${3:?--out is required}
     _inject=${4:-}
     mkdir -p "${_out}"
-    [ -n "${_inject}" ] && [ "${_inject}" != "none" ] && printf '%s\n' "${_inject}" >"${_out}/inject"
 
-    # The image is the old release; the payload is this one. qemu-smoke owns the QEMU
-    # command line, so this stage inherits every timeout and restart rule the other
-    # stages already depend on.
-    CI_QEMU_MODE="uefi-disk" \
-        CI_QEMU_DISK="${_image}" \
-        CI_PAYLOAD="${_payload}" \
-        CI_CROSS_OUT="${_out}" \
-        CI_JUDGE_PREFIX="" \
-        CI_QEMU_SCRIPT="${CI_SCRIPT_DIR}/cross-upgrade-guest.sh" \
-        ci_stage_init cross-upgrade
-    printf 'cross-upgrade: run is not wired to QEMU in this environment\n' >&2
-    printf 'cross-upgrade=skipped reason=qemu-not-available\n'
+    if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+        printf 'cross-upgrade: skipped reason=qemu-not-available\n'
+        return 0
+    fi
+    command -v losetup >/dev/null 2>&1 || {
+        printf 'cross-upgrade: skipped reason=loop-devices-not-available\n'
+        return 0
+    }
+
+    _work="${CI_TMP_ROOT:-/tmp}/cross-upgrade"
+    mkdir -p "${_work}"
+    cp "${_image}" "${_work}/old.img"
+    cross_prepare "${_work}/old.img" "${_payload}" "${_work}" || {
+        printf 'cross-upgrade=fail reason=cannot-prepare-the-old-image\n'
+        return 0
+    }
+
+    # Boot 1 installs and prints the pending status; boot 2 commits and prints the third.
+    CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
+        CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
+        CI_QEMU_CASE="cross-boot1" \
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/serial.log" 2>&1 || true
+    CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
+        CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
+        CI_QEMU_CASE="cross-boot2" \
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >>"${_out}/serial.log" 2>&1 || true
+
+    extract_blocks "${_out}/serial.log" "${_out}"
+    esp_digests "${_work}/old.img" "${_out}/esp.sha256" || :
+    payload_digests "${_payload}" "${_out}/payload.sha256" || :
+    [ -n "${_inject}" ] && [ "${_inject}" != "none" ] && printf '%s\n' "${_inject}" >"${_out}/inject"
+    grade "${_out}"
 }
 
 cmd=${1:-}
@@ -179,6 +302,19 @@ case "${cmd}" in
         done
         [ -n "${out}" ] || ci_die "--out is required"
         grade "${out}"
+        ;;
+    parse)
+        serial="" out=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --serial) serial=${2:?--serial needs a value}; shift 2 ;;
+                --out) out=${2:?--out needs a value}; shift 2 ;;
+                *) ci_die "unknown argument $1" ;;
+            esac
+        done
+        [ -n "${serial}" ] && [ -n "${out}" ] || ci_die "--serial and --out are required"
+        mkdir -p "${out}"
+        extract_blocks "${serial}" "${out}"
         ;;
     -h | --help | help) usage ;;
     *) usage; exit 2 ;;

@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: the cross-version stage selects and builds its own previous release
+# reason: ci: cross-upgrade runs the guest and parses its status blocks
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -53,11 +53,15 @@ sh-flag scripts/ci/boot-member.sh --check
 sh-flag scripts/ci/boot-member.sh --group
 sh-flag scripts/ci/boot-member.sh --numeric-owner
 sh-flag scripts/ci/boot-member.sh --owner
+sh-flag scripts/ci/cross-upgrade.sh --find
 sh-flag scripts/ci/cross-upgrade.sh --help
 sh-flag scripts/ci/cross-upgrade.sh --image
 sh-flag scripts/ci/cross-upgrade.sh --inject
 sh-flag scripts/ci/cross-upgrade.sh --out
+sh-flag scripts/ci/cross-upgrade.sh --partscan
 sh-flag scripts/ci/cross-upgrade.sh --payload
+sh-flag scripts/ci/cross-upgrade.sh --serial
+sh-flag scripts/ci/cross-upgrade.sh --show
 sh-flag scripts/ci/diagnostics.sh --version
 sh-flag scripts/ci/disk.sh --find
 sh-flag scripts/ci/disk.sh --group
@@ -207,8 +211,12 @@ sh-fn scripts/ci/boot-member.sh ci_boot_member_version
 sh-fn scripts/ci/boot-restart.sh boot_restart_count
 sh-fn scripts/ci/boot-restart.sh boot_restart_counts
 sh-fn scripts/ci/boot-restart.sh boot_restart_verdict
+sh-fn scripts/ci/cross-upgrade.sh cross_prepare
+sh-fn scripts/ci/cross-upgrade.sh esp_digests
+sh-fn scripts/ci/cross-upgrade.sh extract_blocks
 sh-fn scripts/ci/cross-upgrade.sh field
 sh-fn scripts/ci/cross-upgrade.sh grade
+sh-fn scripts/ci/cross-upgrade.sh payload_digests
 sh-fn scripts/ci/cross-upgrade.sh run_stage
 sh-fn scripts/ci/cross-upgrade.sh usage
 sh-fn scripts/ci/diagnostics.sh collect_context
@@ -384,14 +392,16 @@ sh-var scripts/ci/boot-member.sh CI_REQUIRE_BOOTLOADER
 sh-var scripts/ci/boot-member.sh CI_SCRIPT_DIR
 sh-var scripts/ci/boot-member.sh CI_TMP_ROOT
 sh-var scripts/ci/boot-member.sh CI_UPSTREAM_VERSION
-sh-var scripts/ci/cross-upgrade.sh CI_CROSS_OUT
+sh-var scripts/ci/cross-upgrade.sh CI_CROSS_LOOP
 sh-var scripts/ci/cross-upgrade.sh CI_JUDGE_PREFIX
 sh-var scripts/ci/cross-upgrade.sh CI_MIN_UPSTREAM_MAJOR
-sh-var scripts/ci/cross-upgrade.sh CI_PAYLOAD
+sh-var scripts/ci/cross-upgrade.sh CI_QEMU_CASE
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_DISK
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_MODE
-sh-var scripts/ci/cross-upgrade.sh CI_QEMU_SCRIPT
+sh-var scripts/ci/cross-upgrade.sh CI_QEMU_STOP_PATTERN
+sh-var scripts/ci/cross-upgrade.sh CI_QEMU_TIMEOUT
 sh-var scripts/ci/cross-upgrade.sh CI_SCRIPT_DIR
+sh-var scripts/ci/cross-upgrade.sh CI_TMP_ROOT
 sh-var scripts/ci/diagnostics.sh CI_DIAG_DIR
 sh-var scripts/ci/diagnostics.sh CI_LOG_DIR
 sh-var scripts/ci/diagnostics.sh CI_REPO_ROOT
