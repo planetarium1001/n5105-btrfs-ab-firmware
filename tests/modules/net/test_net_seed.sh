@@ -330,5 +330,23 @@ assert_contains "$out" "result=fail reason=config-generate" "the failing stage i
 # A second run over a seeded system does nothing, which is the whole idempotence story.
 out="$(run_seed "$fresh" 2>&1)"
 assert_contains "$out" "result=skip reason=seeded" "a second boot is a no-op"
+# --- ac-4: the library's own fallback is closed ----------------------------
+# A platform layer whose rendered file is missing the knob still has to come up closed:
+# the fallback in net-defaults.sh is the last line of defence, and the render test always
+# writes the key, so nothing else covers it.
+fallback="$tmp/fallback"
+mksystem "$fallback" eth0 eth1 eth2 eth3
+python3 - "$fallback/etc/net-defaults.conf" <<'PYFB'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+p.write_text("\n".join(l for l in p.read_text().splitlines() if not l.startswith("NET_WAN_SSH=")) + "\n")
+PYFB
+out="$(run_seed "$fallback" 2>&1)"
+assert_contains "$out" "result=ok mode=router" "ac-4 a machine without the knob still seeds"
+case "$(cat "$fallback/stub.log")" in
+    *"allow_ssh_wan"*) assert_eq "found" "absent" "ac-4 the fallback opens no WAN rule" ;;
+    *) assert_eq "absent" "absent" "ac-4 the fallback opens no WAN rule" ;;
+esac
+
 
 finish

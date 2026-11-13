@@ -140,6 +140,13 @@ if [ -n "${variant_in}" ]; then
         _variant_sha="$(gzip -dc "${variant_gz}" | sha256sum | cut -d' ' -f1)"
         [ "${_variant_sha}" = "$(ci_sha256 "${variant_in}")" ] ||
             ci_die "the compressed variant decompresses to ${_variant_sha}"
+        # Two names for the same bytes would be a lie told by the file list: the variant
+        # exists because it differs, so identical digests mean the wrong image was passed.
+        # Compare the images themselves, not the gzip streams: two compressions of the
+        # same bytes differ in their header, and the question here is whether the two
+        # *systems* are the same.
+        [ "${_variant_sha}" != "${image_sha256}" ] ||
+            ci_die "the variant image is byte-identical to the default one"
         ci_log "variant artefact: ${variant_gz} ($(ci_file_size "${variant_gz}") bytes)"
     fi
 fi

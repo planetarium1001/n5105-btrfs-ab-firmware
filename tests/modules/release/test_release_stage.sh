@@ -86,6 +86,14 @@ assert_contains "$notes" "## Two images" "ac-4 the notes explain the two images"
 assert_contains "$notes" "n5105-ab-25.12.2-install-wan-ssh.img.gz" "ac-4 the notes list the convenience image"
 assert_contains "$out" "variant artefact" "ac-4 the variant is reported"
 
+# Two names, one image: publishing the same bytes twice is refused.
+same_variant="$tmp/same-variant.img"
+cp "$image" "$same_variant"
+out="$(run_release CI_IMAGE="$image" CI_VARIANT_IMAGE="$same_variant" CI_PLATFORM_VERSION=0.0.8 \
+  CI_UPSTREAM_VERSION=25.12.2)"
+assert_eq "$?" "1" "ac-4 the variant must differ from the default image"
+assert_contains "$out" "byte-identical" "ac-4 the refusal says why"
+
 # --- ac-3 refusals ---------------------------------------------------------
 out="$(run_release CI_IMAGE="$tmp/missing.img" CI_PLATFORM_VERSION=0.0.5 \
   CI_UPSTREAM_VERSION=25.12.2)"
