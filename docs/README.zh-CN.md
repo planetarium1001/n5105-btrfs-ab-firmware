@@ -15,6 +15,7 @@
 | [lifecycle.zh-CN.md](lifecycle.zh-CN.md) | 代号模型、状态文件、更新事务、健康检查、回收、日志、命令 |
 | [conflicts-payload.zh-CN.md](conflicts-payload.zh-CN.md) | 三方比对、处置、uci 边界、载荷契约、引导器成员、校验、构建输入 |
 | [install.zh-CN.md](install.zh-CN.md) | 写镜像、首次开机、控制台、升级一台运行中的机器（`ab-upgrade` 的选项与退出码、救援被写坏的引导器）、怎么读 `ab-slot status`、排障 |
+| [update.zh-CN.md](update.zh-CN.md) | 从发布 feed 更新一台机器：配置文件、三个版本号（`base`、`kernel`、`platform`）、`ab-upgrade --feed-check` 与 `--feed`、五个风险级别与各自的确认强度、`UPDATE_PIN`、完整的 `reason=` 表，以及发布方怎么自建 feed |
 | [network.zh-CN.md](network.zh-CN.md) | 首启网络生成、出厂默认值（WAN 口、桥端口、LAN 网段）、怎么改、WAN SSH 例外 |
 | [debug-ssh.zh-CN.md](debug-ssh.zh-CN.md) | 人工交互调试入口：触发、连接、已备好的产物、会话时长、安全、为什么它不是门禁 |
 | [backup.zh-CN.md](backup.zh-CN.md) | 三种产物各自能恢复到多大的盘、整盘镜像为什么在更小的盘上写入即失败、恢复决策树（路径 A–D），以及 `ab-backup` / `ab-restore` 往包里装什么 |

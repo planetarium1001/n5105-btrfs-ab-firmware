@@ -97,16 +97,28 @@ ab_feed_fetch() {
     if [ -n "${UPDATE_FETCH_CMD:-}" ]; then
         # Tests and unusual transports replace the fetcher wholesale. The command gets
         # the url and the output path as $1 and $2.
-        sh -c "${UPDATE_FETCH_CMD}" ab-fetch "${_url}" "${_out}" || _ab_feed_fail feed-unreachable
-        return $?
+        if sh -c "${UPDATE_FETCH_CMD}" ab-fetch "${_url}" "${_out}"; then
+            return 0
+        fi
+        rm -f "${_out}"
+        _ab_feed_fail feed-unreachable
+        return 1
     fi
     if command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "${_out}" "${_url}" 2>/dev/null || _ab_feed_fail feed-unreachable
-        return $?
+        if uclient-fetch -q -O "${_out}" "${_url}" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "${_out}"
+        _ab_feed_fail feed-unreachable
+        return 1
     fi
     if command -v wget >/dev/null 2>&1; then
-        wget -q -O "${_out}" "${_url}" 2>/dev/null || _ab_feed_fail feed-unreachable
-        return $?
+        if wget -q -O "${_out}" "${_url}" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "${_out}"
+        _ab_feed_fail feed-unreachable
+        return 1
     fi
     _ab_feed_fail feed-no-fetcher
 }

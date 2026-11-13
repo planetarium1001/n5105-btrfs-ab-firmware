@@ -269,6 +269,10 @@ dropbear` 会告诉你守护进程到底有没有在监听。
 
 升级写入非活动槽并把它标记为待验证，全程不碰运行中的槽，所以出问题机器照样能用。
 
+能访问发布 feed 的机器自己去取 payload：`ab-upgrade --feed-check` 报告上游有什么，
+`ab-upgrade --feed` 下载、校验，然后走这条完全相同的路径安装。配置文件、三个版本号、
+风险级别以及各自的确认强度见 [update.zh-CN.md](update.zh-CN.md)。
+
 ```sh
 ab-upgrade --check /root/n5105-ab-<upstream>-upgrade.tar
 ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar

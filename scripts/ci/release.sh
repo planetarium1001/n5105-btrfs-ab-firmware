@@ -8,6 +8,15 @@
 #   n5105-ab-<upstream>-upgrade.tar         the update payload
 #   SHA256SUMS                              digests of both
 #   release-notes.md                        versions, inputs, verification steps
+#   index.txt                               the AB-FEED 1 index (feed-index.sh), when the
+#                                           kernel version of this release is known
+#
+# `index.txt` is what a machine reads to find this release (`ab-upgrade --feed-check`
+# fetches `<UPDATE_FEED_URL>/index.txt`). It is generated here rather than published by
+# hand so the payload digest in the index cannot drift from the payload in SHA256SUMS:
+# feed-index.sh reads that file and re-hashes the payload next to it. It is deliberately
+# not a line of SHA256SUMS - the index describes the release, and a checksum file that
+# covered it would have to describe itself.
 #
 # The compressed image is round-tripped and compared against the raw image's digest,
 # so a truncated or corrupted compression cannot be published.
@@ -23,9 +32,18 @@
 #   CI_UPSTREAM_ROOTFS_SHA256, CI_UPSTREAM_KERNEL_SHA256
 #                         upstream digests, recorded in the notes when set
 #   CI_S5_LINE            judge line of the last verified firmware run, recorded
+#   CI_KERNEL_PACKAGE     kernel package version of the build, recorded in the notes and
+#                         used as the index's `kernel` field (optional: without it the
+#                         index falls back to the payload manifest, and without either
+#                         there is no index)
+#   CI_FEED_BASE_URL      directory index.txt will be served from; turns the index's
+#                         `payload` into an absolute `url` (optional)
+#   CI_FEED_HISTORY       space-separated directories of earlier releases to carry in the
+#                         index so `--stepwise` has somewhere to step (optional; this
+#                         release is always first, the helper sorts the rest)
 #
 # Outputs: release_dir, image_gz, image_gz_sha256, image_sha256, payload_copy,
-#          sums_path, notes_path, artifact_list
+#          sums_path, notes_path, artifact_list, feed_index
 
 set -euo pipefail
 
@@ -57,7 +75,7 @@ payload_in="${CI_PAYLOAD:-}"
 
 mkdir -p "${release_dir}"
 rm -f "${release_dir}"/*.img.gz "${release_dir}"/*.tar \
-    "${release_dir}"/SHA256SUMS "${release_dir}"/release-notes.md
+    "${release_dir}"/SHA256SUMS "${release_dir}"/release-notes.md "${release_dir}"/index.txt
 
 # --------------------------------------------------------------------------- #
 # 1. Image
@@ -123,6 +141,9 @@ sed 's/^/[release]   /' "${sums}"
 notes="${release_dir}/release-notes.md"
 upstream_rootfs="${CI_UPSTREAM_ROOTFS_SHA256:-not recorded}"
 upstream_kernel="${CI_UPSTREAM_KERNEL_SHA256:-not recorded}"
+# The kernel package version is what the index calls `kernel`. It is optional here on
+# purpose: a caller that only has an image still gets a release, it just gets no index.
+kernel_package="${CI_KERNEL_PACKAGE:-not recorded}"
 judge_line="${CI_S5_LINE:-not recorded}"
 
 {
@@ -160,6 +181,7 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf '| Upstream version | `%s` |\n' "${upstream_version}"
     printf '| Upstream rootfs sha256 | `%s` |\n' "${upstream_rootfs}"
     printf '| Upstream kernel sha256 | `%s` |\n' "${upstream_kernel}"
+    printf '| Kernel package | `%s` |\n' "${kernel_package}"
     printf '| Platform version | `%s` |\n' "${platform_version}"
     printf '| Uncompressed image sha256 | `%s` |\n' "${image_sha256}"
     printf '\n'
@@ -190,9 +212,88 @@ judge_line="${CI_S5_LINE:-not recorded}"
 } >"${notes}"
 ci_log "release notes: ${notes}"
 
+# --------------------------------------------------------------------------- #
+# 5. Update feed index
+#
+# The notes and SHA256SUMS are the index's two inputs, so this runs after both. An
+# earlier release is carried along only when the caller names its directory: an index
+# that guessed at history would point machines at payloads nobody published.
+# --------------------------------------------------------------------------- #
+
+index="${release_dir}/index.txt"
+index_state="not generated"
+if [ -n "${payload_copy}" ]; then
+    index_releases=("${release_dir}")
+    # shellcheck disable=SC2206  # CI_FEED_HISTORY is a plain path list, by contract
+    index_history=(${CI_FEED_HISTORY:-})
+    if [ "${#index_history[@]}" -gt 0 ]; then
+        for earlier in "${index_history[@]}"; do
+            index_releases+=("${earlier}")
+        done
+    fi
+    index_args=()
+    for release_path in "${index_releases[@]}"; do
+        index_args+=(--release "${release_path}")
+    done
+    # The helper is a stage of its own and publishes its own outputs; both file-command
+    # channels are therefore pointed away from this stage's, so its keys cannot land in
+    # the same output file twice.
+    index_status=0
+    (
+        unset GITHUB_OUTPUT
+        CI_OUTPUT_ENV=/dev/null bash "${CI_SCRIPT_DIR}/feed-index.sh" --out "${index}" "${index_args[@]}"
+    ) || index_status=$?
+    case "${index_status}" in
+        0) index_state="generated" ;;
+        3)
+            # Exit 3 is the one shortfall that is not a failure: nothing here knows the
+            # kernel version. Publishing without an index keeps the release installable
+            # by hand and leaves the feed one release behind - visible, and repairable
+            # by passing CI_KERNEL_PACKAGE. Any other status fails the release, because
+            # a published index that disagrees with its payload is worse than none.
+            rm -f "${index}"
+            ci_warn "no kernel version for this release, index.txt not generated: the release publishes without a feed entry"
+            index_state="skipped, kernel version unknown"
+            ;;
+        *) ci_die "the feed index could not be generated (feed-index.sh exited ${index_status})" ;;
+    esac
+else
+    ci_warn "no payload given, the release carries no feed entry"
+fi
+
+if [ "${index_state}" = "generated" ]; then
+    # The index carries the kernel *version*; the notes carry the kernel *package*. Both
+    # are shown so a reader can match either against what a machine prints.
+    kernel_index="$(printf '%s' "${kernel_package}" |
+        sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+    {
+        printf '\n'
+        printf '## Update feed\n'
+        printf '\n'
+        printf '`index.txt` is the `AB-FEED 1` index for this release. A machine with a feed\n'
+        printf 'configured fetches `<UPDATE_FEED_URL>/index.txt`, reads the entry for\n'
+        printf '`platform %s` / `base %s` / `kernel %s`, and compares it with what it runs.\n' \
+            "${platform_version}" "${upstream_version}" "${kernel_index:-${kernel_package}}"
+        printf '\n'
+        printf 'The same three identities are what an update prompt shows side by side; the\n'
+        printf 'risk it reports comes from the `base` difference alone. See `docs/update.md`.\n'
+        printf '\n'
+        printf '`index.txt` is not covered by `SHA256SUMS`: it describes the release, and the\n'
+        printf 'digest it publishes for the payload is the one in `SHA256SUMS`.\n'
+        printf '\n'
+        printf '```\n'
+        cat "${index}"
+        printf '```\n'
+    } >>"${notes}"
+    ci_log "feed index: ${index}"
+fi
+
 artifacts="${base}-install.img.gz"
 [ -n "${payload_copy}" ] && artifacts="${artifacts} ${base}-upgrade.tar"
 artifacts="${artifacts} SHA256SUMS release-notes.md"
+if [ "${index_state}" = "generated" ]; then
+    artifacts="${artifacts} index.txt"
+fi
 
 ci_emit_output "release_dir" "${release_dir}"
 ci_emit_output "image_gz" "${image_gz}"
@@ -202,5 +303,6 @@ ci_emit_output "payload_copy" "${payload_copy}"
 ci_emit_output "sums_path" "${sums}"
 ci_emit_output "notes_path" "${notes}"
 ci_emit_output "artifact_list" "${artifacts}"
+ci_emit_output "feed_index" "$([ "${index_state}" = "generated" ] && printf '%s' "${index}")"
 
 ci_log "stage release finished"

@@ -15,6 +15,7 @@ Each document covers one topic. Every number is either measured or has an explic
 | [lifecycle.md](lifecycle.md) | Generation model, state file, update transaction, health checks, reclamation, logging, commands |
 | [conflicts-payload.md](conflicts-payload.md) | Three-way comparison, disposition, uci boundary, payload contract, the bootloader member, validation, build inputs |
 | [install.md](install.md) | Writing an image, first boot, the console, upgrading a running machine (`ab-upgrade` flags and exit codes, rescuing a torn bootloader), reading `ab-slot status`, troubleshooting |
+| [update.md](update.md) | Updating a machine from a release feed: the configuration file, the three version numbers (`base`, `kernel`, `platform`), `ab-upgrade --feed-check` and `--feed`, the five risk levels and the confirmation each one asks for, `UPDATE_PIN`, every `reason=` token, and how a publisher builds a feed of its own |
 | [network.md](network.md) | First-boot network generation, the shipped defaults (WAN port, bridge ports, LAN subnet), how to change them, and the WAN SSH exception |
 | [debug-ssh.md](debug-ssh.md) | Manual interactive debugging entry point: trigger, connection, prepared artifacts, session bounds, security, why it is not a gate |
 | [backup.md](backup.md) | The three products and the capacity each one can be restored to, why a whole-disk image fails on a smaller disk, the restore decision tree (paths A-D), and what `ab-backup` / `ab-restore` put in a package |

@@ -344,6 +344,12 @@ jobs:
           printf 'release preflight passed on these exact bytes. The stage verdicts are in that\n' \
             >>"${RELEASE_DIR}/release-notes.md"
           printf "run's report.\n" >>"${RELEASE_DIR}/release-notes.md"
+          # The feed index is an asset only when the release knows its kernel package:
+          # without it feed-index.sh refuses to guess and release.sh publishes no index.
+          assets=("${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS")
+          if [ -f "${RELEASE_DIR}/index.txt" ]; then
+            assets+=("${RELEASE_DIR}/index.txt")
+          fi
           if [ "${DRY_RUN}" = "true" ]; then
             # A rehearsal still uploads and checks the bytes; it only refuses to publish.
             # It is repeatable: a draft left behind by an earlier attempt is replaced, a
@@ -363,11 +369,10 @@ jobs:
               --draft \
               --title "${TITLE}" \
               --notes-file "${RELEASE_DIR}/release-notes.md" \
-              "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS"
+              "${assets[@]}"
           elif gh release view "${TAG}" >/dev/null 2>&1; then
             echo "release ${TAG} exists, uploading the artifacts again"
-            gh release upload "${TAG}" "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar \
-              "${RELEASE_DIR}/SHA256SUMS" --clobber
+            gh release upload "${TAG}" "${assets[@]}" --clobber
             # Uploading over a draft leaves it a draft: the run goes green and nothing is
             # published, which is the worst outcome available. A published release is left
             # alone, so a re-run is idempotent in both directions.
@@ -379,7 +384,7 @@ jobs:
             gh release create "${TAG}" \
               --title "${TITLE}" \
               --notes-file "${RELEASE_DIR}/release-notes.md" \
-              "${RELEASE_DIR}"/*.img.gz "${RELEASE_DIR}"/*.tar "${RELEASE_DIR}/SHA256SUMS"
+              "${assets[@]}"
           fi
           url="$(gh release view "${TAG}" --json url --jq .url 2>/dev/null || true)"
           printf 'release_url=%s\n' "${url}" >>"${GITHUB_OUTPUT}"

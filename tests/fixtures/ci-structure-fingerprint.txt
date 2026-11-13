@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: title default moves into the publisher (derived from tag-policy) and ci-s5 forwards CI_BOOT_SOURCE_* so the S5 payload records its boot source (L2)
+# reason: ci: feed-index.sh is a new stage, release.sh gains its keys
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -64,6 +64,15 @@ sh-flag scripts/ci/disk.sh --wipe
 sh-flag scripts/ci/esp-prepare.sh --find
 sh-flag scripts/ci/esp-prepare.sh --partscan
 sh-flag scripts/ci/esp-prepare.sh --show
+sh-flag scripts/ci/feed-index.sh --base-url
+sh-flag scripts/ci/feed-index.sh --channel
+sh-flag scripts/ci/feed-index.sh --from-github
+sh-flag scripts/ci/feed-index.sh --generated
+sh-flag scripts/ci/feed-index.sh --help
+sh-flag scripts/ci/feed-index.sh --kernel
+sh-flag scripts/ci/feed-index.sh --out
+sh-flag scripts/ci/feed-index.sh --payload
+sh-flag scripts/ci/feed-index.sh --release
 sh-flag scripts/ci/grub-render.sh --check
 sh-flag scripts/ci/grub-render.sh --check-loader
 sh-flag scripts/ci/grub-render.sh --find
@@ -132,6 +141,10 @@ sh-flag scripts/ci/release-preflight.sh --platform-version
 sh-flag scripts/ci/release-preflight.sh --tag
 sh-flag scripts/ci/release-preflight.sh --tag-policy
 sh-flag scripts/ci/release-preflight.sh --version-file
+sh-flag scripts/ci/release.sh --feed-check
+sh-flag scripts/ci/release.sh --out
+sh-flag scripts/ci/release.sh --release
+sh-flag scripts/ci/release.sh --stepwise
 sh-flag scripts/ci/report.sh --log-failed
 sh-flag scripts/ci/s5-phase.sh --find
 sh-flag scripts/ci/s5-phase.sh --layer
@@ -202,6 +215,16 @@ sh-fn scripts/ci/disk.sh populate_slot
 sh-fn scripts/ci/disk.sh unmount_part
 sh-fn scripts/ci/esp-prepare.sh cleanup
 sh-fn scripts/ci/esp-prepare.sh on_error
+sh-fn scripts/ci/feed-index.sh cleanup
+sh-fn scripts/ci/feed-index.sh die_no_kernel
+sh-fn scripts/ci/feed-index.sh die_usage
+sh-fn scripts/ci/feed-index.sh kernel_in_payload
+sh-fn scripts/ci/feed-index.sh kernel_version
+sh-fn scripts/ci/feed-index.sh note_field
+sh-fn scripts/ci/feed-index.sh on_error
+sh-fn scripts/ci/feed-index.sh payload_in_sums
+sh-fn scripts/ci/feed-index.sh sums_digest
+sh-fn scripts/ci/feed-index.sh usage
 sh-fn scripts/ci/fetch.sh fetch_member
 sh-fn scripts/ci/grub-render.sh check_grub
 sh-fn scripts/ci/grub-render.sh on_error
@@ -385,6 +408,14 @@ sh-var scripts/ci/esp-prepare.sh CI_SHA256_RE
 sh-var scripts/ci/esp-prepare.sh CI_TMP_ROOT
 sh-var scripts/ci/esp-prepare.sh CI_UPSTREAM_BASE_URL
 sh-var scripts/ci/esp-prepare.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/feed-index.sh CI_FEED_BASE_URL
+sh-var scripts/ci/feed-index.sh CI_FEED_CHANNEL
+sh-var scripts/ci/feed-index.sh CI_FEED_GENERATED
+sh-var scripts/ci/feed-index.sh CI_KERNEL_PACKAGE
+sh-var scripts/ci/feed-index.sh CI_SCRIPT_DIR
+sh-var scripts/ci/feed-index.sh CI_SHA256_RE
+sh-var scripts/ci/feed-index.sh CI_STAGE
+sh-var scripts/ci/feed-index.sh CI_VERSION_RE
 sh-var scripts/ci/fetch.sh CI_BTRFS_KMOD_NAME
 sh-var scripts/ci/fetch.sh CI_BTRFS_KMOD_SHA256
 sh-var scripts/ci/fetch.sh CI_FETCH_DIR
@@ -553,8 +584,12 @@ sh-var scripts/ci/qemu-smoke.sh CI_TMP_ROOT
 sh-var scripts/ci/release-preflight.sh CI_SCRIPT_DIR
 sh-var scripts/ci/release-preflight.sh CI_TMP_ROOT
 sh-var scripts/ci/release-preflight.sh CI_VERSION_RE
+sh-var scripts/ci/release.sh CI_FEED_BASE_URL
+sh-var scripts/ci/release.sh CI_FEED_HISTORY
 sh-var scripts/ci/release.sh CI_IMAGE
 sh-var scripts/ci/release.sh CI_IMAGE_GZ
+sh-var scripts/ci/release.sh CI_KERNEL_PACKAGE
+sh-var scripts/ci/release.sh CI_OUTPUT_ENV
 sh-var scripts/ci/release.sh CI_PAYLOAD
 sh-var scripts/ci/release.sh CI_PLATFORM_VERSION
 sh-var scripts/ci/release.sh CI_RELEASE_DIR

@@ -353,6 +353,12 @@ dropbear` says whether the daemon is listening at all.
 An update writes the inactive slot and marks it pending. It never touches the running
 slot, so the machine keeps working if anything goes wrong.
 
+A machine that can reach a release feed fetches the payload itself:
+`ab-upgrade --feed-check` reports what is out there, and `ab-upgrade --feed` downloads it,
+checks it and then installs it through this same path. The configuration file, the three
+version numbers, the risk levels and the confirmation each one asks for are in
+[update.md](update.md).
+
 ```sh
 ab-upgrade --check /root/n5105-ab-<upstream>-upgrade.tar
 ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar

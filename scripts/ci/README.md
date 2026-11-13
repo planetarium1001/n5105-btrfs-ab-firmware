@@ -71,7 +71,8 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `platform-runtime.sh` | s5 | resolve and stage the btrfs tooling for the platform layer |
 | `elf_extract.py` | s5 (via platform-runtime.sh) | pull executables and shared objects out of apk v3 packages |
 | `payload-build.sh` | s5 | build the test upgrade payload (rootfs, kernel, initramfs, platform layer, manifest) |
-| `release.sh` | release | name, compress, checksum and describe the published artifacts |
+| `release.sh` | release | name, compress, checksum and describe the published artifacts; also renders `index.txt` when the release knows its kernel package |
+| `feed-index.sh` | via `release.sh` | render the `AB-FEED 1` index a machine reads to find this release (`ab-upgrade --feed-check`) |
 | `s5-phase.sh` | s5 | grade an upgrade / commit / degraded boot by reading the image back |
 | `stage-summary.sh` | s1, s2, s3, s4, s5 | render one stage's verdict as a fixed five-column block for the run page |
 | `report.sh` | report | render the verdict and fail the run when a scheduled stage failed |
@@ -603,7 +604,10 @@ if the fixture's deliberate conflict does not show up, so the path stays covered
 ### Releases
 
 `release.sh` turns a verified build into `n5105-ab-<upstream>-install.img.gz`, the
-matching `-upgrade.tar`, `SHA256SUMS` and `release-notes.md`. The firmware version is a
+matching `-upgrade.tar`, `SHA256SUMS`, `release-notes.md` and - when the kernel package
+version is known - `index.txt`, the update feed the release page also serves. The index
+is built by `feed-index.sh` from `SHA256SUMS` and the payload next to it, so the digest a
+machine reads can never drift from the digest the release publishes. The firmware version is a
 release counter, not part of the file name: the release page's tag already names it. The
 compressed image is
 decompressed again and compared with the raw image digest before it is published.

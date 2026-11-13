@@ -139,7 +139,9 @@ feed_confirm() {
         return 0
     fi
     if [ ! -t 0 ]; then
-        refuse "feed-noninteractive"
+        say "ab-upgrade: refused, reason=feed-noninteractive (no terminal; pass --yes to accept)"
+        console_say "ab-upgrade: refused, reason=feed-noninteractive"
+        exit 74
     fi
     printf 'Proceed? [y/N] ' >&2
     read -r _answer || _answer=""
@@ -163,8 +165,12 @@ feed_show_update() {
         major\ *) _change="MAJOR +${_delta#major }" ;;
         *) _change="UNKNOWN" ;;
     esac
-    say "Update  base     ${installed_base_show} -> ${_cand_base}"
-    say "        kernel   ${installed_kernel_show} -> ${_cand_kernel}"
+    _base_line="base     ${installed_base_show} -> ${_cand_base}"
+    [ "${installed_base_show}" = "${_cand_base}" ] && _base_line="base     ${installed_base_show} (unchanged)"
+    _kernel_line="kernel   ${installed_kernel_show} -> ${_cand_kernel}"
+    [ "${installed_kernel_show}" = "${_cand_kernel}" ] && _kernel_line="kernel   ${installed_kernel_show} (unchanged)"
+    say "Update  ${_base_line}"
+    say "        ${_kernel_line}"
     say "        platform ${installed} -> ${_cand}"
     case "${_level}" in
         Z1)
@@ -326,7 +332,11 @@ feed_main() {
     mkdir -p "$(dirname "${payload_path}")" || fail "cannot-create-feed-dir"
     ab_feed_space_ok "$(dirname "${payload_path}")" "${payload_size}" || refuse "${AB_FEED_REASON}"
     ab_feed_fetch "${payload_url}" "${payload_path}" || refuse "${AB_FEED_REASON}"
-    ab_feed_verify_member "${payload_path}" "${entry}" || refuse "${AB_FEED_REASON}"
+    if ! ab_feed_verify_member "${payload_path}" "${entry}"; then
+        _feed_reason=${AB_FEED_REASON}
+        rm -f "${payload_path}"
+        refuse "${_feed_reason}"
+    fi
     say "ab-upgrade: ${candidate} verified, installing"
     payload_tar="${payload_path}"
 }
