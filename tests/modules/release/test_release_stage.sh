@@ -63,6 +63,16 @@ assert_contains "$notes" "ab-upgrade" "ac-1 the notes point at the update path"
 assert_contains "$notes" "docs/install.md" "ac-1 the notes point at the install guide"
 assert_contains "$notes" "$expected" "ac-1 the notes record the uncompressed digest"
 
+# --- ac-2 (variant): the convenience image has its own name -----------------
+out="$(run_release CI_IMAGE="$image" CI_PAYLOAD="$payload" CI_PLATFORM_VERSION=0.0.8 \
+  CI_UPSTREAM_VERSION=25.12.2 CI_RELEASE_TAG=v0.0.8 CI_RELEASE_VARIANT=wan-ssh)"
+assert_eq "$?" "0" "ac-2 a variant release succeeds"
+assert_file_exists "$rel/n5105-ab-25.12.2-install-wan-ssh.img.gz" "ac-2 the variant name carries what it adds"
+assert_file_exists "$rel/n5105-ab-25.12.2-upgrade.tar" "ac-2 the payload name is not variant-specific"
+out="$(run_release CI_IMAGE="$image" CI_PLATFORM_VERSION=0.0.8 \
+  CI_UPSTREAM_VERSION=25.12.2 CI_RELEASE_VARIANT=maybe)"
+assert_eq "$?" "1" "ac-2 an unknown variant is refused"
+
 # --- ac-3 refusals ---------------------------------------------------------
 out="$(run_release CI_IMAGE="$tmp/missing.img" CI_PLATFORM_VERSION=0.0.5 \
   CI_UPSTREAM_VERSION=25.12.2)"

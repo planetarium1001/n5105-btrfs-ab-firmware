@@ -5,6 +5,9 @@
 # stage produces three things and nothing else:
 #
 #   n5105-ab-<upstream>-install.img.gz      the disk image, compressed
+#   n5105-ab-<upstream>-install-wan-ssh.img.gz
+#                                          the same image with the WAN SSH exception on
+#                                          (CI_RELEASE_VARIANT=wan-ssh)
 #   n5105-ab-<upstream>-upgrade.tar         the update payload
 #   SHA256SUMS                              digests of both
 #   release-notes.md                        versions, inputs, verification steps
@@ -67,6 +70,16 @@ upstream_version="${CI_UPSTREAM_VERSION:?CI_UPSTREAM_VERSION is required}"
 release_dir="${CI_RELEASE_DIR:-${CI_TMP_ROOT}/release}"
 tag="${CI_RELEASE_TAG:-local}"
 base="n5105-ab-${upstream_version}"
+# A variant is a second build of the same release for a different default, not a second
+# release: same tag, same payload, same digests, one extra name. Only the WAN SSH
+# exception has a variant today (docs/install.md), and its name has to say so, because
+# "the image without the open port" and "the image with it" must never be confusable.
+release_variant="${CI_RELEASE_VARIANT:-}"
+case "${release_variant}" in
+    ''|default) release_variant="" ;;
+    wan-ssh) : ;;
+    *) ci_die "unknown release variant: ${release_variant}" ;;
+esac
 
 image="${CI_IMAGE:-}"
 image_gz_in="${CI_IMAGE_GZ:-}"
@@ -81,7 +94,7 @@ rm -f "${release_dir}"/*.img.gz "${release_dir}"/*.tar \
 # 1. Image
 # --------------------------------------------------------------------------- #
 
-image_gz="${release_dir}/${base}-install.img.gz"
+image_gz="${release_dir}/${base}-install${release_variant:+-${release_variant}}.img.gz"
 if [ -n "${image_gz_in}" ]; then
     [ -f "${image_gz_in}" ] || ci_die "compressed image not found: ${image_gz_in}"
     cp "${image_gz_in}" "${image_gz}"
@@ -126,7 +139,7 @@ fi
 sums="${release_dir}/SHA256SUMS"
 (
     cd "${release_dir}"
-    sha256sum "${base}-install.img.gz" >"${sums}"
+    sha256sum "$(basename "${image_gz}")" >"${sums}"
     if [ -n "${payload_copy}" ]; then
         sha256sum "${base}-upgrade.tar" >>"${sums}"
     fi
@@ -156,7 +169,7 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf '\n'
     printf '| artifact | size | sha256 |\n'
     printf '| --- | --- | --- |\n'
-    printf '| `%s-install.img.gz` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${image_gz}")" "${image_gz_sha256}"
+    printf '| `%s` | %s bytes | `%s` |\n' "$(basename "${image_gz}")" "$(ci_file_size "${image_gz}")" "${image_gz_sha256}"
     if [ -n "${payload_copy}" ]; then
         printf '| `%s-upgrade.tar` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${payload_copy}")" \
             "$(ci_sha256 "${payload_copy}")"
@@ -204,7 +217,7 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf 'checklist and the rollback procedure. The short version:\n'
     printf '\n'
     printf '```\n'
-    printf 'gunzip -c %s-install.img.gz | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync\n' "${base}"
+    printf 'gunzip -c %s | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync\n' "$(basename "${image_gz}")"
     printf '```\n'
     printf '\n'
     printf 'After the first boot run `ab-slot status`; it must report `p4=ok` and a\n'
@@ -288,7 +301,7 @@ if [ "${index_state}" = "generated" ]; then
     ci_log "feed index: ${index}"
 fi
 
-artifacts="${base}-install.img.gz"
+artifacts="$(basename "${image_gz}")"
 [ -n "${payload_copy}" ] && artifacts="${artifacts} ${base}-upgrade.tar"
 artifacts="${artifacts} SHA256SUMS release-notes.md"
 if [ "${index_state}" = "generated" ]; then
