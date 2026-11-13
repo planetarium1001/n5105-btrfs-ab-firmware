@@ -68,6 +68,10 @@
 #   layer <slot> <ver> <layer>  record a new version and layer for one slot
 #   conflicts              print the conflict report of the last upgrade
 #   log [--prev|--upgrade] print the ESP ring log
+#   packages               the writable layer's package world: list or take a snapshot, run
+#                          apk update/upgrade behind the `packages=aligned` gate, or replay a
+#                          snapshot's versions (same base only). Never touches the slot
+#                          state: a package rollback and a slot rollback are different units.
 #
 # Environment:
 #   AB_ESP           ESP mount point            (default /boot)

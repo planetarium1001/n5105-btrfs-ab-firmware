@@ -393,7 +393,7 @@ and is mirrored onto the final filesystem paths:
 
 | Path | Role |
 |---|---|
-| `platform/usr/sbin/ab-slot` | status, commit, pending, abandon, rollback, gc, rootfs, log |
+| `platform/usr/sbin/ab-slot` | status, commit, pending, abandon, rollback, next, gc, rootfs, layer, conflicts, log, packages |
 | `platform/etc/init.d/ab-boot` | `START=15`: mounts `/boot` and `/mnt/p4`, rotates the boot log, marks a candidate first boot |
 | `platform/etc/init.d/ab-commit` | `START=99`: runs the three probes, then commits or abandons |
 | `platform/etc/platform-release` | template rendered with the build's versions |
