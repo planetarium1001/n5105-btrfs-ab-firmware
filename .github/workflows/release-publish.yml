@@ -105,6 +105,29 @@ jobs:
           name: ${{ inputs.image-artifact }}
           path: ${{ runner.temp }}/ci/disk
 
+      # The convenience image is built by the tag line next to the default one. It may be
+      # absent (an older run, or a manual dispatch from a branch), in which case the
+      # release simply carries one image and the notes say nothing about a choice.
+      - name: Download the convenience image
+        if: ${{ inputs.run-id == '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: image-install-wan-ssh
+          path: ${{ runner.temp }}/ci/disk-variant
+
+      - name: Unpack the convenience image
+        run: |
+          set -euo pipefail
+          src="$(find "${RUNNER_TEMP}/ci/disk-variant" -name '*.img.gz' -print -quit 2>/dev/null || true)"
+          if [ -n "${src}" ]; then
+            gunzip -c "${src}" >"${RUNNER_TEMP}/ci/publish-variant.img"
+            printf 'CI_VARIANT_IMAGE=%s\n' "${RUNNER_TEMP}/ci/publish-variant.img" >>"${GITHUB_ENV}"
+            echo "convenience image: ${src}"
+          else
+            echo "no convenience image in this run; publishing the default image only"
+          fi
+
       - name: Download the update payload
         if: ${{ inputs.run-id == '' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

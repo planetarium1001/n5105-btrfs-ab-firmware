@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: S3 takes a variant flag and uploads a second literal artifact name
+# reason: ci: release publishes the convenience image as a second asset
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -601,6 +601,7 @@ sh-var scripts/ci/release.sh CI_TMP_ROOT
 sh-var scripts/ci/release.sh CI_UPSTREAM_KERNEL_SHA256
 sh-var scripts/ci/release.sh CI_UPSTREAM_ROOTFS_SHA256
 sh-var scripts/ci/release.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/release.sh CI_VARIANT_IMAGE
 sh-var scripts/ci/report.sh CI_ASSEMBLE_RESULT
 sh-var scripts/ci/report.sh CI_CACHE_HIT
 sh-var scripts/ci/report.sh CI_CACHE_KEY
@@ -2164,32 +2165,42 @@ yaml .github/workflows/release-publish.yml jobs.publish.steps =
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[0].with = {persist-credentials: false}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_EXTRA_NOTES = ${{ inputs.extra-notes }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_PAYLOAD = ${{ runner.temp }}/ci/payload/payload.tar
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_RELEASE_TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_UPSTREAM_KERNEL_SHA256 = ${{ steps.versions.outputs.kernel_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_UPSTREAM_ROOTFS_SHA256 = ${{ steps.versions.outputs.rootfs_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.CI_UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].id = release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].env.TAG_POLICY = ${{ inputs.tag-policy }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[10].id = preflight
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.DRY_RUN = ${{ inputs.dry-run }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.KERNEL_SHA = ${{ steps.versions.outputs.kernel_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.KIND = ${{ steps.image_kind.outputs.kind }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.ROOTFS_SHA = ${{ steps.versions.outputs.rootfs_sha256 }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TITLE = ${{ steps.title.outputs.release_title }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.BARE_VERSION = ${{ steps.versions.outputs.bare_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TAG_POLICY = ${{ inputs.tag-policy }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].env.TITLE_TEMPLATE = ${{ inputs.title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[11].id = title
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.DRY_RUN = ${{ inputs.dry-run }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.RELEASE_DIR = ${{ runner.temp }}/ci/release
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.TITLE = ${{ steps.title.outputs.release_title }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].id = publish
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].if = always()
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_EXTRA_NOTES = ${{ inputs.extra-notes }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_PAYLOAD = ${{ runner.temp }}/ci/payload/payload.tar
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_RELEASE_TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_UPSTREAM_KERNEL_SHA256 = ${{ steps.versions.outputs.kernel_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_UPSTREAM_ROOTFS_SHA256 = ${{ steps.versions.outputs.rootfs_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].env.CI_UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[12].id = release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.KERNEL_SHA = ${{ steps.versions.outputs.kernel_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.KIND = ${{ steps.image_kind.outputs.kind }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.ROOTFS_SHA = ${{ steps.versions.outputs.rootfs_sha256 }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.TITLE = ${{ steps.title.outputs.release_title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[13].env.UPSTREAM_VERSION = ${{ steps.versions.outputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.RELEASE_DIR = ${{ runner.temp }}/ci/release
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].env.TITLE = ${{ steps.title.outputs.release_title }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[14].id = publish
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[16].if = always()
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[1].with = {apt: "cpio"}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].if = ${{ inputs.run-id == '' }}
@@ -2197,36 +2208,32 @@ yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].uses = actions
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].with = 
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].with.name = ${{ inputs.image-artifact }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[2].with.path = ${{ runner.temp }}/ci/disk
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].continue-on-error = true
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].if = ${{ inputs.run-id == '' }}
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
 yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with.name = ${{ inputs.payload-artifact }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with.path = ${{ runner.temp }}/ci/payload
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.IMAGE_ARTIFACT = ${{ inputs.image-artifact }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.PAYLOAD_ARTIFACT = ${{ inputs.payload-artifact }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].env.RUN_ID = ${{ inputs.run-id }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[4].if = ${{ inputs.run-id != '' }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.MANIFEST = ${{ runner.temp }}/ci/payload/payload/manifest.json
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.PLATFORM_VERSION = ${{ inputs.platform_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.TAG_POLICY = ${{ inputs.tag-policy }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].env.UPSTREAM_VERSION = ${{ inputs.upstream_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].id = versions
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].id = mount
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].id = image_kind
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.PLATFORM_VERSION = ${{ steps.versions.outputs.platform_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.TAG = ${{ inputs.tag }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].env.TAG_POLICY = ${{ inputs.tag-policy }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].id = preflight
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env = 
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.BARE_VERSION = ${{ steps.versions.outputs.bare_version }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.TAG_POLICY = ${{ inputs.tag-policy }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].env.TITLE_TEMPLATE = ${{ inputs.title }}
-yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].id = title
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with.name = image-install-wan-ssh
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[3].with.path = ${{ runner.temp }}/ci/disk-variant
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].if = ${{ inputs.run-id == '' }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].with = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].with.name = ${{ inputs.payload-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[5].with.path = ${{ runner.temp }}/ci/payload
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].env.IMAGE_ARTIFACT = ${{ inputs.image-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].env.PAYLOAD_ARTIFACT = ${{ inputs.payload-artifact }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].env.RUN_ID = ${{ inputs.run-id }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[6].if = ${{ inputs.run-id != '' }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].env = 
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].env.MANIFEST = ${{ runner.temp }}/ci/payload/payload/manifest.json
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].env.PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].env.TAG = ${{ inputs.tag }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].env.TAG_POLICY = ${{ inputs.tag-policy }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].env.UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[7].id = versions
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[8].id = mount
+yaml .github/workflows/release-publish.yml jobs.publish.steps.[9].id = image_kind
 yaml .github/workflows/release-publish.yml jobs.publish.timeout-minutes = 35
 yaml .github/workflows/release-publish.yml on = 
 yaml .github/workflows/release-publish.yml on.workflow_call.inputs = 

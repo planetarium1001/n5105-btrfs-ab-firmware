@@ -119,6 +119,32 @@ fi
 ci_log "image artefact: ${image_gz} ($(ci_file_size "${image_gz}") bytes, sha256 ${image_gz_sha256})"
 
 # --------------------------------------------------------------------------- #
+# 1b. The convenience image (optional)
+#
+# Same release, same tag, same payload - one rendered value different: the WAN SSH
+# exception is on. It is a separate file so nobody has to read a README to know which
+# image they are writing, and it is compressed and round-tripped exactly like the
+# default one.
+# --------------------------------------------------------------------------- #
+
+variant_gz=""
+variant_in="${CI_VARIANT_IMAGE:-}"
+if [ -n "${variant_in}" ]; then
+    [ -f "${variant_in}" ] || ci_die "variant image not found: ${variant_in}"
+    if [ "${release_variant}" = "wan-ssh" ]; then
+        ci_warn "this run already is the wan-ssh variant; CI_VARIANT_IMAGE is ignored"
+    else
+        variant_gz="${release_dir}/${base}-install-wan-ssh.img.gz"
+        ci_log "compressing the wan-ssh variant (${variant_in})"
+        gzip -9 -c "${variant_in}" >"${variant_gz}"
+        _variant_sha="$(gzip -dc "${variant_gz}" | sha256sum | cut -d' ' -f1)"
+        [ "${_variant_sha}" = "$(ci_sha256 "${variant_in}")" ] ||
+            ci_die "the compressed variant decompresses to ${_variant_sha}"
+        ci_log "variant artefact: ${variant_gz} ($(ci_file_size "${variant_gz}") bytes)"
+    fi
+fi
+
+# --------------------------------------------------------------------------- #
 # 2. Payload
 # --------------------------------------------------------------------------- #
 
@@ -142,6 +168,9 @@ sums="${release_dir}/SHA256SUMS"
     sha256sum "$(basename "${image_gz}")" >"${sums}"
     if [ -n "${payload_copy}" ]; then
         sha256sum "${base}-upgrade.tar" >>"${sums}"
+    fi
+    if [ -n "${variant_gz}" ]; then
+        sha256sum "$(basename "${variant_gz}")" >>"${sums}"
     fi
 )
 ci_log "checksums:"
@@ -174,7 +203,20 @@ judge_line="${CI_S5_LINE:-not recorded}"
         printf '| `%s-upgrade.tar` | %s bytes | `%s` |\n' "${base}" "$(ci_file_size "${payload_copy}")" \
             "$(ci_sha256 "${payload_copy}")"
     fi
+    if [ -n "${variant_gz}" ]; then
+        printf '| `%s` | %s bytes | `%s` |\n' "$(basename "${variant_gz}")" "$(ci_file_size "${variant_gz}")" \
+            "$(ci_sha256 "${variant_gz}")"
+    fi
     printf '\n'
+    if [ -n "${variant_gz}" ]; then
+        printf '## Two images\n'
+        printf '\n'
+        printf 'The default image opens nothing on the WAN side. The `-install-wan-ssh` image is\n'
+        printf 'the same system with one `22/tcp` rule from the WAN (the `allow_ssh_wan` rule),\n'
+        printf 'for a machine that cannot be reached from the LAN and has no keyboard. It prints\n'
+        printf 'how to close that rule on its first boot; `docs/install.md` explains the choice.\n'
+        printf '\n'
+    fi
     printf '`SHA256SUMS` covers both files:\n'
     printf '\n'
     printf '```\n'
@@ -302,6 +344,7 @@ if [ "${index_state}" = "generated" ]; then
 fi
 
 artifacts="$(basename "${image_gz}")"
+[ -n "${variant_gz}" ] && artifacts="${artifacts} $(basename "${variant_gz}")"
 [ -n "${payload_copy}" ] && artifacts="${artifacts} ${base}-upgrade.tar"
 artifacts="${artifacts} SHA256SUMS release-notes.md"
 if [ "${index_state}" = "generated" ]; then
@@ -310,6 +353,7 @@ fi
 
 ci_emit_output "release_dir" "${release_dir}"
 ci_emit_output "image_gz" "${image_gz}"
+ci_emit_output "variant_image_gz" "${variant_gz}"
 ci_emit_output "image_gz_sha256" "${image_gz_sha256}"
 ci_emit_output "image_sha256" "${image_sha256}"
 ci_emit_output "payload_copy" "${payload_copy}"

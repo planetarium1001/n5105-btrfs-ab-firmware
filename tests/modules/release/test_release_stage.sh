@@ -73,6 +73,19 @@ out="$(run_release CI_IMAGE="$image" CI_PLATFORM_VERSION=0.0.8 \
   CI_UPSTREAM_VERSION=25.12.2 CI_RELEASE_VARIANT=maybe)"
 assert_eq "$?" "1" "ac-2 an unknown variant is refused"
 
+# --- ac-4 (variant): the convenience image rides in the same release --------
+variant="$tmp/build-variant.img"
+head -c 262144 /dev/urandom >"$variant"
+out="$(run_release CI_IMAGE="$image" CI_VARIANT_IMAGE="$variant" CI_PAYLOAD="$payload" \
+  CI_PLATFORM_VERSION=0.0.8 CI_UPSTREAM_VERSION=25.12.2 CI_RELEASE_TAG=v0.0.8)"
+assert_eq "$?" "0" "ac-4 a release with the convenience image succeeds"
+assert_file_exists "$rel/n5105-ab-25.12.2-install-wan-ssh.img.gz" "ac-4 the convenience image is published"
+assert_eq "$(wc -l <"$rel/SHA256SUMS" | tr -d ' ')" "3" "ac-4 the checksums cover all three files"
+notes="$(cat "$rel/release-notes.md")"
+assert_contains "$notes" "## Two images" "ac-4 the notes explain the two images"
+assert_contains "$notes" "n5105-ab-25.12.2-install-wan-ssh.img.gz" "ac-4 the notes list the convenience image"
+assert_contains "$out" "variant artefact" "ac-4 the variant is reported"
+
 # --- ac-3 refusals ---------------------------------------------------------
 out="$(run_release CI_IMAGE="$tmp/missing.img" CI_PLATFORM_VERSION=0.0.5 \
   CI_UPSTREAM_VERSION=25.12.2)"
