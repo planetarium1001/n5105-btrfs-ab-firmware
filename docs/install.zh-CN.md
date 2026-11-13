@@ -467,6 +467,9 @@ cat /boot/ab/packages
 
 `ab-slot` 对同一个判定还会打印一句人话，写报告时引这一句：`ab-slot: packages limited, package metadata is limited (<reason>): installing packages for this kernel needs it fixed first`。
 
+包升级与对应的包级回退是另一组命令：`ab-slot packages upgrade` 与 `ab-slot packages revert`，见
+[update.zh-CN.md](update.zh-CN.md)。
+
 
 
 ## 掉电演练

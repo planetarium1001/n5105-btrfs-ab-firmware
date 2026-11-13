@@ -304,6 +304,39 @@ What the pin does:
 Deleting the line, or `--unpin`, releases the machine. The pin is not written into
 `ab/state.json` and does not affect `apk`.
 
+## Package updates
+
+A system update replaces a slot; packages are a separate transaction with a separate way
+back. Both live on the writable layer, and nothing here is automatic: you ask for it.
+
+```sh
+ab-slot packages list            # snapshots on this layer, newest first
+ab-slot packages snapshot        # record the world and every installed version now
+ab-slot packages upgrade         # snapshot, then apk update && apk upgrade
+ab-slot packages revert          # replay the newest snapshot's versions
+```
+
+`upgrade` refuses to run unless `ab-slot status` reports `packages=aligned`: that field
+means the writable layer's `world` pins the kernel this slot runs and `distfeeds` name the
+release it runs. Upgrading packages behind a stale pin installs modules for a kernel the
+machine is not running.
+
+A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions, every
+world entry, every installed package with its version. The newest three are kept. `revert`
+replays them with `apk add <name>=<version>` and is only allowed on the same base: across
+a base those versions were built against a different kernel and libc, which is what
+`ab-slot rollback` is for. A package the feed no longer carries is reported and the rest
+still go through: `revert result=partial` names each one, and the exit status is 0.
+
+The two ways back, side by side:
+
+| You want to undo | Use | What it restores |
+| --- | --- | --- |
+| the last system update | `ab-slot rollback` | the other slot: its base, its platform layer and its packages |
+| a package change on this base | `ab-slot packages revert` | the versions in the snapshot, nothing else |
+
+Both write `upgrade.log`; neither runs by itself.
+
 ## Exit status
 
 | Exit | Meaning |

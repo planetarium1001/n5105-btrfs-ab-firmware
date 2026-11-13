@@ -191,6 +191,11 @@ If `p4` says `degraded`, read the degraded section below before you do anything 
 `packages=` has a section of its own further down: it is the field that says whether
 `apk` can install a module for the kernel this slot runs.
 
+Package upgrades and the package-level rollback that goes with them are a separate
+command: `ab-slot packages upgrade` and `ab-slot packages revert`, both documented in
+[update.md](update.md).
+
+
 When the seed fails, the boot still finishes and the console carries the reason:
 `stage=net-seed result=fail reason=board-detect`, `reason=config-generate`,
 `reason=config-generate-empty` or `reason=no-ethernet`. To get into the machine without

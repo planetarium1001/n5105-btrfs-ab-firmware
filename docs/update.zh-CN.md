@@ -280,6 +280,36 @@ pin 的效果：
 
 删掉那一行，或者 `--unpin`，机器就解除约束。pin 不写进 `ab/state.json`，也不影响 `apk`。
 
+## 包更新
+
+系统更新换的是一个槽；包是另一个事务，也有自己的回退方式。两者都落在可写层，而且都不是自动的：
+你要求它才发生。
+
+```sh
+ab-slot packages list            # 本层已有的快照，新的在前
+ab-slot packages snapshot        # 现在记下 world 与每个已装包的版本
+ab-slot packages upgrade         # 先快照，再 apk update && apk upgrade
+ab-slot packages revert          # 按最新一份快照回放版本
+```
+
+`upgrade` 只有在 `ab-slot status` 报 `packages=aligned` 时才肯跑：这个字段表示可写层的 `world`
+钉着本槽正在跑的内核、`distfeeds` 指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核
+装模块。
+
+快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本。
+只保留最近三份。`revert` 用 `apk add <name>=<version>` 回放，且只允许在同一个 base 上：跨 base 时
+那些版本是按另一个内核和 libc 构建的，那件事归 `ab-slot rollback` 管。源里已经下架的包会被逐条报出来，
+其余照常回放：`revert result=partial` 会点名每一个，退出码仍是 0。
+
+两条回退路径并列：
+
+| 想撤销什么 | 用什么 | 恢复什么 |
+| --- | --- | --- |
+| 上一次系统更新 | `ab-slot rollback` | 另一个槽：它的 base、它的平台层与它的包 |
+| 同一 base 上的包改动 | `ab-slot packages revert` | 快照里的版本，仅此而已 |
+
+两者都写 `upgrade.log`；都不会自己跑。
+
 ## 退出码
 
 | 退出码 | 含义 |
