@@ -21,7 +21,7 @@
 #      the four PARTUUIDs the upgrade path relies on
 #   8b. the first-boot network seed is shipped and armed: the hook, its rcS start link
 #      (S16, before the upstream network link), the rendered constants
-#      (192.168.100.1/24, eth0 as WAN, WAN SSH open), the upstream generators the
+#      (192.168.100.1/24, eth0 as WAN, WAN SSH closed), the upstream generators the
 #      library calls, and no baked /etc/config/network or /etc/board.json - the absence
 #      of that file is the only thing that makes the seed run
 #   9. exactly one frozen judge line is printed, then the machine powers off:
@@ -493,9 +493,11 @@ fi
 [ "${seed_addr}" = "192.168.100.1" ] || report_failure "net-seed-lan-${seed_addr:-empty}"
 [ "${seed_prefix}" = "24" ] || report_failure "net-seed-prefix-${seed_prefix:-empty}"
 [ "${seed_wan}" = "eth0" ] || report_failure "net-seed-wan-${seed_wan:-empty}"
-# This release line ships the exception open (docs/network.md documents how to close
-# it, and a CI_NET_WAN_SSH=closed build is a different release, not this image).
-[ "${seed_ssh}" = "open" ] || report_failure "net-seed-ssh-${seed_ssh:-empty}"
+# The shipped default closes the WAN: no 22/tcp rule, dropbear left bound to the LAN.
+# The convenience image is a different artifact (-install-wan-ssh), and its own run
+# asserts the opposite (tests/modules/ci/test_wan_ssh_variants.sh), so this check stays
+# about the image a release publishes as the default one.
+[ "${seed_ssh}" = "closed" ] || report_failure "net-seed-ssh-${seed_ssh:-empty}"
 echo "[s2] net seed: lan=${seed_addr}/${seed_prefix} wan=${seed_wan} wan-ssh=${seed_ssh}"
 
 # The start link is what makes rcS run the hook at all.

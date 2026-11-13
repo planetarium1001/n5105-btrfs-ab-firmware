@@ -164,10 +164,12 @@ stage=net-seed wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-i
 `ab-slot log | tail` is the quick read of the same boot: the last lines are the health check
 and the decision (`stage=healthcheck-done`, then `stage=commit`).
 
-Every later boot prints one line instead: `stage=net-seed result=skip
-reason=network-present`. That is the whole idempotence story: the seed runs on the boot that
-found no `/etc/config/network` and never again, which is also what keeps your own `uci`
-changes and an upgrade's configuration intact.
+Every later boot prints one line instead: `stage=net-seed result=skip reason=seeded`.
+The mark that decides this is `/etc/config/.ab-net-seed`, not the presence of a
+configuration file: a configuration that exists and was not written by this hook is left
+alone and reported as `result=skip reason=foreign-config`. That is the whole idempotence
+story, and it is also what keeps your own `uci` changes and an upgrade's configuration
+intact.
 
 `ab-slot status` prints exactly one line on a healthy machine:
 
@@ -311,7 +313,7 @@ Run these on the machine before you trust it with anything:
 | the layout is intact | `ab-slot status` | one line, `p4=ok`, a committed slot |
 | the boot was recorded | `ab-slot log` | `stage=boot`, `stage=btrfs-check result=ok`, `stage=commit` |
 | the growth finished | `ab-slot log` | `stage=grow result=done` (or `stage=resize result=ok` after a runtime rescue) |
-| the network was generated | `ab-slot log` then look for `net-seed` | `result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24` on the first boot, `result=skip reason=network-present` after it |
+| the network was generated | `ab-slot log` then look for `net-seed` | `result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24` on the first boot, `result=skip reason=seeded` after it |
 | the LAN carries its address | `ip -brief address` | a `br-lan` line with `192.168.100.1/24` |
 | the WAN has a lease | `ip -brief address` | the device named by `uci get network.wan.device` (`eth0`) with an address inside the upstream router's subnet |
 | the interfaces are the ones this build ships | `uci show network` | `network.wan.device='eth0'`, `network.wan.proto='dhcp'`, `network.lan.device='br-lan'`, `network.lan.proto='static'`, `network.lan.ipaddr='192.168.100.1/24'`, and `ports='eth1' 'eth2' 'eth3'` on the `br-lan` device section |
@@ -746,8 +748,8 @@ ab-slot log --prev
 | Symptom | Usually means | What to do |
 | --- | --- | --- |
 | no console output at all | wrong boot mode or disk | boot UEFI only, check the disk order |
-| no address on any port after the first boot | the seed did not run, or it failed | look for `net-seed` in `ab-slot log`: `result=fail reason=...` names the step that broke; `result=skip reason=network-present` means a configuration already existed and was left alone |
-| `result=skip reason=network-present` on a disk you just wrote | the writable layer was not empty | the file is the truth: read `uci show network` and decide whether that configuration is the one you want |
+| no address on any port after the first boot | the seed did not run, or it failed | look for `net-seed` in `ab-slot log`: `result=fail reason=...` names the step that broke; `result=skip reason=seeded` means a configuration already existed and was left alone |
+| `result=skip reason=seeded` on a disk you just wrote | the writable layer was not empty | the file is the truth: read `uci show network` and decide whether that configuration is the one you want |
 | the LAN address is not `192.168.100.1` | the network was configured before, or by hand | the defaults are applied only on the boot that generated the file; set the address with `uci` as above |
 | the WAN device has no lease | no cable, no DHCP on the upstream side, or another address already in use | `ip -brief address` for the device `uci get network.wan.device` names, then the upstream router's client list |
 | `allow_ssh_wan` is in `uci show firewall` but not in `nft list ruleset` | the ruleset has not been rendered since the rule was added | `/etc/init.d/firewall reload`, then look again |

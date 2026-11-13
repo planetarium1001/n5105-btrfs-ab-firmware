@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: cross-upgrade runs the guest and parses its status blocks
+# reason: net: the WAN SSH default is derived from the variant flag
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -1552,7 +1552,7 @@ yaml .github/workflows/ci-s3.yml jobs =
 yaml .github/workflows/ci-s3.yml jobs.s3.env = 
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KMODS_DIR = ${{ inputs.kmods_dir }}
-yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_NET_WAN_SSH = ${{ inputs.net_wan_ssh }}
+yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_NET_WAN_SSH = ${{ inputs.variant && 'open' || 'closed' }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_PLATFORM_VERSION = ${{ inputs.platform_version }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_UPSTREAM_BASE_URL = ${{ inputs.upstream_base_url }}
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
@@ -1671,7 +1671,6 @@ yaml .github/workflows/ci-s3.yml on.workflow_call.inputs =
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.boots = {description:<text>, required: false, type: boolean, default: true}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.kernel_package = {description:<text>, required: true, type: string}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.kmods_dir = {description:<text>, required: true, type: string}
-yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.net_wan_ssh = {description:<text>, required: false, type: string, default: "closed"}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.platform_version = {description:<text>, required: true, type: string}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.upstream_base_url = {description:<text>, required: true, type: string}
 yaml .github/workflows/ci-s3.yml on.workflow_call.inputs.upstream_version = {description:<text>, required: true, type: string}

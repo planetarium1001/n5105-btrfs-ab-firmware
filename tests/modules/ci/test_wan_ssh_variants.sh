@@ -47,15 +47,14 @@ assert_contains "$(cat "$seed_hook")" "wan-ssh-close:" "ac-6 the open branch pri
 
 # --- ac-6: the build wiring -------------------------------------------------
 s3="$(cat .github/workflows/ci-s3.yml)"
-assert_contains "$s3" "net_wan_ssh:" "ac-6 S3 takes the WAN SSH default as an input"
-assert_contains "$s3" "CI_NET_WAN_SSH: \${{ inputs.net_wan_ssh }}" "ac-6 S3 passes it to the render"
+assert_contains "$s3" "CI_NET_WAN_SSH: \${{ inputs.variant && 'open' || 'closed' }}" \
+  "ac-6 the WAN SSH default is derived from the variant, not a second input"
 assert_contains "$s3" "variant:" "ac-6 S3 takes a variant flag"
 assert_contains "$s3" "name: image-install-wan-ssh" "ac-6 the variant artifact has a literal name"
 assert_contains "$s3" "boots:" "ac-6 S3 can skip the boot assertions for the variant"
 
 ci="$(cat .github/workflows/ci.yml)"
 assert_contains "$ci" "s3-wan-ssh:" "ac-6 the pipeline has a variant job"
-assert_contains "$ci" "net_wan_ssh: open" "ac-6 the variant is the open one"
 assert_contains "$ci" "variant: true" "ac-6 the variant job asks for the convenience image"
 assert_contains "$ci" "boots: false" "ac-6 the variant does not repeat the boot assertions"
 assert_contains "$ci" "startsWith(github.ref, 'refs/tags/v')" "ac-6 the variant is built on tags only"

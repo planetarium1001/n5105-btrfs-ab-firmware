@@ -124,7 +124,10 @@ stage=net-seed wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-i
 
 `ab-slot log | tail` 是同一次启动的快速读法：最后几行就是健康检查与决定（`stage=healthcheck-done`，然后是 `stage=commit`）。
 
-之后再启动只打印一行：`stage=net-seed result=skip reason=network-present`。幂等就是这件事：只有"发现没有 `/etc/config/network`"的那次启动会跑生成，之后再也不跑——你自己用 `uci` 改的东西、升级带过来的配置也因此不会被覆盖。
+之后再启动只打印一行：`stage=net-seed result=skip reason=seeded`。判定依据是 marker
+`/etc/config/.ab-net-seed`，不是配置文件在不在：配置存在但不是这个钩子写的，会被原样保留并报
+`result=skip reason=foreign-config`。幂等就是这件事，你自己用 `uci` 改的东西、升级带过来的配置
+也因此不会被覆盖。
 
 健康机器上 `ab-slot status` 只打印一行：
 
@@ -228,7 +231,7 @@ uci show firewall | grep allow_ssh_wan     # 没有输出
 | 布局完好 | `ab-slot status` | 一行输出，`p4=ok`，有已提交槽 |
 | 本次启动被记录 | `ab-slot log` | 有 `stage=boot`、`stage=btrfs-check result=ok`、`stage=commit` |
 | 扩容有结论 | `ab-slot log` | `stage=grow result=done`（运行期补做完则是 `stage=resize result=ok`） |
-| 网络是生成出来的 | `ab-slot log` 里找 `net-seed` | 首次启动是 `result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24`，之后是 `result=skip reason=network-present` |
+| 网络是生成出来的 | `ab-slot log` 里找 `net-seed` | 首次启动是 `result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24`，之后是 `result=skip reason=seeded` |
 | LAN 有地址 | `ip -brief address` | 有一条 `br-lan`，带 `192.168.100.1/24` |
 | WAN 拿到租约 | `ip -brief address` | `uci get network.wan.device` 指的设备（`eth0`）上有一个落在上游路由网段里的地址 |
 | 接口配置就是本版发的这套 | `uci show network` | `network.wan.device='eth0'`、`network.wan.proto='dhcp'`、`network.lan.device='br-lan'`、`network.lan.proto='static'`、`network.lan.ipaddr='192.168.100.1/24'`，`br-lan` 设备段上有 `ports='eth1' 'eth2' 'eth3'` |
@@ -588,8 +591,8 @@ ab-slot log --prev
 | 现象 | 通常意味着 | 处理 |
 | --- | --- | --- |
 | 控制台完全没有输出 | 启动方式或盘不对 | 只用 UEFI 启动，检查磁盘顺序 |
-| 首次启动后任何口都没有地址 | 种子没跑，或跑了但失败 | 在 `ab-slot log` 里找 `net-seed`：`result=fail reason=...` 指出坏在哪一步；`result=skip reason=network-present` 说明本来就有配置、被原样保留了 |
-| 刚写好的盘上出现 `result=skip reason=network-present` | 可写层不是空的 | 文件就是事实：读 `uci show network`，判断那套配置是不是你要的 |
+| 首次启动后任何口都没有地址 | 种子没跑，或跑了但失败 | 在 `ab-slot log` 里找 `net-seed`：`result=fail reason=...` 指出坏在哪一步；`result=skip reason=seeded` 说明本来就有配置、被原样保留了 |
+| 刚写好的盘上出现 `result=skip reason=seeded` | 可写层不是空的 | 文件就是事实：读 `uci show network`，判断那套配置是不是你要的 |
 | LAN 地址不是 `192.168.100.1` | 之前配过，或被手工改过 | 默认值只在生成该文件的那次启动叠加；按上面的办法用 `uci` 设置地址 |
 | WAN 设备没有租约 | 没插线、上游没有 DHCP，或地址已被占用 | 对 `uci get network.wan.device` 指的设备跑 `ip -brief address`，再看上游路由的客户端列表 |
 | `uci show firewall` 里有 `allow_ssh_wan`，`nft list ruleset` 里没有 | 规则加上之后 ruleset 还没渲染 | `/etc/init.d/firewall reload`，再看一次 |

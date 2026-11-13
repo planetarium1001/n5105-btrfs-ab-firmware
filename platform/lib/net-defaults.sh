@@ -72,7 +72,7 @@ nd_conf_get() {
     printf '%s' "${nd_fallback}"
 }
 
-# nd_load_conf: the four knobs this project ships, from the file the build rendered into
+# nd_load_conf: the five knobs this project ships, from the file the build rendered into
 # the platform layer. Read once, so a half-written file cannot change behaviour midway.
 nd_load_conf() {
     ND_WAN_DEV="$(nd_conf_get NET_WAN_DEV "${ND_WAN_DEV}")"
@@ -277,13 +277,18 @@ nd_apply_defaults() {
     # WAN. The wan zone keeps input REJECT - a zone set to ACCEPT would open LuCI and
     # every other service too, which is what the community images do and we do not.
     if [ "${nd_ssh}" = "open" ] && [ "${nd_mode}" = "router" ]; then
+        # A *named* section on purpose: the operator has to be able to remove it, and
+        # `uci delete firewall.allow_ssh_wan` only works for a named one. An anonymous
+        # rule named by its `option name` would leave the documented command failing with
+        # "Entry not found" - the one line standing between an open WAN port and a closed
+        # one has to be a command that runs.
         if ! nd_uci get firewall.allow_ssh_wan >/dev/null 2>&1; then
-            nd_uci add firewall rule
-            nd_uci set firewall.@rule[-1].name=allow_ssh_wan
-            nd_uci set firewall.@rule[-1].src=wan
-            nd_uci set firewall.@rule[-1].proto=tcp
-            nd_uci set firewall.@rule[-1].dest_port=22
-            nd_uci set firewall.@rule[-1].target=ACCEPT
+            nd_uci set firewall.allow_ssh_wan=rule
+            nd_uci set firewall.allow_ssh_wan.name=allow_ssh_wan
+            nd_uci set firewall.allow_ssh_wan.src=wan
+            nd_uci set firewall.allow_ssh_wan.proto=tcp
+            nd_uci set firewall.allow_ssh_wan.dest_port=22
+            nd_uci set firewall.allow_ssh_wan.target=ACCEPT
             nd_uci commit firewall
         fi
         # dropbear binds to `lan` in the upstream default; a bound daemon cannot accept
