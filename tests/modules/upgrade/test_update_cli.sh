@@ -175,4 +175,59 @@ set -e
 assert_eq "$rc" "74" "a tampered payload is refused"
 assert_contains "$out" "reason=feed-size-mismatch" "the refusal names the size"
 
+# --- the guards the review asked for ---------------------------------------
+
+# An override URL goes through the same https-only rule as the file.
+set +e
+out=$(run --feed-check --feed-url http://plaintext.invalid/v1)
+rc=$?
+set -e
+assert_eq "$rc" "74" "an http override is refused"
+assert_contains "$out" "reason=feed-conf-url" "the refusal names the url rule"
+
+# A release file this code cannot compare is not something it can advise about.
+printf 'PLATFORM_VERSION=0.0.6\nUPSTREAM_VERSION=25.12\n' >"$tmp/bad-release"
+set +e
+out=$(AB_PLATFORM_RELEASE="$tmp/bad-release" UPDATE_CONF="$conf" sh "$upgrade" --feed-check 2>&1)
+rc=$?
+set -e
+assert_eq "$rc" "74" "a malformed base version is refused"
+assert_contains "$out" "reason=platform-release-invalid" "the refusal names the release file"
+printf 'PLATFORM_VERSION=0.0.6\nUPSTREAM_VERSION=25.12.2\nPLATFORM_STAGE=release\n' >"$release"
+
+# A downgrade on the same base is a downgrade, not Z1.
+write_index 0.0.5 25.12.2 6.12.103
+set +e
+out=$(run --feed --yes --force)
+rc=$?
+set -e
+assert_contains "$out" "level=downgrade" "an older release on the same base is downgraded"
+case "$out" in
+  *"Tested  YES"*) assert_eq "Z1 block" "absent" "a downgrade does not borrow the Z1 block" ;;
+  *) assert_eq "absent" "absent" "a downgrade does not borrow the Z1 block" ;;
+esac
+
+# A platform-only update says what it is, and still reaches the installer.
+write_index 0.0.8 25.12.2 6.12.103
+set +e
+out=$(run --feed --yes)
+rc=$?
+set -e
+assert_contains "$out" "base unchanged; this updates the platform layer only" \
+  "a same-base update announces that only the platform layer moves"
+assert_eq "$rc" "74" "it reaches the installer, which refuses the fixture payload"
+
+# Flags that only mean something with --feed are a usage error on their own.
+set +e
+out=$(run --direct /tmp/payload.tar)
+rc=$?
+set -e
+assert_eq "$rc" "2" "--direct without --feed is a usage error"
+
+set +e
+out=$(AB_PLATFORM_RELEASE="$release" UPDATE_CONF="$conf" sh "$upgrade" --pin 0.0.8 --unpin 2>&1)
+rc=$?
+set -e
+assert_eq "$rc" "2" "--pin and --unpin contradict each other"
+
 finish

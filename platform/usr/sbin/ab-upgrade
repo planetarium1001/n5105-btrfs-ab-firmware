@@ -213,12 +213,24 @@ feed_show_update() {
 feed_main() {
     feed_load_libs
     ab_feed_config_load "${UPDATE_CONF}" || refuse "${AB_FEED_REASON}"
-    [ -n "${feed_url_override}" ] && AB_FEED_URL="${feed_url_override}"
+    if [ -n "${feed_url_override}" ]; then
+        AB_FEED_URL="${feed_url_override}"
+        # The override goes through the same check as the file: one https-only rule, one
+        # place that enforces it (docs/update.md).
+        case "${AB_FEED_URL}" in
+            https://*) : ;;
+            *) refuse "feed-conf-url" ;;
+        esac
+    fi
 
     installed=$(platform_release_value PLATFORM_VERSION) || installed=""
     installed_base=$(platform_release_value UPSTREAM_VERSION) || installed_base=""
     [ -n "${installed}" ] || refuse "platform-release-missing"
     [ -n "${installed_base}" ] || refuse "platform-release-missing"
+    # A version this code cannot compare is not a machine it can advise. Guessing would
+    # print an empty span and skip the whole Change/Tested/Risk block.
+    ab_version_valid "${installed}" || refuse "platform-release-invalid"
+    ab_version_valid "${installed_base}" || refuse "platform-release-invalid"
     installed_base_show=${installed_base}
     installed_kernel_show=$(installed_kernel)
 
@@ -263,6 +275,11 @@ feed_main() {
     # The level is a statement about the base, so an equal base reads as "current".
     # Here the platform version still moves, which is the Z1 same-base case.
     [ "${level}" = "current" ] && level="Z1"
+    # A base that does not move cannot reveal a platform downgrade: the candidate is an
+    # older release on the same base, and calling that Z1/LOW would tell the user the
+    # opposite of what is happening.
+    _platform_cmp=$(ab_version_cmp "${candidate}" "${installed}")
+    [ "${_platform_cmp}" -lt 0 ] && level="downgrade"
 
     if [ -n "${AB_FEED_PIN:-}" ]; then
         _pin_cmp=$(ab_version_cmp "${candidate}" "${AB_FEED_PIN}")
@@ -338,6 +355,13 @@ feed_main() {
         refuse "${_feed_reason}"
     fi
     say "ab-upgrade: ${candidate} verified, installing"
+    # A platform-only update carries the same rootfs as the slot it is installed into,
+    # because the base did not move. The installer refuses an identical rootfs version
+    # unless it is told the reinstall is intended, which here it is.
+    if [ "${cand_base}" = "${installed_base}" ] && [ "${_platform_cmp}" -gt 0 ]; then
+        say "ab-upgrade: base unchanged; this updates the platform layer only"
+        force_mode=1
+    fi
     payload_tar="${payload_path}"
 }
 
@@ -406,14 +430,28 @@ pin_main() {
         ab_version_valid "${pin_version}" || refuse "pin-invalid-version"
     fi
     _tmp="${UPDATE_CONF}.new.$$"
+    # The reader trims blanks around the key, so the writer has to recognise the same
+    # shape; otherwise a hand-edited `UPDATE_PIN = 0.0.8` survives an --unpin that says
+    # it removed the pin.
     awk -v keep="${pin_version}" -v unpin="${unpin_mode}" '
-        /^UPDATE_PIN=/ { next }
+        /^[[:space:]]*UPDATE_PIN[[:space:]]*=/ { next }
         { print }
         END {
             if (unpin != "1" && keep != "") printf "UPDATE_PIN=%s\n", keep
         }
     ' "${UPDATE_CONF}" >"${_tmp}" || refuse "pin-write-failed"
+    # Keep the mode and owner the file had: a pin edit must not widen the permissions of
+    # a file the operator may have tightened.
+    chmod --reference="${UPDATE_CONF}" "${_tmp}" 2>/dev/null || \
+        chmod "$(ls -l "${UPDATE_CONF}" | cut -c1-10 | tr 'rwx-' '7550' | cut -c2-10)" "${_tmp}" 2>/dev/null || :
     mv "${_tmp}" "${UPDATE_CONF}" || refuse "pin-write-failed"
+    _after=$(sed -n 's/^[[:space:]]*UPDATE_PIN[[:space:]]*=[[:space:]]*//p' "${UPDATE_CONF}" | head -n 1)
+    if [ "${unpin_mode}" = "1" ] && [ -n "${_after}" ]; then
+        refuse "pin-write-failed"
+    fi
+    if [ "${unpin_mode}" != "1" ] && [ "${_after}" != "${pin_version}" ]; then
+        refuse "pin-write-failed"
+    fi
     if [ "${unpin_mode}" = "1" ]; then
         say "ab-upgrade: pin removed"
     else
@@ -425,6 +463,14 @@ work="${work:-/tmp/ab-upgrade.$$}"
 cleanup() {
     rm -rf "${work}"
 }
+if [ -n "${route}" ] && [ "${feed_mode}" != "1" ] && [ "${feed_check}" != "1" ]; then
+    say "ab-upgrade: --direct and --stepwise only apply to --feed"
+    usage
+fi
+if [ "${pin_version}" != "" ] && [ "${unpin_mode:-0}" = "1" ]; then
+    say "ab-upgrade: --pin and --unpin contradict each other"
+    usage
+fi
 if [ "${pin_version}" != "" ] || [ "${unpin_mode:-0}" = "1" ]; then
     pin_main
     exit 0

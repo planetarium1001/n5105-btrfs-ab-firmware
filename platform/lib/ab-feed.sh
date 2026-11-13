@@ -86,6 +86,11 @@ ab_feed_config_load() {
         sha256) : ;;
         *) _ab_feed_fail feed-verify-unsupported || return 1 ;;
     esac
+    # A hand-written pin is held to the same shape as `--pin`: an unparsable one would
+    # silently stop protecting the machine.
+    if [ -n "${AB_FEED_PIN:-}" ]; then
+        ab_version_valid "${AB_FEED_PIN}" || _ab_feed_fail pin-invalid-version || return 1
+    fi
     return 0
 }
 
@@ -152,6 +157,7 @@ ab_feed_index_parse() {
     _fmt=""
     _channel=""
     _in=0
+    _seen_entry=0
     _last=""
 
     while IFS= read -r _line || [ -n "${_line}" ]; do
@@ -166,6 +172,10 @@ ab_feed_index_parse() {
         esac
         case "${_key}" in
             AB-FEED)
+                # The header is the first line of the file and appears once; an index that
+                # says so twice has two answers to "which format is this".
+                [ -z "${_fmt}" ] || _ab_feed_fail feed-index-field || return 1
+                [ "${_seen_entry}" = "0" ] || _ab_feed_fail feed-index-field || return 1
                 _fmt=${_val}
                 case "${_fmt}" in
                     1) : ;;
@@ -173,6 +183,10 @@ ab_feed_index_parse() {
                 esac
                 ;;
             channel)
+                # Nothing may precede the header: the format of the file is what the
+                # first line promises, and a reader that accepts a later header is
+                # guessing.
+                [ -n "${_fmt}" ] || _ab_feed_fail feed-index-field || return 1
                 _channel=${_val}
                 ;;
             generated)
@@ -180,8 +194,10 @@ ab_feed_index_parse() {
                 :
                 ;;
             entry)
+                [ -n "${_fmt}" ] || _ab_feed_fail feed-index-field || return 1
                 [ "${_in}" = 0 ] || _ab_feed_fail feed-index-field || return 1
                 _in=1
+                _seen_entry=1
                 _platform="" _base="" _kernel="" _payload="" _size="" _sha="" _url="" _notes=""
                 ;;
             end)
@@ -200,6 +216,13 @@ ab_feed_index_parse() {
                 _ab_feed_field_ok sha256 "${_sha}" || return 1
                 if [ -z "${_url}" ]; then
                     _url="${AB_FEED_URL%/}/${_payload}"
+                else
+                    # An explicit url is used as given, so it has to be as trustworthy as
+                    # the base url: absolute and encrypted, nothing else is accepted.
+                    case "${_url}" in
+                        https://*) : ;;
+                        *) _ab_feed_fail feed-index-field || return 1 ;;
+                    esac
                 fi
                 if [ -n "${_last}" ]; then
                     _cmp=$(ab_version_cmp "${_last}" "${_platform}")
@@ -211,15 +234,18 @@ ab_feed_index_parse() {
                 ;;
             platform | base | kernel | payload | size | sha256 | url | notes)
                 [ "${_in}" = 1 ] || _ab_feed_fail feed-index-field || return 1
+                # One field, one value: a second occurrence means the publisher and this
+                # reader disagree about which line wins, so the entry is refused rather
+                # than resolved by position.
                 case "${_key}" in
-                    platform) _platform=${_val} ;;
-                    base) _base=${_val} ;;
-                    kernel) _kernel=${_val} ;;
-                    payload) _payload=${_val} ;;
-                    size) _size=${_val} ;;
-                    sha256) _sha=${_val} ;;
-                    url) _url=${_val} ;;
-                    notes) _notes=${_val} ;;
+                    platform) [ -z "${_platform}" ] || _ab_feed_fail feed-index-field || return 1; _platform=${_val} ;;
+                    base) [ -z "${_base}" ] || _ab_feed_fail feed-index-field || return 1; _base=${_val} ;;
+                    kernel) [ -z "${_kernel}" ] || _ab_feed_fail feed-index-field || return 1; _kernel=${_val} ;;
+                    payload) [ -z "${_payload}" ] || _ab_feed_fail feed-index-field || return 1; _payload=${_val} ;;
+                    size) [ -z "${_size}" ] || _ab_feed_fail feed-index-field || return 1; _size=${_val} ;;
+                    sha256) [ -z "${_sha}" ] || _ab_feed_fail feed-index-field || return 1; _sha=${_val} ;;
+                    url) [ -z "${_url}" ] || _ab_feed_fail feed-index-field || return 1; _url=${_val} ;;
+                    notes) [ -z "${_notes}" ] || _ab_feed_fail feed-index-field || return 1; _notes=${_val} ;;
                 esac
                 ;;
             *)

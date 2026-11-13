@@ -93,8 +93,9 @@ platform=0.0.6 platform_available=0.0.8 base=25.12.2 base_available=25.12.2 kern
 
 `platform` and `base` are what the running slot carries, `kernel` is the running kernel
 (`uname -r`); the `_available` fields are what the newest entry in the index offers. `span`
-is the `base` difference as `patch N`, `minor N`, `major N` or `none`, and `level` is the
-risk level from [Risk levels](#risk-levels-and-what-each-one-asks-of-you).
+is the `base` difference as `patch N`, `minor N`, `major N` or `none`; a downgrade reports
+the same word with a negative count (`minor -1`) and `level=downgrade`. `level` is the risk
+level from [Risk levels](#risk-levels-and-what-each-one-asks-of-you).
 
 `status` says what the machine may do, and it is the field to branch on:
 

@@ -83,8 +83,8 @@ platform=0.0.6 platform_available=0.0.8 base=25.12.2 base_available=25.12.2 kern
 ```
 
 `platform` 与 `base` 是运行槽位里的值，`kernel` 是正在跑的内核（`uname -r`）；带
-`_available` 的字段是索引里最新条目给的值。`span` 是 `base` 的差值，写成 `patch N`、
-`minor N`、`major N` 或 `none`；`level` 是[风险级别](#风险级别与各自的确认强度)那一节里的级别。
+`_available` 的字段是索引里最新条目给的值。`span` 是 `base` 的差值，写成 `patch N`、`minor N`、`major N` 或 `none`；降级时同一组词带负号
+（`minor -1`）且 `level=downgrade`。`level` 是[风险级别](#风险级别与各自的确认强度)那一节里的级别。
 
 `status` 说这台机器可以做什么，是要分支判断的那个字段：
 

@@ -141,6 +141,64 @@ assert_eq "$(ab_feed_pick "$parsed" 0.0.8)" "" "the installed release is not off
 assert_eq "$(ab_feed_stepwise "$parsed" 0.0.6)" "0.0.7" "stepwise takes the smallest release above the installed one"
 assert_eq "$(ab_feed_stepwise "$parsed" 0.0.7)" "0.0.8" "stepwise moves one release at a time"
 
+# --- ac-2: an index that guesses is refused --------------------------------
+dup="$tmp/dup.txt"
+cat >"$dup" <<'IDX'
+AB-FEED 1
+channel  stable
+entry
+  platform 0.0.8
+  base     25.12.2
+  base     26.0.0
+  kernel   6.12.103
+  payload  p.tar
+  size     1
+  sha256   aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+end
+IDX
+assert_kind "an entry with two bases is refused" "feed-index-field" "$dup"
+
+late="$tmp/late.txt"
+cat >"$late" <<'IDX'
+# comment
+channel  stable
+AB-FEED 1
+entry
+  platform 0.0.8
+  base     25.12.2
+  kernel   6.12.103
+  payload  p.tar
+  size     1
+  sha256   aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+end
+IDX
+assert_kind "a header that is not first is refused" "feed-index-field" "$late"
+
+plain="$tmp/plain.txt"
+cat >"$plain" <<'IDX'
+AB-FEED 1
+channel  stable
+entry
+  platform 0.0.8
+  base     25.12.2
+  kernel   6.12.103
+  payload  p.tar
+  size     1
+  sha256   aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  url      http://mirror.invalid/p.tar
+end
+IDX
+assert_kind "an unencrypted explicit url is refused" "feed-index-field" "$plain"
+
+# A pin written by hand is validated like one given on the command line.
+printf 'UPDATE_FEED_URL=https://example.org/feed\nUPDATE_PIN=0.0.8-r1\n' >"$conf"
+if ab_feed_config_load "$conf" 2>/dev/null; then
+  assert_eq "loaded" "refused" "an unparsable pin in the file is refused"
+else
+  assert_eq "$AB_FEED_REASON" "pin-invalid-version" "an unparsable pin in the file names the reason"
+fi
+printf 'UPDATE_FEED_URL=https://example.org/feed\n' >"$conf"
+
 # --- ac-4: payload verification --------------------------------------------
 payload="$tmp/payload.tar"
 printf 'payload-bytes' >"$payload"
