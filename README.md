@@ -81,12 +81,13 @@ up LAN-only.** The one port joins `br-lan` and there is no `wan` section at all,
 this release's documented behaviour, not a fault, because a slot with no WAN interface cannot
 have a WAN device. A four-port N5105 runs in router mode and is unaffected.
 
-- The WAN side accepts **22/tcp and nothing else**: one `config rule`, `allow_ssh_wan`. The
-  `wan` zone keeps `input 'REJECT'`, and LuCI's `80/tcp` is not exposed to the WAN.
-- That rule is open by default for one reason: the box normally sits under the main router,
-  and `ssh root@<address>` is the only way in that does not need a keyboard and an HDMI
-  cable. The WAN side of a shared network is not necessarily clean, so close it once the
-  box is reachable from the LAN.
+- The WAN side accepts **nothing**. The shipped image carries no `allow_ssh_wan` rule: the
+  `wan` zone keeps `input 'REJECT'`, `dropbear` keeps upstream's binding to `lan`, and
+  LuCI's `80/tcp` is not exposed to the WAN either.
+- One image is the deliberate exception. `n5105-ab-<upstream>-install-wan-ssh.img.gz` adds
+  exactly one `22/tcp` rule, for a machine you cannot reach from the LAN and cannot give a
+  keyboard and a monitor. Its first boot prints the three ways to close the rule, and the
+  default image never carries it.
 
 Change the LAN subnet, then reconnect at the new address:
 
@@ -109,8 +110,9 @@ uci commit network
 /etc/init.d/network reload
 ```
 
-Close WAN 22, in the shell or in LuCI under **Network -> Firewall -> Traffic Rules** (the
-rule is named `allow_ssh_wan`; 中文界面为 网络 -> 防火墙 -> 通信规则):
+Close WAN 22 on the `-wan-ssh` image, in the shell or in LuCI under
+**Network -> Firewall -> Traffic Rules** (the rule is named `allow_ssh_wan`; 中文界面为
+网络 -> 防火墙 -> 通信规则):
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -171,10 +173,12 @@ Format: `MAJOR.MINOR.PATCH`.
 
 Current version: `0.0.8`. The first-boot network generation arrived in `0.0.7`, by reusing the
 upstream `board_detect` and `config_generate` and layering this project's defaults on top:
-`eth1`..`eth3` in the `br-lan` bridge, LAN `192.168.100.1/24`, and a WAN side that accepts
-`22/tcp` and nothing else. `0.0.8` keeps that behaviour and changes what an update carries and
-how a release is produced: the payload brings its own GRUB and slot menu, and a new upstream
-base can be released without a human editing the pin. The health check from `0.0.6` is unchanged: a
+`eth1`..`eth3` in the `br-lan` bridge and LAN `192.168.100.1/24`. The WAN side accepts
+nothing: the `22/tcp` exception lives only in the separate `-install-wan-ssh` image, which
+exists for a machine that cannot be reached from the LAN. `0.0.8` keeps the first-boot
+behaviour and changes what an update carries and how a release is produced: the payload brings
+its own GRUB and slot menu, and a new upstream base can be released without a human editing the
+pin. The health check from `0.0.6` is unchanged: a
 slot is committed only after the writable layer, the firewall ruleset and the WAN device have
 been checked, and the abandon path records the decision on the ESP before it announces it. The
 pipeline still builds a real payload, validates it with the same checker the device uses, and a

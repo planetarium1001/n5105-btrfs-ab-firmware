@@ -71,10 +71,11 @@
 完全没有 `wan` 段，于是健康检查的 `wan-present` 探针每次启动都失败、槽会报自己不干净；这是本发布
 写明的实现口径而不是故障 —— 没有 WAN 接口的槽不可能有 WAN 设备。四口 N5105 走路由器模式，不受影响。
 
-- WAN 侧只放行 **22/tcp**，别的什么都不放：`/etc/config/firewall` 里一条
-  `config rule 'allow_ssh_wan'`。`wan` zone 仍是 `input 'REJECT'`，LuCI 的 `80/tcp` 不对 WAN 暴露。
-- 这条规则默认开，只为一个理由：设备通常接在主路由下面，`ssh root@<地址>` 是唯一不需要键盘
-  和 HDMI 线的入口。共享网络的 WAN 侧并不一定干净，一旦能从 LAN 进机器就把它关掉。
+- WAN 侧**什么都不放**。随发布的镜像里没有 `allow_ssh_wan` 规则：`wan` zone 仍是
+  `input 'REJECT'`，`dropbear` 保持上游的绑定 `lan`，LuCI 的 `80/tcp` 同样不对 WAN 暴露。
+- 有一个镜像是刻意的例外：`n5105-ab-<upstream>-install-wan-ssh.img.gz` 只多一条 `22/tcp` 规则，
+  给「从 LAN 够不到、也给不了键盘和显示器」的机器。它的首启会打印三条关闭这条规则的办法，
+  默认镜像永远没有这条规则。
 
 改 LAN 网段，然后在新地址重连：
 
@@ -97,7 +98,8 @@ uci commit network
 /etc/init.d/network reload
 ```
 
-关掉 WAN 22，命令行或 LuCI 均可（网络 → 防火墙 → 通信规则，规则名 `allow_ssh_wan`）：
+在 `-wan-ssh` 镜像上关掉 WAN 22，命令行或 LuCI 均可（网络 → 防火墙 → 通信规则，规则名
+`allow_ssh_wan`）：
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -155,7 +157,8 @@ uci commit firewall
 
 当前版本：`0.0.8`。首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
 `config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认
-`192.168.100.1/24`、WAN 侧默认只放行 `22/tcp`。`0.0.8` 保留这些行为，改的是「更新带什么」与
+`192.168.100.1/24`。WAN 侧什么都不放：`22/tcp` 那条例外只存在于单独的 `-install-wan-ssh` 镜像里，
+它给的是「从 LAN 够不到的机器」这条进路。`0.0.8` 保留首启行为，改的是「更新带什么」与
 「发布怎么产生」：载荷自带 GRUB 与 slot 菜单，上游新正式版不需要人改 pin 也能发布。`0.0.6` 起的健康检查不变：只有可写层、
 防火墙 ruleset 与 WAN 设备都通过才提交槽；放弃待提交槽时先把决定写进 ESP，再对外宣布。
 流水线仍产出真载荷，并用设备端同一套校验器验证；打 tag 会发布镜像与对应载荷。

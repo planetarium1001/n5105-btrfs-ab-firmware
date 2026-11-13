@@ -35,14 +35,42 @@ of the result.
 
 ### Which artifact to write
 
-Only an image built with the *production* boot initramfs can boot a real machine. The CI
-publishes exactly one of those, under one of two names:
+Only an image built with the *production* boot initramfs can boot a real machine. Two of those
+are built from one pipeline run, and the only difference between them is one rendered value:
+whether `22/tcp` from the WAN is accepted.
 
 | Where | Name | Use |
 | --- | --- | --- |
-| GitHub release | `n5105-ab-<upstream>-install.img.gz` | write this one; it is the only file the release job proved bootable |
-| Actions artifact (tag builds) | `image-install` | the same bytes, for testing before a release |
+| GitHub release | `n5105-ab-<upstream>-install.img.gz` | write this one. No WAN rule at all, which is the same posture as an upstream ImmortalWrt image |
+| Convenience build, same tag | `n5105-ab-<upstream>-install-wan-ssh.img.gz` (artifact `image-install-wan-ssh` of the tag's run) | the same image plus one `allow_ssh_wan` rule: `22/tcp` from the WAN is accepted. Take it only when the machine cannot be reached from the LAN and cannot be given a keyboard and a monitor |
+| Actions artifact (tag builds) | `image-install`, `image-install-wan-ssh` | the two builds before the release stage names them; the file inside the convenience archive is still `n5105-ab-image.img.gz` |
 | Actions artifact (every build) | `image-probe` | **never write this**: it is the S1 module probe, it looks for `/dev/vda` and powers off on real hardware |
+
+Both images come from the same upstream input and share one payload: `NET_WAN_SSH` is the only
+value that differs, so the kernel, the rootfs, the platform layer and the update payload are
+byte for byte the same. The convenience image is a way in, not a safer default - it opens
+`22/tcp` on the WAN side of a machine whose root account may still have no password, and it
+says so on its own console.
+
+Take the convenience image only for the machine you cannot otherwise reach, and close the rule
+as soon as the LAN side answers. There are three ways out, and the first boot prints all three:
+
+```sh
+# 1. on the machine, over the very rule you are using
+uci delete firewall.allow_ssh_wan
+uci commit firewall
+/etc/init.d/firewall reload
+```
+
+```text
+# 2. LuCI: Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan
+# 3. reflash the closed image: n5105-ab-<upstream>-install.img.gz
+```
+
+The rule is added on the boot that generates the network and never again: an upgrade carries
+the writable layer over and does not re-apply the defaults, so a machine flashed with the
+closed image does not grow the rule later, and one flashed with the convenience image keeps it
+until you delete it.
 
 File names carry the board, the product line, the upstream base and the role - not our own
 release counter, which lives on the GitHub release instead. Earlier releases named the
@@ -117,11 +145,20 @@ ab-slot status
 ab-slot log | grep net-seed
 ```
 
-On a freshly written disk the second command prints two lines:
+On a freshly written disk the second command prints the seed's result line:
 
 ```
-stage=net-seed wan-ssh=open
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
+```
+
+The convenience image prints four more lines ahead of it - what it opened and the three ways to
+close it:
+
+```
+stage=net-seed wan-ssh=open port=22 proto=tcp
+stage=net-seed wan-ssh-close: LuCI -> Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan
+stage=net-seed wan-ssh-close: or uci delete firewall.allow_ssh_wan && uci commit firewall && /etc/init.d/firewall reload
+stage=net-seed wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-install.img.gz)
 ```
 
 `ab-slot log | tail` is the quick read of the same boot: the last lines are the health check
@@ -190,8 +227,10 @@ reflash if you would rather start from the defaults again.
   configuration. An upgrade carries the writable layer over and never re-applies them, which
   is deliberate — your changes win — but it also means a changed default only reaches a
   machine that is written fresh.
-* **The WAN exception is open in this release.** `22/tcp` from the WAN is accepted until you
-  delete the `allow_ssh_wan` rule, and `dropbear` accepts password authentication with
+* **The convenience image opens `22/tcp` on the WAN, and nothing closes it for you.** Only
+  `n5105-ab-<upstream>-install-wan-ssh.img.gz` carries the `allow_ssh_wan` rule; the default
+  image carries no WAN rule at all. On the convenience image the rule and the unbound
+  `dropbear` stay until you delete them, and `dropbear` accepts password authentication with
   whatever root password the image carries. Close it as soon as the LAN side answers.
 
 ## Network defaults on a real machine
@@ -204,8 +243,8 @@ The values below are what this build generates on the boot that finds no `/etc/c
 | LAN bridge | `br-lan` with ports `eth1`, `eth2`, `eth3` | project defaults |
 | LAN address | `192.168.100.1/24`, `proto static` | project defaults |
 | LAN DHCP server | dnsmasq on `lan`, upstream's pool | `/etc/config/dhcp`, untouched |
-| WAN inbound | one rule, `allow_ssh_wan`, `22/tcp` | project defaults |
-| SSH binding | `dropbear.@dropbear[0].Interface` emptied | project defaults |
+| WAN inbound | nothing, or on the `-wan-ssh` image one rule, `allow_ssh_wan`, `22/tcp` | project defaults |
+| SSH binding | upstream's binding to `lan`; emptied only on the `-wan-ssh` image | project defaults |
 | Hostname, timezone | `ImmortalWrt`, `GMT0` | `/bin/config_generate` |
 
 The port set comes from `/sys/class/net`: every `eth*` that carries a `device` link, minus the
@@ -234,7 +273,7 @@ uci commit network
 /etc/init.d/network reload
 ```
 
-Close the WAN exception — one `uci` block on the console or over SSH:
+On the `-wan-ssh` image, close the WAN exception — one `uci` block on the console or over SSH:
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -250,12 +289,13 @@ gone:
 uci show firewall | grep allow_ssh_wan     # no output
 ```
 
-Closing it leaves the LAN side untouched, and `dropbear.Interface` stays empty, so SSH from
-the LAN keeps working. Every default here is a build-time constant as well:
+Closing it leaves the LAN side untouched, and SSH from the LAN keeps working because
+`dropbear` still listens on the bridge. Every default here is a build-time constant:
 `/etc/net-defaults.conf` in the platform layer is rendered from `scripts/ci/net-defaults.conf.in`
-(`NET_WAN_DEV`, `NET_LAN_DEVS`, `NET_LAN_ADDR`, `NET_LAN_PREFIX`, `NET_WAN_SSH`), and the
-release with the WAN exception switched off is the same pipeline run with
-`CI_NET_WAN_SSH=closed`. [network.md](network.md) has the long form.
+(`NET_WAN_DEV`, `NET_LAN_DEVS`, `NET_LAN_ADDR`, `NET_LAN_PREFIX`, `NET_WAN_SSH`). The default
+image is the render with `NET_WAN_SSH=closed`; the convenience image is the same pipeline run
+with `CI_NET_WAN_SSH=open`, and the release stage appends `-wan-ssh` to its file name.
+[network.md](network.md) has the long form.
 
 ## Acceptance checklist
 
@@ -270,7 +310,7 @@ Run these on the machine before you trust it with anything:
 | the LAN carries its address | `ip -brief address` | a `br-lan` line with `192.168.100.1/24` |
 | the WAN has a lease | `ip -brief address` | the device named by `uci get network.wan.device` (`eth0`) with an address inside the upstream router's subnet |
 | the interfaces are the ones this build ships | `uci show network` | `network.wan.device='eth0'`, `network.wan.proto='dhcp'`, `network.lan.device='br-lan'`, `network.lan.proto='static'`, `network.lan.ipaddr='192.168.100.1/24'`, and `ports='eth1' 'eth2' 'eth3'` on the `br-lan` device section |
-| the WAN exception is one rule and no more | `nft list ruleset` then look for `allow_ssh_wan` | one rule in the `wan` input chain matching `tcp dport 22`, and the zone still rejecting everything else |
+| the WAN exposes 22/tcp only if you asked for it | `nft list ruleset` then look for `tcp dport 22` | no match at all on the default image; on the `-wan-ssh` image one rule in the `wan` input chain matching `tcp dport 22`, and the zone still rejecting everything else |
 | a laptop on a LAN socket gets a lease | plug the laptop into any `eth1`..`eth3` socket, set it to DHCP | an address in `192.168.100.0/24`, gateway `192.168.100.1` |
 | the tooling works | `btrfs --version` | a `btrfs-progs` banner |
 | the layers are reachable | `btrfs subvolume list /mnt/p4` | the layer named by `ab-slot status` |
@@ -282,7 +322,8 @@ Run these on the machine before you trust it with anything:
 There is no `wan` interface in `ip -brief address`: the WAN interface is bound to a device
 (`option device eth0`), so its address shows on `eth0`. That is why the WAN row reads the
 device name out of `uci` first. `nft list ruleset` is the wider, slower command; piping it into
-`grep -A3 allow_ssh_wan` gives the one excerpt worth keeping.
+`grep -A3 'dport 22'` gives the one excerpt worth keeping - empty output on the default image,
+and that empty output is the pass.
 
 The last row proves the inactive slot still has its kernel and initramfs on the ESP:
 `ab-slot pending` refuses a slot whose payload is missing, so a failure there is a
@@ -332,10 +373,10 @@ SSH is the same account over `22/tcp`:
 ssh root@192.168.100.1
 ```
 
-The same login also works from the WAN side for as long as the `allow_ssh_wan` rule exists:
-`ssh root@<the address the upstream router gave eth0>`. Prove it once — the point of the rule
-is that the machine is reachable when it hangs off a router you cannot see — and then close it
-from the LAN session:
+On the convenience image the same login also works from the WAN side for as long as the
+`allow_ssh_wan` rule exists: `ssh root@<the address the upstream router gave eth0>`. Prove it
+once — the point of that image is that the machine is reachable when it hangs off a router you
+cannot see — and then close the rule from the LAN session:
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -343,7 +384,11 @@ uci commit firewall
 /etc/init.d/firewall reload
 ```
 
-If the WAN-side login is refused while the rule exists, check the daemon's binding:
+On the default image the WAN-side attempt never reaches the daemon: the connection is
+refused by the `wan` zone, so there is no password prompt to answer.
+
+If the WAN-side login is refused on the convenience image while the rule exists, check the
+daemon's binding:
 `uci show dropbear` must show no `Interface` option (`uci delete
 dropbear.@dropbear[0].Interface; uci commit dropbear` if it came back), and `logread | grep
 dropbear` says whether the daemon is listening at all.
@@ -678,7 +723,8 @@ A session is complete when the bundle carries:
   `stage=commit`;
 * `ab-slot status` before and after the upgrade, and after each power cut;
 * the filled-in port mapping table, with the MAC addresses;
-* the `allow_ssh_wan` excerpt from `nft list ruleset`, before and after closing the rule;
+* the `dport 22` excerpt from `nft list ruleset`: empty on the default image, and on the
+  convenience image before and after closing the rule;
 * `ab-slot log --upgrade` after the upgrade;
 * every failure verbatim, including its `reason=` token — that token is the same one the build
   reports, so a machine and a build can be compared without guessing.
@@ -700,7 +746,8 @@ ab-slot log --prev
 | the LAN address is not `192.168.100.1` | the network was configured before, or by hand | the defaults are applied only on the boot that generated the file; set the address with `uci` as above |
 | the WAN device has no lease | no cable, no DHCP on the upstream side, or another address already in use | `ip -brief address` for the device `uci get network.wan.device` names, then the upstream router's client list |
 | `allow_ssh_wan` is in `uci show firewall` but not in `nft list ruleset` | the ruleset has not been rendered since the rule was added | `/etc/init.d/firewall reload`, then look again |
-| WAN-side ssh is refused while the rule exists | `dropbear` is bound to an interface | `uci show dropbear` must show no `Interface`; delete it and commit |
+| WAN-side ssh is refused on the convenience image while the rule exists | `dropbear` is bound to an interface | `uci show dropbear` must show no `Interface`; delete it and commit |
+| WAN-side ssh times out on the default image | that image has no WAN rule, by design | nothing to fix; use the LAN, the console, or flash the `-wan-ssh` image |
 | `p4=degraded` | the shared partition cannot mount | see the section above |
 | `p4=ok` but no `stage=commit` | the health check failed | `ab-slot log` names the failing probe; `ab-slot abandon` clears a pending slot |
 | `ab-upgrade` exits 74 | the payload or the machine was refused | the reason is printed and logged; nothing was written |
@@ -734,10 +781,11 @@ current:
   smaller bridge and a single-port machine degrades to LAN-only.
 * **`192.168.100.1/24` on the LAN**, with upstream's dnsmasq serving the pool. The subnet is
   deliberately not `192.168.1.0/24`.
-* **`22/tcp` from the WAN, on by default.** One `allow_ssh_wan` rule, the `wan` zone still
-  `input 'REJECT'`, and `dropbear.Interface` emptied so the rule can reach the daemon. LuCI's
-  `80/tcp` stays off the WAN. The rule is a build-time constant: the closed variant is the same
-  pipeline with `CI_NET_WAN_SSH=closed`.
+* **`22/tcp` from the WAN only on the convenience image.** The default image opens nothing:
+  the `wan` zone keeps `input 'REJECT'` and `dropbear` keeps upstream's binding to `lan`. The
+  `-wan-ssh` image adds one `allow_ssh_wan` rule and empties `dropbear.Interface` so the rule
+  can reach the daemon. LuCI's `80/tcp` stays off the WAN in both. The choice is a build-time
+  constant: the convenience image is the same pipeline with `CI_NET_WAN_SSH=open`.
 * **Nothing generated is overwritten.** The trigger is the absence of `/etc/config/network` and
   nothing else, so a user edit, a fixture and a configuration carried over by an upgrade all
   survive.

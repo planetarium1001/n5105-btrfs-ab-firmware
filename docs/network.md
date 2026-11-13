@@ -55,8 +55,8 @@ a machine explains its own network without anybody booting it.
 | LAN bridge | `br-lan`, ports `eth1`, `eth2`, `eth3` | the project defaults |
 | LAN address | `192.168.100.1/24`, `proto static` | the project defaults |
 | LAN DHCP server | dnsmasq on `lan`, upstream's pool | `/etc/config/dhcp`, untouched |
-| WAN inbound | one `22/tcp` rule, `allow_ssh_wan` | the project defaults |
-| SSH binding | `dropbear.@dropbear[0].Interface` removed, so the daemon listens on every address | the project defaults |
+| WAN inbound | nothing; only the `-wan-ssh` image adds one `22/tcp` rule, `allow_ssh_wan` | the project defaults |
+| SSH binding | upstream's binding to `lan`; the `-wan-ssh` image removes `dropbear.@dropbear[0].Interface` so the daemon listens on every address | the project defaults |
 
 The port set is not a constant. It comes from `/sys/class/net`: every `eth*` with a `device`
 link, minus the WAN device, joins the bridge. A two-port machine therefore bridges one port,
@@ -74,19 +74,22 @@ every future install, change the template; to change this machine, use `uci` as 
 ```sh
 ip -brief address                          # br-lan carries 192.168.100.1/24, eth0 asked for a lease
 uci show network | sed -n '/br-lan/,+3p'   # the bridge and its port list
-uci show firewall | grep allow_ssh_wan     # the single WAN exception
-uci show dropbear | grep Interface         # no output: the daemon is unbound
-nft list ruleset | grep 'dport 22'         # what fw4 actually rendered
+uci show firewall | grep allow_ssh_wan     # no output on the default image; one rule on -wan-ssh
+uci show dropbear | grep Interface         # no output on -wan-ssh: only that image unbinds it
+nft list ruleset | grep 'dport 22'         # nothing, unless the image was built to open it
 ```
 
 A fresh install writes one line per run to the ring log on `/boot/ab/log/boot-0.log`:
 
 ```
-stage=net-seed wan-ssh=open
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
 ```
 
-That line is the first thing to read when the address is missing, and
+The `-wan-ssh` image prints four lines ahead of it - `wan-ssh=open port=22 proto=tcp` and three
+`wan-ssh-close:` lines - and the default image never does. Their presence is itself the evidence
+of which image a machine is running.
+
+That result line is the first thing to read when the address is missing, and
 [lifecycle.md](lifecycle.md) documents the log format and the `wan-present` probe that reads
 the result.
 
@@ -132,17 +135,20 @@ the LAN-only default above.
 
 ## WAN exposure and how to close it
 
-The WAN side accepts `22/tcp` and nothing beyond what upstream's `wan` zone already allows --
-DHCP client, ICMP and ICMPv6, IGMP and MLD, IPsec. LuCI's `80/tcp` is not exposed: the
-firewall is what keeps it off the WAN, and the `wan` zone keeps `input 'REJECT'`.
+The default image accepts nothing on the WAN beyond what upstream's `wan` zone already allows
+-- DHCP client, ICMP and ICMPv6, IGMP and MLD, IPsec. LuCI's `80/tcp` is not exposed: the
+firewall is what keeps it off the WAN, and the `wan` zone keeps `input 'REJECT'`. There is no
+`22/tcp` rule, so an SSH attempt from the WAN side is refused before it reaches `dropbear`.
 
-The rule is open by default because of how this box is normally deployed: behind the main
-router, where the only way in before it has an address of its own is the cable you just
-plugged in. A single `22/tcp` exception turns that into `ssh root@<address>`; leaving it
-closed would mean an HDMI cable and a keyboard for every change. The trade-off is real -- the
-WAN side of a shared network is not necessarily clean, and `dropbear` accepts password
-authentication with whatever root password the image carries -- so close it as soon as the box
-is reachable from the LAN:
+One image is different. `n5105-ab-<upstream>-install-wan-ssh.img.gz` adds exactly one rule,
+`allow_ssh_wan` (`22/tcp`), and removes `dropbear.@dropbear[0].Interface` so the daemon can
+accept the connection the rule lets through. It exists for the position this box is often in --
+behind a main router you cannot see, with no keyboard and no monitor -- and the price is real:
+the WAN side of a shared network is not necessarily clean, and `dropbear` accepts password
+authentication with whatever root password the image carries.
+
+So this is a step only the convenience image needs: close the rule once the box is reachable
+from the LAN.
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -159,31 +165,34 @@ uci show firewall | grep allow_ssh_wan     # no output
 nft list ruleset | grep 'dport 22'         # no output, unless another rule opens 22
 ```
 
-Closing it leaves the LAN side untouched, and the SSH daemon stays unbound, so SSH from the
-LAN keeps working.
+Closing it leaves the LAN side untouched, and SSH from the LAN keeps working either way.
 
 ## What the seed does not touch
 
 - `/etc/config/dhcp`: the LAN DHCP server is upstream's and stays enabled.
 - `/etc/config/firewall` zones: `lan` stays `input 'ACCEPT'` and `wan` stays `input 'REJECT'`.
-  Exactly one rule is appended, and only on the boot that generated the network.
+  At most one rule is appended -- only when the image was rendered with `NET_WAN_SSH=open` --
+  and only on the boot that generated the network.
 - `/etc/config/uhttpd`: LuCI listens where upstream's configuration says; the firewall is what
   keeps it off the WAN.
 - `/etc/config/system`: whatever `config_generate` produced is kept -- hostname `ImmortalWrt`,
   timezone `GMT0`. Change those in LuCI if you want others.
 
-## Variants: WAN 22 closed at build time
+## Two builds: WAN 22 closed by default, open on request
 
 Whether the `allow_ssh_wan` rule exists is a build-time constant, not a runtime decision.
 `scripts/ci/net-defaults.conf.in` carries the `NET_*` lines with `@...@` placeholders; the
 build renders them into `/etc/net-defaults.conf` in the platform layer, and a placeholder left
 unreplaced fails the build instead of shipping a literal `@NET_...@` to the device.
 
-| `NET_WAN_SSH` | Effect |
-|---|---|
-| `open` (this release) | the `22/tcp` rule is added and the daemon is unbound |
-| `closed` | neither happens; WAN inbound stays exactly as upstream has it |
+| `NET_WAN_SSH` | Effect | Image |
+|---|---|---|
+| `closed` (the default) | no rule is added and the daemon keeps upstream's binding; WAN inbound stays exactly as upstream has it | `n5105-ab-<upstream>-install.img.gz` |
+| `open` | the `22/tcp` rule is added and the daemon is unbound | `n5105-ab-<upstream>-install-wan-ssh.img.gz` |
 
-The closed variant is the same pipeline run with `CI_NET_WAN_SSH=closed`; no code changes.
-This release publishes the open variant only, and [install.md](install.md) covers the first
-boot on a real device.
+Neither is a runtime switch, and no command turns one into the other: the value is baked into
+the platform layer at build time. The open build is the same pipeline run with
+`CI_NET_WAN_SSH=open`, one rendered value apart from the default, and the release stage appends
+`-wan-ssh` to its file name so the two can never be confused on a downloads page. Both consume
+the same upstream input and ship the same update payload. [install.md](install.md) covers
+choosing between them and the first boot on a real device.

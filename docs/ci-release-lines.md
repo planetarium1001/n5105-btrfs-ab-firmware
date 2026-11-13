@@ -25,13 +25,32 @@ release made by the watch is checked the same way as one made by hand.
 | Build | `ci.yml`, called with `workflow_call` | `ci.yml`, called with `workflow_call`, in the same run |
 | Publishing entry | `release.yml` calls `release-publish.yml` with `tag-policy: v` | the watch's `publish` job calls it with `tag-policy: bare` |
 | Release title | `N5105 AB firmware {tag}` | `ImmortalWrt N5105 A/B firmware {tag}`; the publisher derives it from `tag-policy`, neither caller passes a title |
-| Assets | `n5105-ab-<upstream>-install.img.gz`, `n5105-ab-<upstream>-upgrade.tar`, `SHA256SUMS` | the same three |
+| Assets | `n5105-ab-<upstream>-install.img.gz`, `n5105-ab-<upstream>-install-wan-ssh.img.gz` (tag builds only), `n5105-ab-<upstream>-upgrade.tar`, `SHA256SUMS` | the first, the third and `SHA256SUMS`; no convenience image |
 | Where a failure lands | the run on the tag goes red; nothing is published and the tag stays | one Issue titled `[auto-release] <version>`, labelled `auto-release` |
 
 The asset names carry the upstream base and the role, never our own counter, and both lines
 produce them with the same script (`scripts/ci/release.sh`). `release-notes.md` is written next
-to them and becomes the release body, so the page carries three assets and the notes are the
-text above them, not a fourth file to download.
+to them and becomes the release body, so the notes are the text above the assets, not another
+file to download.
+
+### The convenience image
+
+A tag build produces two disk images instead of one. They differ in a single rendered value,
+`NET_WAN_SSH`, which decides whether the firewall gets one `allow_ssh_wan` rule (`22/tcp`) on
+the WAN side; the kernel, the rootfs, the platform layer and the update payload are the same
+bytes in both. `scripts/ci/release.sh` turns that into a distinguishable name by appending
+`-wan-ssh`, so a downloads page can never offer "the image with the port open" under the name
+of the one without it.
+
+| Where the second image comes from | What it is called |
+|---|---|
+| the `s3-wan-ssh` job in `ci.yml`, on a `v*` tag only | Actions artifact `image-install-wan-ssh`, file `n5105-ab-image.img.gz` inside it |
+| `release.sh` with `CI_RELEASE_VARIANT=wan-ssh` | `n5105-ab-<upstream>-install-wan-ssh.img.gz` |
+
+The variant job deliberately runs `boots: false`: the two images differ in one rendered file,
+so the boot assertions (S2, S3 acceptance) are proved once, on the shipped default. The
+convenience image is a way in for a machine that cannot be reached from the LAN, not a second
+product line - and it is the reason the default could be closed at all.
 
 `dry-run: true` means the same thing on both lines: every step runs, the bytes are uploaded,
 and the release is created as a **draft**. It is the only difference between a rehearsal and a
@@ -150,7 +169,9 @@ Release `v0.0.8` came out published, not a draft: `isDraft=false`,
 
 That is the shape of a code-line release: `VERSION` said `0.0.8`, the tag was `v0.0.8`, the
 image recorded platform `0.0.8` and upstream `25.12.2`, the preflight agreed with all three, and
-the published image is the one S3 built with the production initramfs.
+the published image is the one S3 built with the production initramfs. `v0.0.8` predates the
+convenience image, which is why the list above has three assets: a tag build from now on also
+carries `image-install-wan-ssh`.
 
 Both facts can be fetched again:
 

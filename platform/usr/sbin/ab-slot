@@ -162,7 +162,7 @@ die() {
 }
 
 usage() {
-    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|next [--write]|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]"
+    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|next [--write]|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]|packages [list|snapshot|upgrade|revert [--to <id>]]"
     exit 2
 }
 
@@ -815,6 +815,179 @@ cmd_log() {
     cat "${LOGDIR}/${_target}"
 }
 
+# --------------------------------------------------------------------------- #
+# Packages: the writable layer's package world, as a thing you can snapshot,
+# re-resolve and roll back - separately from the slot generation.
+#
+# The slot is the unit of a system update: rolling one back means booting the other
+# slot. Packages need their own unit, because a package rollback is a same-base
+# operation: it replays versions apk can still fetch. `ab-slot packages upgrade` never
+# touches ab/state.json and never switches slots, and `revert` refuses to cross a base,
+# where those versions would be built against a different kernel and libc.
+# --------------------------------------------------------------------------- #
+
+packages_lib() {
+    _lib="${AB_PACKAGES_LIB:-/lib/upgrade/packages.sh}"
+    [ -f "${_lib}" ] || die "packages-library-missing"
+    # shellcheck source=platform/lib/upgrade/packages.sh
+    . "${_lib}"
+}
+
+packages_layer() {
+    _slot="$(running_slot)" || die "state has no running slot"
+    _upper="$(state_upper "${_slot}")" || die "state has no layer for slot ${_slot}"
+    printf '%s/%s' "${AB_P4}" "${_upper}"
+}
+
+# packages_alignment: the same function `status` prints, called directly so the gate
+# cannot drift from what the operator sees and no other probe has to run first.
+packages_alignment() {
+    packages_state
+}
+
+packages_log() {
+    mkdir -p "${LOGDIR}" 2>/dev/null || :
+    printf '%s packages-upgrade %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"${LOGDIR}/upgrade.log" 2>/dev/null || :
+}
+
+packages_release_value() {
+    _rel="${AB_PLATFORM_RELEASE:-/etc/platform-release}"
+    [ -f "${_rel}" ] || return 1
+    sed -n "s/^$1=//p" "${_rel}" | head -n 1
+}
+
+cmd_packages() {
+    _sub=${1:-list}
+    [ "$#" -gt 0 ] && shift
+    require_state
+    packages_lib
+    case "${_sub}" in
+        list)
+            ab_packages_list "$(packages_layer)"
+            ;;
+        snapshot)
+            _layer="$(packages_layer)"
+            _up=$(packages_release_value UPSTREAM_VERSION) || _up=unknown
+            _pv=$(packages_release_value PLATFORM_VERSION) || _pv=unknown
+            _snap=$(ab_packages_snapshot "${_layer}" "${_up}" "${_pv}") || die "snapshot-failed"
+            _id=${_snap##*/snapshot-}
+            _id=${_id%.txt}
+            _n=$(grep -c '^pkg ' "${_snap}" 2>/dev/null || true)
+            say "snapshot ${_id} written (${_n:-0} packages, base ${_up})"
+            ;;
+        upgrade) cmd_packages_upgrade "$@" ;;
+        revert) cmd_packages_revert "$@" ;;
+        *) say "ab-slot: unknown packages subcommand ${_sub}"; usage ;;
+    esac
+}
+
+cmd_packages_upgrade() {
+    _align=$(packages_alignment)
+    if [ "${_align}" != "aligned" ]; then
+        say "ab-slot: refused, reason=packages-not-aligned"
+        say "  The writable layer's package metadata does not describe this release."
+        say "  Next: ab-slot status | grep packages=    then re-run the upgrade that aligned it"
+        exit 74
+    fi
+    if ! command -v apk >/dev/null 2>&1; then
+        say "ab-slot: refused, reason=apk-unsupported"
+        say "  apk is not available on this system."
+        say "  Next: upgrade the slot with ab-upgrade, or manage packages by hand"
+        exit 74
+    fi
+    _layer="$(packages_layer)"
+    _up=$(packages_release_value UPSTREAM_VERSION) || _up=unknown
+    _pv=$(packages_release_value PLATFORM_VERSION) || _pv=unknown
+    _snap=$(ab_packages_snapshot "${_layer}" "${_up}" "${_pv}") || die "snapshot-failed"
+    _id=${_snap##*/snapshot-}
+    _id=${_id%.txt}
+    _n=$(grep -c '^pkg ' "${_snap}" 2>/dev/null || true)
+    say "snapshot ${_id} written (${_n:-0} packages)"
+
+    _timeout=""
+    command -v timeout >/dev/null 2>&1 && _timeout="timeout 600"
+    _start=$(date +%s)
+    say "apk update"
+    _rc=0
+    # shellcheck disable=SC2086
+    ${_timeout} apk update >>"${LOGDIR}/upgrade.log" 2>&1 || _rc=$?
+    if [ "${_rc}" -eq 0 ]; then
+        say "apk upgrade"
+        # shellcheck disable=SC2086
+        ${_timeout} apk upgrade >>"${LOGDIR}/upgrade.log" 2>&1 || _rc=$?
+    fi
+    _elapsed=$(( $(date +%s) - _start ))
+    if [ "${_rc}" -eq 0 ]; then
+        say "packages-upgrade result=ok upgraded=? elapsed=${_elapsed}s"
+        packages_log "result=ok elapsed=${_elapsed}s"
+        return 0
+    fi
+    _reason="apk-${_rc}"
+    [ "${_rc}" -eq 124 ] && _reason="timeout"
+    say "packages-upgrade result=fail reason=${_reason} elapsed=${_elapsed}s"
+    packages_log "result=fail reason=${_reason} elapsed=${_elapsed}s"
+    exit 1
+}
+
+cmd_packages_revert() {
+    _to=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --to) _to=${2:?--to needs a snapshot id}; shift 2 ;;
+            -*) say "ab-slot packages revert: unknown option $1"; usage ;;
+            *) _to=$1; shift ;;
+        esac
+    done
+    _layer="$(packages_layer)"
+    _dir="${_layer}/apk/snapshots"
+    if [ -z "${_to}" ]; then
+        _to=$(ls -1 "${_dir}" 2>/dev/null | grep '^snapshot-.*\.txt$' | sort | tail -n 1 | sed 's/^snapshot-//; s/\.txt$//')
+    fi
+    [ -n "${_to}" ] || {
+        say "ab-slot: refused, reason=revert-no-snapshot"
+        say "  There is no snapshot to go back to on this layer."
+        say "  Next: ab-slot packages snapshot"
+        exit 74
+    }
+    _snap="${_dir}/snapshot-${_to}.txt"
+    [ -f "${_snap}" ] || {
+        say "ab-slot: refused, reason=revert-no-snapshot"
+        say "  No snapshot ${_to} on this layer."
+        say "  Next: ab-slot packages list"
+        exit 74
+    }
+    _snap_base=$(_packages_snapshot_field "${_snap}" upstream)
+    _run_base=$(packages_release_value UPSTREAM_VERSION) || _run_base=unknown
+    if [ "${_snap_base}" != "${_run_base}" ]; then
+        say "ab-slot: refused, reason=revert-across-base"
+        say "  Snapshot base ${_snap_base}, running base ${_run_base}."
+        say "  Next: ab-slot rollback to return to the previous slot instead"
+        exit 74
+    fi
+    say "revert from ${_to} (base ${_snap_base}, platform $(_packages_snapshot_field "${_snap}" platform))"
+    _failed=0
+    _changed=0
+    while IFS=' ' read -r _name _version; do
+        [ -n "${_name}" ] || continue
+        _changed=$((_changed + 1))
+        if apk add "${_name}=${_version}" >>"${LOGDIR}/upgrade.log" 2>&1; then
+            say "  ok      ${_name} ${_version}"
+        else
+            say "  failed  ${_name} ${_version} (not in the feed)"
+            _failed=$((_failed + 1))
+        fi
+    done <<EOF
+$(sed -n 's/^pkg      //p' "${_snap}")
+EOF
+    if [ "${_failed}" -eq 0 ]; then
+        say "revert result=ok (${_changed} packages)"
+        return 0
+    fi
+    say "revert result=partial (${_failed} of ${_changed} failed)"
+    return 0
+}
+
+
 main() {
     [ "$#" -ge 1 ] || usage
     _cmd="$1"
@@ -831,6 +1004,7 @@ main() {
         layer) cmd_layer "$@" ;;
         conflicts) require_state; cmd_conflicts "$@" ;;
         log) cmd_log "$@" ;;
+        packages) cmd_packages "$@" ;;
         -h | --help | help) usage ;;
         *) say "ab-slot: unknown command ${_cmd}"; usage ;;
     esac

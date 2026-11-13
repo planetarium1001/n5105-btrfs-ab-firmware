@@ -28,13 +28,32 @@ sha256sum -c SHA256SUMS
 
 ### 该写哪一个文件
 
-只有装**生产启动 initramfs** 的镜像才能在真机上启动。CI 会产出两种名字，只有一个能写：
+只有装**生产启动 initramfs** 的镜像才能在真机上启动。同一次流水线会产出**两个**这样的镜像，它们之间只差一个渲染值：WAN 侧的 `22/tcp` 放不放行。
 
 | 位置 | 名称 | 用途 |
 | --- | --- | --- |
-| GitHub release | `n5105-ab-<upstream>-install.img.gz` | 写这个；发布作业已验证过它能启动 |
-| Actions 产物（tag 构建） | `image-install` | 与发布版同一份字节，用于发布前测试 |
+| GitHub release | `n5105-ab-<upstream>-install.img.gz` | 写这个。完全没有任何 WAN 规则，与上游 ImmortalWrt 镜像同一个姿态 |
+| 同一 tag 的便利构建 | `n5105-ab-<upstream>-install-wan-ssh.img.gz`（该次运行里的产物名为 `image-install-wan-ssh`） | 同一份镜像，只多一条 `allow_ssh_wan`：WAN 侧接受 `22/tcp`。只在「从 LAN 够不到、也给不了键鼠」的机器上用 |
+| Actions 产物（tag 构建） | `image-install`、`image-install-wan-ssh` | 还没有被发布阶段命名的这两份构建；便利构建压缩包里那个文件名仍是 `n5105-ab-image.img.gz` |
 | Actions 产物（每次构建） | `image-probe` | **永远不要写它**：它是 S1 模块探针，找 `/dev/vda`，在真机上会直接关机 |
+
+两个镜像来自同一批上游输入、共用同一个 payload：唯一不同的值是 `NET_WAN_SSH`，所以内核、rootfs、平台层与升级载荷逐字节相同。便利镜像是一条「进得去」的路，不是更安全的默认值 —— 它在一台 root 可能还没有口令的机器上放开 WAN 侧的 `22/tcp`，而且它自己会在控制台上说出来。
+
+只给那台否则进不去的机器用便利镜像，并且一确认 LAN 侧能连就关掉规则。出口有三条，首启会把三条都打出来：
+
+```sh
+# 1. 在机器上，就通过你正在用的这条规则
+uci delete firewall.allow_ssh_wan
+uci commit firewall
+/etc/init.d/firewall reload
+```
+
+```text
+# 2. LuCI：网络 → 防火墙 → 通信规则 → 删掉 allow_ssh_wan
+# 3. 重新写进「关」的那份镜像：n5105-ab-<upstream>-install.img.gz
+```
+
+这条规则只在「生成网络配置」的那次启动上被添加，之后不再叠加：升级带着可写层一起走、不会重新应用默认值，所以刷了「关」镜像的机器之后不会自己长出这条规则，而刷了便利镜像的机器会一直留着它，直到你删掉。
 
 文件名带的是板型、产品线、上游基线与角色，不带我们自己的发版计数器 —— 那个在 GitHub release 上。
 更早的发布把同一份字节叫 `n5105-ab-<platform>-<upstream>.img.gz` 与 `.tar`；如果你的脚本还在用
@@ -88,11 +107,19 @@ ab-slot status
 ab-slot log | grep net-seed
 ```
 
-刚写好的盘上，第二条会打印两行：
+刚写好的盘上，第二条会打印种子的结论行：
 
 ```
-stage=net-seed wan-ssh=open
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
+```
+
+便利镜像会在它前面多打四行 —— 它开了什么，以及三条关闭路径：
+
+```
+stage=net-seed wan-ssh=open port=22 proto=tcp
+stage=net-seed wan-ssh-close: LuCI -> Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan
+stage=net-seed wan-ssh-close: or uci delete firewall.allow_ssh_wan && uci commit firewall && /etc/init.d/firewall reload
+stage=net-seed wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-install.img.gz)
 ```
 
 `ab-slot log | tail` 是同一次启动的快速读法：最后几行就是健康检查与决定（`stage=healthcheck-done`，然后是 `stage=commit`）。
@@ -136,7 +163,7 @@ ip addr add 192.168.100.1/24 dev eth1
 * **口名是内核给的，不是丝印给的。** `eth0` 到 `eth3` 不一定对应机壳上的标号，镜像里也没有任何猜硬件的地方。每台机器都要做一遍下面的对照，并记下来。
 * **单口机不是路由器。** 种子会把它降级成 LAN-only（`stage=net-seed result=lan-only`）：唯一的口进 `br-lan`，`wan` 段被删掉。于是 `wan-present` 探针找不到 WAN 设备，那次启动不会提交该槽（`action=stay`）；LAN 侧照常可用。
 * **默认值只叠加一次。** 它们属于"生成配置的那次启动"。升级带着可写层一起走，不会重新叠加——这是有意的（你的改动优先），代价是改过的默认值只对重新写盘的机器生效。
-* **本版 WAN 侧的例外是开着的。** 只要 `allow_ssh_wan` 规则还在，WAN 侧就接受 `22/tcp`，而 `dropbear` 会用镜像里带的 root 密码接受密码认证。LAN 侧一旦能连，就把它关掉。
+* **便利镜像会在 WAN 侧放开 `22/tcp`，而且没有东西替你关它。** 只有 `n5105-ab-<upstream>-install-wan-ssh.img.gz` 带 `allow_ssh_wan` 规则；默认镜像一条 WAN 规则都没有。在便利镜像上，那条规则与解绑的 `dropbear` 会一直留着，`dropbear` 也会用镜像里带的 root 口令接受密码认证。LAN 侧一旦能连，就把它关掉。
 
 ## 真机上的网络默认值
 
@@ -148,8 +175,8 @@ ip addr add 192.168.100.1/24 dev eth1
 | LAN 桥 | `br-lan`，端口 `eth1`、`eth2`、`eth3` | 项目默认值 |
 | LAN 地址 | `192.168.100.1/24`，`proto static` | 项目默认值 |
 | LAN DHCP 服务 | dnsmasq 在 `lan` 上，用上游的地址池 | `/etc/config/dhcp`，未改动 |
-| WAN 入站 | 一条规则，`allow_ssh_wan`，`22/tcp` | 项目默认值 |
-| SSH 绑定 | `dropbear.@dropbear[0].Interface` 置空 | 项目默认值 |
+| WAN 入站 | 没有；只有 `-wan-ssh` 镜像才有一条规则 `allow_ssh_wan`、`22/tcp` | 项目默认值 |
+| SSH 绑定 | 上游的绑定 `lan`；只有 `-wan-ssh` 镜像会把它置空 | 项目默认值 |
 | 主机名、时区 | `ImmortalWrt`、`GMT0` | `/bin/config_generate` |
 
 端口集合来自 `/sys/class/net`：带 `device` 链接的每个 `eth*` 除去 WAN 设备，全部进桥。没有任何写死的名字，所以双口机就只桥一个口。
@@ -174,7 +201,7 @@ uci commit network
 /etc/init.d/network reload
 ```
 
-关掉 WAN 例外——在控制台或 SSH 上一条 `uci` 块：
+在 `-wan-ssh` 镜像上，关掉 WAN 例外 —— 在控制台或 SSH 上一条 `uci` 块：
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -188,9 +215,9 @@ LuCI 里同一条规则是 **网络 → 防火墙 → 通信规则**（Network �
 uci show firewall | grep allow_ssh_wan     # 没有输出
 ```
 
-关掉它不影响 LAN 侧，`dropbear.Interface` 仍是空的，所以从 LAN 的 SSH 照旧能用。这里的每个默认值同时也是构建期常量：平台层里的 `/etc/net-defaults.conf` 由
-`scripts/ci/net-defaults.conf.in` 渲染而来（`NET_WAN_DEV`、`NET_LAN_DEVS`、`NET_LAN_ADDR`、`NET_LAN_PREFIX`、`NET_WAN_SSH`），"WAN 22 关"的发布就是同一条流水线带
-`CI_NET_WAN_SSH=closed` 跑一次。完整说明见 [network.md](network.md)。
+关掉它不影响 LAN 侧，从 LAN 的 SSH 照旧能用，因为 `dropbear` 仍在桥上监听。这里的每个默认值同时也是构建期常量：平台层里的 `/etc/net-defaults.conf` 由
+`scripts/ci/net-defaults.conf.in` 渲染而来（`NET_WAN_DEV`、`NET_LAN_DEVS`、`NET_LAN_ADDR`、`NET_LAN_PREFIX`、`NET_WAN_SSH`）。默认镜像就是
+`NET_WAN_SSH=closed` 那份渲染；便利镜像是同一条流水线带 `CI_NET_WAN_SSH=open` 跑一次，发布阶段会在它的文件名后加 `-wan-ssh`。完整说明见 [network.md](network.md)。
 
 ## 验收清单
 
@@ -205,7 +232,7 @@ uci show firewall | grep allow_ssh_wan     # 没有输出
 | LAN 有地址 | `ip -brief address` | 有一条 `br-lan`，带 `192.168.100.1/24` |
 | WAN 拿到租约 | `ip -brief address` | `uci get network.wan.device` 指的设备（`eth0`）上有一个落在上游路由网段里的地址 |
 | 接口配置就是本版发的这套 | `uci show network` | `network.wan.device='eth0'`、`network.wan.proto='dhcp'`、`network.lan.device='br-lan'`、`network.lan.proto='static'`、`network.lan.ipaddr='192.168.100.1/24'`，`br-lan` 设备段上有 `ports='eth1' 'eth2' 'eth3'` |
-| WAN 上只有一条例外 | `nft list ruleset` 里找 `allow_ssh_wan` | `wan` 入站链里一条匹配 `tcp dport 22` 的规则，zone 对其它一切仍然拒绝 |
+| WAN 只在你要过的时候才暴露 22/tcp | `nft list ruleset` 里找 `tcp dport 22` | 默认镜像上一条都没有；`-wan-ssh` 镜像上是 `wan` 入站链里一条匹配 `tcp dport 22` 的规则，zone 对其它一切仍然拒绝 |
 | LAN 口能发地址 | 把笔记本插到 `eth1`..`eth3` 任一口，设成 DHCP | 拿到 `192.168.100.0/24` 里的地址，网关 `192.168.100.1` |
 | 工具可用 | `btrfs --version` | 打印 `btrfs-progs` 版本行 |
 | 可写层可见 | `btrfs subvolume list /mnt/p4` | 包含 `ab-slot status` 报告的那一层 |
@@ -215,7 +242,7 @@ uci show firewall | grep allow_ssh_wan     # 没有输出
 | 下次启动符合预期 | `ab-slot next` | 上面那次 abandon 之后是 `next=<已提交槽>` |
 
 `ip -brief address` 里不会有 `wan` 这个接口：WAN 接口绑在设备上（`option device eth0`），地址就显示在 `eth0` 上。所以 WAN 那一行要先用 `uci` 读出设备名。`nft list ruleset` 更全也更慢，接一个
-`grep -A3 allow_ssh_wan` 就够留下值得回传的那一小段。
+`grep -A3 'dport 22'` 就够留下值得回传的那一小段 —— 默认镜像上是空输出，而空输出正是通过。
 
 最后一行的意义：`ab-slot pending` 会拒绝内核或 initramfs 不在 ESP 上的槽，所以这一步失败说明的是备份槽的载荷缺失，
 而不是当前运行的槽有问题。
@@ -253,7 +280,7 @@ SSH 是同一个账号，走 `22/tcp`：
 ssh root@192.168.100.1
 ```
 
-只要 `allow_ssh_wan` 规则还在，从 WAN 侧同样能登：`ssh root@<上游路由分给 eth0 的地址>`。只验证一次——这条规则的意义就在于机器挂在你进不去的那台路由器后面时还能连上——然后从 LAN 侧的会话里关掉它：
+在便利镜像上，只要 `allow_ssh_wan` 规则还在，从 WAN 侧同样能登：`ssh root@<上游路由分给 eth0 的地址>`。只验证一次 —— 那份镜像的意义就在于机器挂在你进不去的那台路由器后面时还能连上 —— 然后从 LAN 侧的会话里关掉它：
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -261,7 +288,9 @@ uci commit firewall
 /etc/init.d/firewall reload
 ```
 
-如果规则还在、WAN 侧却被拒，就去看守护进程的绑定：`uci show dropbear` 里不该有 `Interface` 选项（要是它又出现了，`uci delete
+默认镜像上，从 WAN 侧的尝试根本到不了守护进程：连接被 `wan` zone 拒掉，没有口令提示可答。
+
+如果在便利镜像上规则还在、WAN 侧却被拒，就去看守护进程的绑定：`uci show dropbear` 里不该有 `Interface` 选项（要是它又出现了，`uci delete
 dropbear.@dropbear[0].Interface; uci commit dropbear`），`logread | grep
 dropbear` 会告诉你守护进程到底有没有在监听。
 
@@ -540,7 +569,7 @@ scp root@192.168.100.1:/data/evidence/first-boot.log .
 * 首启日志，含 `stage=net-seed result=ok ...`、三条 `probe=` 与 `stage=commit`；
 * 升级前后、两次拔电之后的 `ab-slot status`；
 * 填好的端口对照表，带 MAC 地址；
-* 关掉规则前后，`nft list ruleset` 里 `allow_ssh_wan` 那一段；
+* `nft list ruleset` 里 `dport 22` 那一段：默认镜像上是空输出；便利镜像是关掉规则前后的两段；
 * 升级后的 `ab-slot log --upgrade`；
 * 任何失败都原样带回，包括它的 `reason=` 记号——那个记号与构建用的是同一套，所以机器上的现象与构建结果可以直接对照。
 
@@ -561,7 +590,8 @@ ab-slot log --prev
 | LAN 地址不是 `192.168.100.1` | 之前配过，或被手工改过 | 默认值只在生成该文件的那次启动叠加；按上面的办法用 `uci` 设置地址 |
 | WAN 设备没有租约 | 没插线、上游没有 DHCP，或地址已被占用 | 对 `uci get network.wan.device` 指的设备跑 `ip -brief address`，再看上游路由的客户端列表 |
 | `uci show firewall` 里有 `allow_ssh_wan`，`nft list ruleset` 里没有 | 规则加上之后 ruleset 还没渲染 | `/etc/init.d/firewall reload`，再看一次 |
-| 规则还在，WAN 侧 ssh 却被拒 | `dropbear` 绑在某个接口上 | `uci show dropbear` 里不该有 `Interface`；删掉并 commit |
+| 便利镜像上规则还在，WAN 侧 ssh 却被拒 | `dropbear` 绑在某个接口上 | `uci show dropbear` 里不该有 `Interface`；删掉并 commit |
+| 默认镜像上 WAN 侧 ssh 超时 | 那份镜像按设计就没有 WAN 规则 | 不用修；走 LAN、控制台，或者刷 `-wan-ssh` 镜像 |
 | `p4=degraded` | 共享分区挂不上 | 见上一节 |
 | `p4=ok` 但没有 `stage=commit` | 健康检查失败 | `ab-slot log` 会指出失败的探针；待验证槽用 `ab-slot abandon` 清掉 |
 | `ab-upgrade` 退出 74 | 载荷或机器状态被拒绝 | 原因既打印也进日志；没有写入任何东西 |
@@ -587,7 +617,7 @@ ab-slot log --prev
   `/bin/board_detect` 与 `/bin/config_generate`——就是官方 ImmortalWrt 镜像从 preinit 里跑的那两个程序，而本镜像的 A/B initramfs 替掉了那段 preinit。因此 `system` 里的主机名与时区是上游的。
 * **四个口，一个 WAN。** `eth0` 做 WAN（`dhcp`，另有 `wan6`），`eth1` 到 `eth3` 进 `br-lan`。端口集合读自 `/sys/class/net`，所以口少的机器得到更小的桥，单口机降级为 LAN-only。
 * **LAN 上是 `192.168.100.1/24`**，由上游的 dnsmasq 发地址。这个网段刻意避开 `192.168.1.0/24`。
-* **WAN 侧放行 `22/tcp`，默认开。** 一条 `allow_ssh_wan` 规则，`wan` zone 仍是 `input 'REJECT'`，`dropbear.Interface` 置空好让规则真的能摸到守护进程。LuCI 的 `80/tcp` 不进 WAN。这条规则是构建期常量：关掉的变体就是同一条流水线带 `CI_NET_WAN_SSH=closed`。
+* **WAN 侧只有便利镜像才放行 `22/tcp`。** 默认镜像什么都不开：`wan` zone 保持 `input 'REJECT'`，`dropbear` 保持上游的绑定 `lan`。`-wan-ssh` 镜像多一条 `allow_ssh_wan` 规则并把 `dropbear.Interface` 置空，好让规则真的能摸到守护进程。两个镜像里 LuCI 的 `80/tcp` 都不进 WAN。这是构建期常量：便利镜像就是同一条流水线带 `CI_NET_WAN_SSH=open`。
 * **生成出来的东西不会被覆盖。** 触发条件只有"`/etc/config/network` 不存在"这一条，所以用户的改动、夹具注入的配置、升级带过来的配置都能活下来。
 
 其余部分与 `0.0.6` 相同：四个 128 MiB 分区、overlay 层、健康检查、环形日志，以及本文描述的 `ab-slot` 与 `ab-upgrade` 行为。产物名没变，

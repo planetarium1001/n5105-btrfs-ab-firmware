@@ -47,8 +47,8 @@ S25 ab-net-reconcile   只在 S16 没能完成时再试一次
 | LAN 桥 | `br-lan`，端口 `eth1`、`eth2`、`eth3` | 项目默认 |
 | LAN 地址 | `192.168.100.1/24`，`proto static` | 项目默认 |
 | LAN DHCP 服务 | `lan` 上的 dnsmasq，用上游地址池 | `/etc/config/dhcp`，不动 |
-| WAN 入站 | 一条 `22/tcp` 规则，`allow_ssh_wan` | 项目默认 |
-| SSH 绑定 | 删除 `dropbear.@dropbear[0].Interface`，守护进程在所有地址上监听 | 项目默认 |
+| WAN 入站 | 没有；只有 `-wan-ssh` 镜像才加一条 `22/tcp` 规则 `allow_ssh_wan` | 项目默认 |
+| SSH 绑定 | 上游的绑定 `lan`；`-wan-ssh` 镜像才删除 `dropbear.@dropbear[0].Interface`，让守护进程在所有地址上监听 | 项目默认 |
 
 端口集合不是常量，而是从 `/sys/class/net` 读出来的：每个带 `device` 链接的 `eth*` 去掉 WAN 设备后
 全部入桥。所以两口机桥一个口，单口机降级为 LAN-only —— `wan` 段删除、唯一的口进 `br-lan`、环形日志写
@@ -64,17 +64,19 @@ S25 ab-net-reconcile   只在 S16 没能完成时再试一次
 ```sh
 ip -brief address                          # br-lan 上有 192.168.100.1/24，eth0 要去租约
 uci show network | sed -n '/br-lan/,+3p'   # 桥与端口列表
-uci show firewall | grep allow_ssh_wan     # 唯一的 WAN 例外
-uci show dropbear | grep Interface         # 无输出：守护进程未绑定接口
-nft list ruleset | grep 'dport 22'         # fw4 实际渲染出的东西
+uci show firewall | grep allow_ssh_wan     # 默认镜像无输出；-wan-ssh 镜像上一条规则
+uci show dropbear | grep Interface         # -wan-ssh 镜像上无输出：只有那份镜像解绑
+nft list ruleset | grep 'dport 22'         # 除非镜像就是被构建成放行，否则什么都没有
 ```
 
 全新安装每次启动都会往 `/boot/ab/log/boot-0.log` 里的环形日志写一行：
 
 ```
-stage=net-seed wan-ssh=open
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
 ```
+
+`-wan-ssh` 镜像会在这行之前多打四行 —— `wan-ssh=open port=22 proto=tcp` 与三条 `wan-ssh-close:`
+指引 —— 默认镜像永远没有这几行。它们的有没有，本身就是"这台机器跑的是哪份镜像"的证据。
 
 地址没出现时先读这一行；日志格式与读取它的 `wan-present` 探针见
 [lifecycle.zh-CN.md](lifecycle.zh-CN.md)。
@@ -117,13 +119,16 @@ uci commit network
 
 ## WAN 暴露面与关法
 
-WAN 侧只接受 `22/tcp`，此外只有上游 `wan` zone 本来就放的东西 —— DHCP 客户端、ICMP 与 ICMPv6、IGMP 与
-MLD、IPsec。LuCI 的 `80/tcp` 不放行：挡住它的是防火墙，`wan` zone 仍是 `input 'REJECT'`。
+默认镜像的 WAN 侧什么都不接受，只有上游 `wan` zone 本来就放的东西 —— DHCP 客户端、ICMP 与 ICMPv6、IGMP 与
+MLD、IPsec。LuCI 的 `80/tcp` 不放行：挡住它的是防火墙，`wan` zone 仍是 `input 'REJECT'`。这里没有
+`22/tcp` 规则，所以从 WAN 侧发起的 SSH 在碰到 `dropbear` 之前就被拒了。
 
-这条规则默认开，是因为这台机器的典型部署位置：挂在主路由下面，在它自己有地址之前，唯一入口就是你刚插上
-的那根网线。一条 `22/tcp` 的定向例外把这件事变成 `ssh root@<地址>`；关着就意味着每次改动都要搬来 HDMI 线
-和键盘。代价是真实的 —— 共享网络的 WAN 侧并不一定干净，而 `dropbear` 用的密码认证继承的是镜像里那个 root
-密码 —— 所以只要从 LAN 能进机器，就把它关掉：
+有一个镜像不一样。`n5105-ab-<upstream>-install-wan-ssh.img.gz` 只多一条规则 `allow_ssh_wan`（`22/tcp`），
+并删除 `dropbear.@dropbear[0].Interface`，让守护进程能接住这条规则放行的连接。它是为这台机器常见的处境准备
+的 —— 挂在你看不见的主路由下面，没有键盘也没有显示器 —— 而代价是真实的：共享网络的 WAN 侧并不一定干净，
+而 `dropbear` 用的密码认证继承的是镜像里那个 root 口令。
+
+所以这是只有便利镜像才需要、默认镜像根本没有的一步：只要从 LAN 能进机器，就把规则关掉。
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -139,27 +144,29 @@ uci show firewall | grep allow_ssh_wan     # 无输出
 nft list ruleset | grep 'dport 22'         # 无输出，除非另有规则开了 22
 ```
 
-关掉不影响 LAN 侧，SSH 守护进程仍未绑定接口，所以从 LAN 的 SSH 继续可用。
+关掉不影响 LAN 侧，两种镜像下从 LAN 的 SSH 都继续可用。
 
 ## 生成过程不动的东西
 
 - `/etc/config/dhcp`：LAN 的 DHCP 服务是上游的，保持开启。
-- `/etc/config/firewall` 的 zone：`lan` 仍是 `input 'ACCEPT'`，`wan` 仍是 `input 'REJECT'`。只追加一条
-  规则，且只在那次真正生成网络的启动里追加。
+- `/etc/config/firewall` 的 zone：`lan` 仍是 `input 'ACCEPT'`，`wan` 仍是 `input 'REJECT'`。最多追加一条
+  规则 —— 只有镜像渲染时 `NET_WAN_SSH=open` 才有 —— 且只在那次真正生成网络的启动里追加。
 - `/etc/config/uhttpd`：LuCI 按上游配置监听，把它挡在 WAN 之外的是防火墙。
 - `/etc/config/system`：`config_generate` 生成什么就保留什么 —— hostname `ImmortalWrt`、timezone `GMT0`。
   想要别的就在 LuCI 里改。
 
-## 变体：构建期关闭 WAN 22
+## 两份构建：WAN 22 默认关闭，需要时才开
 
 `allow_ssh_wan` 这条规则在不在，是构建期常量，不是运行期决定。`scripts/ci/net-defaults.conf.in` 用
 `@...@` 占位符承载 `NET_*` 各行；构建时渲染进平台层的 `/etc/net-defaults.conf`，占位符没被替换则构建
 失败，而不是把字面量 `@NET_...@` 发到设备上。
 
-| `NET_WAN_SSH` | 效果 |
-|---|---|
-| `open`（本次发布） | 追加 `22/tcp` 规则并解除 SSH 的接口绑定 |
-| `closed` | 两件事都不做，WAN 入站与上游完全一致 |
+| `NET_WAN_SSH` | 效果 | 镜像 |
+|---|---|---|
+| `closed`（默认） | 不加规则、守护进程保持上游绑定，WAN 入站与上游完全一致 | `n5105-ab-<upstream>-install.img.gz` |
+| `open` | 追加 `22/tcp` 规则并解除 SSH 的接口绑定 | `n5105-ab-<upstream>-install-wan-ssh.img.gz` |
 
-"关"的变体就是同一条流水线带 `CI_NET_WAN_SSH=closed` 跑一次，不改代码。本次发布只出"开"的变体；
-真机首启的操作步骤见 [docs/install.zh-CN.md](install.zh-CN.md)。
+两者都不是运行期开关，也没有命令能把一个变成另一个：这个值在构建时就被烤进平台层了。"开"的那份就是同一条
+流水线带 `CI_NET_WAN_SSH=open` 跑一次，与默认镜像只差一个渲染值，发布阶段会在它的文件名后加 `-wan-ssh`，
+这样下载页上两份文件不可能被看混。它们吃的是同一批上游输入、发的是同一个升级载荷。
+怎么在两者之间选、以及真机首启的步骤见 [docs/install.zh-CN.md](install.zh-CN.md)。

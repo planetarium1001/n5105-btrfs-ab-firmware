@@ -22,12 +22,28 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 | 构建 | `ci.yml`，以 `workflow_call` 调用 | `ci.yml`，以 `workflow_call` 调用，且在同一次 run 里 |
 | 发布入口 | `release.yml` 以 `tag-policy: v` 调 `release-publish.yml` | watch 的 `publish` job 以 `tag-policy: bare` 调它 |
 | release 标题 | `N5105 AB firmware {tag}` | `ImmortalWrt N5105 A/B firmware {tag}`；由 publisher 按 `tag-policy` 派生，两个调用点都不传标题 |
-| 资产 | `n5105-ab-<upstream>-install.img.gz`、`n5105-ab-<upstream>-upgrade.tar`、`SHA256SUMS` | 同样三个 |
+| 资产 | `n5105-ab-<upstream>-install.img.gz`、`n5105-ab-<upstream>-install-wan-ssh.img.gz`（仅 tag 构建）、`n5105-ab-<upstream>-upgrade.tar`、`SHA256SUMS` | 第一个、第三个与 `SHA256SUMS`；没有便利镜像 |
 | 失败落在哪 | tag 上的 run 变红；什么都没发布，tag 留着 | 一个标题 `[auto-release] <version>`、label `auto-release` 的 Issue |
 
 资产名带的是上游基线与角色，从不带我们自己的计数器；两条线用同一个脚本
-（`scripts/ci/release.sh`）产出它们。`release-notes.md` 写在资产旁边并成为 release 正文：页面上下载得到的
-是三个资产，正文就是这三个文件上面的那段字，不是第四个文件。
+（`scripts/ci/release.sh`）产出它们。`release-notes.md` 写在资产旁边并成为 release 正文：正文就是资产列表
+上面的那段字，而不是另一个要下载的文件。
+
+### 便利镜像
+
+一次 tag 构建产出两个磁盘镜像而不是一个。它们只差一个渲染值 `NET_WAN_SSH` —— 它决定防火墙要不要在 WAN 侧
+多加一条 `allow_ssh_wan`（`22/tcp`）—— 内核、rootfs、平台层与升级载荷在两份镜像里是同一批字节。
+`scripts/ci/release.sh` 用追加 `-wan-ssh` 的方式把这个差异变成一个看得见的文件名，这样下载页上不可能出现
+"开着口的镜像"顶着"没开口那份"的名字。
+
+| 第二份镜像从哪来 | 它叫什么 |
+|---|---|
+| `ci.yml` 里的 `s3-wan-ssh` job，只在 `v*` tag 上 | Actions 产物 `image-install-wan-ssh`，包里那个文件名是 `n5105-ab-image.img.gz` |
+| `release.sh` 带 `CI_RELEASE_VARIANT=wan-ssh` | `n5105-ab-<upstream>-install-wan-ssh.img.gz` |
+
+变体 job 故意跑 `boots: false`：两个镜像只差一个渲染文件，所以启动断言（S2、S3 验收）只在随默认镜像发出去的
+那一份上证明一次。便利镜像是给"从 LAN 够不到的机器"留的一条进路，不是第二条产品线 —— 也正是因为它在，默认值
+才关得起。
 
 `dry-run: true` 在两条线上含义相同：每一步都跑、字节都上传，但 release 建成 **draft**。彩排和
 真发布只差这一点。
@@ -131,6 +147,8 @@ release `v0.0.8` 是发出去的、不是 draft：`isDraft=false`、
 
 这就是代码线一次发布的样子：`VERSION` 写着 `0.0.8`，tag 是 `v0.0.8`，镜像记录的平台版本是
 `0.0.8`、上游是 `25.12.2`，preflight 三者都认，发出去的镜像是 S3 用生产 initramfs 构建的那一份。
+`v0.0.8` 早于便利镜像，所以上面那份清单只有三个资产：从今往后的 tag 构建还会多一个
+`image-install-wan-ssh`。
 
 这两组事实可以重新取出来：
 
