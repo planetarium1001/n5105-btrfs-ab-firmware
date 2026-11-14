@@ -45,9 +45,11 @@ AB_FEED_REASON=""
 AB_FEED_URL=""
 # Which source answered, and the two values the release root is built from. Empty until a
 # configuration is loaded; `ab-upgrade --feed-check` prints the first one on its own line.
-AB_FEED_SOURCE=""
-AB_FEED_RELEASE_REPO=""
-AB_FEED_RELEASE_BASE=""
+# Exported because the reader is another script (ab-upgrade sources this file), which is the
+# only way shellcheck can see that these are used at all.
+export AB_FEED_SOURCE=""
+export AB_FEED_RELEASE_REPO=""
+export AB_FEED_RELEASE_BASE=""
 AB_FEED_CHANNEL="stable"
 AB_FEED_VERIFY="sha256"
 
