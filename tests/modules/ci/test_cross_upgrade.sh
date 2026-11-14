@@ -156,4 +156,16 @@ else
     "a host without QEMU reports the stage as skipped"
 fi
 
+# --- ac-6: the graders do not share run_stage's variables -------------------
+# esp_digests and payload_digests take the same _out name run_stage owns. Without local,
+# the first call rebinds run_stage's _out to <out>/esp.sha256 and the second writes
+# inside that file: "cross-out/esp.sha256/payload.sha256: Not a directory" (run
+# 43573287849, the first run that got this far).
+esp_fn="$(sed -n '/^esp_digests()/,/^}/p' "$script")"
+payload_fn="$(sed -n '/^payload_digests()/,/^}/p' "$script")"
+assert_contains "$esp_fn" "local _image=\$1 _out=\$2" \
+  "ac-6 esp_digests keeps its arguments out of run_stage's variables"
+assert_contains "$payload_fn" "local _payload=\$1 _out=\$2" \
+  "ac-6 payload_digests keeps its arguments out of run_stage's variables"
+
 finish

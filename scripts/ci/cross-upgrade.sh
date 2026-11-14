@@ -251,7 +251,10 @@ extract_blocks() {
 
 # esp_digests <image> <out>: the kernel and initrd actually written to the ESP.
 esp_digests() {
-    _image=$1 _out=$2
+    # local, not the file's usual bare underscore style: run_stage also owns _image and
+    # _out, and without this the second call below writes inside the first call's output
+    # file (cross-out/esp.sha256/payload.sha256: Not a directory, run 43573287849).
+    local _image=$1 _out=$2
     _loop=$(sudo losetup --find --show --partscan "${_image}") || return 1
     _mnt=$(mktemp -d)
     sudo mount "${_loop}p1" "${_mnt}" || { sudo losetup -d "${_loop}"; return 1; }
@@ -262,7 +265,7 @@ esp_digests() {
 }
 
 payload_digests() {
-    _payload=$1 _out=$2
+    local _payload=$1 _out=$2
     _dir=$(mktemp -d)
     tar -xf "${_payload}" -C "${_dir}" kernel.bin initramfs.cpio.gz 2>/dev/null || return 1
     ( cd "${_dir}" && sha256sum kernel.bin initramfs.cpio.gz ) >"${_out}"
