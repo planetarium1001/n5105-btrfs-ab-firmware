@@ -217,4 +217,30 @@ run_fn="$(sed -n '/^run_stage()/,/^}/p' "$script")"
 assert_contains "$run_fn" 'if [ -n "${_inject}" ] && [ "${_inject}" != "none" ]; then' \
   "ac-7 the inject guard is a conditional, so an absent flag cannot exit early"
 
+# --- ac-7: what grade() says, from files alone ------------------------------
+# `assert --out` is the stage's own test hook: it prints the verdict for a finished run.
+# Both cases below are runs that happened, reduced to the files grade() reads.
+grade_dir="$tmp/grade-ok"
+mkdir -p "$grade_dir"
+# The status blocks keep a leading space: field() matches "<space>name=value".
+printf ' slot=b committed=a pending=b next=b generation=3\n' >"$grade_dir/status.after"
+printf ' slot=b committed=b pending=none generation=4 packages=aligned\n' >"$grade_dir/status.committed"
+printf ' slot=a committed=a pending=none generation=2\n' >"$grade_dir/status.before"
+# Same digests, different member names on each side: the ESP names the kernel vmlinuz-*,
+# the payload names it kernel.bin.
+printf 'a1b2c3  vmlinuz-a\na1b2c3  initrd-a\n' >"$grade_dir/esp.sha256"
+printf 'a1b2c3  kernel.bin\na1b2c3  initramfs.cpio.gz\n' >"$grade_dir/payload.sha256"
+printf 'ab-commit: stage=commit slot=b result=ok\n' >"$grade_dir/serial.log"
+out="$(bash "$script" assert --out "$grade_dir" 2>&1)"
+assert_contains "$out" "cross-upgrade=ok slot=b generation=4" \
+  "ac-7 a run that installed, committed and shipped the payload grades ok"
+
+# A boot that never printed the pending block: grade() must say which fact is missing
+# instead of dying in a command substitution (run 43588155580 printed no verdict at all).
+empty_dir="$tmp/grade-empty"
+mkdir -p "$empty_dir"
+out="$(bash "$script" assert --out "$empty_dir" 2>&1)"
+assert_contains "$out" "cross-upgrade=fail reason=status-after-missing" \
+  "ac-7 a missing status block is a verdict, not a silent exit"
+
 finish

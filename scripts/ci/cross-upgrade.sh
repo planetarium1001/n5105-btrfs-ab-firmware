@@ -48,8 +48,14 @@ USAGE
 }
 
 # field <file> <name>: one `name=value` token from a status line.
+# field <file> <name>: one value out of a status block. A missing file is an empty value,
+# not a failure: grade() reads four of these in a row, and under `set -e` a non-zero field
+# ended the whole stage before it could say what was missing (run 43588155580 printed no
+# verdict at all, and the run page only knew that the step had failed).
 field() {
-    [ -f "$1" ] || return 1
+    if [ ! -f "$1" ]; then
+        return 0
+    fi
     sed -n "s/.*[[:space:]]$2=\([^[:space:]]*\).*/\1/p" "$1" | head -n 1
 }
 
