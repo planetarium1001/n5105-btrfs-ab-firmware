@@ -209,4 +209,12 @@ assert_contains "$esp_fn" "local _image=\$1 _out=\$2" \
 assert_contains "$payload_fn" "local _payload=\$1 _out=\$2" \
   "ac-6 payload_digests keeps its arguments out of run_stage's variables"
 
+# --- ac-7: an empty --inject must not end the script -----------------------
+# `[ -n "$x" ] && ...` as the last statement of run_stage returns non-zero when the flag is
+# absent, and set -e then kills the script before grade() prints: the run reports "no
+# verdict line" instead of the verdict (43584337812).
+run_fn="$(sed -n '/^run_stage()/,/^}/p' "$script")"
+assert_contains "$run_fn" 'if [ -n "${_inject}" ] && [ "${_inject}" != "none" ]; then' \
+  "ac-7 the inject guard is a conditional, so an absent flag cannot exit early"
+
 finish

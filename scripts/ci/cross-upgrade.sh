@@ -381,7 +381,12 @@ run_stage() {
     extract_blocks "${_out}/serial.log" "${_out}"
     esp_digests "${_work}/old.img" "${_out}/esp.sha256" || :
     payload_digests "${_payload}" "${_out}/payload.sha256" || :
-    [ -n "${_inject}" ] && [ "${_inject}" != "none" ] && printf '%s\n' "${_inject}" >"${_out}/inject"
+    # An if, not a && chain: with an empty --inject the chain returns non-zero and set -e
+    # ends the script here, before grade() can print anything - the run then reports "no
+    # verdict line" instead of the verdict (run 43584337812).
+    if [ -n "${_inject}" ] && [ "${_inject}" != "none" ]; then
+        printf '%s\n' "${_inject}" >"${_out}/inject"
+    fi
     grade "${_out}"
 }
 
