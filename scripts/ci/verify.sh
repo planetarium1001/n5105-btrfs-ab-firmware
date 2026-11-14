@@ -246,6 +246,18 @@ if [ "${test_rc}" -ne 0 ]; then
     printf '%s\n' "${test_output}" >"${CI_LOG_DIR}/verify-tests.log"
     ci_warn "test suite failed; the full output is logs/verify-tests.log"
     printf '%s\n' "${test_output}" | grep -E '^(FAIL|not ok)' | head -n 20 >&2 || true
+    # A one-line FAIL is not something anyone can act on, and tests/run.sh keeps each
+    # test's own output in tests/.out, which the logs artifact does not carry. Print the
+    # tail of the failing logs here so the run page alone explains the red.
+    shown=0
+    for log in "${CI_REPO_ROOT}"/tests/.out/*.log; do
+        [ -f "${log}" ] || continue
+        [ "${shown}" -lt 5 ] || break
+        grep -q '^not ok' "${log}" 2>/dev/null || continue
+        shown=$((shown + 1))
+        printf '----- %s (last 30 lines) -----\n' "${log#"${CI_REPO_ROOT}"/}" >&2
+        tail -n 30 "${log}" >&2 || true
+    done
 fi
 
 # --------------------------------------------------------------------------- #

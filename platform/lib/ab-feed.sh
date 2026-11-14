@@ -324,6 +324,7 @@ ab_feed_verify_member() {
 # ab_feed_space_ok <dir> <bytes>: room for the download plus ten percent.
 ab_feed_space_ok() {
     _dir=${1:?} _bytes=${2:?}
+    # shellcheck disable=SC2034  # cleared per call; a caller prints it only when this fails
     AB_FEED_REASON=""
     _avail_k=$(df -k "${_dir}" 2>/dev/null | awk 'NR == 2 { print $4 }')
     case "${_avail_k}" in

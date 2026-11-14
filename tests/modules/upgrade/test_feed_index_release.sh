@@ -196,8 +196,10 @@ out="$(run_index --out "$tmp/feed/stale.txt" --release "$stale")"
 assert_eq "$?" "1" "ac-9c a payload that no longer matches SHA256SUMS is refused"
 assert_contains "$out" "claims" "ac-9c the refusal quotes the published digest"
 
-assert_eq "$(ls "$tmp/feed" | grep -c 'dup.txt\|no-sums.txt\|stale.txt')" "0" \
-  "ac-9c nothing is written when the input is refused"
+strays="$(cd "$tmp/feed" && for name in dup.txt no-sums.txt stale.txt; do
+  [ -e "$name" ] && printf '%s\n' "$name"
+done | wc -l | tr -d ' ')"
+assert_eq "$strays" "0" "ac-9c nothing is written when the input is refused"
 
 # --- ac-9d: an unrecorded kernel publishes the release, without an index ----
 mystery="$tmp/rel-mystery"

@@ -957,7 +957,11 @@ cmd_packages_revert() {
     _layer="$(packages_layer)"
     _dir="${_layer}/apk/snapshots"
     if [ -z "${_to}" ]; then
-        _to=$(ls -1 "${_dir}" 2>/dev/null | grep '^snapshot-.*\.txt$' | sort | tail -n 1 | sed 's/^snapshot-//; s/\.txt$//')
+        # Sorted as file names, not as stripped ids: `snapshot-<id>.txt` and
+        # `snapshot-<id>-2.txt` are told apart by '.' against '-', and stripping first
+        # would invert which of the two sorts last (the same-second case in packages.sh).
+        _to=$(find "${_dir}" -maxdepth 1 -name 'snapshot-*.txt' 2>/dev/null \
+            | sed 's#^.*/##' | sort | tail -n 1 | sed 's/^snapshot-//; s/\.txt$//')
     fi
     [ -n "${_to}" ] || {
         say "ab-slot: refused, reason=revert-no-snapshot"

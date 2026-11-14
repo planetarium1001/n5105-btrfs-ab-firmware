@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: one pipefail default line per workflow, plus the shared partition-field reader
+# reason: ci: find instead of ls|grep for snapshot files, and the failing-test detail in verify
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -414,7 +414,6 @@ sh-var scripts/ci/boot-member.sh CI_REQUIRE_BOOTLOADER
 sh-var scripts/ci/boot-member.sh CI_SCRIPT_DIR
 sh-var scripts/ci/boot-member.sh CI_TMP_ROOT
 sh-var scripts/ci/boot-member.sh CI_UPSTREAM_VERSION
-sh-var scripts/ci/cross-upgrade.sh CI_CROSS_LOOP
 sh-var scripts/ci/cross-upgrade.sh CI_JUDGE_PREFIX
 sh-var scripts/ci/cross-upgrade.sh CI_MIN_UPSTREAM_MAJOR
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_CASE

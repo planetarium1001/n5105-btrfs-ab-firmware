@@ -147,7 +147,12 @@ cross_prepare() {
     _mnt="${_work}/p4"
     sudo mkdir -p "${_mnt}"
     sudo mount "${_p4}" "${_mnt}" || { sudo losetup -d "${_loop}"; return 1; }
-    _layer=$(ls -1 "${_mnt}" | grep '^@overlay-' | head -n 1)
+    _layer=""
+    for _cand in "${_mnt}"/@overlay-*; do
+        [ -d "${_cand}" ] || continue
+        _layer="${_cand##*/}"
+        break
+    done
     if [ -z "${_layer}" ]; then
         sudo umount "${_mnt}"; sudo losetup -d "${_loop}"
         return 1
@@ -200,7 +205,6 @@ RCLOCAL
     sudo sync
     sudo umount "${_mnt}"
     sudo losetup -d "${_loop}"
-    CI_CROSS_LOOP=""
 }
 
 # extract_blocks <serial> <out>: split the three status blocks out of the serial log.

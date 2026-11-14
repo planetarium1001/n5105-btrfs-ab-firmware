@@ -327,7 +327,8 @@ _packages_snapshot_files() {
     # The id has one-second resolution, so two snapshots in the same second are told apart
     # by a -N suffix. That suffix is the *later* write, which plain `sort` would place
     # first ("-" < "."); the sort key makes the number the last thing compared.
-    ls -1 "${_dir}" 2>/dev/null | grep '^snapshot-.*\.txt$' | awk '
+    find "${_dir}" -maxdepth 1 -name 'snapshot-*.txt' 2>/dev/null \
+        | sed 's#^.*/##' | awk '
         {
             name = $0
             id = name
