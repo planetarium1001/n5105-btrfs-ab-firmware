@@ -182,6 +182,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # The same runner the S3 boot gets, because this job boots that image under QEMU and
+      # mounts its partition: on a bare runner cross-upgrade.sh reports
+      # skipped reason=qemu-not-available (run 43568028301), which is not a passing proof.
+      # It also creates the log directory the grading step and the evidence reuse.
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+        with:
+          apt: btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+
       - name: Guard - there is no previous release to upgrade from
         id: gap
         if: ${{ needs.select-previous.outputs.has_previous != 'true' }}
@@ -241,3 +250,4 @@ jobs:
             ${{ runner.temp }}/ci/cross-out
             ${{ runner.temp }}/ci/cross
             ${{ runner.temp }}/ci/cross-payload
+            ${{ runner.temp }}/ci/logs

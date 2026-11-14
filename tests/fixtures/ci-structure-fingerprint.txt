@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: the cross stage builds one payload and publishes its facts once
+# reason: ci: the cross job prepares its runner for QEMU
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -2038,27 +2038,30 @@ yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps =
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[0].with = 
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[0].with.persist-credentials = false
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].id = gap
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].if = ${{ needs.select-previous.outputs.has_previous != 'true' }}
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].with = 
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].with.name = image-install-old
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].with.path = ${{ runner.temp }}/ci/cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].id = gap
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[2].if = ${{ needs.select-previous.outputs.has_previous != 'true' }}
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with = 
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with.name = payload-upgrade
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with.path = ${{ runner.temp }}/ci/cross-payload
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].id = grade
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with.name = image-install-old
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[3].with.path = ${{ runner.temp }}/ci/cross
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].if = always()
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].uses = ./.github/actions/stage-evidence
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].with = 
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].with.diag-args = ${{ runner.temp }}/ci/cross-out
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].with.name = evidence-cross
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].with.paths = |
-yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].with.stage = cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with.name = payload-upgrade
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[4].with.path = ${{ runner.temp }}/ci/cross-payload
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].id = grade
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[5].if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].if = always()
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with = 
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.diag-args = ${{ runner.temp }}/ci/cross-out
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.name = evidence-cross
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.paths = |
+yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.steps.[6].with.stage = cross
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.timeout-minutes = 35
 yaml .github/workflows/ci-upgrade-cross.yml jobs.fetch-old.if = ${{ needs.select-previous.outputs.has_previous == 'true' }}
 yaml .github/workflows/ci-upgrade-cross.yml jobs.fetch-old.needs = [resolve-new, select-previous, resolve-old]

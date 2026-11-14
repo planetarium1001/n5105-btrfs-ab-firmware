@@ -247,7 +247,8 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # directory (run 43564031421).
 #
 # The artifact suffixes that keep the cross stage's two builds apart (ci-fetch, ci-s3) fit in
-# this budget: deleting the stage's duplicate payload build paid for them. Measured 2568.
+# this budget: deleting the stage's duplicate payload build paid for them. Measured 2578
+# (the cross job's runner preparation is three of those lines).
 CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2580}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))

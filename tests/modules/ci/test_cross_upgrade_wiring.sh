@@ -113,6 +113,27 @@ assert_contains "$setup_clause" 'default: "upstream-files"' \
 assert_contains "$setup_action" 'name: ${{ inputs.artifact }}' \
   "ac-2 setup-ci downloads the artifact it was told about"
 
+# --- ac-2: the grading job needs QEMU on its runner -------------------------
+# The stage boots the old image under QEMU and mounts its partition, so a job that only checks
+# out and downloads runs cross-upgrade.sh with no qemu-system-x86_64. The script then prints
+# `skipped reason=qemu-not-available` and the step fails on the skip: a missing tool turned a
+# real verification into a skip, and a skip is not a passed proof (run 43568028301).
+cross_job="$(awk '/^  cross:$/ {found = 1} found {print}' .github/workflows/ci-upgrade-cross.yml)"
+assert_contains "${cross_job}" 'uses: ./.github/actions/setup-ci' \
+  "ac-2 the grading job prepares its runner instead of running on a bare image"
+assert_contains "${cross_job}" 'qemu-system-x86' \
+  "ac-2 that preparation installs QEMU, or the boot is skipped rather than graded"
+assert_contains "$script" 'command -v qemu-system-x86_64' \
+  "ac-2 the script refuses to boot without QEMU, so the job has to provide it"
+assert_contains "${cross_job}" '${{ runner.temp }}/ci/logs' \
+  "ac-2 the verdict's own log travels with the facts, not only the diagnostics summary"
+setup_line=$(awk '/^  cross:$/ {job = 1} job && /uses: .\/\.github\/actions\/setup-ci/ {print NR; exit}' \
+  .github/workflows/ci-upgrade-cross.yml)
+download_line=$(awk '/^  cross:$/ {job = 1} job && /uses: actions\/download-artifact@/ {print NR; exit}' \
+  .github/workflows/ci-upgrade-cross.yml)
+assert_eq "$([ -n "${setup_line}" ] && [ -n "${download_line}" ] && [ "${setup_line}" -lt "${download_line}" ] && echo before)" \
+  "before" "ac-2 the runner is prepared before the artifacts are downloaded"
+
 # --- ac-5: no previous release --------------------------------------------
 assert_contains "$stage" "cross-upgrade=skipped reason=no-previous-formal-release" \
   "ac-5 a missing previous release is skipped with its reason"
