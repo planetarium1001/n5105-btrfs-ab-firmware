@@ -29,9 +29,11 @@
 : "${AB_REPO_ROOT:=$PWD}"
 
 AB_HOST=${AB_HOST:-root@192.168.2.49}
-# The key lives in the earlier real-device task's scratch directory: it is the one
-# key the machine already trusts, and it is reachable without touching ~/.ssh.
-AB_KEY=${AB_KEY:-${AB_REPO_ROOT}/.workflow/tasks/20261111-04-real-device-functional-validation/scratch/abkey}
+# The key is the project secret (workflow project secret, mode 600, never committed):
+# a task's scratch/ directory is not a home for it, because archive does not carry
+# scratch along and a default that points there rots silently - every dev_ssh then
+# fails as "Permission denied" and dev_wait_up reports it as "machine is down".
+AB_KEY=${AB_KEY:-${AB_REPO_ROOT}/.workflow/secrets/n5105-device-ssh-key}
 AB_SSH_CONNECT_TIMEOUT=${AB_SSH_CONNECT_TIMEOUT:-8}
 
 AB_REMOTE_TMP=${AB_REMOTE_TMP:-/tmp}

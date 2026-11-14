@@ -78,6 +78,24 @@ same bytes `n5105-ab-<platform>-<upstream>.img.gz` and `.tar`; if a script of yo
 uses that pattern, it is the same file with `-install` or `-upgrade` in front of the
 extension.
 
+### Verify the release before you write it
+
+A release is four files that have to agree: the install image, the update payload,
+`index.txt` and `SHA256SUMS`. One command reads them back from the release and says
+whether they do:
+
+```sh
+./scripts/device/release-verify.sh --tag v0.0.9
+```
+
+It prints one `release-verify check=... result=...` line per claim - the tag against the
+`VERSION` it carries, each of the four assets, every line of `SHA256SUMS`, and the
+`platform` / `base` the index declares - and ends with a `release-verify result=pass|fail`
+line, exiting 0 only when every check passed. `--dir <path>` runs the same checks over
+files you downloaded by hand, and `AB_DRY_RUN=1` sends nothing over the network at all.
+Run it before `dd`: a digest that disagrees with `SHA256SUMS` is the last cheap moment to
+stop.
+
 Which one an image carries is recorded inside it: mount the ESP (`PARTNAME ab-esp`, FAT) and
 read `ab/image.json` - `"kind": "boot"` is writable, `"kind": "probe"` is a CI fixture. The
 release job refuses to publish anything whose `kind` is not `boot`, and also reads `initrd-a`

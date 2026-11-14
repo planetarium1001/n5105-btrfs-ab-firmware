@@ -59,6 +59,21 @@ uci commit firewall
 更早的发布把同一份字节叫 `n5105-ab-<platform>-<upstream>.img.gz` 与 `.tar`；如果你的脚本还在用
 那个模式，它就是同一个文件，只是在扩展名前多了 `-install` 或 `-upgrade`。
 
+### 写盘之前先核对发布
+
+一次发布是四个必须彼此一致的文件：安装镜像、升级载荷、`index.txt` 与 `SHA256SUMS`。一条命令把它们从
+release 上读回来，并回答一致不一致：
+
+```sh
+./scripts/device/release-verify.sh --tag v0.0.9
+```
+
+它每条断言打一行 `release-verify check=... result=...` —— tag 与它携带的 `VERSION`、四件资产、
+`SHA256SUMS` 的每一行、index 声明的 `platform` / `base` —— 最后一行是
+`release-verify result=pass|fail`，只有全部断言通过才退出 0。`--dir <path>` 用同样的断言核对你自己
+下载下来的文件，`AB_DRY_RUN=1` 则一个网络包都不发。请在 `dd` 之前跑它：摘要与 `SHA256SUMS` 不一致的
+时候，这是最后一个代价很小的止步点。
+
 镜像自己会说明身份：挂上 ESP（`PARTNAME ab-esp`，FAT），读 `ab/image.json` —— `"kind": "boot"`
 才是可写的，`"kind": "probe"` 是 CI 夹具。发布作业会拒绝 `kind` 不是 `boot` 的镜像，并且会把
 镜像里的 `initrd-a` 解出来确认它是生产 init。
