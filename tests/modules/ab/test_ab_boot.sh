@@ -349,4 +349,31 @@ assert_eq "$([ -f "$esp/ab/candidate" ] && echo present || echo absent)" "presen
 assert_eq "$(grep -c 'candidate=1' "$esp/ab/log/boot-0.log")" "0" \
   "ac-6 a boot of the committed slot is not a candidate"
 
+
+# --- the interrupted candidate record is published once ------------------
+# The initramfs cannot append to the ring log (rotation is this hook's job), so it leaves one
+# line in ab/interrupted; this is where it becomes a `stage=interrupted` line that `ab-slot
+# log` and the acceptance checklist can grep. Published once, then removed: an ESP that
+# cannot be written would otherwise replay the same interruption on every boot.
+rm -f "$esp/ab/candidate"
+write_state b none 7
+printf 'console=ttyS0 ab.slot=b\n' >"$cmdline"
+printf 'slot=b attempt=2 last=2026-11-14T20:00:00Z result=retry\n' >"$esp/ab/interrupted"
+run_boot
+assert_contains "$(boot_log)" "stage=interrupted slot=b attempt=2 last=2026-11-14T20:00:00Z result=retry" \
+  "the interrupted candidate boot reaches the ring log"
+assert_eq "$([ -f "$esp/ab/interrupted" ] && echo present || echo absent)" "absent" \
+  "the record is published once, not replayed on every boot"
+
+# --- a running attempt count is not reset by this hook -------------------
+# The initramfs owns the counter now. Rewriting the marker here would reset it to 1 on every
+# boot, which is exactly the loop the counter exists to stop.
+write_state b b 8
+printf 'console=ttyS0 ab.slot=b\n' >"$cmdline"
+printf 'b 2026-11-14T21:00:00Z 2\n' >"$esp/ab/candidate"
+run_boot
+assert_eq "$(cat "$esp/ab/candidate")" "b 2026-11-14T21:00:00Z 2" \
+  "the hook leaves the initramfs attempt count alone"
+assert_contains "$(boot_log)" "candidate=1 attempt=2" \
+  "the ring log reports the attempt the initramfs recorded"
 finish

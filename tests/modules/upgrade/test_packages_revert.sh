@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 # Module: upgrade
-# Package snapshots: the record that makes a package-level rollback possible.
+# Package snapshots and package-level rollback.
 #
 # A snapshot is text on the writable layer, next to the world it describes:
 #
-#   <layer>/apk/snapshots/snapshot-<UTC>.txt
+#   <layer>/apk/snapshots/snapshot-<id>.txt      the manifest
+#   <layer>/apk/snapshots/snapshot-<id>.d/       the payloads fetched for it
+#       payloads/<name>-<version>.apk
 #
-# It records the base and platform versions the machine was on, every world entry, and
-# every installed package with its version. Nothing here runs apk for real: the test
-# puts a stub on PATH and asserts what the library asked it for.
+# The stub apk below answers the way apk-tools 3.0.5 does on the measured machine
+# (device 192.168.2.49, 2026-11-14): bare `apk info` prints names only, `apk info -v`
+# prints name-version, `apk list --installed` prints name-version followed by the arch and
+# the repository, `apk fetch -o DIR` lands <name>-<version>.apk, `apk add name=version`
+# pins a package into the world, and a local .apk needs --allow-untrusted. Nothing here
+# runs apk for real: the test asserts what the library asked it for.
 #
-#   ac-1  a snapshot names the release it belongs to and every installed package
+#   ac-1  every installed package is parsed with its version, from `apk info -v`
+#         (falling back to the first field of `apk list --installed`), the split is "the
+#         last dash followed by a digit", and a line that cannot be split fails the
+#         snapshot with `apk-info-unparsed` instead of being dropped
+#   ac-2  the snapshot header counts packages/world/payloads and `packages list` agrees
+#   ac-3  a revert replays the pinned versions (one apk transaction when the payloads are
+#         there), reports changed= and reconciles world=/matched=
+#   ac-4  payloads land in snapshot-<id>.d/payloads with a sha256 per package,
+#         --no-payloads turns them off, a failed fetch is a recorded gap, and a digest
+#         that does not match installs nothing at all
 #   ac-7  listing shows the snapshots newest first and says when there are none
 #   ac-8  snapshots live on the writable layer only; no slot state is touched
-#   ac-1  the newest three are kept, older ones are reaped by the snapshot itself
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -34,29 +47,128 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# --- a stub apk: the library may ask, never install --------------------------
+# --- a stub apk: the library may ask, never install (unless the test says so) ----
 bin="$tmp/bin"
 mkdir -p "$bin"
-cat >"$bin/apk" <<'STUB'
+
+# The installed set the measured machine reports: names that carry dashes and versions
+# that carry a dash of their own are the two shapes that broke the old split.
+pkglist="$tmp/installed.txt"
+cat >"$pkglist" <<'LIST'
+kmod-8139cp-6.12.103-r1
+libnghttp2-14-1.64.0-r0
+libiptext6-0.1-r0
+kmod-nls-iso8859-1-6.12.103-r1
+htop-3.3.0-r1
+kernel-6.12.103-r1
+nano-8.2-r1
+LIST
+
+export APK_INFO_LIST="$pkglist"
+export APK_CALLS="$tmp/apk-calls.log"
+: >"$APK_CALLS"
+
+cat >"$bin/apk" <<'APK'
 #!/bin/sh
+printf '%s\n' "$*" >>"${APK_CALLS:-/dev/null}"
 case "${1:-}" in
-  --version) printf 'apk-tools 3.0.0\n' ;;
+  --version) printf 'apk-tools 3.0.5\n' ;;
   info)
-    printf 'htop-3.3.0-r1\n'
-    printf 'kernel-6.12.103-r1\n'
-    printf 'nano-8.2-r1\n'
+    if [ "${2:-}" = "-v" ]; then
+      [ "${APK_INFO_FAIL:-0}" = "1" ] && exit 1
+      cat "${APK_INFO_LIST:-/dev/null}"
+    else
+      # apk-tools 3 prints the names only, with no version at all.
+      sed 's/-[0-9][^-]*\(-r[0-9][^-]*\)\{0,1\}$//' "${APK_INFO_LIST:-/dev/null}"
+    fi
+    ;;
+  list)
+    [ "${APK_LIST_FAIL:-0}" = "1" ] && exit 1
+    sed 's/$/ x86_64 https:\/\/example.invalid\/base (MIT) [installed]/' "${APK_INFO_LIST:-/dev/null}"
+    ;;
+  fetch)
+    [ "${APK_FETCH_FAIL:-0}" = "1" ] && exit 1
+    shift
+    dir=""
+    pins=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -o) dir="$2"; shift 2 ;;
+        --recursive) shift ;;
+        *) pins="$pins $1"; shift ;;
+      esac
+    done
+    [ -n "$dir" ] || exit 1
+    mkdir -p "$dir" || exit 1
+    for pin in $pins; do
+      name=${pin%%=*}
+      ver=${pin#*=}
+      printf 'APK %s %s\n' "$name" "$ver" >"$dir/$name-$ver.apk" || exit 1
+    done
+    ;;
+  add)
+    [ "${APK_ADD_FAIL_ALL:-0}" = "1" ] && exit 1
+    case "$*" in
+      *--allow-untrusted*) exit "${APK_ADD_FAIL:-0}" ;;
+    esac
+    for arg in "$@"; do
+      case "$arg" in
+        nano=*) [ "${APK_FAIL_NANO:-1}" = "0" ] && continue; exit 1 ;;
+      esac
+    done
+    exit 0
     ;;
   *) exit 0 ;;
 esac
-STUB
+APK
 chmod +x "$bin/apk"
 export PATH="$bin:$PATH"
 
+# --- ac-1: the parse ---------------------------------------------------------
+expected_parse="kmod-8139cp 6.12.103-r1
+libnghttp2-14 1.64.0-r0
+libiptext6 0.1-r0
+kmod-nls-iso8859-1 6.12.103-r1
+htop 3.3.0-r1
+kernel 6.12.103-r1
+nano 8.2-r1"
+
+parsed="$(_packages_installed)"
+assert_eq "$parsed" "$expected_parse" "ac-1 every installed package is split into name and version"
+assert_eq "$(grep -c '^info -v$' "$APK_CALLS")" "1" "ac-1 the source is apk info -v"
+assert_eq "$(grep -c '^info$' "$APK_CALLS")" "0" \
+  "ac-1 bare apk info is never read (it prints names only)"
+
+# The documented fallback: `apk list --installed`, first field.
+: >"$APK_CALLS"
+parsed_fallback="$(APK_INFO_FAIL=1 _packages_installed)"
+assert_eq "$parsed_fallback" "$expected_parse" \
+  "ac-1 apk list --installed is the fallback and its first field is name-version"
+assert_eq "$(grep -c '^list --installed$' "$APK_CALLS")" "1" \
+  "ac-1 the fallback is asked for the installed set"
+
+# A line that cannot be split is a failure, not something to drop: dropping lines was how
+# a 317-package machine produced a snapshot with almost nothing in it.
+badlist="$tmp/unparsable.txt"
+printf 'htop-3.3.0-r1\nweirdname\nnano-8.2-r1\ntrailing-\n' >"$badlist"
+bad_layer="$tmp/overlay-unparsable"
+mkdir -p "$bad_layer/upper/etc/apk"
+printf 'kernel\n' >"$bad_layer/upper/etc/apk/world"
+out="$(APK_INFO_LIST="$badlist" ab_packages_snapshot "$bad_layer" 25.12.2 0.0.8 2>&1)"
+rc=$?
+assert_eq "$rc" "1" "ac-1 a line that cannot be split fails the snapshot"
+assert_contains "$out" "apk-info-unparsed" "ac-1 the failure names the unparsable package list"
+assert_contains "$out" "2 of 4" "ac-1 the failure counts the unparsable lines against the input"
+assert_contains "$out" "weirdname" "ac-1 the first unparsable line is shown"
+assert_contains "$out" "trailing-" "ac-1 every unparsable line is shown (up to three)"
+assert_eq "$(ls "$bad_layer/apk/snapshots" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "ac-1 no half snapshot is left behind"
+
+# --- ac-2 / ac-4: the snapshot, its counts and its payloads ------------------
 layer="$tmp/overlay-25.12.2"
 mkdir -p "$layer/upper/etc/apk"
-printf 'kernel\nhtop\nnano\n' >"$layer/upper/etc/apk/world"
+printf 'kernel\nhtop\nnano\nzlib\n' >"$layer/upper/etc/apk/world"
 
-# --- ac-1: a snapshot records the release and the packages ------------------
 snap=$(ab_packages_snapshot "$layer" 25.12.2 0.0.8) || snap=""
 assert_file_exists "$snap" "ac-1 a snapshot file is written"
 contents="$(cat "$snap" 2>/dev/null)"
@@ -65,21 +177,86 @@ assert_contains "$contents" "upstream 25.12.2" "ac-1 the snapshot names the base
 assert_contains "$contents" "platform 0.0.8" "ac-1 the snapshot names the platform version"
 assert_contains "$contents" "world    htop" "ac-1 every world entry is recorded"
 assert_contains "$contents" "pkg      htop 3.3.0-r1" "ac-1 every installed package is recorded with its version"
+assert_contains "$contents" "pkg      kmod-nls-iso8859-1 6.12.103-r1" \
+  "ac-1 a package whose name ends in a dashed number keeps it in the name"
+assert_contains "$contents" "pkg      libnghttp2-14 1.64.0-r0" \
+  "ac-1 a package whose name ends in a number keeps it in the name"
 assert_contains "$contents" "end" "ac-1 the snapshot is terminated"
 
-# --- ac-1: retention keeps the newest three --------------------------------
+# The counts live in the header as `packages <N>` / `world <M>`; the entries themselves
+# keep their `pkg      ` and `world    ` columns, which is what tells a count line and an
+# entry apart and what a reader written before the counts existed already matches.
+assert_eq "$(sed -n 's/^packages //p' "$snap")" "7" "ac-2 the header counts the packages"
+assert_eq "$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "$snap")" "4" \
+  "ac-2 the header counts the world entries"
+assert_eq "$(sed -n 's/^payloads //p' "$snap")" "yes" "ac-4 the payloads are fetched by default"
+assert_eq "$(grep -c '^pkg ' "$snap")" "7" "ac-2 there is one pkg line per package"
+assert_eq "$(grep -c '^world    ' "$snap")" "4" "ac-2 there is one world line per entry"
+assert_eq "$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "$snap")" "$(grep -c '^world    ' "$snap")" \
+  "ac-2 the world count equals the number of world entries"
+
+# The three new header lines sit where the format says: after `platform`, before the
+# entries, counts first and the payload verdict last.
+l_platform=$(grep -n '^platform ' "$snap" | cut -d: -f1)
+l_packages=$(grep -n '^packages ' "$snap" | cut -d: -f1)
+l_world=$(grep -n '^world ' "$snap" | head -n 1 | cut -d: -f1)
+l_payloads=$(grep -n '^payloads ' "$snap" | cut -d: -f1)
+assert_eq "$([ "$l_platform" -lt "$l_packages" ] && [ "$l_packages" -lt "$l_world" ] \
+  && [ "$l_world" -lt "$l_payloads" ] && printf ordered)" "ordered" \
+  "ac-2 packages/world/payloads sit after platform and before the entries"
+
+sid=${snap##*/snapshot-}
+sid=${sid%.txt}
+pdir="$layer/apk/snapshots/snapshot-$sid.d/payloads"
+assert_eq "$([ -d "$pdir" ] && printf present || printf absent)" "present" \
+  "ac-4 the payloads land in snapshot-<id>.d/payloads"
+assert_file_exists "$pdir/htop-3.3.0-r1.apk" "ac-4 every pinned package has a file"
+want_sha=$(shasum -a 256 "$pdir/htop-3.3.0-r1.apk" | cut -d' ' -f1)
+assert_contains "$contents" "apkfile  htop $want_sha" \
+  "ac-4 the sha256 of each payload is recorded next to its name"
+assert_eq "$(grep -c '^apkfile ' "$snap")" "7" "ac-4 there is one apkfile line per package"
+assert_eq "$(grep -c '^end$' "$snap")" "1" "ac-4 the apkfile lines come before the end marker"
+assert_eq "$(awk '/^apkfile /{ last = NR } /^end$/{ print (last < NR) ? "before" : "after"; exit }' "$snap")" \
+  "before" "ac-4 the apkfile lines are inside the record"
+
+# --no-payloads: the manifest is the main deliverable, the payloads are optional.
+: >"$APK_CALLS"
+snap_np=$(ab_packages_snapshot "$layer" 25.12.2 0.0.8 --no-payloads) || snap_np=""
+assert_file_exists "$snap_np" "ac-4 --no-payloads still writes the manifest"
+assert_eq "$(sed -n 's/^payloads //p' "$snap_np")" "no" "ac-4 --no-payloads records no payloads"
+sid_np=${snap_np##*/snapshot-}
+sid_np=${sid_np%.txt}
+assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_np.d" ] && printf present || printf absent)" \
+  "absent" "ac-4 --no-payloads leaves no payload directory"
+assert_eq "$(grep -c '^fetch' "$APK_CALLS")" "0" "ac-4 --no-payloads does not ask apk for anything"
+
+# A fetch that fails is a gap in the record, not a broken snapshot: the feed can be
+# unreachable while the machine still needs a list of what it has.
+snap_gap=$(APK_FETCH_FAIL=1 ab_packages_snapshot "$layer" 25.12.2 0.0.8 2>/dev/null) || snap_gap=""
+assert_file_exists "$snap_gap" "ac-4 a failed fetch still leaves the manifest"
+assert_eq "$(sed -n 's/^payloads //p' "$snap_gap")" "no" "ac-4 a failed fetch is recorded as no payloads"
+assert_eq "$(sed -n 's/^payload-gap //p' "$snap_gap")" "apk-fetch-failed" \
+  "ac-4 the gap names why the payloads are missing"
+sid_gap=${snap_gap##*/snapshot-}
+sid_gap=${sid_gap%.txt}
+assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_gap.d" ] && printf present || printf absent)" \
+  "absent" "ac-4 a failed fetch leaves no half-populated payload directory"
+
+# --- ac-1: retention keeps the newest three, payloads included --------------
 for _ in 1 2 3; do
   sleep 1
   ab_packages_snapshot "$layer" 25.12.2 0.0.8 >/dev/null 2>&1 || true
 done
 count=$(ab_packages_list "$layer" | grep -c '^snapshot ' || true)
 assert_eq "$count" "3" "ac-1 three snapshots are kept, not four"
+assert_eq "$(find "$layer/apk/snapshots" -maxdepth 1 -name 'snapshot-*.d' | wc -l | tr -d ' ')" "3" \
+  "ac-4 the payload directory is reaped with its manifest"
 
 # --- ac-7: listing ----------------------------------------------------------
 listed="$(ab_packages_list "$layer")"
 assert_contains "$listed" "base 25.12.2" "ac-7 each line names the base"
 assert_contains "$listed" "platform 0.0.8" "ac-7 each line names the platform version"
-assert_contains "$listed" "3 packages" "ac-7 each line counts the packages"
+assert_contains "$listed" "7 packages" "ac-7 each line counts the packages"
 first_line=$(printf '%s\n' "$listed" | head -n 1)
 assert_contains "$first_line" "3 snapshots kept" "ac-7 the list states how many are retained"
 # Newest first: the ids are UTC timestamps, so the first line has the largest id.
@@ -138,29 +315,7 @@ release="$tmp/platform-release"
 printf 'PLATFORM_VERSION=0.0.8\nUPSTREAM_VERSION=25.12.2\n' >"$release"
 p4="$tmp/p4"
 mkdir -p "$p4/@overlay-25.12.2/upper/etc/apk"
-printf 'kernel\nhtop\n' >"$p4/@overlay-25.12.2/upper/etc/apk/world"
-
-# The stub records what it was asked to do and fails only for nano, which is how a
-# package that is no longer in the feed behaves.
-cat >"$bin/apk" <<'APK'
-#!/bin/sh
-printf '%s\n' "$*" >>"$APK_CALLS"
-case "${1:-}" in
-  --version) printf 'apk-tools 3.0.0\n' ;;
-  info) printf 'htop-3.3.0-r1\nkernel-6.12.103-r1\nnano-8.2-r1\n' ;;
-  add)
-    case "${2:-}" in
-      nano=*) [ "${APK_FAIL_NANO:-1}" = "0" ] && exit 0; exit 1 ;;
-    esac
-    exit 0
-    ;;
-  update|upgrade) exit 0 ;;
-  *) exit 0 ;;
-esac
-APK
-chmod +x "$bin/apk"
-export APK_CALLS="$tmp/apk-calls.log"
-: >"$APK_CALLS"
+printf 'kernel\nhtop\nzlib\n' >"$p4/@overlay-25.12.2/upper/etc/apk/world"
 
 slot_run() {
   AB_ESP="$esp" AB_P4="$p4" AB_CMD="$cmdline" AB_PLATFORM_RELEASE="$release" \
@@ -168,12 +323,26 @@ slot_run() {
     PATH="$bin:$PATH" sh "$root/platform/usr/sbin/ab-slot" "$@" 2>&1
 }
 
+: >"$APK_CALLS"
 out="$(slot_run packages snapshot)"
-assert_contains "$out" "snapshot " "ac-1 the CLI writes a snapshot"
-assert_contains "$out" "base 25.12.2" "ac-1 the CLI names the base"
+snap_id=$(printf '%s\n' "$out" | sed -n 's/^snapshot \([^ ]*\) written.*/\1/p')
+assert_eq "$([ -n "$snap_id" ] && printf named || printf missing)" "named" \
+  "ac-1 the CLI writes a snapshot and names it"
+assert_contains "$out" "packages=7" "ac-2 the CLI reports the package count"
+assert_contains "$out" "world=3" "ac-2 the CLI reports the world count"
+assert_contains "$out" "payloads=yes" "ac-4 the CLI reports whether the payloads are there"
+assert_contains "$out" "base=25.12.2" "ac-1 the CLI names the base"
 
 out="$(slot_run packages list)"
 assert_contains "$out" "snapshots kept" "ac-7 the CLI lists snapshots"
+assert_contains "$out" "7 packages" "ac-2 the listing counts the packages"
+
+# ac-2: the numbers the record carries and the numbers a reader counts are the same.
+cli_snap="$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_id.txt"
+assert_eq "$(sed -n 's/^packages //p' "$cli_snap")" "$(grep -c '^pkg ' "$cli_snap")" \
+  "ac-2 the packages header equals the pkg lines"
+assert_eq "$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "$cli_snap")" "$(grep -c '^world    ' "$cli_snap")" \
+  "ac-2 the world header equals the world lines"
 
 out="$(slot_run packages upgrade)"
 rc=$?
@@ -188,40 +357,97 @@ out="$(slot_run packages upgrade)"
 rc=$?
 assert_eq "$rc" "74" "ac-2 an unaligned layer is refused"
 assert_contains "$out" "reason=packages-not-aligned" "ac-2 the refusal names the gate"
-
-# --- ac-5 / ac-6: revert ---------------------------------------------------
 printf 'packages=aligned reason=none slot=a\n' >"$esp/ab/packages"
-# The newest snapshot is the default `--to`, so that is the one to rewrite.
-snapfile="$(ls -1 "$p4/@overlay-25.12.2/apk/snapshots"/snapshot-*.txt | sort | tail -n 1)"
+
+# --- ac-3 / ac-4: revert with the payloads ---------------------------------
+# The payloads were fetched by the snapshot above, so the replay is one apk transaction
+# over local files: the source no longer carries the pinned versions, which is exactly the
+# case this exists for.
+: >"$APK_CALLS"
+out="$(slot_run packages revert --to "$snap_id")"
+rc=$?
+assert_eq "$rc" "0" "ac-3 a revert from the payloads succeeds"
+assert_contains "$out" "revert result=ok changed=7 path=payloads" \
+  "ac-3 the summary counts what was replayed and how"
+assert_eq "$(grep -c '^add ' "$APK_CALLS")" "1" \
+  "ac-3 the payloads are one apk transaction, not one per package"
+add_line="$(grep '^add ' "$APK_CALLS")"
+assert_contains "$add_line" "--allow-untrusted" \
+  "ac-4 a local .apk is installed with --allow-untrusted (the trust chain is our sha256 list)"
+assert_contains "$add_line" ".apk" "ac-3 the transaction installs the fetched files"
+assert_contains "$out" "revert world=3 matched=2" \
+  "ac-3 the revert reconciles the world against the package set"
+assert_contains "$out" "world-unmatched  zlib" \
+  "ac-3 a world entry with no package in the snapshot is named"
+assert_contains "$out" "apkfile verified 7" "ac-4 every payload's digest is verified before installing"
+
+# A payload that does not match its recorded digest means the record cannot be trusted:
+# nothing is installed at all.
+corrupt="$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_id.d/payloads/htop-3.3.0-r1.apk"
+printf 'tampered\n' >"$corrupt"
+: >"$APK_CALLS"
+out="$(slot_run packages revert --to "$snap_id")"
+rc=$?
+assert_eq "$rc" "74" "ac-4 a payload whose digest does not match is refused"
+assert_contains "$out" "reason=revert-payload-mismatch" "ac-4 the refusal names the mismatch"
+assert_contains "$out" "revert result=fail" "ac-4 the accounting says the revert did not happen"
+assert_eq "$(grep -c '^add ' "$APK_CALLS")" "0" \
+  "ac-4 not one package is installed from a set that does not verify"
+
+# Payloads gone (deleted, or a snapshot taken with --no-payloads) falls back to the
+# network replay, which reports per package and still reconciles the world.
+rm -rf "$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_id.d"
+: >"$APK_CALLS"
+out="$(APK_FAIL_NANO=0 slot_run packages revert --to "$snap_id")"
+rc=$?
+assert_eq "$rc" "0" "ac-3 a revert without payloads still succeeds when the feed has the versions"
+assert_contains "$out" "revert result=ok changed=7 path=network" \
+  "ac-3 the network replay reports its own path"
+assert_contains "$out" "revert world=3 matched=2" "ac-3 the network replay reconciles the world too"
+assert_eq "$(grep -c '^add ' "$APK_CALLS")" "7" \
+  "ac-3 without payloads every pinned version is asked for on its own"
+
+# The network path keeps the per-package report: one package that is gone from the feed
+# does not hide the six that came back.
+: >"$APK_CALLS"
+out="$(slot_run packages revert --to "$snap_id")"
+rc=$?
+assert_eq "$rc" "0" "ac-3 a partial revert is not a failure exit"
+assert_contains "$out" "ok      htop 3.3.0-r1" "ac-3 each successful package is named"
+assert_contains "$out" "failed  nano 8.2-r1" "ac-3 each failed package is named"
+assert_contains "$out" "revert result=partial" "ac-3 the summary says partial"
+
+# A revert where every package is still in the feed is a success, not a partial one.
+out="$(APK_FAIL_NANO=0 slot_run packages revert --to "$snap_id")"
+rc=$?
+assert_eq "$rc" "0" "ac-4 a complete revert exits 0"
+assert_contains "$out" "revert result=ok" "ac-4 the summary says ok"
+
+# --no-payloads on the CLI: the snapshot is written, the payload directory is not.
+snap_out="$(slot_run packages snapshot --no-payloads)"
+snap_np_id=$(printf '%s\n' "$snap_out" | sed -n 's/^snapshot \([^ ]*\) written.*/\1/p')
+assert_contains "$snap_out" "payloads=no" "ac-4 the CLI writes a manifest without payloads"
+assert_eq "$([ -d "$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_np_id.d" ] && printf present || printf absent)" \
+  "absent" "ac-4 the CLI leaves no payload directory for --no-payloads"
+
+# --- ac-5 / ac-6: the base is a hard boundary ------------------------------
 # A snapshot from another base must not be replayable: those versions were built for a
 # different kernel and libc.
-python3 - "$snapfile" 26.0.0 <<'PYEDIT'
+python3 - "$cli_snap" 26.0.0 <<'PYEDIT'
 import sys, pathlib, re
 path = pathlib.Path(sys.argv[1])
 path.write_text(re.sub(r"^upstream .*$", "upstream " + sys.argv[2], path.read_text(), flags=re.M))
 PYEDIT
-out="$(slot_run packages revert)"
+out="$(slot_run packages revert --to "$snap_id")"
 rc=$?
 assert_eq "$rc" "74" "ac-5 a snapshot from another base is refused"
 assert_contains "$out" "reason=revert-across-base" "ac-5 the refusal names the base"
 
-python3 - "$snapfile" 25.12.2 <<'PYEDIT'
+python3 - "$cli_snap" 25.12.2 <<'PYEDIT'
 import sys, pathlib, re
 path = pathlib.Path(sys.argv[1])
 path.write_text(re.sub(r"^upstream .*$", "upstream " + sys.argv[2], path.read_text(), flags=re.M))
 PYEDIT
-out="$(slot_run packages revert)"
-rc=$?
-assert_eq "$rc" "0" "ac-6 a partial revert is not a failure exit"
-assert_contains "$out" "ok      htop 3.3.0-r1" "ac-6 each successful package is named"
-assert_contains "$out" "failed  nano 8.2-r1" "ac-6 each failed package is named"
-assert_contains "$out" "revert result=partial" "ac-6 the summary says partial"
-
-# A revert where every package is still in the feed is a success, not a partial one.
-out="$(APK_FAIL_NANO=0 slot_run packages revert)"
-rc=$?
-assert_eq "$rc" "0" "ac-4 a complete revert exits 0"
-assert_contains "$out" "revert result=ok" "ac-4 the summary says ok"
 
 # --- the failure paths the reviewer found unguarded ------------------------
 
@@ -233,6 +459,7 @@ cat >"$broken/apk" <<'APK'
 #!/bin/sh
 case "${1:-}" in
   info) exit 1 ;;
+  list) exit 1 ;;
   *) exit 0 ;;
 esac
 APK
@@ -244,13 +471,13 @@ out="$(PATH="$broken:$PATH" ab_packages_snapshot "$broken_layer" 25.12.2 0.0.8 2
 rc=$?
 assert_eq "$rc" "1" "a snapshot refuses to record a package list it could not read"
 assert_eq "$(ls "$broken_layer/apk/snapshots" 2>/dev/null | wc -l | tr -d ' ')" "0" \
-  "no snapshot file is left behind when apk info fails"
+  "no snapshot file is left behind when apk cannot list the packages"
 assert_contains "$out" "apk-info" "the refusal names the apk failure"
 
 # A machine without apk cannot revert, and says which reason it is.
 noapk="$tmp/noapkbin"
 mkdir -p "$noapk"
-for tool in sh sed awk grep cut sort tail head wc cat ls rm mv mkdir date basename dirname printf; do
+for tool in sh sed awk grep cut sort tail head wc cat ls rm mv mkdir date basename dirname printf find; do
   p=$(command -v "$tool" 2>/dev/null) && ln -sf "$p" "$noapk/$tool" 2>/dev/null
 done
 out="$(AB_ESP="$esp" AB_P4="$p4" AB_CMD="$cmdline" AB_PLATFORM_RELEASE="$release" \
@@ -261,17 +488,7 @@ assert_eq "$rc" "74" "a revert without apk is refused"
 assert_contains "$out" "reason=apk-unsupported" "the refusal names the missing apk"
 
 # When every package fails, the verdict is a failure, not a partial success.
-cat >"$bin/apk" <<'APK'
-#!/bin/sh
-case "${1:-}" in
-  --version) printf 'apk-tools 3.0.0\n' ;;
-  info) printf 'htop-3.3.0-r1\nkernel-6.12.103-r1\nnano-8.2-r1\n' ;;
-  add) exit 1 ;;
-  *) exit 0 ;;
-esac
-APK
-chmod +x "$bin/apk"
-out="$(slot_run packages revert)"
+out="$(APK_ADD_FAIL_ALL=1 slot_run packages revert --to "$snap_id")"
 rc=$?
 assert_eq "$rc" "1" "a revert where nothing could be restored fails"
 assert_contains "$out" "revert result=fail" "the verdict says fail, not partial"

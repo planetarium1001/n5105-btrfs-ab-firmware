@@ -120,6 +120,7 @@ if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${work}/content/platform/etc/platform-release"
     ci_die "platform-release still carries unreplaced placeholders"
 fi
 ci_render_net_defaults "${work}/content/platform"
+ci_render_update_conf "${work}/content/platform"
 # The layer that ships in a payload must be as runnable as the one baked into the image,
 # including the rcS start links, otherwise an upgraded slot never starts the hooks.
 # The platform layer is the first lower layer of the merged root, so any file in it hides

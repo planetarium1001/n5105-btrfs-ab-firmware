@@ -191,6 +191,7 @@ cp -a "${platform_src}/." "${platform_stage}/"
 ci_render_release "${platform_stage}/etc/platform-release" \
     "${platform_version}" "${upstream_version}" "image"
 ci_render_net_defaults "${platform_stage}"
+ci_render_update_conf "${platform_stage}"
 
 # The btrfs user space tooling has no place in @sys (that tree must stay byte
 # identical to upstream), so stage "runtime" hands over a ready tree that is merged

@@ -37,6 +37,18 @@
 | `kernel` | 这次构建的内核包版本，例如 `6.12.103` | payload 会装哪个内核。它通常跟着 `base` 走，有时不跟 | 不决定，只展示 |
 | `platform` | 本项目自己的平台层，即 `PLATFORM_VERSION`，例如 `0.0.8` | 我们在同一个 `base` 上发布过多少次。它数的是我们的发布，不是系统的 | 不决定，只展示 |
 
+三个数字都来自同一个文件 `/etc/platform-release`，两个命令行工具打印的都是那一份，所以
+「我现在跑的是什么」不需要在答案里夹一个路径：
+
+```sh
+ab-slot --version        # 或 -V
+ab-upgrade --version
+```
+
+两者都只打 `PLATFORM_VERSION=`、`UPSTREAM_VERSION=`、`PLATFORM_STAGE=` 三行，都不读槽状态、不要求 root。
+文件位置不变，是因为「机器自己的身份」本来就该在 `/etc`（`/etc/os-release` 是同一个道理），
+而人该用命令去问它。
+
 `base` 不变、只有 `platform` 变的更新是普通的低风险更新：变的是平台层（脚本、默认值、
 菜单），底下的系统没变。这就是为什么决定风险的是 `base`，也是为什么一个只写 `0.0.8`
 的提示会把用户真正需要知道的东西藏起来。
@@ -44,12 +56,34 @@
 风险级别总是取三个比较里最严重的一档：同时跨 minor 和若干 patch 的一次跳跃，算 minor，
 不算 patch。
 
-## 配置一个 feed
+## 配置更新源
 
 配置只有一个文件 `/etc/ab/update.conf`，与 `/etc/net-defaults.conf` 同样是
-`key=value` 风格，`#` 起注释。文件缺失不是「用默认值」，而是拒绝。
+`key=value` 风格，`#` 起注释。
+
+镜像出厂就带一份，指向本仓库自己的 release：
 
 ```
+UPDATE_SOURCE=release
+UPDATE_RELEASE_REPO=planetarium1001/n5105-btrfs-ab-firmware
+UPDATE_RELEASE_BASE=https://github.com
+UPDATE_CHANNEL=stable
+```
+
+有这份文件，刚刷完的机器不用做任何设置就能回答「有没有更新的版本」，比较的基线就是本仓库
+最新发布的版本。`release` 源拼出的地址是
+`<UPDATE_RELEASE_BASE>/<UPDATE_RELEASE_REPO>/releases/latest/download/index.txt`，所以发布说明、
+payload 和它的摘要都是发布出来的那一份，设备上不生成任何东西。
+
+`releases/latest` 有两个直接结果：它永远不会指向预发布，所以 `-rc` 线要自己的 feed；以及
+在这个功能之前发布的版本里没有 `index.txt`，下载会得到 `404`。取件器把 404 与「网络不通」报成同一件事
+——`feed-unreachable`——拒绝时额外打一行，告诉你该去看哪个 releases 页面。`feed-index-missing` 是另一种形状：
+源应答了，但回来的不是 `AB-FEED` 索引（代理错误页、目录列表）。
+
+自建 feed 是另一种源，用法没变：
+
+```
+UPDATE_SOURCE=feed
 UPDATE_FEED_URL=https://example.org/n5105/feed/v1
 UPDATE_CHANNEL=stable
 UPDATE_VERIFY=sha256
@@ -57,13 +91,17 @@ UPDATE_VERIFY=sha256
 
 | 键 | 必填 | 作用 |
 | --- | --- | --- |
-| `UPDATE_FEED_URL` | 是 | feed 所在的目录。设备取 `<url>/index.txt`，条目自己没有 `url` 时取 `<url>/<payload>`。必须以 `https://` 开头，其它值以 `feed-conf-url` 拒绝 |
+| `UPDATE_SOURCE` | 否；没有 `UPDATE_FEED_URL` 时默认 `release`，有则默认 `feed` | 由哪个源回答「最新版本是什么」。`release` 跟本仓库发布的 release；`feed` 读 `UPDATE_FEED_URL`。只写了 `UPDATE_FEED_URL` 的旧配置仍然按 `feed` 工作 |
+| `UPDATE_RELEASE_REPO` | `release` 时必填 | 作为基线的仓库，形如 `owner/name`。发自己的线就改成自己的 fork |
+| `UPDATE_RELEASE_BASE` | 否，默认 `https://github.com` | release 地址的前缀。指到代理上时路径其余部分不变，例如 `UPDATE_RELEASE_BASE=https://gh-proxy.example/https://github.com` 就是经该代理取同一个 release。必须以 `https://` 开头 |
+| `UPDATE_FEED_URL` | `UPDATE_SOURCE=feed` 时必填 | feed 所在的目录。设备取 `<url>/index.txt`，条目自己没有 `url` 时取 `<url>/<payload>`。必须以 `https://` 开头，其它值以 `feed-conf-url` 拒绝 |
 | `UPDATE_CHANNEL` | 否，默认 `stable` | 这台机器跟哪一条发布线。索引自己声明 `channel`，不一致以 `feed-index-channel` 拒绝，所以机器不会悄悄装上 `edge` 的发布 |
 | `UPDATE_VERIFY` | 否，默认 `sha256` | 下载下来的文件怎么校验。本版本只实现 `sha256`，其它值是 `feed-verify-unsupported`，为将来的签名校验留位 |
 | `UPDATE_PIN` | 否 | 这台机器自动更新到的最高的 `platform` 版本。由 `ab-upgrade --pin` 写入、`ab-upgrade --unpin` 删除，见[把机器钉在某个发布上](#把机器钉在某个发布上) |
 
 `ab-upgrade --feed-url <url>` 可以在单次调用里覆盖 `UPDATE_FEED_URL`，试一个镜像不必改
-文件。文件本身仍然必须存在。
+文件。文件本身仍然必须存在。`ab-upgrade --release-repo <owner/name>` 与
+`--release-base <url>` 对 `release` 源做同样的事，用来在写进文件之前先试一次 fork 或代理。
 
 `UPDATE_FETCH_CMD` 是给「取件器做不到 feed 需要的事」的机器留的口子：一旦设置，它的值会
 以 `sh -c "<cmd>" ab-fetch <url> <输出文件>` 运行。测试用的就是它；在特殊传输后面放一台
@@ -76,6 +114,12 @@ ab-upgrade --feed-check
 ```
 
 这条命令读配置、取索引、把查到的东西打出来。它不写任何东西、不下载 payload、不碰槽位。
+第一行说明这个答案来自哪里，这样「拒绝」和「比较结果」不会被混为一谈：
+
+```
+source=release feed=https://github.com/planetarium1001/n5105-btrfs-ab-firmware/releases/latest/download
+```
+
 有更新时它打一行字段顺序固定的机器可读输出：
 
 ```
@@ -296,12 +340,24 @@ ab-slot packages revert          # 按最新一份快照回放版本
 钉着本槽正在跑的内核、`distfeeds` 指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核
 装模块。
 
-快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本。
-只保留最近三份。`revert` 用 `apk add <name>=<version>` 回放，且只允许在同一个 base 上：跨 base 时
-那些版本是按另一个内核和 libc 构建的，那件事归 `ab-slot rollback` 管。源里已经下架的包会被逐条报出来，
-其余照常回放：`revert result=partial` 会点名每一个，退出码仍是 0。一个都没回放成功时结论是
-`revert result=fail`，退出码 1；快照里没有包时是 `revert result=empty`。`failed` 行说的是哪个包，
-不是原因：apk 说了什么在 `upgrade.log` 里。
+快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本，
+以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。
+
+文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`，每个归档一行
+`apkfile <name> <sha256>`。这不是优化：仓库里一个包只留最新那一个版本，所以光有版本清单，
+能回退的只有源上还在的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次；
+空间不够的机器可以 `--no-payloads`，得到只记清单的快照（`payloads no`，下一行写原因）。
+
+`revert` 优先用包体：逐个核对快照里的 sha256，然后一次 `apk add` 事务装回。本地归档用
+`--allow-untrusted` 安装，因为设备上没有它们的 keyring；这里的信任来自快照内的摘要清单（写在同一个分区上），
+不是签名。有摘要不符就整体拒绝，不装半套。没有包体时退回归放 `<name>=<version>`——在 apk-tools 3 上
+这同时会把这些版本写进 world，于是机器保持钉住，直到有人再要求 `apk upgrade`。
+
+两条路径都只允许在同一个 base 上：跨 base 时那些版本是按另一个内核和 libc 构建的，那件事归
+`ab-slot rollback` 管。源里已经下架的包会被逐条报出来，其余照常回放：`revert result=partial`
+会点名每一个，退出码仍是 0。一个都没回放成功时结论是 `revert result=fail`，退出码 1；快照里没有包时
+是 `revert result=empty`。`failed` 行说的是哪个包，不是原因：apk 说了什么在 `upgrade.log` 里。
+每个结论还会打 `world=<M> matched=<K>`：world 条目数与快照包集合覆盖了多少。
 
 两条回退路径并列：
 
@@ -311,6 +367,13 @@ ab-slot packages revert          # 按最新一份快照回放版本
 | 同一 base 上的包改动 | `ab-slot packages revert` | 快照里的版本，仅此而已 |
 
 两者都写 `upgrade.log`；都不会自己跑。
+
+## 确认提示
+
+工具提的每个问题都是同一个形状：`Proceed? [y/N] `。回车、`n`、`N`、`no` 都是不确认，
+而不确认不是错误——它打一行 `ab-upgrade: declined, nothing was written reason=declined` 并以 `0` 退出。
+只有 `y`、`Y`、`yes`、`YES` 才算同意。按一下回车就开始写固件是 bug，所以安全答案才是默认；
+脚本要同意就传 `--yes`，不要塞一个 `y` 进管道。
 
 ## 退出码
 
@@ -332,11 +395,14 @@ ab-slot packages revert          # 按最新一份快照回放版本
 
 | reason | 退出码 | 含义与怎么办 |
 | --- | --- | --- |
-| `no-feed-config` | 74 | `/etc/ab/update.conf` 不存在。建一个并写好 `UPDATE_FEED_URL`；命令不会猜地址 |
+| `no-feed-config` | 74 | `/etc/ab/update.conf` 不存在。镜像出厂带一份；没有它说明被人删了，命令不会猜源 |
 | `feed-conf-missing-url` | 74 | 文件存在但没有 `UPDATE_FEED_URL` |
-| `feed-conf-url` | 74 | `UPDATE_FEED_URL` 不是 `https://` 地址。不加密的 feed 被拒绝：索引里的摘要只有在索引本身无法被中途替换时才能保护 payload |
+| `feed-conf-source` | 74 | `UPDATE_SOURCE` 既不是 `release` 也不是 `feed`。键拼错就按键错报，不说成「地址不安全」 |
+| `feed-conf-repo` | 74 | `UPDATE_RELEASE_REPO` 不是 `owner/name`，拼不出 release 地址 |
+| `feed-conf-url` | 74 | `UPDATE_FEED_URL` 或 `UPDATE_RELEASE_BASE` 不是 `https://` 地址。不加密的 feed 被拒绝：索引里的摘要只有在索引本身无法被中途替换时才能保护 payload |
 | `feed-conf-channel` | 74 | `UPDATE_CHANNEL` 既不是 `stable` 也不是 `edge` |
 | `feed-verify-unsupported` | 74 | `UPDATE_VERIFY` 指定了本版本没有实现的模式。只有 `sha256` |
+| `feed-index-missing` | 74 | 源应答了，但回来的不是 `AB-FEED 1` 索引：代理错误页、目录列表，或者本该是文件的位置返回了 HTML。早于索引出现的发布是回 `404`，那种情况读作 `feed-unreachable` |
 | `feed-unreachable` | 74 | 索引或 payload 取不到：没有路由、解析不到域名、`404`，或者取件命令非零退出 |
 | `feed-no-fetcher` | 74 | 机器既没有 `uclient-fetch` 也没有 `wget`，而 `UPDATE_FETCH_CMD` 没设 |
 | `feed-index-version` | 74 | 索引第一行不是 `AB-FEED 1`，或者 `platform` / `base` / `kernel` 不是 `MAJOR.MINOR.PATCH` |

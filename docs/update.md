@@ -43,6 +43,19 @@ different questions, and none of them may be guessed from another.
 | `kernel` | the kernel package version of the build, e.g. `6.12.103` | which kernel the payload installs. It usually moves with `base` and sometimes does not | no, it is shown |
 | `platform` | this project's own layer, `PLATFORM_VERSION`, e.g. `0.0.8` | how many times we published this project on top of one `base`. It counts our releases, not the system's | no, it is shown |
 
+All three come from one file, `/etc/platform-release`, and both command-line tools print
+that same file, so "what am I running" never needs a path in the answer:
+
+```sh
+ab-slot --version        # or -V
+ab-upgrade --version
+```
+
+Both print `PLATFORM_VERSION=`, `UPSTREAM_VERSION=` and `PLATFORM_STAGE=` and nothing else;
+neither reads the slot state or needs root. The file stays where it is because `/etc` is
+where a machine keeps its own identity (`/etc/os-release` is the same idea), and the
+commands are the way a person should have to ask.
+
 A `platform` bump with an unchanged `base` is an ordinary, low-risk update: the platform
 layer (the scripts, the defaults, the menu) changes and the system underneath does not.
 That is why the number that decides the risk is `base`, and why a prompt that only said
@@ -51,13 +64,38 @@ That is why the number that decides the risk is `base`, and why a prompt that on
 The risk level always takes the most severe of the three comparisons: a jump that crosses
 both a minor and several patches is a minor jump, not a patch jump.
 
-## Configure a feed
+## Configure an update source
 
 The configuration is one file, `/etc/ab/update.conf`, in the same `key=value` style as
-`/etc/net-defaults.conf`. `#` starts a comment. A missing file is not a default: it is a
-refusal.
+`/etc/net-defaults.conf`. `#` starts a comment.
+
+The image ships one, and it points at this project's own releases:
 
 ```
+UPDATE_SOURCE=release
+UPDATE_RELEASE_REPO=planetarium1001/n5105-btrfs-ab-firmware
+UPDATE_RELEASE_BASE=https://github.com
+UPDATE_CHANNEL=stable
+```
+
+With that file in place a freshly flashed machine answers "is there something newer?"
+without any setup, and the baseline it compares against is the newest release of this
+project. The `release` source builds
+`<UPDATE_RELEASE_BASE>/<UPDATE_RELEASE_REPO>/releases/latest/download/index.txt`, so the
+release notes, the payload and its digest are all the published ones - nothing is
+generated on the device.
+
+Two things follow from `releases/latest`: it never names a pre-release, so an `-rc` line
+needs a feed of its own; and a release published before this feature existed carries no
+`index.txt`, so the download answers `404`. A fetcher reports that the same way it reports a
+dead network - `feed-unreachable` - and the refusal adds a line saying which releases page
+to look at. `feed-index-missing` is the other shape: the source answered, but what came back
+is not an `AB-FEED` index (a proxy error page, a directory listing).
+
+A self-hosted feed is the other source, unchanged:
+
+```
+UPDATE_SOURCE=feed
 UPDATE_FEED_URL=https://example.org/n5105/feed/v1
 UPDATE_CHANNEL=stable
 UPDATE_VERIFY=sha256
@@ -65,13 +103,18 @@ UPDATE_VERIFY=sha256
 
 | Key | Required | What it does |
 | --- | --- | --- |
-| `UPDATE_FEED_URL` | yes | the directory the feed lives in. The device fetches `<url>/index.txt`, and an entry without a `url` of its own is fetched from `<url>/<payload>`. It must start with `https://`; anything else is refused with `feed-conf-url` |
+| `UPDATE_SOURCE` | no, default `release` when no `UPDATE_FEED_URL` is set, otherwise `feed` | which source answers "what is the newest release". `release` follows this project's published releases; `feed` reads `UPDATE_FEED_URL`. An older configuration that only sets `UPDATE_FEED_URL` keeps working as `feed` |
+| `UPDATE_RELEASE_REPO` | for `release` | `owner/name` of the repository whose releases are the baseline. Point it at your own fork when you publish your own line |
+| `UPDATE_RELEASE_BASE` | no, default `https://github.com` | the prefix the release URL is built from. Point it at a proxy and the rest of the path stays the same: `UPDATE_RELEASE_BASE=https://gh-proxy.example/https://github.com` fetches the same release through that proxy. It must start with `https://` |
+| `UPDATE_FEED_URL` | when `UPDATE_SOURCE=feed` | the directory the feed lives in. The device fetches `<url>/index.txt`, and an entry without a `url` of its own is fetched from `<url>/<payload>`. It must start with `https://`; anything else is refused with `feed-conf-url` |
 | `UPDATE_CHANNEL` | no, default `stable` | which line of releases this machine follows. The index declares its own `channel` and a mismatch is refused with `feed-index-channel`, so a machine cannot silently take an `edge` release |
 | `UPDATE_VERIFY` | no, default `sha256` | how the downloaded file is checked. `sha256` is the only value this release implements; anything else is `feed-verify-unsupported`, reserved for signature checking later |
 | `UPDATE_PIN` | no | the newest `platform` version this machine will move to on its own. Written by `ab-upgrade --pin`, removed by `ab-upgrade --unpin`; see [Holding a machine on one release](#holding-a-machine-on-one-release) |
 
 `ab-upgrade --feed-url <url>` overrides `UPDATE_FEED_URL` for a single run, so one command
 can try a mirror without editing the file. The file itself must still exist.
+`ab-upgrade --release-repo <owner/name>` and `--release-base <url>` do the same for the
+`release` source, which is how a fork or a proxy is tried once before it is written down.
 
 `UPDATE_FETCH_CMD` is an escape hatch for a machine whose fetchers cannot do what the feed
 needs: if it is set, its value is run as `sh -c "<cmd>" ab-fetch <url> <output>`. It is
@@ -84,8 +127,14 @@ ab-upgrade --feed-check
 ```
 
 This command reads the configuration, fetches the index, and prints what it found. It
-writes nothing, downloads no payload, and touches no slot. When there is an update it
-prints one machine-readable line whose field order is fixed:
+writes nothing, downloads no payload, and touches no slot. The first line names where the
+answer came from, so a refusal and a comparison can never be confused with each other:
+
+```
+source=release feed=https://github.com/planetarium1001/n5105-btrfs-ab-firmware/releases/latest/download
+```
+
+When there is an update it prints one machine-readable line whose field order is fixed:
 
 ```
 platform=0.0.6 platform_available=0.0.8 base=25.12.2 base_available=25.12.2 kernel=6.12.103 kernel_available=6.12.103 span=patch 2 level=Z1 status=update
@@ -323,14 +372,33 @@ release it runs. Upgrading packages behind a stale pin installs modules for a ke
 machine is not running.
 
 A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions, every
-world entry, every installed package with its version. The newest three are kept. `revert`
-replays them with `apk add <name>=<version>` and is only allowed on the same base: across
-a base those versions were built against a different kernel and libc, which is what
-`ab-slot rollback` is for. A package that cannot be restored is reported and the rest
-still go through: `revert result=partial` names each one and exits 0. When nothing could be
-restored the verdict is `revert result=fail` and the exit status is 1; a snapshot with no
-packages is `revert result=empty`. A `failed` line names a package, not a cause: what apk
-said is in `upgrade.log`.
+world entry, every installed package with its version, and the counts that make the record
+self-checking (`packages=`, `world=`, `payloads=`). The newest three are kept.
+
+Alongside the text file the snapshot keeps the packages themselves, in
+`snapshots/snapshot-<id>.d/payloads/`, with one `apkfile <name> <sha256>` line per archive.
+That is not an optimisation: the repositories carry one version of a package - the newest -
+so a version list on its own can only ever restore what the source still has. `apk fetch`
+fills the directory at snapshot time, which costs about 300 MiB and needs the network once;
+a machine without the room can pass `--no-payloads` and gets a list-only snapshot
+(`payloads no`, and the reason for it on the next line).
+
+`revert` prefers the archives: it checks every sha256 against the snapshot, then installs
+them in one `apk add` transaction. Local archives are installed with `--allow-untrusted`,
+because the device has no keyring for them; the trust here is the digest list inside the
+snapshot, written on the same partition, not a signature. A digest that does not match
+refuses the whole revert instead of installing half a set. Without archives, `revert`
+replays `<name>=<version>` instead - which on apk-tools 3 also writes those versions into
+the world, so the machine stays pinned until a later `apk upgrade` is asked for.
+
+Either path is only allowed on the same base: across a base those versions were built
+against a different kernel and libc, which is what `ab-slot rollback` is for. A package
+that cannot be restored is reported and the rest still go through:
+`revert result=partial` names each one and exits 0. When nothing could be restored the
+verdict is `revert result=fail` and the exit status is 1; a snapshot with no packages is
+`revert result=empty`. A `failed` line names a package, not a cause: what apk said is in
+`upgrade.log`. Every verdict also prints `world=<M> matched=<K>`, the number of world
+entries and how many of them the snapshot's package set covers.
 
 The two ways back, side by side:
 
@@ -340,6 +408,14 @@ The two ways back, side by side:
 | a package change on this base | `ab-slot packages revert` | the versions in the snapshot, nothing else |
 
 Both write `upgrade.log`; neither runs by itself.
+
+## The confirmation prompt
+
+Every question the tool asks has the same shape: `Proceed? [y/N] `. Enter, `n`, `N` and
+`no` all decline, and a decline is not an error - it prints
+`ab-upgrade: declined, nothing was written reason=declined` and exits `0`. Only `y`, `Y`,
+`yes` and `YES` accept. A firmware write that starts because somebody pressed Enter is a
+bug, so the safe answer is the default; scripts pass `--yes` instead of piping a `y`.
 
 ## Exit status
 
@@ -362,11 +438,14 @@ runbook can match on it. The line is always
 
 | Reason | Exit | What it means and what to do |
 | --- | --- | --- |
-| `no-feed-config` | 74 | `/etc/ab/update.conf` does not exist. Create it with `UPDATE_FEED_URL` set; the command will not guess an address |
+| `no-feed-config` | 74 | `/etc/ab/update.conf` does not exist. The image ships one; a machine without it had it removed, and the command will not guess a source |
 | `feed-conf-missing-url` | 74 | the file exists but has no `UPDATE_FEED_URL` |
-| `feed-conf-url` | 74 | `UPDATE_FEED_URL` is not an `https://` address. An unencrypted feed is refused: the digest in the index only protects the payload if the index itself cannot be swapped in transit |
+| `feed-conf-source` | 74 | `UPDATE_SOURCE` is neither `release` nor `feed`. A typo'd key is reported as a key, not as an unsafe address |
+| `feed-conf-repo` | 74 | `UPDATE_RELEASE_REPO` is not `owner/name`, so the release URL cannot be built |
+| `feed-conf-url` | 74 | `UPDATE_FEED_URL` or `UPDATE_RELEASE_BASE` is not an `https://` address. An unencrypted feed is refused: the digest in the index only protects the payload if the index itself cannot be swapped in transit |
 | `feed-conf-channel` | 74 | `UPDATE_CHANNEL` is neither `stable` nor `edge` |
 | `feed-verify-unsupported` | 74 | `UPDATE_VERIFY` names a mode this release does not implement. `sha256` is the only one |
+| `feed-index-missing` | 74 | the source answered, but what came back is not an `AB-FEED 1` index: a proxy error page, a directory listing, or an HTML page served in place of the file. A release that simply predates the index answers `404` instead, which reads as `feed-unreachable` |
 | `feed-unreachable` | 74 | the index or the payload could not be fetched: no route, no DNS, a `404`, or a transport that exited non-zero |
 | `feed-no-fetcher` | 74 | the machine has neither `uclient-fetch` nor `wget`, and `UPDATE_FETCH_CMD` is unset |
 | `feed-index-version` | 74 | the index's first line is not `AB-FEED 1`, or `platform` / `base` / `kernel` is not a `MAJOR.MINOR.PATCH` version |

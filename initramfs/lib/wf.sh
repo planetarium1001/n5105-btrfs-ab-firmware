@@ -281,6 +281,9 @@ wf_mark() {
 wf_abandon_evidence() {
     wf_ae_result="$1"
     wf_ae_reason="$2"
+    # The single record of what the fail-safe did, for callers that have to act on it
+    # (wf_interrupted_escalate only reboots when the menu really moved).
+    WF_ABANDON_STATE="${wf_ae_result}"
     wf_ae_slot="${3:-}"
     wf_ae_zone="${4:-}"
     if [ -z "${wf_ae_zone}" ]; then
@@ -394,8 +397,197 @@ wf_failsafe_abandon() {
     return 0
 }
 
-# wf_fail <reason>: single failure exit for the pre-switch phase.
+# --------------------------------------------------------------------------- #
+# Candidate boots: the marker, the attempt counter, and what "interrupted" means
+# --------------------------------------------------------------------------- #
+# A candidate first boot is recorded in one file on the ESP, `${WF_ESP_MOUNT}/ab/candidate`:
 #
+#     <slot> <start-ts> <attempt>
+#
+# ab-commit removes it in both of its decisions (commit and abandon), so a marker that is
+# still there means the last candidate boot never got to a decision - a power cut, a hang,
+# a kernel that never reached userspace. Before this counter existed, GRUB's
+# `default=<pending>` selected the same slot on every restart and the machine retried it
+# forever; only a failing health check ever moved it. The 2026-11-14 real-device run found
+# exactly that: two power cuts, no `stage=interrupted` line, `pending` untouched.
+#
+# The counter lives in the marker, not in ab/state.json. state.json has exactly one writer
+# (ab-slot / ab-slot-cfg), and a second writer on the boot path is how a state machine
+# starts disagreeing with itself.
+WF_ABANDON_STATE="${WF_ABANDON_STATE:-}"
+AB_BOOT_RETRY_MAX="${AB_BOOT_RETRY_MAX:-1}"
+
+# wf_candidate_path: where the candidate marker lives, next to state.json.
+wf_candidate_path() {
+    printf '%s/ab/candidate' "${WF_ESP_MOUNT}"
+}
+
+# wf_interrupted_path: the one line the next runtime boot publishes into the ring log.
+wf_interrupted_path() {
+    printf '%s/ab/interrupted' "${WF_ESP_MOUNT}"
+}
+
+# _wf_marker_write <file> <slot> <now> <attempt>: replace the marker in one rename, so a
+# power cut in the middle of the write cannot leave half a count on the ESP.
+_wf_marker_write() {
+    _wm_file=${1:?}
+    _wm_dir=$(dirname "${_wm_file}")
+    mkdir -p "${_wm_dir}" 2>/dev/null || :
+    printf '%s %s %s\n' "${2:?}" "${3:?}" "${4:?}" >"${_wm_file}.tmp.$$" || return 1
+    mv "${_wm_file}.tmp.$$" "${_wm_file}" || {
+        rm -f "${_wm_file}.tmp.$$" 2>/dev/null || :
+        return 1
+    }
+}
+
+# _wf_marker_fields <file>: prints "<slot> <last-ts> <attempt>"; a two-field marker from an
+# image older than the counter counts as attempt 1. Empty when the file is unreadable.
+_wf_marker_fields() {
+    _wf_mf_file=${1:?}
+    [ -f "${_wf_mf_file}" ] || return 0
+    _wf_mf_line=$(cat "${_wf_mf_file}" 2>/dev/null) || return 0
+    # shellcheck disable=SC2086  # deliberate word splitting: three space separated fields
+    set -- ${_wf_mf_line}
+    [ "$#" -ge 1 ] || return 0
+    _wf_mf_attempt=${3:-}
+    case "${_wf_mf_attempt}" in
+        '' | *[!0-9]*) _wf_mf_attempt=1 ;;
+    esac
+    printf '%s %s %s\n' "${1}" "${2:-}" "${_wf_mf_attempt}"
+}
+
+# wf_pending_slot <state.json>: the pending slot, "none", or empty when the state or the
+# shared slot-config library is unreadable. The library is the only reader of state.json's
+# pending field (platform/lib/ab-slot-cfg.sh), so initramfs code asks it instead of growing a
+# second parser here.
+wf_pending_slot() {
+    _ps_state=${1:?}
+    [ -f "${WF_SLOT_CFG_LIB}" ] || return 0
+    if ! command -v ab_slot_state_pending >/dev/null 2>&1; then
+        # shellcheck source=platform/lib/ab-slot-cfg.sh
+        . "${WF_SLOT_CFG_LIB}" 2>/dev/null || return 0
+    fi
+    ab_slot_state_pending "${_ps_state}" 2>/dev/null
+}
+
+# wf_interrupted_record <slots-dir-file> <slot> <attempt> <last> <result> [reason]
+# One line, key=value, the shape the ring log and the acceptance checklist grep for. It is
+# written by the guard (which knows the numbers) so the runtime half only has to publish it.
+wf_interrupted_record() {
+    _ir_file=${1:?}
+    _ir_dir=$(dirname "${_ir_file}")
+    mkdir -p "${_ir_dir}" 2>/dev/null || :
+    if [ -n "${6:-}" ]; then
+        printf 'slot=%s attempt=%s last=%s result=%s reason=%s\n' \
+            "${2:-?}" "${3:-?}" "${4:-?}" "${5:-?}" "${6}" >"${_ir_file}.tmp.$$" || return 1
+    else
+        printf 'slot=%s attempt=%s last=%s result=%s\n' \
+            "${2:-?}" "${3:-?}" "${4:-?}" "${5:-?}" >"${_ir_file}.tmp.$$" || return 1
+    fi
+    mv "${_ir_file}.tmp.$$" "${_ir_file}" || {
+        rm -f "${_ir_file}.tmp.$$" 2>/dev/null || :
+        return 1
+    }
+}
+
+# wf_boot_attempt_guard <marker> <slot> <pending> <now> [max]
+#
+# Decides what this boot is, keeps the marker in step, and prints exactly one token:
+#
+#   not-candidate        no pending slot, or the pending slot is not the one being booted
+#   first                the first candidate boot; marker written with attempt 1
+#   retry <attempt> <last>    the last candidate boot never finished; this one retries it
+#   abandon <attempt> <last>  it used its last attempt; escalate before switching root
+#
+# The interruption record is written for retry and abandon, with the timestamp of the boot
+# that did not finish, so the machine explains itself on the next runtime boot.
+wf_boot_attempt_guard() {
+    _bg_marker=${1:?}
+    _bg_slot=${2:?}
+    _bg_pending=${3:-none}
+    _bg_now=${4:?}
+    _bg_max=${5:-${AB_BOOT_RETRY_MAX}}
+    _bg_record=$(dirname "${_bg_marker}")/interrupted
+    case "${_bg_slot}" in
+        a | b) : ;;
+        *)
+            printf 'not-candidate\n'
+            return 0
+            ;;
+    esac
+    if [ "${_bg_pending}" != "${_bg_slot}" ]; then
+        printf 'not-candidate\n'
+        return 0
+    fi
+    if [ ! -f "${_bg_marker}" ]; then
+        _wf_marker_write "${_bg_marker}" "${_bg_slot}" "${_bg_now}" 1 || return 1
+        printf 'first\n'
+        return 0
+    fi
+    _bg_fields=$(_wf_marker_fields "${_bg_marker}")
+    if [ -z "${_bg_fields}" ]; then
+        _wf_marker_write "${_bg_marker}" "${_bg_slot}" "${_bg_now}" 1 || return 1
+        printf 'first\n'
+        return 0
+    fi
+    _bg_mslot=${_bg_fields%% *}
+    _bg_rest=${_bg_fields#* }
+    _bg_mlast=${_bg_rest%% *}
+    _bg_mattempt=${_bg_rest#* }
+    if [ "${_bg_mslot}" != "${_bg_slot}" ]; then
+        # Another slot's history says nothing about this one: the count starts over.
+        _wf_marker_write "${_bg_marker}" "${_bg_slot}" "${_bg_now}" 1 || return 1
+        printf 'first\n'
+        return 0
+    fi
+    _bg_next=$((_bg_mattempt + 1))
+    _wf_marker_write "${_bg_marker}" "${_bg_slot}" "${_bg_now}" "${_bg_next}" || return 1
+    # attempt 1 is the first candidate boot; AB_BOOT_RETRY_MAX is how many *retries* are
+    # allowed after an interruption, so the cap is reached at attempt max+1.
+    if [ "${_bg_next}" -gt "$((_bg_max + 1))" ]; then
+        wf_interrupted_record "${_bg_record}" "${_bg_slot}" "${_bg_next}" "${_bg_mlast}" \
+            abandon attempt-limit
+        printf 'abandon %s %s\n' "${_bg_next}" "${_bg_mlast}"
+        return 0
+    fi
+    wf_interrupted_record "${_bg_record}" "${_bg_slot}" "${_bg_next}" "${_bg_mlast}" retry
+    printf 'retry %s %s\n' "${_bg_next}" "${_bg_mlast}"
+}
+
+# wf_interrupted_escalate <marker> <slot> <attempt> <last>
+#
+# The end of the retry budget. The kernel of the pending slot is already loaded, so the only
+# way back is to move the menu (through the one writer that owns ab-slot.cfg), drop the
+# marker, and reboot into the committed slot. A fail-safe that could not write must not
+# reboot: the machine then boots the candidate it already started - the behaviour it had
+# before this feature - and the marker stays for the next attempt.
+wf_interrupted_escalate() {
+    _ie_marker=${1:?}
+    _ie_slot=${2:-?}
+    _ie_attempt=${3:-?}
+    _ie_last=${4:-?}
+    wf_say "[boot] stage=interrupted slot=${_ie_slot} attempt=${_ie_attempt} last=${_ie_last} result=abandon reason=attempt-limit"
+    wf_log "candidate slot ${_ie_slot} used its last attempt (attempt ${_ie_attempt}); moving the menu back to the committed slot"
+    wf_failsafe_abandon || :
+    case "${WF_ABANDON_STATE:-skip}" in
+        ok)
+            # Counted afresh: a later re-queue of this slot is a new candidate, not a
+            # continuation of the count that just expired.
+            rm -f "${_ie_marker}" 2>/dev/null || :
+            sync
+            wf_say "[boot] action=abandon-candidate slot=${_ie_slot} result=reboot-to-committed"
+            reboot -f
+            wf_log "the reboot returned; this boot continues without switching the menu"
+            return 0
+            ;;
+        *)
+            wf_log "fail-safe abandon did not write (${WF_ABANDON_STATE:-skip}); booting the candidate and keeping the marker"
+            return 1
+            ;;
+    esac
+}
+
+# wf_fail <reason>: single failure exit for the pre-switch phase.
 # The breadcrumb goes first, then the fail-safe abandon, then the judge line - in that
 # order, and `poweroff -f` last. After the poweroff there is no serial log and no shell, so
 # the line on the disk is the only record that survives; a harness that stops the machine

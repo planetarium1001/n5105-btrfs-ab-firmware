@@ -269,6 +269,13 @@ hop_install() {
         ev "payload missing: ${_local}"
         return 2
     fi
+    # The line check runs before anything is pushed: a 24.x or opkg-era payload is out of
+    # scope, and finding that out from a failed boot would look like a product defect.
+    if ! _line_out=$(require_supported_line "${_version}" "${_local}" 2>&1); then
+        CASE_NOTE="${_line_out}"
+        ev "${_line_out}"
+        return 1
+    fi
 
     require_healthy_committed "${_case}" || return 1
     _before=${STATUS_LINE}

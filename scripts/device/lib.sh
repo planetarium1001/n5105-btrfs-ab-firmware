@@ -81,6 +81,59 @@ AB_RESULTS=${AB_RESULTS:-results.tsv}
 AB_ASSERT_FAILURES=0
 
 # --------------------------------------------------------------------------- #
+# What this project may be tested against
+# --------------------------------------------------------------------------- #
+
+# require_supported_line <version> [payload]: the matrix and the scenario driver only run
+# the 25.x / apk line. Below major 25 the upstream tree is opkg-era: a different package
+# manager, a different firewall model and a different kernel-module layout, so a verdict
+# from it says nothing about this project - and `scripts/ci/upstream-watch.sh` already
+# refuses to pin anything below 25 for the same reason. The rule is enforced here, in the
+# driver, so a 24.x payload is refused before a slot is written instead of failing
+# somewhere that looks like a product defect.
+#
+# When the payload file is there, a second check looks at its shape: an apk-era payload
+# carries `platform.tar`, and one without it is refused even if the version string looks
+# right. A missing file is not this function's business - callers report GAP themselves.
+require_supported_line() {
+    _rsl_version=${1:-}
+    _rsl_payload=${2:-}
+    case "${_rsl_version}" in
+        '' | *[!0-9.]*)
+            printf 'unsupported payload line: %s is not a version number this matrix can use\n' \
+                "${_rsl_version:-empty}"
+            return 1
+            ;;
+    esac
+    _rsl_major=${_rsl_version%%.*}
+    case "${_rsl_major}" in
+        '' | *[!0-9]*)
+            printf 'unsupported payload line: %s has no numeric major\n' "${_rsl_version}"
+            return 1
+            ;;
+    esac
+    if [ "${_rsl_major}" -lt 25 ]; then
+        printf 'unsupported payload line: %s is below 25; this project covers only the 25.x/apk line (24.x and older are opkg-era and out of scope)\n' \
+            "${_rsl_version}"
+        return 1
+    fi
+    if [ -n "${_rsl_payload}" ] && [ -f "${_rsl_payload}" ]; then
+        # The shape check only speaks for a file that is really a tar: a driver test uses a
+        # placeholder where the payload would be, and "not a tar" is a different problem
+        # that the installer reports on its own.
+        if _rsl_members=$(tar -tf "${_rsl_payload}" 2>/dev/null); then
+            if ! printf '%s\n' "${_rsl_members}" | grep -qx 'platform.tar'; then
+                printf 'unsupported payload shape: %s carries no platform.tar, so it is not an apk-era payload of this project\n' \
+                    "${_rsl_payload}"
+                return 1
+            fi
+        fi
+    fi
+    printf 'supported payload line: %s\n' "${_rsl_version}"
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
 # ssh
 # --------------------------------------------------------------------------- #
 

@@ -227,6 +227,101 @@ printf 'packages=maybe reason=none\n' >"$esp/ab/packages"
 assert_eq "$(pkg_field "$(slot_cmd status 2>/dev/null)")" "unknown" \
   "ac-10 an unrecognised state reads as unknown"
 
+# --- ac-16 the packages verdict after a rollback -----------------------------
+# The record names one slot. A rollback changes which slot this machine is committed to,
+# so the record has to be re-judged for the target: leaving the old line behind is what
+# made `status` answer `unknown reason=other-slot` for ever after a rollback.
+write_state a none 1
+printf 'packages=aligned reason=none version=25.12.2 kernel=kernel=6.12.87~abc-r1 slot=b\n' >"$esp/ab/packages"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_reason_field "$status")" "other-slot" \
+  "ac-16 before the rollback the record describes the slot that is not running"
+slot_cmd rollback >/dev/null 2>&1
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "aligned" \
+  "ac-16 after the rollback the verdict for the target slot is what is reported"
+assert_eq "$(pkg_reason_field "$status")" "none" "ac-16 the reason is the recorded one, not other-slot"
+assert_contains "$(cat "$esp/ab/packages")" "slot=b" \
+  "ac-16 the record names the slot it describes after the rollback"
+assert_contains "$(cat "$esp/ab/packages")" "kernel=kernel=6.12.87~abc-r1" \
+  "ac-16 the rewrite keeps the fields the aligner published"
+
+# A record that only ever described the slot we rolled away from says nothing about the
+# target; that is a no-record we can prove, never a placeholder.
+write_state a none 1
+printf 'packages=limited reason=kernel-unknown version=25.12.2 kernel=unknown slot=a\n' >"$esp/ab/packages"
+out="$(slot_cmd rollback 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-16 the rollback itself succeeds"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "unknown" "ac-16 a target with no verdict is unknown"
+assert_eq "$(pkg_reason_field "$status")" "no-record" \
+  "ac-16 and the reason is a provable no-record, never other-slot"
+assert_contains "$out" "packages unknown for slot b" \
+  "ac-16 the rewrite is reported"
+assert_contains "$(cat "$esp/ab/packages")" "packages=unknown reason=no-record slot=b" \
+  "ac-16 the record is rewritten for the target slot"
+assert_eq "$(grep -c 'other-slot' "$esp/ab/packages" || true)" "0" \
+  "ac-16 nothing in the record says other-slot"
+
+# --- ac-10 the binary can name its own version ------------------------------
+# The identity lives in /etc/platform-release (AB_RELEASE_FILE points the test at a copy),
+# and the question has to be answerable before any slot state is read, any lock is taken
+# or the ESP is touched: a machine whose slots are a mess can still say what it is.
+release_file="$tmp/platform-release"
+printf 'PLATFORM_VERSION=0.0.9\nUPSTREAM_VERSION=25.12.2\nPLATFORM_STAGE=stable\n' >"$release_file"
+identity_expected="PLATFORM_VERSION=0.0.9
+UPSTREAM_VERSION=25.12.2
+PLATFORM_STAGE=stable"
+
+absent_esp="$tmp/esp-absent"
+out="$(AB_RELEASE_FILE="$release_file" AB_ESP="$absent_esp" AB_CMD="$tmp/no-cmdline" \
+  sh "$ab_slot" --version 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-10 --version succeeds without any slot state"
+assert_eq "$out" "$identity_expected" "ac-10 --version prints the three identity lines"
+out="$(AB_RELEASE_FILE="$release_file" AB_ESP="$absent_esp" AB_CMD="$tmp/no-cmdline" \
+  sh "$ab_slot" -V 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-10 -V is the same question"
+assert_eq "$out" "$identity_expected" "ac-10 -V prints the same identity"
+assert_eq "$([ -e "$absent_esp" ] && printf exists || printf absent)" "absent" \
+  "ac-10 --version does not create or touch the ESP mount point"
+
+# A machine without a release file still answers, with unknown: not being able to name the
+# version is a fact about the machine, not an error of the question.
+out="$(AB_RELEASE_FILE="$tmp/no-such-release" AB_ESP="$absent_esp" AB_CMD="$tmp/no-cmdline" \
+  sh "$ab_slot" --version 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-10 a missing release file is not an error"
+assert_eq "$out" "PLATFORM_VERSION=unknown
+UPSTREAM_VERSION=unknown
+PLATFORM_STAGE=unknown" "ac-10 a missing release file prints unknown three times"
+
+# Neither an unreadable state file nor a live lock stands between the operator and the
+# version: --version is dispatched before the state is touched at all.
+locked_esp="$tmp/esp-locked"
+mkdir -p "$locked_esp/ab/.lock"
+printf 'this is not the state file\n' >"$locked_esp/ab/state.json"
+printf '%s %s %s\n' "$(cat "$boot_id_file")" "$$" "2026-01-01T00:00:00Z" \
+  >"$locked_esp/ab/.lock/owner"
+out="$(AB_RELEASE_FILE="$release_file" AB_ESP="$locked_esp" AB_CMD="$cmdline" \
+  AB_BOOT_ID_FILE="$boot_id_file" sh "$ab_slot" --version 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-10 --version answers while the state is unreadable and locked"
+assert_eq "$out" "$identity_expected" "ac-10 and it prints the identity, not a state error"
+assert_eq "$([ -d "$locked_esp/ab/.lock" ] && printf kept || printf gone)" "kept" \
+  "ac-10 --version does not take the state lock"
+
+# Unit 03 renders the same three lines for ab-upgrade through this one helper, so the
+# function name and its output shape are a contract.
+identity_lib_out="$(AB_RELEASE_FILE="$release_file" sh -c \
+  '. "$1"; ab_version_identity' sh "$root/platform/lib/ab-version.sh" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-10 the shared helper runs on its own"
+assert_eq "$identity_lib_out" "$identity_expected" \
+  "ac-10 the shared helper prints the same three lines ab-slot prints"
+
 # --- ac-2 commit and abandon ------------------------------------------------
 write_state a a 2
 slot_cmd commit >/dev/null 2>&1

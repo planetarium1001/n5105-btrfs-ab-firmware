@@ -5,6 +5,15 @@
 #       install and mark the target slot pending
 #   ab-upgrade --check [flags] <payload.tar>
 #       validate only, change nothing
+#   ab-upgrade --version
+#       print PLATFORM_VERSION / UPSTREAM_VERSION / PLATFORM_STAGE, read from the same
+#       helper ab-slot uses; needs no root, no payload and no config
+#   ab-upgrade --help
+#       every option, including the update-feed ones
+#
+# The update-feed path (`--feed-check`, `--feed`, `--pin`, `--unpin`, `--feed-url`,
+# `--release-repo`, `--release-base`) is documented where it is implemented, further down:
+# it decides which source answers "is there something newer" before any of it is written.
 #
 # Payload layout (see docs/conflicts-payload.md):
 #
@@ -47,8 +56,43 @@ AB_P4="${AB_P4:-/mnt/p4}"
 LIB="${AB_LIB:-/lib/upgrade/platform.sh}"
 LOG_MAX=32768
 
+usage_text() {
+    cat <<'USAGE'
+usage: ab-upgrade [options] <payload.tar>
+       ab-upgrade --feed-check [options]
+       ab-upgrade --feed [options]
+       ab-upgrade --pin <version> | --unpin
+       ab-upgrade --version
+
+Install a payload into the inactive slot:
+  --check                       validate only, change nothing
+  --bootloader                  require the payload to carry a bootloader
+  --no-bootloader               never touch the ESP's bootloader
+  --force                       install even when the running slot already carries it
+
+Ask the update source:
+  --feed-check                  report what is available; writes nothing
+  --feed                        download, verify and install the newest release
+  --feed-url <url>              use this feed for one run
+  --release-repo <owner/name>   follow this repository's releases for one run
+  --release-base <url>          build the release URL from this prefix for one run
+  --direct                      with --feed: install the newest release in one step
+  --stepwise                    with --feed: install the next release only
+
+Other:
+  --yes                         accept the confirmation without a terminal
+  --pin <version>               hold this machine at or below <version>
+  --unpin                       remove the pin
+  --version                     print PLATFORM_VERSION, UPSTREAM_VERSION, PLATFORM_STAGE
+  --help                        this text
+
+Every question is `Proceed? [y/N] `: Enter, n and no decline and write nothing; only
+y, Y, yes and YES go ahead (docs/update.md).
+USAGE
+}
+
 usage() {
-    printf 'usage: ab-upgrade [--bootloader|--no-bootloader] [--force] [--check] <payload.tar>\n' >&2
+    usage_text >&2
     exit 2
 }
 
@@ -133,22 +177,54 @@ feed_entry_field() {
     printf '%s\n' "$1" | cut -d'|' -f"$2"
 }
 
+# feed_answer_accepts <answer>: the whole contract of the question, in one place. Only an
+# explicit yes goes ahead; everything else, including a word that merely starts with a y, is
+# an answer to "no".
+feed_answer_accepts() {
+    case "${1:-}" in
+        y | Y | yes | YES) return 0 ;;
+    esac
+    return 1
+}
+
+# feed_declined: the documented "nothing was written". Declining is not an error - the
+# person answered the question - so it leaves with 0.
+feed_declined() {
+    say "ab-upgrade: declined, nothing was written reason=declined"
+    exit 0
+}
+
 # feed_confirm <level>: the tiers that only need a yes.
+#
+# One shape for every question, `Proceed? [y/N] `, because a firmware write that starts
+# because somebody pressed Enter is a bug. Enter, n, N, no and anything unrecognised decline.
+#
+# AB_UPGRADE_ASSUME_TTY=1 makes the prompt read stdin as if a terminal were attached. It
+# exists because the test suite has no terminal to answer on; it changes nothing about which
+# answers accept, so a machine cannot be made to install by setting it.
 feed_confirm() {
     if [ "${yes_mode}" = "1" ]; then
         return 0
     fi
-    if [ ! -t 0 ]; then
+    if [ -z "${AB_UPGRADE_ASSUME_TTY:-}" ] && [ ! -t 0 ]; then
         say "ab-upgrade: refused, reason=feed-noninteractive (no terminal; pass --yes to accept)"
         console_say "ab-upgrade: refused, reason=feed-noninteractive"
         exit 74
     fi
     printf 'Proceed? [y/N] ' >&2
+    _answer=""
     read -r _answer || _answer=""
-    case "${_answer}" in
-        y | Y | yes | YES) return 0 ;;
-        *) say "ab-upgrade: not confirmed, nothing was written"; exit 0 ;;
-    esac
+    feed_answer_accepts "${_answer}" || feed_declined
+}
+
+# show_version: the identity this machine was built as, from the same helper ab-slot uses.
+# Answered before the command line is parsed: no root, no payload, no config, no slot.
+show_version() {
+    [ -f "${AB_VERSION_LIB}" ] || fail "feed-library-missing"
+    # shellcheck source=platform/lib/ab-version.sh
+    . "${AB_VERSION_LIB}"
+    ab_version_identity
+    exit 0
 }
 
 # feed_show_update <level> <entry>: the three-line identity plus Change/Tested/Risk.
@@ -215,12 +291,29 @@ feed_main() {
     ab_feed_config_load "${UPDATE_CONF}" || refuse "${AB_FEED_REASON}"
     if [ -n "${feed_url_override}" ]; then
         AB_FEED_URL="${feed_url_override}"
+        AB_FEED_SOURCE=feed
         # The override goes through the same check as the file: one https-only rule, one
         # place that enforces it (docs/update.md).
         case "${AB_FEED_URL}" in
             https://*) : ;;
             *) refuse "feed-conf-url" ;;
         esac
+    elif [ -n "${release_repo_override}" ] || [ -n "${release_base_override}" ]; then
+        # A fork or a proxy for one run, the same way --feed-url is a mirror for one run.
+        # Both flags build the release root, so either one selects that source; the value the
+        # file carries fills the half that was not given.
+        ab_feed_release_source \
+            "${release_repo_override:-${AB_FEED_RELEASE_REPO}}" \
+            "${release_base_override:-${AB_FEED_RELEASE_BASE}}" \
+            || refuse "${AB_FEED_REASON}"
+        AB_FEED_SOURCE=release
+    fi
+
+    # Where the answer came from, printed before the answer. A refusal and a comparison must
+    # never be read as each other, and the URL is what the operator needs to see when a
+    # machine answers with a page instead of an index.
+    if [ "${feed_check}" = "1" ]; then
+        say "source=${AB_FEED_SOURCE} feed=${AB_FEED_URL}"
     fi
 
     installed=$(platform_release_value PLATFORM_VERSION) || installed=""
@@ -237,7 +330,21 @@ feed_main() {
     work="${work:-/tmp/ab-upgrade.$$}"
     mkdir -p "${work}" || fail "cannot-create-workdir"
     index_file="${work}/index.txt"
-    ab_feed_fetch "${AB_FEED_URL%/}/index.txt" "${index_file}" || refuse "${AB_FEED_REASON}"
+    if ! ab_feed_fetch "${AB_FEED_URL%/}/index.txt" "${index_file}"; then
+        # A release published before this project had a feed index answers 404 here, which a
+        # fetcher reports the same way it reports a dead network. The reason stays honest
+        # (nothing was fetched); the extra line says where to look first when the source is
+        # this project's own releases.
+        if [ "${AB_FEED_SOURCE}" = "release" ]; then
+            say "  Next: check https://github.com/${AB_FEED_RELEASE_REPO}/releases - a release"
+            say "  published before the feed index existed carries no index.txt, and the next"
+            say "  release will. A fork or a proxy goes in UPDATE_RELEASE_REPO / UPDATE_RELEASE_BASE."
+        fi
+        refuse "${AB_FEED_REASON}"
+    fi
+    # Before parsing: a source that answered with a page is not a source with a broken
+    # field, and it is not an unreachable source either.
+    ab_feed_index_check "${index_file}" || refuse "${AB_FEED_REASON}"
     entries="${work}/entries.txt"
     ab_feed_index_parse "${index_file}" "${AB_FEED_CHANNEL}" >"${entries}" || refuse "${AB_FEED_REASON}"
 
@@ -366,6 +473,13 @@ feed_main() {
 }
 
 
+# `--version` is answered here, before anything below looks at the command line or the
+# machine: a support script asks this of a box that may have no config, no payload and no
+# writable slot, and it must get an answer.
+case "${1:-}" in
+    --version | -V) show_version ;;
+esac
+
 check_mode=0
 force_mode=0
 # update (default) | skip. "update" still degrades to "no bootloader in this payload"
@@ -384,6 +498,8 @@ feed_mode=0
 route=""
 yes_mode=0
 feed_url_override=""
+release_repo_override=""
+release_base_override=""
 pin_version=""
 unpin_mode=0
 while [ "$#" -gt 0 ]; do
@@ -395,6 +511,10 @@ while [ "$#" -gt 0 ]; do
         --stepwise) route="stepwise"; shift ;;
         --yes) yes_mode=1; shift ;;
         --feed-url) feed_url_override=${2:?--feed-url needs a value}; shift 2 ;;
+        --release-repo) release_repo_override=${2:?--release-repo needs owner/name}; shift 2 ;;
+        --release-base) release_base_override=${2:?--release-base needs a url}; shift 2 ;;
+        --version | -V) show_version ;;
+        --help | -h) usage_text; exit 0 ;;
         --pin) pin_version=${2:?--pin needs a version}; shift 2 ;;
         --unpin) unpin_mode=1; shift ;;
         --bootloader) bootloader_required=1; bootloader_mode="update"; shift ;;

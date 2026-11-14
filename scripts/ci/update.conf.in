@@ -1,0 +1,16 @@
+# Rendered into the platform layer at image and payload staging time by
+# scripts/ci/lib.sh:ci_render_update_conf. Every value can be overridden from the build
+# environment (CI_UPDATE_*), and a user overrides the same keys in /etc/ab/update.conf.
+#
+# UPDATE_SOURCE        release = this project's published releases, feed = UPDATE_FEED_URL.
+#                      Unset, the device reads a config that carries UPDATE_FEED_URL as
+#                      feed and anything else as release.
+# UPDATE_RELEASE_REPO  owner/name of the repository whose releases are the baseline. Point
+#                      it at a fork to follow a line published somewhere else.
+# UPDATE_RELEASE_BASE  the prefix the release URL is built from, https only. A proxy
+#                      (ghproxy and friends) goes here and the path behind it is unchanged.
+# UPDATE_CHANNEL       which line of releases this machine follows: stable or edge.
+UPDATE_SOURCE=@UPDATE_SOURCE@
+UPDATE_RELEASE_REPO=@UPDATE_RELEASE_REPO@
+UPDATE_RELEASE_BASE=@UPDATE_RELEASE_BASE@
+UPDATE_CHANNEL=@UPDATE_CHANNEL@

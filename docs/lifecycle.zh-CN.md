@@ -87,6 +87,13 @@ set default=<pending 槽，没有 pending 时就是已提交槽>
 3. 内核起来了但 boot initramfs 在进入用户态之前失败：`wf_fail` 走同一条 fail-safe abandon（清掉
    `pending`、把提示指回 committed 槽、日志记 `action=fail-safe-abandon`），然后才关机，下一次启动
    不会再去试那个刚失败的槽。
+4. 内核起来了、槽也是 pending，但启动在 `ab-commit` 决策之前就结束了（掉电、卡死、内核没进用户态）：
+   下一次启动会发现候选标记还在 ESP 上，于是把尝试次数加一并重试该槽，日志记
+   `stage=interrupted … result=retry`；`AB_BOOT_RETRY_MAX`（默认 1）是允许的重试次数，到
+   attempt = max+1 仍未走完的那次启动会清掉 `pending`、把提示指回 committed 槽并重启过去，日志记
+   `stage=interrupted … result=abandon reason=attempt-limit`。没有这个计数时提示永远不会移动，
+   机器每次重启都会重试同一个槽。
+
 
 `ab-slot rollback` 是手动路径：它提交另一个槽并连带移动提示。`ab-slot status` 把结果报成
 `next=<a|b|unknown>`，`ab-slot next` 单独打印它，是在运行中的系统上最快看清"下次启动会做什么"的办法。

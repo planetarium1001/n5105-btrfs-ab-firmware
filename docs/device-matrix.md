@@ -5,6 +5,16 @@ reboot into a single PASS/FAIL/GAP line. It exists because a slot can boot and s
 broken: only a status field, a breadcrumb and a surviving data marker together answer
 "did this jump keep a bootable machine".
 
+## Which releases the matrix may use
+
+One line: the 25.x / apk line. A release older than 25 is refused, and so is anything
+built from an opkg-era tree, because the two eras do not share a package manager, a
+firewall model or a kernel-module layout - `scripts/ci/upstream-watch.sh` already refuses
+to pin anything below major 25, and the matrix is held to the same rule. `matrix.sh`
+checks the payload's `platform-release` and refuses a `-` payload with an explicit line
+rather than letting it run and fail somewhere that looks like a product bug. The 24.x /
+opkg line is out of scope for this project: it is neither tested nor supported here.
+
 ## What it is for
 
 The A/B model is only proven by real upstream releases, not by rewriting a version string

@@ -171,7 +171,17 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.8`. The first-boot network generation arrived in `0.0.7`, by reusing the
+Current version: `0.0.9`. It fixes what the 2026-11-14 real-device run broke or exposed: the
+package snapshot read the wrong column under apk-tools 3 (`apk info` prints names, not
+`name-version`), so `ab-slot packages revert` failed on every package; the snapshot now also
+keeps the `.apk` files, because the repositories carry only the newest version. A candidate
+slot whose first boot never reaches the health check - a power cut - is now counted and
+recorded as `stage=interrupted`, and after one retry the machine is moved back to the
+committed slot instead of retrying it forever. `VERSION` finally matches the tag, and the
+image ships an update source (`/etc/ab/update.conf`) that points at this repository's own
+releases, so `ab-upgrade --feed-check` works on a freshly flashed machine.
+
+The first-boot network generation arrived in `0.0.7`, by reusing the
 upstream `board_detect` and `config_generate` and layering this project's defaults on top:
 `eth1`..`eth3` in the `br-lan` bridge and LAN `192.168.100.1/24`. The WAN side accepts
 nothing: the `22/tcp` exception lives only in the separate `-install-wan-ssh` image, which

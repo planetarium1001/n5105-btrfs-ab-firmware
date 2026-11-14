@@ -23,11 +23,13 @@
 # Two more answers are not levels at all and are kept apart so callers cannot
 # accidentally treat "nothing to do" as "an update": `current` and `downgrade`.
 #
-# Functions (all POSIX sh, no external commands):
+# Functions (all POSIX sh, external commands only for the identity file):
 #   ab_version_valid <v>             0 when <v> is X.Y.Z, 1 otherwise
 #   ab_version_cmp <a> <b>           prints -1, 0 or 1; exits 2 on a malformed version
 #   ab_version_delta <a> <b>         prints "major N", "minor N", "patch N" or "none"
 #   ab_version_level <a> <b>         prints X1|Y2|Y1|Z2|Z1, or current|downgrade
+#   ab_version_identity              prints PLATFORM_VERSION= / UPSTREAM_VERSION= /
+#                                    PLATFORM_STAGE= of ${AB_RELEASE_FILE:-/etc/platform-release}
 #
 # The comparison is numeric per segment on purpose: a string comparison would sort
 # 0.0.10 before 0.0.9 and make the updater offer a downgrade as an update.
@@ -182,4 +184,37 @@ ab_version_level() {
         return 0
     fi
     printf 'Z1\n'
+}
+
+# ab_version_identity: the three lines this project's identity is made of, read from
+# ${AB_RELEASE_FILE:-/etc/platform-release}. A machine without that file still answers, with
+# `unknown` on all three lines and status 0: not being able to name the version is a fact
+# about the machine, not an error of the question. Both CLIs print exactly this, so the
+# function name and the three keys are a contract.
+#
+# Nothing here is derived from another number: platform is our own layer's version,
+# upstream is the release underneath it, and stage says which line of it this is.
+ab_version_identity() {
+    _ab_rel=${AB_RELEASE_FILE:-/etc/platform-release}
+    _ab_pv=unknown
+    _ab_uv=unknown
+    _ab_st=unknown
+    if [ -f "${_ab_rel}" ] && [ -r "${_ab_rel}" ]; then
+        while IFS= read -r _ab_line || [ -n "${_ab_line}" ]; do
+            # A file written on another system may carry CRLF; the value must not.
+            _ab_line=${_ab_line%"$(printf '\r')"}
+            case "${_ab_line}" in
+                PLATFORM_VERSION=*) _ab_pv=${_ab_line#PLATFORM_VERSION=} ;;
+                UPSTREAM_VERSION=*) _ab_uv=${_ab_line#UPSTREAM_VERSION=} ;;
+                PLATFORM_STAGE=*) _ab_st=${_ab_line#PLATFORM_STAGE=} ;;
+            esac
+        done <"${_ab_rel}"
+    fi
+    [ -n "${_ab_pv}" ] || _ab_pv=unknown
+    [ -n "${_ab_uv}" ] || _ab_uv=unknown
+    [ -n "${_ab_st}" ] || _ab_st=unknown
+    printf 'PLATFORM_VERSION=%s\n' "${_ab_pv}"
+    printf 'UPSTREAM_VERSION=%s\n' "${_ab_uv}"
+    printf 'PLATFORM_STAGE=%s\n' "${_ab_st}"
+    return 0
 }

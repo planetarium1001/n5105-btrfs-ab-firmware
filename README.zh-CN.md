@@ -155,7 +155,14 @@ uci commit firewall
 - `MINOR` 表示项目目标彻底达成，只有那时才升到 `0.1.0`。
 - `PATCH` 表示阶段性里程碑，目标尚未达成。
 
-当前版本：`0.0.8`。首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
+当前版本：`0.0.9`。这一版修的是 2026-11-14 真机验收暴露的问题：apk-tools 3 下包快照读错了栏位
+（`apk info` 只打印包名，不是 `name-version`），导致 `ab-slot packages revert` 逐包失败；快照现在
+同时保留 `.apk` 包体，因为仓库只留最新版本。候选槽首启没走到健康检查（掉电）现在会被计数并记成
+`stage=interrupted`，重试一次之后机器会被移回已提交槽，而不是一直重试同一个槽。`VERSION` 终于和
+tag 对得上，镜像出厂自带更新源（`/etc/ab/update.conf`）指向本仓库的 release，所以刚刷完的机器上
+`ab-upgrade --feed-check` 直接可用。
+
+首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
 `config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认
 `192.168.100.1/24`。WAN 侧什么都不放：`22/tcp` 那条例外只存在于单独的 `-install-wan-ssh` 镜像里，
 它给的是「从 LAN 够不到的机器」这条进路。`0.0.8` 保留首启行为，改的是「更新带什么」与

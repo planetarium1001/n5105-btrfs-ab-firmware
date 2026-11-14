@@ -265,19 +265,153 @@ _packages_snapshot_dir() {
 
 # _packages_installed: one `name version` line per installed package.
 #
-# apk prints `name-version` with the version starting at the first dash followed by a
-# digit; names themselves carry dashes (kmod-fs-btrfs), so the split cannot be "last
-# dash" and cannot be "first dash" either.
+# The source is `apk info -v`. Bare `apk info` is deliberately never read: under
+# apk-tools 3 (3.0.5 on the measured machine, 2026-11-14) it prints the names only, which
+# is how a 317-package machine produced a snapshot of versionless lines. `apk list
+# --installed` is the documented fallback, and its first field is the same `name-version`.
+#
+# The split is "the last dash followed by a digit": names carry dashes
+# (kmod-nls-iso8859-1) and versions carry one of their own (-r1), so neither the first nor
+# the last dash is right. A line that does not split is a failure, not something to drop:
+# returning fewer lines than there were is exactly the silent loss this exists to catch.
+#
+# Returns 0 with the lines on stdout, 1 when apk cannot answer at all, 2 when a line does
+# not split. The lines that did not split (up to three) are named on stderr.
 _packages_installed() {
-    _installed=$(apk info 2>/dev/null) || return 1
-    printf '%s\n' "${_installed}" | sed -n 's/^\(.*\)-\([0-9][^-]*\(-r[0-9][^-]*\)\{0,1\}\)$/\1 \2/p'
+    _raw=""
+    if _info=$(apk info -v 2>/dev/null); then
+        _raw=${_info}
+    fi
+    if [ -z "${_raw}" ]; then
+        _raw=$(apk list --installed 2>/dev/null | awk 'NF { print $1 }')
+    fi
+    [ -n "${_raw}" ] || return 1
+
+    _total=$(printf '%s\n' "${_raw}" | grep -c . || true)
+    _unparsed=$(printf '%s\n' "${_raw}" | grep . | sed -n '/^\(.*\)-\([0-9].*\)$/!p')
+    if [ -n "${_unparsed}" ]; then
+        _bad=$(printf '%s\n' "${_unparsed}" | grep -c . || true)
+        printf 'packages: %s of %s lines could not be split into name and version\n' \
+            "${_bad}" "${_total}" >&2
+        printf '%s\n' "${_unparsed}" | head -n 3 | while IFS= read -r _line; do
+            printf 'packages: unparsed %s\n' "${_line}" >&2
+        done
+        return 2
+    fi
+    printf '%s\n' "${_raw}" | grep . | sed -n 's/^\(.*\)-\([0-9].*\)$/\1 \2/p'
 }
 
-# ab_packages_snapshot <layer> <upstream> <platform>: write one snapshot, print its path.
+# _packages_sha256 <file>: the hex digest of a payload, or empty when no tool can make
+# one. The device is busybox (sha256sum); a build host may have shasum or openssl.
+_packages_sha256() {
+    [ -f "$1" ] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{ print $1; exit }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{ print $1; exit }'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" 2>/dev/null | awk '{ print $NF; exit }'
+    else
+        return 1
+    fi
+}
+
+# _packages_payload_file <payload-dir> <name> <version>: the .apk a package was fetched
+# as. `apk fetch` names it <name>-<version>.apk; the glob is only a second chance for a
+# version apk re-spelled.
+_packages_payload_file() {
+    if [ -n "${3:-}" ]; then
+        _exact="$1/$2-$3.apk"
+        if [ -f "${_exact}" ]; then
+            printf '%s' "${_exact}"
+            return 0
+        fi
+    fi
+    _found=$(find "$1" -maxdepth 1 -name "$2-*.apk" 2>/dev/null | head -n 1)
+    [ -n "${_found}" ] || return 1
+    printf '%s' "${_found}"
+}
+
+# ab_packages_payloads_verified <snapshot> <payload-dir>: 0 when the snapshot lists
+# payloads, the directory holds them, and every recorded sha256 matches the file; the
+# number verified is printed. 1 when there is nothing usable to verify (no payload lines,
+# no directory, a file that is not there); 2 when a digest does not match.
+#
+# The digest list is the whole trust chain for a local .apk: the device reports
+# `UNTRUSTED signature` and we do not carry its keyring, so `--allow-untrusted` is only
+# safe because the record says what each byte should be.
+ab_packages_payloads_verified() {
+    _snap=$1
+    _pdir=$2
+    _apkfiles=$(sed -n 's/^apkfile  *//p' "${_snap}" 2>/dev/null)
+    [ -n "${_apkfiles}" ] || return 1
+    [ -d "${_pdir}" ] || return 1
+    _n=0
+    while IFS=' ' read -r _name _sha; do
+        [ -n "${_name}" ] || continue
+        _file=$(_packages_payload_file "${_pdir}" "${_name}" "") || return 1
+        _got=$(_packages_sha256 "${_file}")
+        [ -n "${_got}" ] || return 2
+        [ "${_got}" = "${_sha}" ] || return 2
+        _n=$((_n + 1))
+    done <<APKFILES
+${_apkfiles}
+APKFILES
+    [ "${_n}" -gt 0 ] || return 1
+    printf '%s\n' "${_n}"
+}
+
+# _packages_world_report <snapshot>: reconcile the world with the package set. The count
+# line goes to stdout (it is a machine-readable fact); the first five world entries that
+# have no package in the snapshot go to stderr, because a name apk would have to resolve
+# again is exactly what a replay cannot fix on its own.
+_packages_world_report() {
+    awk '
+        /^pkg      / { pkg[$2] = 1; next }
+        /^world    / { entry[++n] = substr($0, 10); next }
+        END {
+            matched = 0
+            shown = 0
+            for (i = 1; i <= n; i++) {
+                key = entry[i]
+                sub(/[=<>~].*/, "", key)
+                if (key in pkg) {
+                    matched++
+                } else if (shown < 5) {
+                    printf "  world-unmatched  %s\n", key > "/dev/stderr"
+                    shown++
+                }
+            }
+            printf "revert world=%d matched=%d\n", n, matched
+        }
+    ' "$1"
+}
+
+# ab_packages_snapshot <layer> <upstream> <platform> [--no-payloads]: write one snapshot,
+# print its path.
+#
+# The payloads are fetched by default, because on the measured machine the feed carries
+# only the newest version (`apk policy htop` -> 3.5.3-r1 while the machine runs 3.3.0-r1),
+# so a manifest without the files cannot be replayed once anything moved. A failed or
+# partial fetch is recorded as `payloads no` plus one `payload-gap <reason>` line, and the
+# manifest still succeeds: the record of what this machine runs is the main deliverable,
+# the files are the part that needs a network.
 ab_packages_snapshot() {
     _layer=${1:?ab_packages_snapshot needs a layer}
     _upstream=${2:?ab_packages_snapshot needs the upstream version}
     _platform=${3:?ab_packages_snapshot needs the platform version}
+    shift 3
+    _want_payloads=1
+    for _arg in "$@"; do
+        case "${_arg}" in
+            --no-payloads) _want_payloads=0 ;;
+            *)
+                _packages_fail "snapshot-argument-invalid"
+                return 1
+                ;;
+        esac
+    done
+
     _dir=$(_packages_snapshot_dir "${_layer}")
     mkdir -p "${_dir}" || return 1
 
@@ -288,14 +422,80 @@ ab_packages_snapshot() {
         _n=$((_n + 1))
         _file="${_dir}/snapshot-${_id}-${_n}.txt"
     done
+    # The payload directory is named after the snapshot, not after the id: a same-second
+    # second snapshot is `-2` and needs its own .d, or two records would share a payload
+    # set that only one of them describes.
+    _sid=${_file##*/snapshot-}
+    _sid=${_sid%.txt}
+    _snapdir="${_dir}/snapshot-${_sid}.d"
+    _pdir="${_snapdir}/payloads"
 
-    _packages=$(_packages_installed) || _packages_fail apk-info-failed || return 1
+    _packages=$(_packages_installed)
+    _prc=$?
+    if [ "${_prc}" -ne 0 ]; then
+        case "${_prc}" in
+            2) _packages_fail "apk-info-unparsed" ;;
+            *) _packages_fail "apk-info-failed" ;;
+        esac
+        return 1
+    fi
     _pkgnum=$(printf '%s\n' "${_packages}" | grep -c . || true)
+    _worldfile="${_layer}/upper/etc/apk/world"
     # A world with entries but no readable package list is not an empty machine, it is a
     # broken apk. Writing "0 packages" here would make every later revert a silent no-op.
-    if [ "${_pkgnum}" -eq 0 ] && [ -s "${_layer}/upper/etc/apk/world" ]; then
-        _packages_fail apk-info-empty
+    if [ "${_pkgnum}" -eq 0 ] && [ -s "${_worldfile}" ]; then
+        _packages_fail "apk-info-empty"
         return 1
+    fi
+    _worldnum=0
+    if [ -f "${_worldfile}" ]; then
+        _worldnum=$(grep -c . "${_worldfile}" || true)
+    fi
+
+    _payloads_written=0
+    _payload_gap=""
+    _apkfiles=""
+    if [ "${_want_payloads}" = "1" ] && [ "${_pkgnum}" -gt 0 ]; then
+        _apkfiles="${_snapdir}/apkfile"
+        if mkdir -p "${_pdir}" 2>/dev/null; then
+            _pins=$(printf '%s\n' "${_packages}" | awk '{ print $1 "=" $2 }')
+            # shellcheck disable=SC2086  # one word per pin by construction
+            if apk fetch --recursive -o "${_pdir}" ${_pins} 2>/dev/null; then
+                : >"${_apkfiles}"
+                _missing=0
+                while IFS=' ' read -r _pname _pver; do
+                    [ -n "${_pname}" ] || continue
+                    _sha=""
+                    if _pfile=$(_packages_payload_file "${_pdir}" "${_pname}" "${_pver}"); then
+                        _sha=$(_packages_sha256 "${_pfile}")
+                    fi
+                    if [ -z "${_sha}" ]; then
+                        _missing=$((_missing + 1))
+                        continue
+                    fi
+                    printf 'apkfile  %s %s\n' "${_pname}" "${_sha}" >>"${_apkfiles}"
+                done <<PKGS
+${_packages}
+PKGS
+                if [ "${_missing}" -eq 0 ]; then
+                    _payloads_written=1
+                else
+                    _payload_gap="payload-incomplete"
+                fi
+            else
+                # A feed that cannot be reached and a disk that filled up look the same
+                # from here, and either way the manifest is still worth writing.
+                _payload_gap="apk-fetch-failed"
+            fi
+        else
+            _payload_gap="payloads-unwritable"
+        fi
+        if [ "${_payloads_written}" = "0" ]; then
+            # Nothing half-populated is left behind: a directory that exists but does not
+            # verify would send a later revert down the local path with a broken set.
+            rm -rf "${_snapdir}" 2>/dev/null || true
+            _apkfiles=""
+        fi
     fi
 
     {
@@ -303,18 +503,45 @@ ab_packages_snapshot() {
         printf 'created  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'upstream %s\n' "${_upstream}"
         printf 'platform %s\n' "${_platform}"
-        if [ -f "${_layer}/upper/etc/apk/world" ]; then
+        printf 'packages %s\n' "${_pkgnum}"
+        printf 'world %s\n' "${_worldnum}"
+        if [ "${_payloads_written}" = "1" ]; then
+            printf 'payloads yes\n'
+        else
+            printf 'payloads no\n'
+        fi
+        if [ -n "${_payload_gap}" ]; then
+            printf 'payload-gap %s\n' "${_payload_gap}"
+        fi
+        if [ -f "${_worldfile}" ]; then
             while IFS= read -r _entry || [ -n "${_entry}" ]; do
                 [ -n "${_entry}" ] || continue
                 printf 'world    %s\n' "${_entry}"
-            done <"${_layer}/upper/etc/apk/world"
+            done <"${_worldfile}"
         fi
         printf '%s\n' "${_packages}" | while IFS=' ' read -r _name _version; do
             [ -n "${_name}" ] || continue
             printf 'pkg      %s %s\n' "${_name}" "${_version}"
         done
+        if [ "${_payloads_written}" = "1" ] && [ -f "${_apkfiles}" ]; then
+            cat "${_apkfiles}"
+        fi
         printf 'end\n'
-    } >"${_file}" || return 1
+    } >"${_file}" || {
+        rm -rf "${_snapdir}" 2>/dev/null || true
+        rm -f "${_file}" 2>/dev/null || true
+        _packages_fail "snapshot-unwritable"
+        return 1
+    }
+    # The record is what a later revert trusts; the payload files are worth several hundred
+    # megabytes and may still be in flight through the page cache.
+    sync 2>/dev/null || true
+    if [ -n "${_apkfiles}" ]; then
+        rm -f "${_apkfiles}" 2>/dev/null || true
+    fi
+    if [ -n "${_payload_gap}" ]; then
+        printf 'packages: payload-gap %s\n' "${_payload_gap}" >&2
+    fi
 
     _packages_snapshot_reap "${_layer}"
     printf '%s\n' "${_file}"
@@ -353,12 +580,23 @@ _packages_snapshot_reap() {
     _drop=$((_count - AB_APK_SNAPSHOT_KEEP))
     printf '%s\n' "${_files}" | head -n "${_drop}" | while IFS= read -r _name; do
         rm -f "${_dir}/${_name}" || :
+        # The payloads belong to exactly one manifest: reaping the text without the .d
+        # would leave up to 300 MiB of files nothing on the machine can name.
+        rm -rf "${_dir}/${_name%.txt}.d" || :
     done
 }
 
 # _packages_snapshot_field <file> <key>: one header value, or empty.
 _packages_snapshot_field() {
     sed -n "s/^$2  *//p" "$1" 2>/dev/null | head -n 1
+}
+
+# _packages_snapshot_count <file> <key>: a header count. The counts are read by pattern
+# rather than with _packages_snapshot_field because `world 3` and the `world    <entry>`
+# lines differ by one space: reading a snapshot written before the counts existed must not
+# return the first entry as if it were a number.
+_packages_snapshot_count() {
+    sed -n "s/^$2 \([0-9][0-9]*\)\$/\\1/p" "$1" 2>/dev/null | head -n 1
 }
 
 # ab_packages_list <layer>: the snapshots on this layer, newest first.
@@ -379,7 +617,9 @@ ab_packages_list() {
         _base=$(_packages_snapshot_field "${_path}" upstream)
         _platform=$(_packages_snapshot_field "${_path}" platform)
         _pkgs=$(grep -c '^pkg ' "${_path}" 2>/dev/null || true)
-        printf 'snapshot %s  base %s  platform %s  %s packages\n' \
-            "${_id}" "${_base}" "${_platform}" "${_pkgs:-0}"
+        _world=$(_packages_snapshot_count "${_path}" world)
+        _payloads=$(_packages_snapshot_field "${_path}" payloads)
+        printf 'snapshot %s  base %s  platform %s  %s packages  world %s  payloads %s\n' \
+            "${_id}" "${_base}" "${_platform}" "${_pkgs:-0}" "${_world:-0}" "${_payloads:-no}"
     done
 }

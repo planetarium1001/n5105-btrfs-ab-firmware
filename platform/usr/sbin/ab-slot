@@ -72,6 +72,9 @@
 #                          apk update/upgrade behind the `packages=aligned` gate, or replay a
 #                          snapshot's versions (same base only). Never touches the slot
 #                          state: a package rollback and a slot rollback are different units.
+#   --version, -V          the identity this machine was built as, read from
+#                          /etc/platform-release. Answered before anything else: no slot
+#                          state is read, no lock is taken and the ESP is not touched.
 #
 # Environment:
 #   AB_ESP           ESP mount point            (default /boot)
@@ -84,6 +87,9 @@
 #   AB_PARTITIONS_LIB  shared partition discovery (default /lib/ab-partitions.sh)
 #   AB_PACKAGES_FILE   the package-alignment verdict the last upgrade published
 #                      (default $AB_ESP/ab/packages)
+#   AB_PACKAGES_LIB  package snapshot/replay library (default /lib/upgrade/packages.sh)
+#   AB_VERSION_LIB   version comparison and identity (default /lib/ab-version.sh)
+#   AB_RELEASE_FILE  the identity file itself (default /etc/platform-release)
 
 set -u
 # Keep whatever PATH we were given in front: the running system already supplies
@@ -106,6 +112,7 @@ AB_SLOT_CFG="${AB_SLOT_CFG:-${AB_ESP}/boot/grub/ab-slot.cfg}"
 AB_SLOT_CFG_LIB="${AB_SLOT_CFG_LIB:-/lib/ab-slot-cfg.sh}"
 AB_PARTITIONS_LIB="${AB_PARTITIONS_LIB:-/lib/ab-partitions.sh}"
 AB_PACKAGES_FILE="${AB_PACKAGES_FILE:-${AB_ESP}/ab/packages}"
+AB_VERSION_LIB="${AB_VERSION_LIB:-/lib/ab-version.sh}"
 STATE="${AB_ESP}/ab/state.json"
 LOGDIR="${AB_ESP}/ab/log"
 LOCKDIR="${AB_ESP}/ab/.lock"
@@ -166,7 +173,7 @@ die() {
 }
 
 usage() {
-    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|next [--write]|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]|packages [list|snapshot|upgrade|revert [--to <id>]]"
+    say "usage: ab-slot status|commit [slot]|pending <slot>|abandon|rollback|next [--write]|gc [--dry-run]|rootfs [slot]|layer <slot> <ver> <layer>|conflicts|log [--prev|--upgrade]|packages [list|snapshot [--no-payloads]|upgrade|revert [--to <id>]]|--version|-V"
     exit 2
 }
 
@@ -499,6 +506,29 @@ esp_health_state() {
 	printf 'unknown'
 }
 
+# packages_record_slot: the slot the published record describes, or empty for a record
+# written before the field existed.
+packages_record_slot() {
+    sed -n 's/^packages=[a-z]* .* slot=\([ab]\).*/\1/p' "${AB_PACKAGES_FILE}" 2>/dev/null | tail -n 1
+}
+
+# packages_record_applies: 0 when the record can speak for this machine.
+#
+# The record names one slot, and it speaks for this system when that slot is the one
+# running now (a candidate's first boot, before it is committed) or the one the system is
+# committed to run (the next boot, and every boot after a rollback). A record for a
+# candidate that is still only staged says nothing about this boot - that is what
+# `other-slot` means.
+packages_record_applies() {
+    _pkg_rec="$(packages_record_slot)"
+    [ -n "${_pkg_rec}" ] || return 0
+    _pkg_run="$(running_slot 2>/dev/null)" || _pkg_run=""
+    _pkg_committed="$(state_committed 2>/dev/null)" || _pkg_committed=""
+    [ "${_pkg_rec}" = "${_pkg_run}" ] && return 0
+    [ "${_pkg_rec}" = "${_pkg_committed}" ] && return 0
+    return 1
+}
+
 # packages_state: whether the running slot's package metadata describes the version it
 # runs, as the last upgrade published it (platform/lib/upgrade/packages.sh). `aligned`
 # means "world pins this kernel and distfeeds name this release", not "the feeds are
@@ -511,16 +541,9 @@ packages_state() {
         printf 'unknown'
         return 0
     }
-    # The record describes the slot an upgrade was aiming at. Until that slot is committed
-    # and running, its verdict says nothing about this boot, so a record for another slot is
-    # reported as unknown rather than as this slot's state.
-    _pkg_slot="$(sed -n 's/^packages=[a-z]* .* slot=\([ab]\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
-    if [ -n "${_pkg_slot}" ]; then
-        _pkg_running="$(running_slot 2>/dev/null)" || _pkg_running=""
-        [ "${_pkg_slot}" = "${_pkg_running}" ] || {
-            printf 'unknown'
-            return 0
-        }
+    if ! packages_record_applies; then
+        printf 'unknown'
+        return 0
     fi
     _pkg_state="$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
     case "${_pkg_state}" in
@@ -537,17 +560,55 @@ packages_reason() {
         printf 'unknown'
         return 0
     }
-    _pkg_slot="$(sed -n 's/^packages=[a-z]* .* slot=\([ab]\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
-    if [ -n "${_pkg_slot}" ]; then
-        _pkg_running="$(running_slot 2>/dev/null)" || _pkg_running=""
-        if [ "${_pkg_slot}" != "${_pkg_running}" ]; then
-            printf 'other-slot'
-            return 0
-        fi
+    if ! packages_record_applies; then
+        printf 'other-slot'
+        return 0
     fi
     _pkg_reason="$(sed -n 's/^packages=[a-z]* reason=\([^ ]*\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
     [ -n "${_pkg_reason}" ] || _pkg_reason="unknown"
     printf '%s' "${_pkg_reason}"
+}
+
+# packages_record_retarget <slot>: make the published verdict speak for the slot a
+# rollback has just committed.
+#
+# A record that already names the target is the aligner's own verdict for exactly that
+# layer, so it stands: it is rewritten as-is, atomically, which is also what proves the
+# file survived the rollback. Anything else - including a record that only ever described
+# the slot we rolled away from - becomes an explicit `unknown reason=no-record` for the
+# new committed slot. Leaving the old line behind is what made `ab-slot status` answer
+# `packages=unknown reason=other-slot` for ever after a rollback.
+packages_record_retarget() {
+    _slot=$1
+    _file="${AB_PACKAGES_FILE}"
+    _line=""
+    _verdict="unknown"
+    if [ "$(packages_record_slot)" = "${_slot}" ]; then
+        case "$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${_file}" 2>/dev/null | tail -n 1)" in
+            aligned | limited)
+                _line="$(tail -n 1 "${_file}" 2>/dev/null)"
+                _verdict=$(printf '%s\n' "${_line}" | sed -n 's/^packages=\([a-z]*\).*/\1/p')
+                ;;
+        esac
+    fi
+    if [ -z "${_line}" ]; then
+        _line="packages=unknown reason=no-record slot=${_slot}"
+    fi
+    mkdir -p "$(dirname "${_file}")" 2>/dev/null || :
+    _tmp="${_file}.tmp.$$"
+    if ! printf '%s\n' "${_line}" >"${_tmp}" 2>/dev/null; then
+        say "ab-slot: could not rewrite ${_file}; the record still names the old slot"
+        return 1
+    fi
+    sync 2>/dev/null || :
+    if ! mv "${_tmp}" "${_file}" 2>/dev/null; then
+        rm -f "${_tmp}" 2>/dev/null || :
+        say "ab-slot: could not rewrite ${_file}; the record still names the old slot"
+        return 1
+    fi
+    sync 2>/dev/null || :
+    say "ab-slot: packages ${_verdict} for slot ${_slot}"
+    return 0
 }
 
 # --------------------------------------------------------------------------- #
@@ -670,6 +731,9 @@ cmd_rollback() {
     _from="${_committed}"
     write_state "${_generation}" "${_target}" "none"
     say "ab-slot: rolled back from slot ${_from} to slot ${_target}"
+    # The package verdict describes a slot, and that slot has just changed. Re-judging it
+    # here is what keeps `ab-slot status` from answering `other-slot` after a rollback.
+    packages_record_retarget "${_target}" || :
     sync_or_die
 }
 
@@ -837,6 +901,55 @@ packages_lib() {
     . "${_lib}"
 }
 
+# --------------------------------------------------------------------------- #
+# Identity: which version this machine is
+#
+# One source, /etc/platform-release, and one helper: `ab-upgrade --version` prints the same
+# three lines through `ab_version_identity`. The library is found the way every other
+# platform library is - the installed path first, then the copy that ships next to this
+# tool inside the layer - so the tool also works from a mounted image or a chroot.
+# --------------------------------------------------------------------------- #
+
+version_lib_path() {
+    _lib_base="$(basename "${AB_VERSION_LIB}")"
+    _lib_self="$(dirname "$0")"
+    for _lib_candidate in "${AB_VERSION_LIB}" \
+        "${_lib_self}/../../lib/${_lib_base}" \
+        "${_lib_self}/../lib/${_lib_base}"; do
+        [ -f "${_lib_candidate}" ] || continue
+        printf '%s' "${_lib_candidate}"
+        return 0
+    done
+    return 1
+}
+
+version_identity() {
+    if _vlib="$(version_lib_path)"; then
+        # shellcheck source=platform/lib/ab-version.sh
+        . "${_vlib}"
+    else
+        die "version-library-missing"
+    fi
+    ab_version_identity
+}
+
+# packages_snapshot_line <snapshot>: the one line `snapshot` prints. It carries the same
+# counts the record's header carries, so a reader can compare what was said with what was
+# written without opening the file.
+packages_snapshot_line() {
+    _snap=$1
+    _id=${_snap##*/snapshot-}
+    _id=${_id%.txt}
+    _np=$(grep -c '^pkg ' "${_snap}" 2>/dev/null || true)
+    _nw=$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "${_snap}" 2>/dev/null | head -n 1)
+    _pl=$(_packages_snapshot_field "${_snap}" payloads)
+    _gap=$(_packages_snapshot_field "${_snap}" payload-gap)
+    printf 'snapshot %s written packages=%s world=%s payloads=%s base=%s%s\n' \
+        "${_id}" "${_np:-0}" "${_nw:-0}" "${_pl:-no}" \
+        "$(_packages_snapshot_field "${_snap}" upstream)" \
+        "${_gap:+ payload_gap=${_gap}}"
+}
+
 packages_layer() {
     _slot="$(running_slot)" || die "state has no running slot"
     _upper="$(state_upper "${_slot}")" || die "state has no layer for slot ${_slot}"
@@ -885,11 +998,8 @@ cmd_packages() {
             _layer="$(packages_layer)"
             _up=$(packages_release_value UPSTREAM_VERSION) || _up=unknown
             _pv=$(packages_release_value PLATFORM_VERSION) || _pv=unknown
-            _snap=$(ab_packages_snapshot "${_layer}" "${_up}" "${_pv}") || die "snapshot-failed"
-            _id=${_snap##*/snapshot-}
-            _id=${_id%.txt}
-            _n=$(grep -c '^pkg ' "${_snap}" 2>/dev/null || true)
-            say "snapshot ${_id} written (${_n:-0} packages, base ${_up})"
+            _snap=$(ab_packages_snapshot "${_layer}" "${_up}" "${_pv}" "$@") || die "snapshot-failed"
+            say "$(packages_snapshot_line "${_snap}")"
             ;;
         upgrade) cmd_packages_upgrade "$@" ;;
         revert) cmd_packages_revert "$@" ;;
@@ -915,10 +1025,7 @@ cmd_packages_upgrade() {
     _up=$(packages_release_value UPSTREAM_VERSION) || _up=unknown
     _pv=$(packages_release_value PLATFORM_VERSION) || _pv=unknown
     _snap=$(ab_packages_snapshot "${_layer}" "${_up}" "${_pv}") || die "snapshot-failed"
-    _id=${_snap##*/snapshot-}
-    _id=${_id%.txt}
-    _n=$(grep -c '^pkg ' "${_snap}" 2>/dev/null || true)
-    say "snapshot ${_id} written (${_n:-0} packages)"
+    say "$(packages_snapshot_line "${_snap}")"
 
     _timeout=""
     command -v timeout >/dev/null 2>&1 && _timeout="timeout 600"
@@ -993,11 +1100,54 @@ cmd_packages_revert() {
         exit 74
     fi
     say "revert from ${_to} (base ${_snap_base}, platform $(_packages_snapshot_field "${_snap}" platform))"
+    _total=$(grep -c '^pkg      ' "${_snap}" 2>/dev/null || true)
+    _total=${_total:-0}
+    if [ "${_total}" -eq 0 ]; then
+        say "revert result=empty (no packages in the snapshot)"
+        packages_log "revert result=empty snapshot=${_to}"
+        exit 1
+    fi
+
+    # Two paths, one verdict. The payloads are the offline one: the source may carry only
+    # the newest version of everything (measured: `apk policy htop` -> 3.5.3-r1 while the
+    # machine runs 3.3.0-r1), so replaying over the network cannot restore what the
+    # snapshot was taken of. The digest list is what makes a local .apk trustworthy - the
+    # device reports `UNTRUSTED signature` and we do not carry its keyring - so a set that
+    # does not verify installs nothing at all rather than half of it.
+    _pdir="${_dir}/snapshot-${_to}.d/payloads"
+    _verify=0
+    _verified=$(ab_packages_payloads_verified "${_snap}" "${_pdir}") || _verify=$?
+    if [ "${_verify}" -eq 2 ]; then
+        say "ab-slot: refused, reason=revert-payload-mismatch"
+        say "  A payload of snapshot ${_to} does not match the sha256 recorded in it."
+        say "  Next: ab-slot packages snapshot    (record the machine again, with fresh payloads)"
+        say "revert result=fail reason=revert-payload-mismatch"
+        packages_log "revert result=fail reason=revert-payload-mismatch snapshot=${_to}"
+        exit 74
+    fi
+    if [ "${_verify}" -eq 0 ]; then
+        say "apkfile verified ${_verified} payloads in ${_pdir}"
+        _packages_world_report "${_snap}"
+        if apk add --allow-untrusted "${_pdir}"/*.apk >>"${LOGDIR}/upgrade.log" 2>&1; then
+            say "revert result=ok changed=${_total} path=payloads"
+            packages_log "revert result=ok changed=${_total} path=payloads snapshot=${_to}"
+            return 0
+        fi
+        # One transaction: it either lands or it does not, so there is nothing to report
+        # per package and nothing was changed.
+        say "revert result=fail changed=0 failed=${_total} path=payloads"
+        packages_log "revert result=fail changed=0 failed=${_total} path=payloads snapshot=${_to}"
+        exit 1
+    fi
+    if [ -d "${_pdir}" ]; then
+        say "revert: the payloads of ${_to} are incomplete, replaying from the network"
+    fi
+
+    _attempted=0
     _failed=0
-    _changed=0
     while IFS=' ' read -r _name _version; do
         [ -n "${_name}" ] || continue
-        _changed=$((_changed + 1))
+        _attempted=$((_attempted + 1))
         if apk add "${_name}=${_version}" >>"${LOGDIR}/upgrade.log" 2>&1; then
             say "  ok      ${_name} ${_version}"
         else
@@ -1010,29 +1160,35 @@ cmd_packages_revert() {
     done <<EOF
 $(sed -n 's/^pkg      //p' "${_snap}")
 EOF
-    if [ "${_changed}" -eq 0 ]; then
-        say "revert result=empty (no packages in the snapshot)"
-        packages_log "revert result=empty snapshot=${_to}"
-        exit 1
-    fi
+    _done=$((_attempted - _failed))
+    _packages_world_report "${_snap}"
     if [ "${_failed}" -eq 0 ]; then
-        say "revert result=ok (${_changed} packages)"
-        packages_log "revert result=ok changed=${_changed} snapshot=${_to}"
+        say "revert result=ok changed=${_done} path=network"
+        packages_log "revert result=ok changed=${_done} path=network snapshot=${_to}"
         return 0
     fi
-    if [ "${_failed}" -eq "${_changed}" ]; then
-        say "revert result=fail (${_failed} of ${_changed} failed)"
-        packages_log "revert result=fail failed=${_failed} changed=${_changed} snapshot=${_to}"
+    if [ "${_failed}" -eq "${_attempted}" ]; then
+        say "revert result=fail changed=0 failed=${_failed} path=network"
+        packages_log "revert result=fail changed=0 failed=${_failed} path=network snapshot=${_to}"
         exit 1
     fi
-    say "revert result=partial (${_failed} of ${_changed} failed)"
-    packages_log "revert result=partial failed=${_failed} changed=${_changed} snapshot=${_to}"
+    say "revert result=partial changed=${_done} failed=${_failed} path=network"
+    packages_log "revert result=partial changed=${_done} failed=${_failed} path=network snapshot=${_to}"
     return 0
 }
 
 
 main() {
     [ "$#" -ge 1 ] || usage
+    # Identity is answered before anything else: no state file, no lock, no ESP. A machine
+    # whose slots are in a mess can still say which version it is, and `ab-upgrade
+    # --version` prints the same three lines through the same helper.
+    case "$1" in
+        -V | --version)
+            version_identity
+            return 0
+            ;;
+    esac
     _cmd="$1"
     shift
     case "${_cmd}" in

@@ -335,6 +335,7 @@ start() {
 			exit 0
 		fi
 		rm -f "${AB_ESP}/ab/candidate"
+		rm -f "${AB_ESP}/ab/interrupted"
 		sync
 		log_append "stage=commit slot=${slot} upper=${upper} rootfs=${rootfs} result=ok action=commit"
 		console_say "ab-commit: committed slot=${slot} upper=${upper}"
@@ -349,6 +350,7 @@ start() {
 		# abandon` said that about a write that had not happened yet, and a power cut in
 		# between (or a harness that kills the VM) left a slot still marked pending.
 		rm -f "${AB_ESP}/ab/candidate"
+		rm -f "${AB_ESP}/ab/interrupted"
 		ab-slot abandon
 		sync
 		log_append "stage=abandon slot=${slot} upper=${upper} rootfs=${rootfs} result=fail reason=${failed}${failed_detail:+ detail=${failed_detail}} action=reboot-to-committed"

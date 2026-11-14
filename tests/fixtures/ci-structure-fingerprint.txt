@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: grade reads a missing status block as a verdict
+# reason: ci: render the shipped update.conf at all three staging times (ci_render_update_conf + CI_UPDATE_* overrides)
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -310,6 +310,7 @@ sh-fn scripts/ci/lib.sh ci_platform_modes
 sh-fn scripts/ci/lib.sh ci_platform_startlinks
 sh-fn scripts/ci/lib.sh ci_render_net_defaults
 sh-fn scripts/ci/lib.sh ci_render_release
+sh-fn scripts/ci/lib.sh ci_render_update_conf
 sh-fn scripts/ci/lib.sh ci_require_cmd
 sh-fn scripts/ci/lib.sh ci_require_var
 sh-fn scripts/ci/lib.sh ci_sha256
@@ -575,6 +576,11 @@ sh-var scripts/ci/lib.sh CI_STAGE
 sh-var scripts/ci/lib.sh CI_TMP_ROOT
 sh-var scripts/ci/lib.sh CI_TOOLS
 sh-var scripts/ci/lib.sh CI_TOOLS_VERSION
+sh-var scripts/ci/lib.sh CI_UPDATE_BASE
+sh-var scripts/ci/lib.sh CI_UPDATE_CHANNEL
+sh-var scripts/ci/lib.sh CI_UPDATE_CONF_TEMPLATE
+sh-var scripts/ci/lib.sh CI_UPDATE_REPO
+sh-var scripts/ci/lib.sh CI_UPDATE_SOURCE
 sh-var scripts/ci/lib.sh CI_UPSTREAM_BASE
 sh-var scripts/ci/lib.sh CI_UPSTREAM_PIN_DEFAULT
 sh-var scripts/ci/lib.sh CI_UPSTREAM_PIN_FILE

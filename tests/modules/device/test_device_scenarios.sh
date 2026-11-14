@@ -1224,4 +1224,56 @@ rc=0
 printf '%s' "$helper" | grep -qE '\b(PASS|FAIL|GAP)\b' || rc=1
 assert_eq "$rc" "1" "the helper prints facts, never a verdict"
 
+
+# --- ac-19 only the 25.x/apk line is accepted ------------------------------ #
+# The rule lives in one place (scripts/device/lib.sh) and both drivers call it before
+# anything is pushed, so a 24.x payload is refused with a line instead of being installed
+# and failing somewhere that looks like a product defect.
+# shellcheck source=scripts/device/lib.sh
+. "$root/scripts/device/lib.sh"
+
+assert_ok_line() {
+  local out
+  if out=$(require_supported_line "$1" "${2:-}" 2>&1); then
+    _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+    printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-19 $1 is accepted"
+  else
+    _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+    _assert_fail "ac-19 $1 is accepted" "$out"
+  fi
+}
+
+assert_refused_line() {
+  local out
+  if out=$(require_supported_line "$1" "${2:-}" 2>&1); then
+    _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+    _assert_fail "ac-19 $1 is refused" "accepted, expected a refusal"
+  else
+    _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+    printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-19 $1 is refused"
+    assert_contains "$out" "$3" "ac-19 the refusal names the rule"
+  fi
+}
+
+assert_ok_line 25.12.0
+assert_ok_line 25.12.2
+assert_refused_line 24.10.0 "" "25.x/apk line"
+assert_refused_line 23.05.5 "" "opkg-era"
+assert_refused_line "" "" "not a version number"
+
+# Shape: an apk-era payload carries platform.tar; one without it is refused even when the
+# version string looks right.
+mkdir -p "$tmp/shape/src"
+printf 'not an apk payload\n' >"$tmp/shape/src/rootfs.tar.gz"
+( cd "$tmp/shape/src" && tar -cf "$tmp/shape/no-platform.tar" rootfs.tar.gz )
+printf 'PLATFORM_VERSION=25.12.2\n' >"$tmp/shape/src/platform-release"
+( cd "$tmp/shape/src" && tar -cf "$tmp/shape/platform.tar" rootfs.tar.gz platform-release )
+printf 'PLATFORM_VERSION=25.12.2\n' >"$tmp/shape/platform.tar.platform-release"
+# build a payload that does carry platform.tar
+mkdir -p "$tmp/shape/good"
+printf 'x\n' >"$tmp/shape/good/platform-release"
+( cd "$tmp/shape/good" && tar -cf platform.tar platform-release )
+( cd "$tmp/shape/good" && tar -cf "$tmp/shape/good-payload.tar" platform.tar )
+assert_ok_line 25.12.2 "$tmp/shape/good-payload.tar"
+assert_refused_line 25.12.2 "$tmp/shape/no-platform.tar" "platform.tar"
 finish

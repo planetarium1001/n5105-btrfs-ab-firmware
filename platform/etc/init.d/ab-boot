@@ -165,6 +165,47 @@ log_append() {
 	sync
 }
 
+# candidate_attempt: the attempt count the initramfs left in the candidate marker, or 0
+# when there is no marker. The marker's third field is the count; a two-field marker from an
+# older image counts as attempt 1, the same reading initramfs/lib/wf.sh uses.
+candidate_attempt() {
+	_ca_file="${AB_ESP}/ab/candidate"
+	[ -f "${_ca_file}" ] || {
+		printf '0'
+		return 0
+	}
+	_ca_line=$(cat "${_ca_file}" 2>/dev/null) || _ca_line=""
+	# shellcheck disable=SC2086  # deliberate word splitting: space separated fields
+	set -- ${_ca_line}
+	[ "$#" -ge 1 ] || {
+		printf '0'
+		return 0
+	}
+	case "${3:-}" in
+		'' | *[!0-9]*) printf '1' ;;
+		*) printf '%s' "${3}" ;;
+	esac
+}
+
+# publish_interrupted: the initramfs writes the one line it knows about an interrupted
+# candidate boot (`slot=… attempt=… last=… result=…`) next to the marker; this is where it
+# becomes a `stage=interrupted` line in the ring log, which is the file `ab-slot log` and the
+# acceptance checklist read. Published once, then removed: an ESP that cannot be written
+# would otherwise replay the same interruption on every boot forever.
+publish_interrupted() {
+	_pi_src="${AB_ESP}/ab/interrupted"
+	[ -f "${_pi_src}" ] || return 0
+	_pi_line=$(cat "${_pi_src}" 2>/dev/null) || _pi_line=""
+	[ -n "${_pi_line}" ] || {
+		rm -f "${_pi_src}" 2>/dev/null || :
+		return 0
+	}
+	log_append "stage=interrupted ${_pi_line}"
+	console_say "ab-boot: previous candidate boot did not finish (${_pi_line})"
+	rm -f "${_pi_src}" 2>/dev/null || :
+	return 0
+}
+
 rotate_logs() {
 	mkdir -p "${AB_ESP}/ab/log"
 	rm -f "${AB_ESP}/ab/log/boot-2.log"
@@ -302,6 +343,10 @@ start() {
 	mount_p4 || echo "ab-boot: cannot mount the writable partition, reclamation degraded"
 
 	rotate_logs
+	# The initramfs appends nothing to the ring log itself (rotation is this file's job), so
+	# the one line it writes about an interrupted candidate boot is published here, right
+	# after the rotation and before anything else reads the log.
+	publish_interrupted
 	# The initramfs buffers its grow decision on p4; publish it next to the ring log.
 	publish_grow_log
 
@@ -369,10 +414,18 @@ start() {
 	fi
 
 	if [ -n "${pending}" ] && [ "${pending}" != "none" ] && [ "${pending}" = "${slot}" ]; then
-		printf '%s %s\n' "${slot}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${AB_ESP}/ab/candidate"
-		sync
-		log_append "stage=boot slot=${slot} upper=${upper} rootfs=${rootfs:-?} result=ok candidate=1"
-		console_say "ab-boot: slot ${slot} is the pending slot, marking a candidate first boot"
+		# The initramfs owns the marker now: it writes `<slot> <start-ts> <attempt>` before
+		# the root switch so a power cut in the mount window is still counted. Rewriting it
+		# here would reset the counter to zero on every boot, which is the loop this
+		# counter exists to stop. It is written here only when the initramfs did not.
+		_candidate_attempt="$(candidate_attempt)"
+		if [ "${_candidate_attempt}" = "0" ]; then
+			printf '%s %s 1\n' "${slot}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${AB_ESP}/ab/candidate"
+			sync
+			_candidate_attempt=1
+		fi
+		log_append "stage=boot slot=${slot} upper=${upper} rootfs=${rootfs:-?} result=ok candidate=1 attempt=${_candidate_attempt}"
+		console_say "ab-boot: slot ${slot} is the pending slot, a candidate first boot (attempt ${_candidate_attempt})"
 	fi
 
 	# The btrfs tool ships in the platform layer; prove it runs before relying on it,

@@ -12,6 +12,8 @@
 # function of files and environment, which is what makes it testable without a network.
 #
 #   ab_feed_config_load <file>          read /etc/ab/update.conf
+#   ab_feed_release_source <repo> [base]  set AB_FEED_URL for the `release` source
+#   ab_feed_index_check <file>          is this file an index at all (before parsing it)
 #   ab_feed_fetch <url> <out>           one file, via a replaceable fetcher
 #   ab_feed_index_parse <file> [chan]   validate an index and print one line per entry
 #   ab_feed_pick <parsed> <installed>   the newest entry above the installed platform
@@ -19,6 +21,17 @@
 #   ab_feed_sha256 <file>               sha256sum, or shasum -a 256 on macOS
 #   ab_feed_verify_member <file> <entry>   size and digest of a downloaded payload
 #   ab_feed_space_ok <dir> <bytes>      room for a download plus ten percent
+#
+# Two sources answer "what is the newest release", and AB_FEED_SOURCE says which one
+# answered:
+#
+#   release  this project's own published releases. The root is
+#            <UPDATE_RELEASE_BASE>/<UPDATE_RELEASE_REPO>/releases/latest/download, so the
+#            index, the payload and the notes are the published ones and nothing is
+#            generated on the device. A fork changes the repository, a proxy changes the
+#            base, and neither changes the path behind it.
+#   feed     UPDATE_FEED_URL, unchanged. A configuration written before the release source
+#            existed only has that key, and it keeps working as a feed.
 #
 # Every failure sets AB_FEED_REASON to a token callers print verbatim; nothing here
 # decides what a failure means for the user.
@@ -30,6 +43,11 @@
 
 AB_FEED_REASON=""
 AB_FEED_URL=""
+# Which source answered, and the two values the release root is built from. Empty until a
+# configuration is loaded; `ab-upgrade --feed-check` prints the first one on its own line.
+AB_FEED_SOURCE=""
+AB_FEED_RELEASE_REPO=""
+AB_FEED_RELEASE_BASE=""
 AB_FEED_CHANNEL="stable"
 AB_FEED_VERIFY="sha256"
 
@@ -51,10 +69,15 @@ ab_feed_config_load() {
     _conf=${1:-}
     AB_FEED_REASON=""
     AB_FEED_URL=""
+    AB_FEED_SOURCE=""
+    AB_FEED_RELEASE_REPO=""
+    AB_FEED_RELEASE_BASE=""
     AB_FEED_CHANNEL="stable"
     AB_FEED_VERIFY="sha256"
+    AB_FEED_PIN=""
     [ -f "${_conf}" ] || _ab_feed_fail no-feed-config || return 1
 
+    _source="" _feed_url="" _repo="" _base=""
     while IFS= read -r _line || [ -n "${_line}" ]; do
         _line=$(_ab_feed_trim "${_line}")
         case "${_line}" in
@@ -65,7 +88,10 @@ ab_feed_config_load() {
         _key=$(_ab_feed_trim "${_key}")
         _val=$(_ab_feed_trim "${_val}")
         case "${_key}" in
-            UPDATE_FEED_URL) AB_FEED_URL="${_val}" ;;
+            UPDATE_SOURCE) _source="${_val}" ;;
+            UPDATE_RELEASE_REPO) _repo="${_val}" ;;
+            UPDATE_RELEASE_BASE) _base="${_val}" ;;
+            UPDATE_FEED_URL) _feed_url="${_val}" ;;
             UPDATE_CHANNEL) AB_FEED_CHANNEL="${_val:-stable}" ;;
             UPDATE_VERIFY) AB_FEED_VERIFY="${_val:-sha256}" ;;
             UPDATE_PIN) AB_FEED_PIN="${_val}" ;;
@@ -73,11 +99,37 @@ ab_feed_config_load() {
         esac
     done <"${_conf}"
 
-    [ -n "${AB_FEED_URL}" ] || _ab_feed_fail feed-conf-missing-url || return 1
-    case "${AB_FEED_URL}" in
-        https://*) : ;;
-        *) _ab_feed_fail feed-conf-url || return 1 ;;
+    # Which source answers the question. An unset one is decided by what the file carries: a
+    # configuration written before the release source existed only has UPDATE_FEED_URL, and
+    # it keeps working as a feed without anyone editing the device.
+    if [ -z "${_source}" ]; then
+        if [ -n "${_feed_url}" ]; then
+            _source=feed
+        else
+            _source=release
+        fi
+    fi
+    case "${_source}" in
+        release | feed) : ;;
+        *) _ab_feed_fail feed-conf-source || return 1 ;;
     esac
+    AB_FEED_SOURCE=${_source}
+
+    if [ "${_source}" = "release" ]; then
+        ab_feed_release_source "${_repo}" "${_base}" || return 1
+    else
+        AB_FEED_URL=${_feed_url}
+        [ -n "${AB_FEED_URL}" ] || _ab_feed_fail feed-conf-missing-url || return 1
+        case "${AB_FEED_URL}" in
+            https://*) : ;;
+            *) _ab_feed_fail feed-conf-url || return 1 ;;
+        esac
+        # Recorded even for a feed: `--release-repo` / `--release-base` on the command line
+        # need to know what the file would have used before they override it.
+        AB_FEED_RELEASE_REPO=${_repo}
+        AB_FEED_RELEASE_BASE=${_base}
+    fi
+
     case "${AB_FEED_CHANNEL}" in
         stable | edge) : ;;
         *) _ab_feed_fail feed-conf-channel || return 1 ;;
@@ -92,6 +144,75 @@ ab_feed_config_load() {
         ab_version_valid "${AB_FEED_PIN}" || _ab_feed_fail pin-invalid-version || return 1
     fi
     return 0
+}
+
+# _ab_feed_release_ok <owner/name>: exactly one slash, both halves non-empty, and no
+# character a URL path would have to escape. A repository that is not this cannot be turned
+# into a release URL that is worth fetching.
+_ab_feed_release_ok() {
+    case "${1:-}" in
+        */*/*) return 1 ;;
+        */*) ;;
+        *) return 1 ;;
+    esac
+    _r_owner=${1%%/*}
+    _r_name=${1#*/}
+    [ -n "${_r_owner}" ] || return 1
+    [ -n "${_r_name}" ] || return 1
+    case "${_r_owner}${_r_name}" in
+        *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# ab_feed_release_source <owner/name> [base]: set AB_FEED_URL to the root this project's
+# releases live under.
+#
+# `releases/latest/download` is one path, the same for every release, never a pre-release
+# and never an API answer, so the device fetches `<root>/index.txt` with no JSON parser and
+# no listing to interpret. The base is the only part a proxy changes, and the path behind it
+# stays the same; the repository is the only part a fork changes.
+ab_feed_release_source() {
+    _r_repo=${1:-}
+    _r_base=${2:-https://github.com}
+    [ -n "${_r_base}" ] || _r_base=https://github.com
+    AB_FEED_REASON=""
+    _ab_feed_release_ok "${_r_repo}" || _ab_feed_fail feed-conf-repo || return 1
+    case "${_r_base}" in
+        https://*) : ;;
+        *) _ab_feed_fail feed-conf-url || return 1 ;;
+    esac
+    AB_FEED_RELEASE_REPO=${_r_repo}
+    AB_FEED_RELEASE_BASE=${_r_base}
+    AB_FEED_URL="${_r_base%/}/${_r_repo}/releases/latest/download"
+    return 0
+}
+
+# ab_feed_index_check <file>: is what came back an index at all.
+#
+# The three answers this keeps apart: a source that could not be reached (feed-unreachable),
+# a source that answered with something that is not an index at all (feed-index-missing -
+# the usual cause is a release published before the index existed, and a directory listing
+# lands here too), and an index this reader cannot use (left to ab_feed_index_parse, which
+# names the one thing that can be wrong with it).
+ab_feed_index_check() {
+    _file=${1:?ab_feed_index_check needs a file}
+    AB_FEED_REASON=""
+    [ -f "${_file}" ] || _ab_feed_fail feed-index-missing || return 1
+    while IFS= read -r _line || [ -n "${_line}" ]; do
+        _line=${_line%"$(printf '\r')"}
+        _line=$(_ab_feed_trim "${_line}")
+        case "${_line}" in
+            '' | '#'*) continue ;;
+        esac
+        # Anything that opens with the header is an index; whether this reader has that
+        # format is the parser's question, not this one's.
+        case "${_line}" in
+            AB-FEED*) return 0 ;;
+            *) _ab_feed_fail feed-index-missing || return 1 ;;
+        esac
+    done <"${_file}"
+    _ab_feed_fail feed-index-missing
 }
 
 # _ab_feed_which <cmd>: the first usable fetcher, or nothing.

@@ -1809,6 +1809,13 @@ run_jump() {
         ev "${CASE_NOTE}"
         return 2
     fi
+    # Only the 25.x/apk line is in scope; a 24.x or opkg-era payload is refused here, with
+    # a line that says so, instead of being installed and judged as if it were ours.
+    if ! _line_out=$(require_supported_line "${_to}" "${PAYLOAD_DIR}/payload-${_to}.tar" 2>&1); then
+        CASE_NOTE="${_line_out}"
+        ev "${_line_out}"
+        return 1
+    fi
     require_prereq "${_case}" "${SCEN_EVIDENCE}/packages.tsv" "the preinstall snapshot" || return $?
     require_prereq "${_case}" "${SCEN_EVIDENCE}/config.tsv" "the user configuration record" || return $?
     require_prereq "${_case}" "${SCEN_EVIDENCE}/data.sha256" "the data manifest" || return $?

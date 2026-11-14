@@ -49,6 +49,8 @@ value in a file of its own:
 | `ab/state.json` | `ab-slot` (temp file, `sync`, rename) | initramfs, `ab-boot`, `ab-commit`, `ab-upgrade`, `ab-slot` | the truth: `committed`, `pending`, layers |
 | `boot/grub/ab-slot.cfg` | `ab-slot` in `pending`/`commit`/`abandon`/`rollback`, `ab-boot` on every boot, and the boot initramfs on its failure path | GRUB, through `source` | the hint: which entry the next boot runs, and where a failed try falls back to |
 | `boot/grub/grub.cfg` | the image build, once; an upgrade, from the payload's `boot.tar` | GRUB | the menu and the build-time default; no boot, commit or rollback rewrites it, while an upgrade replaces the whole file and keeps the old one as `grub.cfg.prev` |
+| `ab/candidate` | the boot initramfs before the root switch (`<slot> <start-ts> <attempt>`), and `ab-boot` only when it is missing | the next boot's initramfs, `ab-boot` | the candidate marker: still present means the last candidate boot never reached `ab-commit`, which is what makes the attempt counter and `stage=interrupted` possible |
+| `ab/interrupted` | the boot initramfs, when it finds a leftover marker | `ab-boot`, once per boot | the one line about an interrupted candidate boot; published into the ring log as `stage=interrupted` and then removed |
 
 `boot/grub/ab-slot.cfg` holds exactly two GRUB commands, in this order:
 
@@ -93,7 +95,7 @@ slot the hint names.
 
 ### When a new slot does not work
 
-Two fallbacks, in this order:
+The fallbacks, in this order:
 
 1. the kernel of the pending slot does not start: GRUB moves to the `fallback` entry,
    which is the committed slot, and the machine boots the old system;
@@ -103,7 +105,15 @@ Two fallbacks, in this order:
 3. the kernel starts but the boot initramfs fails before userspace: `wf_fail` runs the
    same fail-safe abandon (clear `pending`, point the hint at the committed slot, log
    `action=fail-safe-abandon`) and only then powers off, so the next boot does not retry
-   the slot that just failed.
+   the slot that just failed;
+4. the kernel starts, the slot is the pending one, and the boot ends before `ab-commit`
+   decides (a power cut, a hang, a kernel that never reaches userspace): the next boot
+   finds the candidate marker still on the ESP, counts the attempt, logs
+   `stage=interrupted … result=retry` and retries the slot. `AB_BOOT_RETRY_MAX` (default 1)
+   is the number of retries allowed, so the boot that would be attempt max+2 clears
+   `pending`, points the hint back at the committed slot and reboots into it, logging
+   `stage=interrupted … result=abandon reason=attempt-limit`. Without the counter the hint
+   never moved and the machine retried the same slot on every restart.
 
 `ab-slot rollback` is the manual path: it commits the other slot and moves the hint with
 it. `ab-slot status` reports the resulting hint as `next=<a|b|unknown>`, and

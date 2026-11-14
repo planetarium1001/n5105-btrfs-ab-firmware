@@ -104,6 +104,11 @@ rc=$?
 
 # ab-upgrade prints the machine line on stdout and a refusal on the same channel; keep
 # whichever appeared, because both are the fact this probe was asked for.
+# The source line comes first and is printed on its own line: "which source answered" is a
+# different fact from "what it said", and a runbook that only has the second one cannot tell
+# a misconfigured machine from a release that predates the feed index.
+source_line=$(printf '%s\n' "${line}" | grep -E '^source=' | head -n 1)
+[ -n "${source_line}" ] && printf 'feed-probe source %s\n' "${source_line}"
 answer=$(printf '%s\n' "${line}" | grep -E '^(platform=|ab-upgrade: refused)' | head -n 1)
 [ -n "${answer}" ] || answer=$(printf '%s\n' "${line}" | tail -n 1)
 printf 'feed-probe check %s\n' "${answer:-<no output>}"

@@ -577,6 +577,39 @@ upper="$(wf_upper "${STATE}" "${slot}")"
 [ -n "${upper}" ] || wf_fail state-upper-invalid
 generation="$(wf_generation "${STATE}")" || generation=unknown
 wf_log "state: committed=${slot} upper=${upper} generation=${generation}"
+
+# Candidate first boot: one marker, one attempt counter. A marker left behind means the last
+# candidate boot never reached ab-commit - a power cut, a hang, a kernel that never got to
+# userspace - so this boot is the retry. Past AB_BOOT_RETRY_MAX retries the menu goes back to
+# the committed slot instead of trying the same one forever. Both decisions belong before the
+# root switch: the kernel of this slot is already loaded, so the only way back is a reboot.
+# The marker lives next to ab/state.json and is removed by ab-commit when it decides.
+candidate_pending="$(wf_pending_slot "${STATE}")" || candidate_pending=""
+candidate_verdict=""
+if command -v wf_boot_attempt_guard >/dev/null 2>&1; then
+    candidate_verdict="$(wf_boot_attempt_guard "$(wf_candidate_path)" "${slot}" \
+        "${candidate_pending}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "${AB_BOOT_RETRY_MAX:-1}")" || candidate_verdict=""
+fi
+case "${candidate_verdict}" in
+    first)
+        wf_log "candidate first boot of slot ${slot} (attempt 1)"
+        ;;
+    retry\ * | abandon\ *)
+        candidate_kind=${candidate_verdict%% *}
+        candidate_rest=${candidate_verdict#* }
+        candidate_attempt=${candidate_rest%% *}
+        candidate_last=${candidate_rest#* }
+        wf_say "[boot] stage=interrupted slot=${slot} attempt=${candidate_attempt} last=${candidate_last:-?} result=${candidate_kind}"
+        if [ "${candidate_kind}" = "abandon" ]; then
+            wf_interrupted_escalate "$(wf_candidate_path)" "${slot}" \
+                "${candidate_attempt}" "${candidate_last}"
+        fi
+        ;;
+    *)
+        :
+        ;;
+esac
 # Milestone 4. The slot decision is the last thing read from the ESP before the layers are
 # mounted, so a boot that dies in the mount window says which layer it died on.
 wf_mark state "committed=${committed_slot}" "slot=${slot}" "upper=${upper}"

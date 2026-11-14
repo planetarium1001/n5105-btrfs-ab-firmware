@@ -418,6 +418,60 @@ ci_render_net_defaults() {
     ci_log "rendered net-defaults: $(tr '\n' ' ' <"${out}" | sed -e 's/  */ /g')"
 }
 
+# ci_render_update_conf <dir>: render scripts/ci/update.conf.in into the platform layer as
+# etc/ab/update.conf. The shipped answer to "is there something newer?" is this project's
+# own releases, and it is the same answer in the image, on the disk image and in a payload,
+# so it is rendered from one template at all three staging times instead of being written
+# out three times.
+#
+# The CI_UPDATE_SOURCE, CI_UPDATE_REPO, CI_UPDATE_BASE and CI_UPDATE_CHANNEL variables are
+# the build-time overrides: an unset one keeps the shipped default. CI_UPDATE_REPO is how a
+# fork ships its own line and CI_UPDATE_BASE is how a proxy (ghproxy and friends) is baked
+# in; both are also one-run flags on ab-upgrade.
+#
+# The device refuses a value it cannot act on, so the build refuses it first: an image with
+# a source that is neither release nor feed, a repository that is not owner/name, a base
+# that is not https, or a channel that is neither stable nor edge would be a machine whose
+# update check can only fail.
+ci_render_update_conf() {
+    local dir="${1:?platform layer directory}"
+    local template="${CI_UPDATE_CONF_TEMPLATE:-${CI_LIB_DIR}/update.conf.in}"
+    [ -f "${template}" ] || ci_die "update.conf template not found: ${template}"
+    local source="${CI_UPDATE_SOURCE:-release}"
+    local repo="${CI_UPDATE_REPO:-planetarium1001/n5105-btrfs-ab-firmware}"
+    local base="${CI_UPDATE_BASE:-https://github.com}"
+    local channel="${CI_UPDATE_CHANNEL:-stable}"
+    local out="${dir}/etc/ab/update.conf"
+    mkdir -p "${dir}/etc/ab"
+    sed \
+        -e "s|@UPDATE_SOURCE@|${source}|g" \
+        -e "s|@UPDATE_RELEASE_REPO@|${repo}|g" \
+        -e "s|@UPDATE_RELEASE_BASE@|${base}|g" \
+        -e "s|@UPDATE_CHANNEL@|${channel}|g" \
+        "${template}" >"${out}" || ci_die "could not render ${out}"
+    if grep -Eq '@[A-Z_][A-Z0-9_]*@' "${out}"; then
+        ci_die "update.conf still carries unreplaced placeholders: ${out}"
+    fi
+    case "${source}" in
+        release|feed) : ;;
+        *) ci_die "UPDATE_SOURCE must be release or feed: ${source}" ;;
+    esac
+    # owner/name, exactly one slash and no character a URL path would have to escape. A
+    # repository that is not that cannot be turned into a release URL on the device.
+    if ! [[ "${repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+        ci_die "UPDATE_RELEASE_REPO must be owner/name: ${repo}"
+    fi
+    case "${base}" in
+        https://*) : ;;
+        *) ci_die "UPDATE_RELEASE_BASE must be an https:// address: ${base}" ;;
+    esac
+    case "${channel}" in
+        stable|edge) : ;;
+        *) ci_die "UPDATE_CHANNEL must be stable or edge: ${channel}" ;;
+    esac
+    ci_log "rendered update.conf: $(grep -v '^#' "${out}" | tr '\n' ' ' | sed -e 's/  */ /g')"
+}
+
 # ci_render_release <file> <platform-version> <upstream-version> <stage>
 # The release file is a template in the source tree; every producer of a platform
 # layer renders it the same way, and refuses to pack a file with placeholders left.
