@@ -37,9 +37,11 @@ usage() {
     cat <<'USAGE'
 usage: cross-upgrade.sh <subcommand>
 
-  run     --image <old.img> --payload <new.tar> --out <dir> [--inject unhealthy]
+  run     --image <old.img|old.img.gz> --payload <new.tar> --out <dir> [--inject unhealthy]
   assert  --out <dir>
   parse   --serial <file> --out <dir>    split the status blocks out of a saved serial log
+  stage-image --src <file> --dest <file> write the image as a plain disk image (a .gz is
+                                         decompressed, anything else is copied)
 USAGE
 }
 
@@ -207,6 +209,34 @@ RCLOCAL
     sudo losetup -d "${_loop}"
 }
 
+# cross_stage_image <src> <dest>: the image a caller handed over, as a plain disk image.
+#
+# The artifacts are published compressed and named `*.img.gz`, and a caller that finds the
+# image by that name used to hand the gzip bytes straight to losetup: it answered "file does
+# not fit into a 512-byte sector" and then a partition that does not exist, which names the
+# sector size instead of the compression (run 43570531757). Staging the file here makes every
+# caller work the same way, and a torn archive says so instead of becoming a loop-device error
+# three lines later.
+cross_stage_image() {
+    _src=$1 _dest=$2
+    case "${_src}" in
+        *.gz)
+            gzip -dc "${_src}" >"${_dest}" 2>/dev/null || {
+                rm -f "${_dest}"
+                printf 'cross-upgrade=fail reason=cannot-decompress-the-image src=%s\n' "${_src##*/}"
+                return 1
+            }
+            ;;
+        *)
+            cp "${_src}" "${_dest}" || {
+                rm -f "${_dest}"
+                printf 'cross-upgrade=fail reason=cannot-copy-the-image src=%s\n' "${_src##*/}"
+                return 1
+            }
+            ;;
+    esac
+}
+
 # extract_blocks <serial> <out>: split the three status blocks out of the serial log.
 extract_blocks() {
     _serial=$1 _out=$2
@@ -257,7 +287,11 @@ run_stage() {
 
     _work="${CI_TMP_ROOT:-/tmp}/cross-upgrade"
     mkdir -p "${_work}"
-    cp "${_image}" "${_work}/old.img"
+    # The caller may hand over the `.img.gz` it found: the helper stages plain bytes and has
+    # already printed the reason when it cannot.
+    if ! cross_stage_image "${_image}" "${_work}/old.img"; then
+        return 0
+    fi
     cross_prepare "${_work}/old.img" "${_payload}" "${_work}" || {
         printf 'cross-upgrade=fail reason=cannot-prepare-the-old-image\n'
         return 0
@@ -319,6 +353,18 @@ case "${cmd}" in
         [ -n "${serial}" ] && [ -n "${out}" ] || ci_die "--serial and --out are required"
         mkdir -p "${out}"
         extract_blocks "${serial}" "${out}"
+        ;;
+    stage-image)
+        src="" dest=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --src) src=${2:?--src needs a value}; shift 2 ;;
+                --dest) dest=${2:?--dest needs a value}; shift 2 ;;
+                *) ci_die "unknown argument $1" ;;
+            esac
+        done
+        [ -n "${src}" ] && [ -n "${dest}" ] || ci_die "--src and --dest are required"
+        cross_stage_image "${src}" "${dest}"
         ;;
     -h | --help | help) usage ;;
     *) usage; exit 2 ;;

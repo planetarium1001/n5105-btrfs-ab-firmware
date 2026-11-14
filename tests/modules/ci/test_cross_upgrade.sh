@@ -10,6 +10,8 @@
 #         ESP kernel/initrd byte-identical to the payload's
 #   ac-4  an injected failure: the candidate is abandoned and the machine returns
 #   ac-5  no previous release: skipped, with the reason spelled out
+#   ac-6  the image a caller hands over may be compressed: a .gz is decompressed, a plain
+#         file is copied, and a torn archive says so instead of reaching losetup
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -116,6 +118,34 @@ assert_file_exists "$parsed/status.after" "the parser finds the pending status"
 assert_file_exists "$parsed/status.committed" "the parser finds the status after the commit"
 assert_contains "$(cat "$parsed/status.after" 2>/dev/null)" "pending=b" "the pending block is the one with a candidate"
 assert_contains "$(cat "$parsed/status.committed" 2>/dev/null)" "packages=aligned" "the committed block is the last boot's"
+
+# --- ac-6: the caller may hand over the compressed artifact -----------------
+# The cross stage finds the previous image by `*.img.gz` and handed those gzip bytes to
+# losetup, which answered "file does not fit into a 512-byte sector" and then a partition
+# that does not exist (run 43570531757). The stage stages a plain image from either shape,
+# through a subcommand of its own, so this half is asserted with no loop device and no QEMU.
+stage_image() { bash "$script" stage-image --src "$1" --dest "$2" 2>&1; }
+
+printf 'a small disk image, not a gzip stream\n' >"$tmp/plain.img"
+gzip -c "$tmp/plain.img" >"$tmp/plain.img.gz"
+
+stage_image "$tmp/plain.img.gz" "$tmp/staged-gz.img" >/dev/null
+assert_eq "$?" "0" "ac-6 a gzip image is staged"
+assert_eq "$(cmp -s "$tmp/plain.img" "$tmp/staged-gz.img" && echo same)" "same" \
+  "ac-6 the staged image is the bytes the archive carries, not the archive"
+
+stage_image "$tmp/plain.img" "$tmp/staged-plain.img" >/dev/null
+assert_eq "$?" "0" "ac-6 an uncompressed image is staged"
+assert_eq "$(cmp -s "$tmp/plain.img" "$tmp/staged-plain.img" && echo same)" "same" \
+  "ac-6 an uncompressed image is copied unchanged"
+
+head -c 20 "$tmp/plain.img.gz" >"$tmp/torn.img.gz"
+torn="$(stage_image "$tmp/torn.img.gz" "$tmp/staged-torn.img")"
+assert_eq "$?" "1" "ac-6 a torn gzip image is refused"
+assert_contains "${torn}" "cannot-decompress" \
+  "ac-6 the refusal names the compression, so nobody reads it as a loop-device error"
+assert_eq "$([ -e "$tmp/staged-torn.img" ] && echo present || echo absent)" "absent" \
+  "ac-6 a torn archive leaves no half-written image behind"
 
 # A machine without QEMU says so instead of pretending it ran.
 if command -v qemu-system-x86_64 >/dev/null 2>&1; then

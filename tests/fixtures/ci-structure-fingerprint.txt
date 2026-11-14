@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: the cross job prepares its runner for QEMU
+# reason: ci: the cross stage stages a compressed image before losetup
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -53,6 +53,7 @@ sh-flag scripts/ci/boot-member.sh --check
 sh-flag scripts/ci/boot-member.sh --group
 sh-flag scripts/ci/boot-member.sh --numeric-owner
 sh-flag scripts/ci/boot-member.sh --owner
+sh-flag scripts/ci/cross-upgrade.sh --dest
 sh-flag scripts/ci/cross-upgrade.sh --find
 sh-flag scripts/ci/cross-upgrade.sh --help
 sh-flag scripts/ci/cross-upgrade.sh --image
@@ -62,6 +63,7 @@ sh-flag scripts/ci/cross-upgrade.sh --partscan
 sh-flag scripts/ci/cross-upgrade.sh --payload
 sh-flag scripts/ci/cross-upgrade.sh --serial
 sh-flag scripts/ci/cross-upgrade.sh --show
+sh-flag scripts/ci/cross-upgrade.sh --src
 sh-flag scripts/ci/derive-variant.sh --find
 sh-flag scripts/ci/derive-variant.sh --help
 sh-flag scripts/ci/derive-variant.sh --image
@@ -223,6 +225,7 @@ sh-fn scripts/ci/boot-restart.sh boot_restart_count
 sh-fn scripts/ci/boot-restart.sh boot_restart_counts
 sh-fn scripts/ci/boot-restart.sh boot_restart_verdict
 sh-fn scripts/ci/cross-upgrade.sh cross_prepare
+sh-fn scripts/ci/cross-upgrade.sh cross_stage_image
 sh-fn scripts/ci/cross-upgrade.sh esp_digests
 sh-fn scripts/ci/cross-upgrade.sh extract_blocks
 sh-fn scripts/ci/cross-upgrade.sh field
