@@ -40,6 +40,23 @@ assert_contains "$stage" "cross-upgrade=skipped reason=no-previous-formal-releas
   "ac-5 a missing previous release is skipped with its reason"
 assert_contains "$stage" "has_previous" "ac-5 the decision is made from the selector's output"
 
+# --- ac-5: the selector's answer has to reach the decision -----------------
+# The selector emits its keys through ci_emit_output, which writes $GITHUB_OUTPUT in
+# Actions and CI_OUTPUT_ENV only when that is set. This step read a file nothing wrote, so
+# candidates/gaps came back empty, `previous` became none, and every downstream job was
+# skipped - the stage reported success while never running. Run 43561858131 is the one
+# that showed it: only the first two cross jobs ran, the rest were skipped.
+assert_contains "$stage" 'export CI_OUTPUT_ENV=' \
+  "ac-5 the selector is given a file to write, not only the step's GITHUB_OUTPUT"
+assert_contains "$stage" 'env_file="${CI_OUTPUT_ENV}"' \
+  "ac-5 the file it reads is the file it exported"
+case "$stage" in
+  *'env_file="${RUNNER_TEMP}/ci/matrix-select/matrix-select.env"'*)
+    assert_eq "hardcoded-file-nobody-writes" "exported-file" \
+      "ac-5 the step does not read an env file it never asked for" ;;
+  *) assert_eq "exported-file" "exported-file" "ac-5 the step does not read an env file it never asked for" ;;
+esac
+
 # --- ac-6: documented ------------------------------------------------------
 assert_contains "$readme" "cross-upgrade.sh" "ac-6 the stage script is in the stage table"
 assert_contains "$pipeline" "cross-version" "ac-6 the English pipeline page names the stage"

@@ -78,8 +78,13 @@ jobs:
           CI_UPSTREAM_VERSION: ${{ needs.resolve-new.outputs.version }}
         run: |
           set -euo pipefail
+          # matrix-select emits through ci_emit_output: $GITHUB_OUTPUT in Actions, and
+          # CI_OUTPUT_ENV only when that is set. Without this line the file read below was
+          # never written, `previous` became none, and every downstream job was skipped -
+          # the stage looked green while never running (run 43561858131).
+          export CI_OUTPUT_ENV="${RUNNER_TEMP}/matrix.env"
           bash scripts/ci/matrix-select.sh --version "${CI_UPSTREAM_VERSION}" --count 1 2>&1 | tee -a "${RUNNER_TEMP}/matrix.log"
-          env_file="${RUNNER_TEMP}/ci/matrix-select/matrix-select.env"
+          env_file="${CI_OUTPUT_ENV}"
           candidates="$(sed -n 's/^candidates=//p' "${env_file}" 2>/dev/null || true)"
           gaps="$(sed -n 's/^gaps=//p' "${env_file}" 2>/dev/null || true)"
           previous="$(printf '%s\n' "${candidates}" | awk '{print $2}')"
