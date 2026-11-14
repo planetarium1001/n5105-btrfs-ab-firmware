@@ -240,7 +240,15 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # stage script into tee now carries `defaults: {run: {shell: bash}}`, one line each. The
 # runner's default shell drops a pipeline's exit status, so without it a gate cannot fail
 # its step (run 43553833091: image-verify refused the image and the step stayed green).
-CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2540}
+#
+# Raised 2540 -> 2580 so the cross stage can fetch the previous release's own upstream
+# files: one job in ci-upgrade-cross, and resolve-old has to publish what fetch consumes.
+# The old image was built from the new release's files and booted without a module
+# directory (run 43564031421).
+#
+# The artifact suffixes that keep the cross stage's two builds apart (ci-fetch, ci-s3) fit in
+# this budget: deleting the stage's duplicate payload build paid for them. Measured 2568.
+CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2580}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le "${CI_WORKFLOW_LINE_CEILING}" ]; then

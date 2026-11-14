@@ -20,6 +20,7 @@ on:
       kernel_package: {description: "Kernel package version from the upstream manifest", required: true, type: string}
       platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
       boots: {description: "Run the boot assertions (the convenience variant only needs the image)", required: false, type: boolean, default: true}
+      artifact_suffix: {description: "Suffix appended to every artifact name this stage reads and writes", required: false, type: string, default: ""}
     outputs:
       judge_line: {description: "Frozen S3 judge line from the first boot", value: "${{ jobs.s3.outputs.judge_line }}"}
       judge_line_boot2: {description: "Frozen S3 judge line from the second boot", value: "${{ jobs.s3.outputs.judge_line_boot2 }}"}
@@ -59,6 +60,7 @@ jobs:
         uses: ./.github/actions/setup-ci
         with:
           download-upstream: "true"
+          artifact: upstream-files${{ inputs.artifact_suffix }}
           apt: btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
 
       # The ESP needs vfat, so the closure carries the vfat and nls modules next to btrfs.
@@ -245,7 +247,8 @@ jobs:
         uses: ./.github/actions/stage-evidence
         with:
           stage: s3
-          name: evidence-s3
+          name: evidence-s3${{ inputs.artifact_suffix }}
+          suffix: ${{ inputs.artifact_suffix }}
           diag-args: ${{ runner.temp }}/ci/qemu
           paths: |
             ${{ runner.temp }}/ci/logs
@@ -255,14 +258,15 @@ jobs:
             ${{ runner.temp }}/ci/disk/grub.cfg
             ${{ runner.temp }}/ci/disk/ab-slot.cfg
 
-      # The image this stage built. Two literal names, one step each: an artifact name is
-      # what a person reads in the run page, so it is spelled out rather than assembled
-      # from an input (tests/modules/ci/test_display_names.sh holds that vocabulary).
+      # The image this stage built. Two vocabulary names, one step each: an artifact name is
+      # what a person reads in the run page, so it is spelled out rather than assembled from
+      # an input. Only the caller's suffix is appended, so the cross-version stage can build a
+      # second image in one run (tests/modules/ci/test_display_names.sh holds that vocabulary).
       - name: Upload the install image
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: image-install
+          name: image-install${{ inputs.artifact_suffix }}
           path: |
             ${{ runner.temp }}/ci/disk/*.img.gz
             !${{ runner.temp }}/ci/disk/*-wan-ssh.img.gz
@@ -273,7 +277,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: image-install-wan-ssh
+          name: image-install-wan-ssh${{ inputs.artifact_suffix }}
           path: ${{ runner.temp }}/ci/disk/*-wan-ssh.img.gz
           if-no-files-found: error
           retention-days: 7
@@ -285,5 +289,5 @@ jobs:
         with:
           stage: s3
           result: ${{ job.status }}
-          artifact: image-install, image-install-wan-ssh
+          artifact: image-install${{ inputs.artifact_suffix }}, image-install-wan-ssh${{ inputs.artifact_suffix }}
           artifact-file: ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz

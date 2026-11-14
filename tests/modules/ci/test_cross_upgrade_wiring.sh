@@ -19,6 +19,9 @@ cd "$root" || exit 1
 stage="$(cat .github/workflows/ci-upgrade-cross.yml)"
 release="$(cat .github/workflows/release.yml)"
 main="$(cat .github/workflows/ci.yml)"
+fetch="$(cat .github/workflows/ci-fetch.yml)"
+s3wf="$(cat .github/workflows/ci-s3.yml)"
+setup_action="$(cat .github/actions/setup-ci/action.yml)"
 script="$(cat scripts/ci/cross-upgrade.sh)"
 readme="$(cat scripts/ci/README.md)"
 pipeline="$(cat docs/ci-pipeline.md)"
@@ -34,6 +37,81 @@ assert_contains "$stage" "matrix-select.sh --version" "ac-2 the previous release
 assert_contains "$stage" "scripts/ci/resolve.sh" "ac-2 the old release's mirror layout is resolved, not guessed"
 assert_contains "$stage" "name: image-install" "ac-2 it boots the image the S3 stage built"
 assert_contains "$stage" "name: payload-upgrade" "ac-2 it installs the payload the assemble stage built"
+
+# --- ac-2: the payload is built once, not twice -----------------------------
+# The stage used to call ci-assemble.yml again for the same release. Two artifacts named
+# payload-upgrade in one run made the download above ambiguous (run 43564031421 shows both,
+# and both logs-assemble), and the second build spent ten minutes of the stage's budget
+# rebuilding what the run had already built.
+assert_eq "$(grep -c 'ci-assemble.yml' .github/workflows/ci-upgrade-cross.yml)" "0" \
+  "ac-2 the cross stage does not assemble the payload a second time"
+assert_contains "$stage" "needs: [select-previous, old-image]" \
+  "ac-2 the grading waits for the previous image and for nothing else"
+assert_contains "$stage" "uses: ./.github/workflows/ci-s3.yml" \
+  "ac-2 the previous image is still built"
+assert_contains "$script" "cross-upgrade=ok" "ac-2 the grading still runs"
+
+# One run, one artifact name: upload-artifact v4 refuses a second upload of a name it already
+# has, so the facts are published once - after the grading step that writes them, or the
+# artifact would be empty.
+assert_eq "$(grep -c 'name: evidence-cross' .github/workflows/ci-upgrade-cross.yml)" "1" \
+  "ac-2 the cross facts are uploaded once, under one name"
+grade_line=$(grep -n '      id: grade' .github/workflows/ci-upgrade-cross.yml | cut -d: -f1)
+facts_line=$(grep -n 'name: evidence-cross' .github/workflows/ci-upgrade-cross.yml | cut -d: -f1)
+assert_eq "$([ -n "${grade_line}" ] && [ -n "${facts_line}" ] && [ "${facts_line}" -gt "${grade_line}" ] && echo after)" \
+  "after" "ac-2 the facts are collected after the run that writes them"
+
+# --- ac-2: the old image is built from the old release's own files ----------
+# The old image used to download this run's `upstream-files`, an artifact the fetch stage had
+# already filled with the new release: the boot carried kernel 6.12.103 and the modules were
+# packaged for 6.12.94, so the boot hook found no module directory for its `uname -r`
+# (run 43564031421, job "build the previous image"). The cross stage now fetches the previous
+# release's files itself, under a name of its own.
+assert_contains "$stage" "uses: ./.github/workflows/ci-fetch.yml" \
+  "ac-2 the cross stage fetches the previous release's own upstream files"
+assert_contains "$stage" "needs: [resolve-new, select-previous, resolve-old]" \
+  "ac-2 that fetch runs after the previous release is resolved, not before"
+assert_contains "$fetch" 'name: upstream-files${{ inputs.artifact_suffix }}' \
+  "ac-2 the fetch stage names its artifact from the suffix it is given"
+
+# The tag line runs this release's own stages in the same run, so the old build and this
+# release's build must not meet in one artifact list. Both calls take the suffix, and both
+# the file it downloads and the image it publishes derive their name from that one input.
+assert_eq "$(grep -c 'artifact_suffix: "-old"' .github/workflows/ci-upgrade-cross.yml)" "2" \
+  "ac-2 the old fetch and the old build both take the -old suffix"
+assert_contains "$stage" "name: image-install-old" \
+  "ac-2 the cross stage boots the old build's image, not this release's"
+assert_contains "$s3wf" 'artifact: upstream-files${{ inputs.artifact_suffix }}' \
+  "ac-2 the old build downloads the files fetched under its own suffix"
+assert_eq "$(grep -cE '^ +fetch_artifact: ' .github/workflows/ci-s3.yml)" "0" \
+  "ac-2 the download name is derived from the suffix, never spelled twice"
+
+# The uploads the old build would otherwise collide with this release's own S3 artifacts.
+assert_contains "$s3wf" 'name: image-install${{ inputs.artifact_suffix }}' \
+  "ac-2 the install image carries the suffix"
+assert_contains "$s3wf" 'name: image-install-wan-ssh${{ inputs.artifact_suffix }}' \
+  "ac-2 the convenience image carries the suffix"
+assert_contains "$s3wf" 'name: evidence-s3${{ inputs.artifact_suffix }}' \
+  "ac-2 the old build's evidence cannot overwrite this release's"
+assert_contains "$s3wf" 'suffix: ${{ inputs.artifact_suffix }}' \
+  "ac-2 the old build's logs artifact cannot overwrite this release's"
+
+# Nothing else changes behaviour: the new inputs are optional, and their defaults leave the
+# new-release path and every other caller exactly as they were.
+s3_input="$(grep -E '^ +artifact_suffix: ' .github/workflows/ci-s3.yml)"
+assert_contains "$s3_input" 'required: false' \
+  "ac-2 ci-s3 accepts the suffix as an optional input"
+assert_contains "$s3_input" 'default: ""' \
+  "ac-2 an unconfigured ci-s3 call keeps today's artifact names"
+fetch_input="$(grep -E '^ +artifact_suffix: ' .github/workflows/ci-fetch.yml)"
+assert_contains "$fetch_input" 'default: ""' \
+  "ac-2 an unconfigured ci-fetch call keeps today's artifact names"
+setup_clause="$(awk '/^  artifact:$/ {found = 1} found {print} found && /^    default:/ {exit}' \
+  .github/actions/setup-ci/action.yml)"
+assert_contains "$setup_clause" 'default: "upstream-files"' \
+  "ac-2 setup-ci still defaults to upstream-files"
+assert_contains "$setup_action" 'name: ${{ inputs.artifact }}' \
+  "ac-2 setup-ci downloads the artifact it was told about"
 
 # --- ac-5: no previous release --------------------------------------------
 assert_contains "$stage" "cross-upgrade=skipped reason=no-previous-formal-release" \

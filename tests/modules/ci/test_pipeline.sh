@@ -48,10 +48,20 @@ assert_contains "$(cat "$CI_SCRIPTS/resolve.sh")" "sha256" "script digests parti
 # ci-debug.yml is a manual debugging entry point, not a stage: its only upload is the
 # short-lived debug-<stage>-logs diagnostics artifact, it renders no verdict, and it is
 # excluded from the stage counts above for that reason.
+#
+# The count is a proxy: a stage that publishes through the shared composite does both halves
+# in its one `if: always()` call, so it has a single guard to check, not two. When it keeps an
+# upload of its own, both halves are grepped so a dropped guard on either is still caught.
 for workflow in "$WORKFLOWS"/ci-*.yml; do
   [[ $(basename "$workflow") == ci-debug.yml ]] && continue
   count=$(grep -c "if: always()" "$workflow")
-  [[ $count -ge 2 ]] && result=ok || result=thin
+  uploads=$(grep -c "uses: actions/upload-artifact@" "$workflow")
+  if [ "$uploads" -eq 0 ]; then
+    guarded=$(grep -B2 'uses: ./.github/actions/stage-evidence' "$workflow" | grep -c "if: always()")
+    [[ $guarded -ge 1 ]] && result=ok || result=thin
+  else
+    [[ $count -ge 2 ]] && result=ok || result=thin
+  fi
   assert_eq "$result" "ok" "$(basename "$workflow") collects and uploads diagnostics unconditionally"
 done
 

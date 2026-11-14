@@ -141,6 +141,9 @@ allowed = {
     "debug-session",
 }
 problems = []
+# The one expression an artifact name may carry. Spelled once here, compared literally, so
+# an upload that builds its own name from a different input is still caught.
+SUFFIX = "${{ inputs.artifact_suffix }}"
 
 targets = workflows + sorted((root / ".github" / "actions").glob("*/action.yml"))
 for path in targets:
@@ -162,6 +165,17 @@ for path in targets:
         if not name:
             problems.append(f"{path.name}: upload without a name")
             continue
+        # One expression may be baked into an artifact name: the stage's own suffix, which
+        # is how the cross-version stage runs a stage a second time in one run. The part
+        # before it still has to be a vocabulary name, so a hand-assembled name remains a
+        # second spelling - and the suffix counts only from a file that declares it as an
+        # optional input with an empty default, or every caller's artifacts would be renamed.
+        if name.endswith(SUFFIX) and re.search(
+            r'^ +artifact_suffix: \{[^}]*required: false[^}]*default: ""\}',
+            "\n".join(lines),
+            re.M,
+        ):
+            name = name[: -len(SUFFIX)]
         # A name built from an expression (debug-${{ inputs.stage }}-logs) is compared on
         # its literal prefix, which is the part a reader sees in the artifact list.
         name = re.sub(r"\$\{\{.*?\}\}", "stage", name)
@@ -195,9 +209,15 @@ for num in range(1, 6):
         problems.append(f"ci-s{num}.yml: no stage-evidence call")
         continue
     block = call.group(1)
-    # Exact match: a rename to evidence-s2x must not pass as evidence-s2.
-    if not re.search(rf"^\s+name: evidence-s{num}\s*$", block, re.M):
+    # Exact match: a rename to evidence-s2x must not pass as evidence-s2. The one exception is
+    # the file's own optional suffix input, which is how the cross-version stage keeps a second
+    # copy of this stage out of the artifact list of the release it is proving.
+    found = re.search(r"^\s+name: (.+)$", block, re.M)
+    evidence_name = found.group(1).strip() if found else ""
+    if evidence_name not in (f"evidence-s{num}", f"evidence-s{num}{SUFFIX}"):
         problems.append(f"ci-s{num}.yml: does not name evidence-s{num}")
+    if SUFFIX in evidence_name and "artifact_suffix: {" not in text:
+        problems.append(f"ci-s{num}.yml: suffixes its evidence without declaring artifact_suffix")
     if f"stage: s{num}" not in block:
         problems.append(f"ci-s{num}.yml: the stage-evidence stage is not s{num}")
     # The stage logs - serial copies included - travel with the evidence, once.
@@ -213,7 +233,10 @@ for num in range(1, 6):
 for needle, message in (
     ("name: ${{ inputs.name }}", "the evidence artifact is named by the caller"),
     ("path: ${{ inputs.paths }}", "the evidence artifact carries the caller's paths"),
-    ("format('logs-{0}', inputs.stage)", "the diagnostics artifact is named logs-<stage>"),
+    (
+        "format('logs-{0}{1}', inputs.stage, inputs.suffix)",
+        "the diagnostics artifact is named logs-<stage>, plus the caller's suffix",
+    ),
     (
         "format('{0}/ci/diagnostics/summary.txt', runner.temp)",
         "the diagnostics artifact carries only the diagnostics summary",

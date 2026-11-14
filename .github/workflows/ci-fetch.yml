@@ -6,6 +6,10 @@ name: fetch upstream
 # in the release's sha256sums. The download directory is cached under a key derived by the
 # resolve stage, so an unchanged upstream version, tool set and CI script set skips the
 # network; files that match their digest are reused, files that do not are re-downloaded.
+#
+# Every artifact this stage uploads carries the caller's suffix. The cross-version stage runs
+# the stage twice in one run - once for the previous release, once for this one - and an
+# artifact name may only be used once per run, so the second copy is told apart by its suffix.
 
 defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
@@ -23,6 +27,7 @@ on:
       btrfs_kmod_sha256: {description: "Expected sha256 of the btrfs module", required: true, type: string}
       cache_key: {description: "Cache key for the upstream downloads", required: true, type: string}
       cache_restore_prefix: {description: "Restore prefix for partial cache reuse", required: true, type: string}
+      artifact_suffix: {description: "Suffix appended to every artifact name this stage uploads", required: false, type: string, default: ""}
     outputs:
       cache_hit: {description: "true when every member came from the cache", value: "${{ jobs.fetch.outputs.cache_hit }}"}
       fetch_total_bytes: {description: "Total size of the fetched members", value: "${{ jobs.fetch.outputs.fetch_total_bytes }}"}
@@ -52,7 +57,7 @@ jobs:
       cache_hit: ${{ steps.fetch.outputs.cache_hit }}
       fetch_total_bytes: ${{ steps.fetch.outputs.fetch_total_bytes }}
       members: ${{ steps.fetch.outputs.members }}
-      artifact_name: upstream-files
+      artifact_name: upstream-files${{ inputs.artifact_suffix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: {persist-credentials: false}
@@ -75,7 +80,7 @@ jobs:
       - name: Upload upstream artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: upstream-files
+          name: upstream-files${{ inputs.artifact_suffix }}
           path: ${{ runner.temp }}/ci/fetch
           if-no-files-found: error
           retention-days: 7
@@ -92,7 +97,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: logs-fetch
+          name: logs-fetch${{ inputs.artifact_suffix }}
           path: |
             ${{ runner.temp }}/ci/logs
             ${{ runner.temp }}/ci/diagnostics/summary.txt

@@ -107,7 +107,8 @@ assert_contains "$s3" "CI_NET_WAN_SSH: closed" "ac-6 the stage always builds the
 assert_contains "$s3" "name: Derive the convenience image" "ac-6 the variant is derived, not rebuilt"
 assert_contains "$s3" "derive-variant.sh --image" "ac-6 the derivation runs on the image just built"
 assert_contains "$s3" '*-wan-ssh.img.gz' "ac-6 the derived image is its own artifact"
-assert_contains "$s3" "name: image-install-wan-ssh" "ac-6 the variant artifact has a literal name"
+assert_contains "$s3" 'name: image-install-wan-ssh${{ inputs.artifact_suffix }}' \
+  "ac-6 the variant artifact has a literal name, plus the caller's suffix"
 
 # The derived image is the only artifact nothing boots, so it gets the one proof that is
 # cheap: the ESP preflight reads its GRUB menu and its slot file back off the copy.

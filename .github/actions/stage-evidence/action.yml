@@ -15,6 +15,10 @@ inputs:
   paths:
     description: "Newline separated paths carried by the evidence artifact"
     required: true
+  suffix:
+    description: "Suffix appended to the derived logs name, empty for none"
+    required: false
+    default: ""
   logs-name:
     description: "Diagnostics artifact name, empty for logs-<stage>, the word none to skip it"
     required: false
@@ -74,7 +78,7 @@ runs:
       if: inputs.logs-name != 'none'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: ${{ inputs.logs-name || format('logs-{0}', inputs.stage) }}
+        name: ${{ inputs.logs-name || format('logs-{0}{1}', inputs.stage, inputs.suffix) }}
         path: ${{ inputs.logs-paths || format('{0}/ci/diagnostics/summary.txt', runner.temp) }}
         if-no-files-found: ${{ inputs.if-no-files-found }}
         retention-days: ${{ inputs.retention-days }}

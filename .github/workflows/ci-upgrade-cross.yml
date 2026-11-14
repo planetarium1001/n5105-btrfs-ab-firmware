@@ -7,9 +7,11 @@ name: cross-version upgrade
 # that an upgrade across versions actually commits - which is what the update prompt means
 # when it tells a user that a patch range is covered (docs/update.md).
 #
-# It is composed from stages that already exist: ci-s3.yml builds the old image, ci-assemble
-# builds the new payload, and scripts/ci/cross-upgrade.sh boots the one and installs the
-# other, then grades the facts. It runs on the tag line only, with a hard 35 minute ceiling.
+# It is composed from stages that already exist: ci-s3.yml builds the old image, the payload
+# is the one this run's own assemble job already built, and scripts/ci/cross-upgrade.sh boots
+# the one and installs the other, then grades the facts. It runs on the tag line only, with a
+# hard 35 minute ceiling. The payload is not rebuilt here: it would be the same release built
+# twice, and a second artifact of the same name makes download-artifact ambiguous.
 
 defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
@@ -104,6 +106,14 @@ jobs:
       upstream_base_url: ${{ steps.resolve.outputs.upstream_base_url }}
       kmods_dir: ${{ steps.resolve.outputs.kmods_dir }}
       kernel_package: ${{ steps.resolve.outputs.kernel_package }}
+      rootfs_name: ${{ steps.resolve.outputs.rootfs_name }}
+      kernel_name: ${{ steps.resolve.outputs.kernel_name }}
+      btrfs_kmod_name: ${{ steps.resolve.outputs.btrfs_kmod_name }}
+      rootfs_sha256: ${{ steps.resolve.outputs.rootfs_sha256 }}
+      kernel_sha256: ${{ steps.resolve.outputs.kernel_sha256 }}
+      btrfs_kmod_sha256: ${{ steps.resolve.outputs.btrfs_kmod_sha256 }}
+      cache_key: ${{ steps.resolve.outputs.cache_key }}
+      cache_restore_prefix: ${{ steps.resolve.outputs.cache_restore_prefix }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -115,9 +125,34 @@ jobs:
           CI_UPSTREAM_VERSION: ${{ needs.select-previous.outputs.version }}
         run: bash scripts/ci/resolve.sh 2>&1 | tee -a "${RUNNER_TEMP}/resolve.log"
 
+  # The old image is built from the old release's own upstream files. The S3 stage used to
+  # download this run's upstream-files, which the fetch stage had filled with the new release
+  # (kernel 6.12.103 against modules packaged for 6.12.94), and the boot failed with
+  # no-module-directory (run 43564031421). Every artifact this stage touches takes the suffix
+  # below, because the tag line runs this release's own copy of each stage in the same run.
+  fetch-old:
+    name: fetch the old upstream files
+    needs: [resolve-new, select-previous, resolve-old]
+    if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
+    uses: ./.github/workflows/ci-fetch.yml
+    with:
+      upstream_version: ${{ needs.select-previous.outputs.version }}
+      upstream_base_url: ${{ needs.resolve-old.outputs.upstream_base_url }}
+      kmods_dir: ${{ needs.resolve-old.outputs.kmods_dir }}
+      kernel_package: ${{ needs.resolve-old.outputs.kernel_package }}
+      rootfs_name: ${{ needs.resolve-old.outputs.rootfs_name }}
+      kernel_name: ${{ needs.resolve-old.outputs.kernel_name }}
+      btrfs_kmod_name: ${{ needs.resolve-old.outputs.btrfs_kmod_name }}
+      rootfs_sha256: ${{ needs.resolve-old.outputs.rootfs_sha256 }}
+      kernel_sha256: ${{ needs.resolve-old.outputs.kernel_sha256 }}
+      btrfs_kmod_sha256: ${{ needs.resolve-old.outputs.btrfs_kmod_sha256 }}
+      cache_key: ${{ needs.resolve-old.outputs.cache_key }}
+      cache_restore_prefix: ${{ needs.resolve-old.outputs.cache_restore_prefix }}
+      artifact_suffix: "-old"
+
   old-image:
     name: build the previous image
-    needs: [resolve-new, select-previous, resolve-old]
+    needs: [resolve-new, select-previous, resolve-old, fetch-old]
     if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
     uses: ./.github/workflows/ci-s3.yml
     with:
@@ -125,28 +160,19 @@ jobs:
       upstream_base_url: ${{ needs.resolve-old.outputs.upstream_base_url }}
       kmods_dir: ${{ needs.resolve-old.outputs.kmods_dir }}
       kernel_package: ${{ needs.resolve-old.outputs.kernel_package }}
+      # Both the files it downloads and the artifacts it publishes take the suffix, so this
+      # build cannot see or overwrite this release's own S3 output (see fetch-old).
+      artifact_suffix: "-old"
       # The platform layer is this project's, not the old release's: the image boots an
       # older upstream base with the same platform version the tag publishes.
       platform_version: ${{ needs.resolve-new.outputs.platform_version }}
 
-  new-payload:
-    name: assemble payload - this release
-    needs: [resolve-new, select-previous]
-    if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
-    uses: ./.github/workflows/ci-assemble.yml
-    with:
-      upstream_version: ${{ needs.resolve-new.outputs.version }}
-      upstream_base_url: ${{ needs.resolve-new.outputs.upstream_base_url }}
-      kmods_dir: ${{ needs.resolve-new.outputs.kmods_dir }}
-      kernel_package: ${{ needs.resolve-new.outputs.kernel_package }}
-      platform_version: ${{ needs.resolve-new.outputs.platform_version }}
-
   cross:
     name: cross-upgrade
-    needs: [select-previous, old-image, new-payload]
+    needs: [select-previous, old-image]
     runs-on: ubuntu-latest
-    # 35 minutes is the whole stage budget: the two builds above are the expensive part
-    # and they run in their own jobs, so this ceiling is the QEMU run plus its assertions.
+    # 35 minutes is the whole stage budget: the old image is built in its own job, so this
+    # ceiling is the QEMU run plus its assertions.
     timeout-minutes: 35
     outputs:
       verdict: ${{ steps.grade.outputs.verdict }}
@@ -165,33 +191,23 @@ jobs:
             | tee -a "${GITHUB_STEP_SUMMARY}"
           printf 'verdict=cross-upgrade=skipped\n' >>"${GITHUB_OUTPUT}"
 
+      # old-image published it with the suffix it was given, so this download cannot reach the
+      # image this release's own S3 stage published in the same run.
       - name: Download the previous release's image
         if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: image-install
+          name: image-install-old
           path: ${{ runner.temp }}/ci/cross
 
+      # The payload this release's own assemble job published in this run, not a second copy
+      # built here: release.yml runs this stage after the build, so the artifact is there.
       - name: Download this release's payload
         if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: payload-upgrade
           path: ${{ runner.temp }}/ci/cross-payload
-
-      # The facts the verdict was graded from, kept whether the run passed or failed: a
-      # cross-version failure is investigated from these five files, not from the log.
-      - name: Collect the stage evidence
-        if: always()
-        uses: ./.github/actions/stage-evidence
-        with:
-          stage: cross
-          name: evidence-cross
-          diag-args: ${{ runner.temp }}/ci/cross-out
-          paths: |
-            ${{ runner.temp }}/ci/cross-out
-            ${{ runner.temp }}/ci/cross
-            ${{ runner.temp }}/ci/cross-payload
 
       - name: Install this release over the previous one
         id: grade
@@ -210,11 +226,18 @@ jobs:
             *) echo "cross-version upgrade did not pass: ${verdict}" >&2; exit 1 ;;
           esac
 
-      - name: Upload the cross-upgrade facts
+      # The facts the verdict was graded from, kept whether the run passed or failed: a
+      # cross-version failure is investigated from these five files, not from the log. One
+      # upload, after the grading wrote them - a second artifact of the same name in one run
+      # is a conflict, and the facts do not exist before the step above runs.
+      - name: Collect the stage evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: ./.github/actions/stage-evidence
         with:
+          stage: cross
           name: evidence-cross
-          path: ${{ runner.temp }}/ci/cross-out
-          if-no-files-found: warn
-          retention-days: 7
+          diag-args: ${{ runner.temp }}/ci/cross-out
+          paths: |
+            ${{ runner.temp }}/ci/cross-out
+            ${{ runner.temp }}/ci/cross
+            ${{ runner.temp }}/ci/cross-payload
