@@ -44,7 +44,7 @@
 # `workflow verify --test` and the evidence hooks append. `.workflow/tasks/<id>/evidence/
 # manifest.json` holds *file* evidence (name, file, sha256), which is what
 # `workflow task evidence add --name <name>` writes - and that is the one an `ac-N` name is
-# normally registered in. Both are read, and `source=file` / `source=command` says which
+# normally registered in. Both are read, and `source=from-file` / `source=from-command` says which
 # one answered, so nobody has to guess where to look.
 #
 # A missing record file is not an error: a task that has registered nothing yet audits as
@@ -301,13 +301,13 @@ while [ "${i}" -le "${AC_MAX}" ]; do
     cited="${cited}${cited:+,}${want}"
 
     row=""
-    source=""
+    ev_source=""
     row=$(pick "${FILE_ROWS}" "${want}")
     if [ -n "${row}" ]; then
-        source=file
+        ev_source=from-file
     else
         row=$(pick "${CMD_ROWS}" "${want}")
-        [ -n "${row}" ] && source=command
+        [ -n "${row}" ] && ev_source=from-command
     fi
 
     if [ -z "${row}" ]; then
@@ -342,7 +342,7 @@ while [ "${i}" -le "${AC_MAX}" ]; do
     verdict=covered
     sha_field=""
     detail=""
-    if [ "${source}" = "file" ]; then
+    if [ "${ev_source}" = "from-file" ]; then
         path="${TASK_DIR}/evidence/${r_file}"
         if [ -z "${r_file}" ]; then
             verdict=unchecked
@@ -390,7 +390,7 @@ while [ "${i}" -le "${AC_MAX}" ]; do
     if [ "${QUIET}" = "1" ] && [ "${verdict}" = "covered" ]; then
         continue
     fi
-    line="evidence-audit ${ac} status=${verdict} evidence=${want} source=${source}"
+    line="evidence-audit ${ac} status=${verdict} evidence=${want} source=${ev_source}"
     [ -n "${r_file}" ] && line="${line} file=${r_file}"
     [ -n "${sha_field}" ] && line="${line} ${sha_field}"
     [ -n "${detail}" ] && line="${line} ${detail}"

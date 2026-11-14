@@ -159,6 +159,8 @@ dev_ssh() {
     fi
     ssh -i "${AB_KEY}" \
         -o IdentitiesOnly=yes \
+        -o PreferredAuthentications=publickey \
+        -o PubkeyAuthentication=yes \
         -o ControlMaster=no \
         -o ControlPath=none \
         -o BatchMode=yes \

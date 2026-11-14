@@ -62,7 +62,8 @@
 # The one probe that writes is probe=key: it installs AB_KEY's public key (idempotent, one
 # copy, mode 600). Everything else is a read. AB_DRY_RUN=1 writes nothing anywhere.
 #
-# Primitives come from scripts/device/lib.sh: dev_ssh (key, BatchMode=yes, IdentitiesOnly=yes
+# Primitives come from scripts/device/lib.sh: dev_ssh (key, PreferredAuthentications=publickey,
+# BatchMode=yes, IdentitiesOnly=yes
 # - which is why a successful `dev_ssh true` proves public-key auth rather than an empty
 # password), dev_push, dev_status, status_field, ev and record. The `assert_*` family is not
 # used on purpose: it prints a multi-line FAIL block for the matrix's per-case report, and
@@ -333,7 +334,7 @@ if [ ! -f "\$f" ]; then
     exit 0
 fi
 magic=\$(dd if="\$f" bs=2 count=1 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
-# One fact per line: the reader below takes `key=value` literally, so a line carrying two
+# One fact per line: the reader below takes each line literally, so a line carrying two
 # tokens would be read as one value and turn a pass into a GAP.
 if [ "\$magic" = "1f8b" ]; then
     if gzip -dc "\$f" 2>/dev/null | grep -qa wf_boot_attempt_guard; then
@@ -711,7 +712,7 @@ _pubkey_line() {
             PUBKEY_HOW=file-missing
             return 0
         fi
-        PUBKEY_HOW=file
+        PUBKEY_HOW=from-file
         PUBKEY_LINE=$(sed -n '1p' "${PUBKEY_SRC}" 2>/dev/null)
         return 0
     fi
@@ -911,7 +912,7 @@ probe_initrd() {
     if [ "${DRY_RUN}" = "1" ]; then
         _emit initrd "${_ac}" skip reason=dry-run "slot=${_slot:-auto}"
         _dry_note "ab-slot status   # the target slot is the one that is not running"
-        _dry_plan initrd "${_ac}" inspect-initrd "$(_remote_initrd)"
+        _dry_plan initrd "${_ac}" inspect-initrd "$(_remote_initrd "${_slot}")"
         return 0
     fi
     if [ "${REACH}" != "ok" ]; then
@@ -924,7 +925,7 @@ probe_initrd() {
         return 0
     fi
 
-    _facts=$(dev_ssh "$(_remote_initrd)" 2>/dev/null) || _facts=""
+    _facts=$(dev_ssh "$(_remote_initrd "${_slot}")" 2>/dev/null) || _facts=""
     _state=$(_field "${_facts}" initrd)
     _method=$(_field "${_facts}" method)
     _magic=$(_field "${_facts}" magic)
