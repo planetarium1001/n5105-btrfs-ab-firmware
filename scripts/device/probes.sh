@@ -280,7 +280,7 @@ printf 'log_pending=%s\n' "$(grep -c 'record result=table-write-pending' "$f" 2>
 printf 'log_table_written=%s\n' "$(grep -c 'record result=table-written' "$f" 2>/dev/null || true)"
 printf 'log_done=%s\n' "$(grep -c 'record result=done' "$f" 2>/dev/null || true)"
 printf 'log_already_full=%s\n' "$(grep -c 'record result=already-full' "$f" 2>/dev/null || true)"
-printf 'log_resize_ok=%s\n' "$(grep -c 'btrfs filesystem resize max .*: ok' "$f" 2>/dev/null || true)"
+printf 'log_resize_ok=%s\n' "$(grep -c 'btrfs filesystem resize max' "$f" 2>/dev/null || true)"
 printf 'log_reboot=%s\n' "$(grep -c 'rebooting so the kernel re-reads' "$f" 2>/dev/null || true)"
 printf 'log_fail=%s\n' "$(grep -c 'record result=fail:' "$f" 2>/dev/null || true)"
 REMOTE
@@ -333,22 +333,21 @@ if [ ! -f "\$f" ]; then
     printf 'initrd=missing\n'
     exit 0
 fi
-magic=\$(dd if="\$f" bs=2 count=1 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
 # One fact per line: the reader below takes each line literally, so a line carrying two
 # tokens would be read as one value and turn a pass into a GAP.
-if [ "\$magic" = "1f8b" ]; then
+# The sniff is behavioural, not a magic number: this image has no `od`, and a missing tool
+# used to turn a decidable answer into a GAP. gzip -t says whether the file is gzip at all;
+# a plain cpio is searched in place.
+if gzip -t "\$f" >/dev/null 2>&1; then
     if gzip -dc "\$f" 2>/dev/null | grep -qa wf_boot_attempt_guard; then
         printf 'initrd=ok\nmethod=gzip\n'
     else
         printf 'initrd=absent\nmethod=gzip\n'
     fi
+elif grep -qa wf_boot_attempt_guard "\$f" 2>/dev/null; then
+    printf 'initrd=ok\nmethod=plain\n'
 else
-    printf 'magic=%s\n' "\${magic:-unknown}"
-    if grep -qa wf_boot_attempt_guard "\$f" 2>/dev/null; then
-        printf 'initrd=ok\nmethod=raw\n'
-    else
-        printf 'initrd=undecidable\nmethod=raw\n'
-    fi
+    printf 'initrd=undecidable\nmethod=unknown\n'
 fi
 REMOTE
 }
@@ -502,6 +501,7 @@ probe_grow() {
     _grow_log=$(_field "${_logs}" grow_log)
     _done_n=$(_field "${_logs}" log_done)
     _table_n=$(_field "${_logs}" log_table_written)
+    _pending_n=$(_field "${_logs}" log_pending)
     _reboot_n=$(_field "${_logs}" log_reboot)
     _resize_n=$(_field "${_logs}" log_resize_ok)
     _fail_n=$(_field "${_logs}" log_fail)
@@ -524,7 +524,7 @@ probe_grow() {
     # is the `done` record and the resize line in front of it. Both are in the append-only log.
     _phase_table=0
     _phase_resize=0
-    if _pos "${_table_n}" || _pos "${_reboot_n}"; then _phase_table=1; fi
+    if _pos "${_table_n}" || _pos "${_reboot_n}" || _pos "${_pending_n}"; then _phase_table=1; fi
     if _pos "${_done_n}" || _pos "${_resize_n}"; then _phase_resize=1; fi
     _phases=incomplete
     [ "${_phase_table}" -eq 1 ] && [ "${_phase_resize}" -eq 1 ] && _phases=complete

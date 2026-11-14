@@ -168,12 +168,21 @@ prove_key() {
              nft insert rule inet fw4 input tcp dport $_p accept 2>/dev/null" >/dev/null 2>&1 || true
     ssh_key "setsid dropbear -p $_p -s -g -F -E -P /tmp/ab-keyprove.pid \
              </dev/null >/tmp/ab-keyprove.log 2>&1 & sleep 1" >/dev/null 2>&1 || true
+    # The spare dropbear answers a second or two after a fresh boot; three short attempts
+    # cost less than a misread "inconclusive" on a machine that only got that far once.
+    _auth=""
+    _try=0
+    while [ "$_try" -lt 3 ]; do
+    _try=$((_try + 1))
     _auth=$(ssh -i "$key" -p "$_p" \
         -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes \
         -o BatchMode=yes -o ControlMaster=no -o ControlPath=none \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o "ConnectTimeout=${AB_SSH_CONNECT_TIMEOUT}" -v \
         "$AB_HOST" true 2>&1 | sed -n 's/.*Authenticated to .* using "\([a-z]*\)".*/\1/p' | tail -n 1)
+    [ "$_auth" = "publickey" ] && break
+    sleep 2
+    done
     # Cleanup deletes by handle, not by spec: `nft delete rule <chain> tcp dport N accept`
     # only matches when the rule text is identical, and the insert above adds to whichever
     # of the two chains exists. One pass over the ruleset removes what this run added.

@@ -76,8 +76,11 @@ fi
 dev_ssh 'command -v setsid >/dev/null' || die no-setsid
 
 # Space: the compressed image on tmpfs, nothing else.
-avail=$(dev_ssh "df -k $AB_STAGE 2>/dev/null | awk 'NR==2{print $4}'")
-[ -n "$avail" ] || avail=$(dev_ssh "df -k /tmp | awk 'NR==2{print $4}'")
+# The awk program is single-quoted and lives inside a double-quoted string, so `$4` has to
+# be escaped: unescaped, the local shell expands it under `set -u` and the space check below
+# silently disappears (measured 2026-11-15, first real flash of this task).
+avail=$(dev_ssh "df -k $AB_STAGE 2>/dev/null | awk 'NR==2{print \$4}'")
+[ -n "$avail" ] || avail=$(dev_ssh "df -k /tmp | awk 'NR==2{print \$4}'")
 size_kb=$(( $(wc -c < "$image") / 1024 ))
 [ -n "$avail" ] && [ "$avail" -lt $(( size_kb + 8192 )) ] && die no-space
 
