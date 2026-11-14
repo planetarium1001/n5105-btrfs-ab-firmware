@@ -11,6 +11,7 @@ name: S2 image
 #
 #     S2-RESULT=ok parts=4 images=<bytes>
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

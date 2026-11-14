@@ -6,6 +6,7 @@ name: assemble payload
 # per-member size and sha256, format tag and rootfs version. A member the build cannot
 # produce fails the build instead of being listed as missing.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

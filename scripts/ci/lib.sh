@@ -178,6 +178,37 @@ ci_require_cmd() {
     done
 }
 
+# ci_part_field <device> <field>: one partition field, read from the block device.
+# blkid reads the GPT entry and the filesystem superblock directly; lsblk reads the same
+# fields through udev, which covers a blkid that cannot answer with -p. An empty answer
+# means "not readable yet", not "wrong": the caller decides whether to wait.
+ci_part_field() {
+    local device="$1" field="$2" value=""
+    value="$(sudo blkid -p -o value -s "${field}" "${device}" 2>/dev/null || true)"
+    if [ -z "${value}" ]; then
+        value="$(sudo lsblk -ndo "${field}" "${device}" 2>/dev/null \
+            | head -n 1 | sed 's/[[:space:]]*$//' || true)"
+    fi
+    printf '%s' "${value}"
+}
+
+# ci_wait_part_field <device> <field> [attempts] [interval]
+# `losetup --find --show --partscan` returns before the kernel and udev have named the
+# partitions, so a read-back taken right after it can see an empty GPT PARTNAME on a
+# correct image - that race is what lost S2 on run 43553833091 while the same commit
+# passed on a branch run. Poll until the field reads something, then let the caller judge
+# the value; give up after a bounded wait so a device nobody named still fails.
+ci_wait_part_field() {
+    local device="$1" field="$2" attempts="${3:-40}" interval="${4:-0.25}" i=0 value=""
+    while :; do
+        value="$(ci_part_field "${device}" "${field}")"
+        [ -n "${value}" ] && return 0
+        i=$((i + 1))
+        [ "${i}" -ge "${attempts}" ] && return 1
+        sleep "${interval}"
+    done
+}
+
 # ci_require_var <name>: fail early when a required value is empty.
 ci_require_var() {
     local name="$1"

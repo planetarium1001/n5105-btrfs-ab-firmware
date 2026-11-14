@@ -6,6 +6,7 @@ name: pipeline report
 # actually scheduled did not succeed. All inputs are optional strings, so a partially
 # scheduled pipeline (stage=fetch, stage=verify, ...) still reports.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

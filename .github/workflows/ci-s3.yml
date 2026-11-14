@@ -10,6 +10,7 @@ name: S3 boot
 #
 #     S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=<overlay>
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

@@ -11,6 +11,7 @@ name: cross-version upgrade
 # builds the new payload, and scripts/ci/cross-upgrade.sh boots the one and installs the
 # other, then grades the facts. It runs on the tag line only, with a hard 35 minute ceiling.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

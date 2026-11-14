@@ -7,6 +7,7 @@ name: fetch upstream
 # resolve stage, so an unchanged upstream version, tool set and CI script set skips the
 # network; files that match their digest are reused, files that do not are re-downloaded.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

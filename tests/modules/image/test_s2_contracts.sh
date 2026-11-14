@@ -78,8 +78,15 @@ assert_contains "$verify_want" '("ab-slot-b","slot-b",262144,' \
   "ac-1 image-verify expects PARTNAME ab-slot-b with label slot-b"
 assert_contains "$verify_want" '("ab-data","data",262144,' \
   "ac-1 image-verify expects PARTNAME ab-data with label data"
-assert_contains "$(cat "$verify_script")" 'blkid -p -o value -s "${field}"' \
+# The reader itself lives in scripts/ci/lib.sh, because the label race it has to survive
+# (device nodes exist before udev names them) is the same for every stage that mounts a
+# partition. image-verify is the caller, and it waits rather than reading once.
+assert_contains "$(cat scripts/ci/lib.sh)" 'blkid -p -o value -s "${field}"' \
+  "ac-1 the shared reader reads PARTNAME and LABEL back from a block device"
+assert_contains "$(cat "$verify_script")" 'ci_part_field "${loopdev}p${index}" PARTLABEL' \
   "ac-1 image-verify reads PARTNAME and LABEL back from the image"
+assert_contains "$(cat "$verify_script")" 'ci_wait_part_field' \
+  "ac-1 image-verify waits for the names instead of reading them once"
 assert_eq "$(grep -c 'ab-shared' "$verify_script" || true)" "0" \
   "ac-1 the retired name ab-shared is gone from image-verify.sh"
 

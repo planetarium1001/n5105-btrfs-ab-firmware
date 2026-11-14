@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci(s3): the derived image gets its own ESP preflight
+# reason: ci: one pipefail default line per workflow, plus the shared partition-field reader
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -127,12 +127,15 @@ sh-flag scripts/ci/kmods.sh --out
 sh-flag scripts/ci/kmods.sh --write-lock
 sh-flag scripts/ci/lib.sh --connect-timeout
 sh-flag scripts/ci/lib.sh --fail
+sh-flag scripts/ci/lib.sh --find
 sh-flag scripts/ci/lib.sh --location
 sh-flag scripts/ci/lib.sh --max-time
 sh-flag scripts/ci/lib.sh --output
+sh-flag scripts/ci/lib.sh --partscan
 sh-flag scripts/ci/lib.sh --retry
 sh-flag scripts/ci/lib.sh --retry-connrefused
 sh-flag scripts/ci/lib.sh --retry-delay
+sh-flag scripts/ci/lib.sh --show
 sh-flag scripts/ci/lib.sh --show-error
 sh-flag scripts/ci/lib.sh --silent
 sh-flag scripts/ci/matrix-select.sh --count
@@ -276,7 +279,6 @@ sh-fn scripts/ci/image-verify.sh ci_hook_members
 sh-fn scripts/ci/image-verify.sh cleanup
 sh-fn scripts/ci/image-verify.sh note
 sh-fn scripts/ci/image-verify.sh on_error
-sh-fn scripts/ci/image-verify.sh part_name
 sh-fn scripts/ci/image-verify.sh subvolumes
 sh-fn scripts/ci/initramfs-tools.sh warn_derived_lock
 sh-fn scripts/ci/initramfs.sh on_error
@@ -297,6 +299,7 @@ sh-fn scripts/ci/lib.sh ci_load_env_file
 sh-fn scripts/ci/lib.sh ci_log
 sh-fn scripts/ci/lib.sh ci_lookup_sha256
 sh-fn scripts/ci/lib.sh ci_match
+sh-fn scripts/ci/lib.sh ci_part_field
 sh-fn scripts/ci/lib.sh ci_platform_modes
 sh-fn scripts/ci/lib.sh ci_platform_startlinks
 sh-fn scripts/ci/lib.sh ci_render_net_defaults
@@ -308,6 +311,7 @@ sh-fn scripts/ci/lib.sh ci_sha256_text
 sh-fn scripts/ci/lib.sh ci_stage_init
 sh-fn scripts/ci/lib.sh ci_upstream_pin_file
 sh-fn scripts/ci/lib.sh ci_upstream_pin_read
+sh-fn scripts/ci/lib.sh ci_wait_part_field
 sh-fn scripts/ci/lib.sh ci_warn
 sh-fn scripts/ci/lib.sh ci_write_upstream_pin
 sh-fn scripts/ci/matrix-select.sh formal_releases_desc
@@ -1002,6 +1006,7 @@ yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_NOTE = 
 yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_RESULT = ${{ inputs.result }}
 yaml .github/actions/stage-summary/action.yml runs.steps.[0].env.SUMMARY_STAGE = ${{ inputs.stage }}
 yaml .github/actions/stage-summary/action.yml runs.steps.[0].shell = bash
+yaml .github/workflows/ci-assemble.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-assemble.yml jobs = 
 yaml .github/workflows/ci-assemble.yml jobs.assemble.env = 
 yaml .github/workflows/ci-assemble.yml jobs.assemble.env.AB_CI_HOOKS = ${{ vars.AB_CI_HOOKS }}
@@ -1082,6 +1087,7 @@ yaml .github/workflows/ci-assemble.yml permissions =
 yaml .github/workflows/ci-debug.yml concurrency = 
 yaml .github/workflows/ci-debug.yml concurrency.cancel-in-progress = true
 yaml .github/workflows/ci-debug.yml concurrency.group = ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+yaml .github/workflows/ci-debug.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-debug.yml jobs = 
 yaml .github/workflows/ci-debug.yml jobs.debug.runs-on = ubuntu-latest
 yaml .github/workflows/ci-debug.yml jobs.debug.steps = 
@@ -1146,6 +1152,7 @@ yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.stage =
 yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.stage.default = build-disk
 yaml .github/workflows/ci-debug.yml on.workflow_dispatch.inputs.stage.type = choice
 yaml .github/workflows/ci-debug.yml permissions = 
+yaml .github/workflows/ci-fetch.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-fetch.yml jobs = 
 yaml .github/workflows/ci-fetch.yml jobs.fetch.env = 
 yaml .github/workflows/ci-fetch.yml jobs.fetch.env.CI_BTRFS_KMOD_NAME = ${{ inputs.btrfs_kmod_name }}
@@ -1213,6 +1220,7 @@ yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.cache_hit = {descri
 yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.fetch_total_bytes = {description:<text>, value: "${{ jobs.fetch.outputs.fetch_total_bytes }}"}
 yaml .github/workflows/ci-fetch.yml on.workflow_call.outputs.members = {description:<text>, value: "${{ jobs.fetch.outputs.members }}"}
 yaml .github/workflows/ci-fetch.yml permissions = 
+yaml .github/workflows/ci-report.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-report.yml jobs = 
 yaml .github/workflows/ci-report.yml jobs.report.env = 
 yaml .github/workflows/ci-report.yml jobs.report.env.CI_ASSEMBLE_RESULT = ${{ inputs.assemble_result }}
@@ -1343,6 +1351,7 @@ yaml .github/workflows/ci-report.yml on.workflow_call.inputs.upstream_version = 
 yaml .github/workflows/ci-report.yml on.workflow_call.inputs.verify_result = {description:<text>, required: false, type: string, default: ""}
 yaml .github/workflows/ci-report.yml on.workflow_call.inputs.version_source = {description:<text>, required: false, type: string, default: ""}
 yaml .github/workflows/ci-report.yml permissions = 
+yaml .github/workflows/ci-resolve.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-resolve.yml jobs = 
 yaml .github/workflows/ci-resolve.yml jobs.resolve.env = 
 yaml .github/workflows/ci-resolve.yml jobs.resolve.env.CI_UPSTREAM_VERSION = ${{ inputs.upstream_version }}
@@ -1398,6 +1407,7 @@ yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.upstream_base_url
 yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.upstream_version = {description:<text>, value: "${{ jobs.resolve.outputs.upstream_version }}"}
 yaml .github/workflows/ci-resolve.yml on.workflow_call.outputs.version_source = {description:<text>, value: "${{ jobs.resolve.outputs.version_source }}"}
 yaml .github/workflows/ci-resolve.yml permissions = 
+yaml .github/workflows/ci-s1.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-s1.yml jobs = 
 yaml .github/workflows/ci-s1.yml jobs.s1.env = 
 yaml .github/workflows/ci-s1.yml jobs.s1.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
@@ -1470,6 +1480,7 @@ yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.judge_line = {descript
 yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.module_count = {description:<text>, value: "${{ jobs.s1.outputs.module_count }}"}
 yaml .github/workflows/ci-s1.yml on.workflow_call.outputs.uefi_line = {description:<text>, value: "${{ jobs.s1.outputs.uefi_line }}"}
 yaml .github/workflows/ci-s1.yml permissions = 
+yaml .github/workflows/ci-s2.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-s2.yml jobs = 
 yaml .github/workflows/ci-s2.yml jobs.s2.env = 
 yaml .github/workflows/ci-s2.yml jobs.s2.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
@@ -1568,6 +1579,7 @@ yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.image_gz_bytes = {desc
 yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.judge_line = {description:<text>, value: "${{ jobs.s2.outputs.judge_line }}"}
 yaml .github/workflows/ci-s2.yml on.workflow_call.outputs.rootfs_files = {description:<text>, value: "${{ jobs.s2.outputs.rootfs_files }}"}
 yaml .github/workflows/ci-s2.yml permissions = 
+yaml .github/workflows/ci-s3.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-s3.yml jobs = 
 yaml .github/workflows/ci-s3.yml jobs.s3.env = 
 yaml .github/workflows/ci-s3.yml jobs.s3.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
@@ -1707,6 +1719,7 @@ yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.module_count = {descri
 yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.slot = {description:<text>, value: "${{ jobs.s3.outputs.slot }}"}
 yaml .github/workflows/ci-s3.yml on.workflow_call.outputs.upper = {description:<text>, value: "${{ jobs.s3.outputs.upper }}"}
 yaml .github/workflows/ci-s3.yml permissions = 
+yaml .github/workflows/ci-s4.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-s4.yml jobs = 
 yaml .github/workflows/ci-s4.yml jobs.s4.env = 
 yaml .github/workflows/ci-s4.yml jobs.s4.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
@@ -1857,6 +1870,7 @@ yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.line_commit_b = {descr
 yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.line_rollback = {description:<text>, value: "${{ jobs.s4.outputs.line_rollback }}"}
 yaml .github/workflows/ci-s4.yml on.workflow_call.outputs.next_slot_final = {description:<text>, value: "${{ jobs.s4.outputs.next_slot_final }}"}
 yaml .github/workflows/ci-s4.yml permissions = 
+yaml .github/workflows/ci-s5.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-s5.yml jobs = 
 yaml .github/workflows/ci-s5.yml jobs.s5.env = 
 yaml .github/workflows/ci-s5.yml jobs.s5.env.CI_KERNEL_PACKAGE = ${{ inputs.kernel_package }}
@@ -2005,6 +2019,7 @@ yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.runtime_packages = {de
 yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.toolchain_line = {description:<text>, value: "${{ jobs.s5.outputs.toolchain_line }}"}
 yaml .github/workflows/ci-s5.yml on.workflow_call.outputs.upgrade_line = {description:<text>, value: "${{ jobs.s5.outputs.upgrade_line }}"}
 yaml .github/workflows/ci-s5.yml permissions = 
+yaml .github/workflows/ci-upgrade-cross.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-upgrade-cross.yml jobs = 
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.needs = [select-previous, old-image, new-payload]
 yaml .github/workflows/ci-upgrade-cross.yml jobs.cross.outputs = 
@@ -2112,6 +2127,7 @@ yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.gaps = {desc
 yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.outputs = 
 yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.outputs.verdict = {description:<text>, value: "${{ jobs.cross.outputs.verdict }}"}
 yaml .github/workflows/ci-upgrade-cross.yml permissions = 
+yaml .github/workflows/ci-verify.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-verify.yml jobs = 
 yaml .github/workflows/ci-verify.yml jobs.verify.outputs = 
 yaml .github/workflows/ci-verify.yml jobs.verify.outputs.design_checks_problems = ${{ steps.verify.outputs.design_checks_problems }}
@@ -2303,6 +2319,7 @@ yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.upstream_version =
 yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.upstream_version.default = ""
 yaml .github/workflows/ci.yml on.workflow_dispatch.inputs.upstream_version.type = string
 yaml .github/workflows/ci.yml permissions = 
+yaml .github/workflows/release-publish.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/release-publish.yml jobs = 
 yaml .github/workflows/release-publish.yml jobs.publish.permissions = 
 yaml .github/workflows/release-publish.yml jobs.publish.runs-on = ubuntu-latest
@@ -2437,6 +2454,7 @@ yaml .github/workflows/release.yml jobs.publish.with.tag = ${{ github.ref_name }
 yaml .github/workflows/release.yml jobs.publish.with.tag-policy = v
 yaml .github/workflows/release.yml on = 
 yaml .github/workflows/release.yml permissions = 
+yaml .github/workflows/upstream-watch.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/upstream-watch.yml jobs = 
 yaml .github/workflows/upstream-watch.yml jobs.build.needs = [detect, bump]
 yaml .github/workflows/upstream-watch.yml jobs.build.permissions = 

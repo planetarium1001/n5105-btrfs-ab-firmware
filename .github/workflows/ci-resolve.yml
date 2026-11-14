@@ -6,6 +6,7 @@ name: resolve upstream
 # from (upstream version + tool versions + CI script content), so a version bump or a script
 # change invalidates the download cache in exactly one place.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

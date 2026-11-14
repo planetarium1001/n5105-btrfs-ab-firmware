@@ -9,6 +9,7 @@ name: static checks
 # failing so one run reports all findings, and scripts/ci/verify.sh writes one verdict
 # line per check to the run summary.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     outputs:

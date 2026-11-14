@@ -20,6 +20,7 @@ name: Firmware CI - upstream watch
 # A run with nothing new ends successfully and touches nothing: that is the ordinary
 # outcome of most days, not a failure.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   schedule:
     # 20:00 UTC = 04:00 in Beijing: after the upstream mirrors settle for the day and

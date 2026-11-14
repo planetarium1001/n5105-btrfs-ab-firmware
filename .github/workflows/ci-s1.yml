@@ -11,6 +11,7 @@ name: S1 probe
 # QEMU runs under TCG because hosted runners do not guarantee /dev/kvm. The OVMF boot is
 # evidence only.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

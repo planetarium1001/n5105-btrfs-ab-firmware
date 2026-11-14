@@ -152,15 +152,14 @@ done
 # Read both name sets back from the image itself, never from the script that wrote it:
 # PARTNAME comes from the GPT entry, LABEL from the filesystem superblock. A drift in
 # either one is caught here, before QEMU costs a boot cycle.
-part_name() {
-    local device="$1" field="$2" value=""
-    value="$(sudo blkid -p -o value -s "${field}" "${device}" 2>/dev/null || true)"
-    if [ -z "${value}" ]; then
-        # lsblk reads the same fields through udev; it covers a blkid without -p.
-        value="$(sudo lsblk -ndo "${field}" "${device}" 2>/dev/null | head -n 1 | sed 's/[[:space:]]*$//')"
-    fi
-    printf '%s' "${value}"
-}
+#
+# The nodes of a --partscan loop device exist before the names do, so each PARTNAME is
+# waited for rather than read once: run 43553833091 refused a correct image because the
+# read-back ran a moment too early, and the refusal then named the wrong cause downstream.
+for index in 1 2 3 4; do
+    ci_wait_part_field "${loopdev}p${index}" PARTLABEL \
+        || ci_die "part-label-timeout: ${loopdev}p${index} carries no readable GPT PARTNAME after 10s"
+done
 
 # shellcheck disable=SC2024  # the redirect target is owned by the runner user
 sudo sfdisk -J "${loopdev}" >"${disk_dir}/sfdisk-verify.json"
@@ -168,11 +167,11 @@ sudo sfdisk -J "${loopdev}" >"${disk_dir}/sfdisk-verify.json"
 : >"${disk_dir}/part-uuids.txt"
 for index in 1 2 3 4; do
     printf 'p%s|%s|%s\n' "${index}" \
-        "$(part_name "${loopdev}p${index}" PARTLABEL)" \
-        "$(part_name "${loopdev}p${index}" LABEL)" >>"${disk_dir}/part-names.txt"
+        "$(ci_part_field "${loopdev}p${index}" PARTLABEL)" \
+        "$(ci_part_field "${loopdev}p${index}" LABEL)" >>"${disk_dir}/part-names.txt"
     printf 'p%s|%s|%s\n' "${index}" \
-        "$(part_name "${loopdev}p${index}" PARTLABEL)" \
-        "$(part_name "${loopdev}p${index}" PARTUUID)" >>"${disk_dir}/part-uuids.txt"
+        "$(ci_part_field "${loopdev}p${index}" PARTLABEL)" \
+        "$(ci_part_field "${loopdev}p${index}" PARTUUID)" >>"${disk_dir}/part-uuids.txt"
 done
 python3 - "${disk_dir}/sfdisk-verify.json" "${disk_dir}/part-names.txt" <<'PYTHON'
 import json, sys

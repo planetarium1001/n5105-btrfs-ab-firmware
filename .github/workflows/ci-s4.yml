@@ -16,6 +16,7 @@ name: S4 slots
 # --verify-esp re-reads the same ESP, so a state file and a runtime slot file that disagree
 # fail instead of waiting for a device.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

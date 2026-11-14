@@ -13,6 +13,7 @@ name: Firmware CI - debug session
 # scripts/check_design.py ("debug-ssh") fails if this file ever gains a push trigger, a
 # floating action ref or a session without a bound.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   # workflow_dispatch only: anything else hands every contributor an interactive shell.
   workflow_dispatch:

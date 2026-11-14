@@ -235,7 +235,12 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # that regrows the duplication composites were introduced to remove, so it is raised
 # deliberately when a stage is added (cross-version upgrade: two reusable calls and a
 # selector). The baseline it replaced was 3269.
-CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2520}
+#
+# Raised 2520 -> 2540 for a cross-cutting fix, not a stage: every workflow that pipes a
+# stage script into tee now carries `defaults: {run: {shell: bash}}`, one line each. The
+# runner's default shell drops a pipeline's exit status, so without it a gate cannot fail
+# its step (run 43553833091: image-verify refused the image and the step stayed green).
+CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2540}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le "${CI_WORKFLOW_LINE_CEILING}" ]; then

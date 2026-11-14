@@ -16,6 +16,7 @@ name: S5 upgrade
 # Boots 2-4 print their evidence to /dev/console (procd sends hook stdout to syslog, so a hook
 # that wants to be seen must write the console). s5-phase.sh grades on the host.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:

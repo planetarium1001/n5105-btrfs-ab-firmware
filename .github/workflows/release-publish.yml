@@ -23,6 +23,7 @@ name: release publish
 # read back from the payload manifest and the VERSION file, and a caller-supplied value is
 # asserted against them instead of trusted.
 
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   workflow_call:
     inputs:
