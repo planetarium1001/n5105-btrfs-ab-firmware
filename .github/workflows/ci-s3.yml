@@ -139,13 +139,20 @@ jobs:
           printf 'out=%s\n' "${out}" >>"${GITHUB_OUTPUT}"
 
       # The third boot hands the machine to the firmware, so prove the ESP is bootable first.
-      # Runs for the convenience image too: it is the only proof that artifact gets, and it
-      # costs a GRUB parse rather than a boot.
       - name: Preflight - the ESP boots through GRUB
         id: verify0
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
         run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-preflight.log"
+
+      # The derived image is never booted: it is the same bytes plus one changed line, so the
+      # whole of its evidence is a read of the copy. Ask the same preflight the default image
+      # passed - the ESP, the loader commands and the runtime slot file - rather than booting.
+      - name: Preflight - the convenience ESP boots
+        id: verify0_variant
+        env:
+          CI_IMAGE: ${{ steps.variant.outputs.out }}
+        run: bash scripts/ci/grub-render.sh --verify-esp "${CI_IMAGE}" 2>&1 | tee -a "${CI_LOG_DIR}/grub-preflight-wan-ssh.log"
 
       - name: Boot 1 - compose the layered root
         if: ${{ inputs.boots }}

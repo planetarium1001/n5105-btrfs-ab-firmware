@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: one build derives the convenience image
+# reason: ci(s3): the derived image gets its own ESP preflight
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -67,6 +67,7 @@ sh-flag scripts/ci/derive-variant.sh --help
 sh-flag scripts/ci/derive-variant.sh --image
 sh-flag scripts/ci/derive-variant.sh --out
 sh-flag scripts/ci/derive-variant.sh --partscan
+sh-flag scripts/ci/derive-variant.sh --rewrite-slot
 sh-flag scripts/ci/derive-variant.sh --rewrite-tree
 sh-flag scripts/ci/derive-variant.sh --show
 sh-flag scripts/ci/diagnostics.sh --version
@@ -226,11 +227,16 @@ sh-fn scripts/ci/cross-upgrade.sh grade
 sh-fn scripts/ci/cross-upgrade.sh payload_digests
 sh-fn scripts/ci/cross-upgrade.sh run_stage
 sh-fn scripts/ci/cross-upgrade.sh usage
+sh-fn scripts/ci/derive-variant.sh cleanup_image
+sh-fn scripts/ci/derive-variant.sh find_platform
 sh-fn scripts/ci/derive-variant.sh main
 sh-fn scripts/ci/derive-variant.sh mount_part
+sh-fn scripts/ci/derive-variant.sh place_file
 sh-fn scripts/ci/derive-variant.sh rewrite_record
+sh-fn scripts/ci/derive-variant.sh rewrite_slot
 sh-fn scripts/ci/derive-variant.sh rewrite_tree
 sh-fn scripts/ci/derive-variant.sh usage
+sh-fn scripts/ci/derive-variant.sh wait_part
 sh-fn scripts/ci/diagnostics.sh collect_context
 sh-fn scripts/ci/diagnostics.sh collect_disk_usage
 sh-fn scripts/ci/diagnostics.sh collect_logs
@@ -1581,71 +1587,74 @@ yaml .github/workflows/ci-s3.yml jobs.s3.runs-on = ubuntu-latest
 yaml .github/workflows/ci-s3.yml jobs.s3.steps = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[0].with = {persist-credentials: false}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].id = boot1
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].if = ${{ inputs.boots }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].uses = ./.github/actions/qemu-boot
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].with.append-extra = wf.boot=1
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].with.case = s3-boot1
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].with.image = ${{ steps.disk.outputs.image_path }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].with.judge-prefix = S3-RESULT
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].env = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].env.JUDGE_LINE = ${{ steps.boot1.outputs.judge_line }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].id = judge
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].env.CI_IMAGE = ${{ steps.variant.outputs.out }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[10].id = verify0_variant
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].id = boot1
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].if = ${{ inputs.boots }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].id = boot2
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.append-extra = wf.boot=1
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.case = s3-boot1
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[11].with.judge-prefix = S3-RESULT
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].env.JUDGE_LINE = ${{ steps.boot1.outputs.judge_line }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].id = judge
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].if = ${{ inputs.boots }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].uses = ./.github/actions/qemu-boot
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.append-extra = wf.boot=2
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.case = s3-boot2
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.image = ${{ steps.disk.outputs.image_path }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[12].with.judge-prefix = S3-RESULT
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].id = boot3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].id = boot2
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].if = ${{ inputs.boots }}
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].uses = ./.github/actions/qemu-boot
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.case = s3-grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.append-extra = wf.boot=2
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.case = s3-boot2
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.image = ${{ steps.disk.outputs.image_path }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.judge-prefix = ""
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.mode = uefi-disk
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.stop-pattern = "^ab-boot: stage="
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].env = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].env.BOOT1_SLOT = ${{ steps.judge.outputs.slot }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].env.SERIAL = ${{ steps.boot3.outputs.serial_log }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].id = judge_grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.initramfs = ${{ steps.initramfs_ci.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[13].with.judge-prefix = S3-RESULT
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].id = boot3
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].if = ${{ inputs.boots }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = always()
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].uses = ./.github/actions/stage-evidence
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.diag-args = ${{ runner.temp }}/ci/qemu
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.name = evidence-s3
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.paths = |
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].with.stage = s3
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = success()
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].uses = ./.github/actions/qemu-boot
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.case = s3-grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.image = ${{ steps.disk.outputs.image_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.judge-prefix = ""
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.mode = uefi-disk
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[14].with.stop-pattern = "^ab-boot: stage="
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].env = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].env.BOOT1_SLOT = ${{ steps.judge.outputs.slot }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].env.SERIAL = ${{ steps.boot3.outputs.serial_log }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].id = judge_grub
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[15].if = ${{ inputs.boots }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].uses = ./.github/actions/stage-evidence
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.if-no-files-found = warn
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.name = image-install
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.path = |
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.retention-days = 7
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.diag-args = ${{ runner.temp }}/ci/qemu
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.name = evidence-s3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.paths = |
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[16].with.stage = s3
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].if = success()
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.if-no-files-found = error
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.name = image-install-wan-ssh
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.path = ${{ runner.temp }}/ci/disk/*-wan-ssh.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.if-no-files-found = warn
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.name = image-install
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.path = |
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[17].with.retention-days = 7
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].if = always()
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].if = success()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].uses = actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with = 
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.artifact = image-install, image-install-wan-ssh
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.artifact-file = ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.result = ${{ job.status }}
-yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.stage = s3
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.if-no-files-found = error
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.name = image-install-wan-ssh
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.path = ${{ runner.temp }}/ci/disk/*-wan-ssh.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[18].with.retention-days = 7
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].if = always()
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].uses = ./.github/actions/stage-summary
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].with = 
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].with.artifact = image-install, image-install-wan-ssh
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].with.artifact-file = ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].with.result = ${{ job.status }}
+yaml .github/workflows/ci-s3.yml jobs.s3.steps.[19].with.stage = s3
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with = 
 yaml .github/workflows/ci-s3.yml jobs.s3.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
