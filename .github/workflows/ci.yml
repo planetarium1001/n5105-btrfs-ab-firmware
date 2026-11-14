@@ -165,20 +165,6 @@ jobs:
   # Stage 6b: the convenience image - the same build with the WAN SSH exception on.
   # Only the image is produced: the boot assertions run once, on the shipped default,
   # because the two images differ in one rendered file and nothing else.
-  s3-wan-ssh:
-    name: build the wan-ssh image
-    needs: [resolve, fetch, versions]
-    if: ${{ needs.fetch.result == 'success' && startsWith(github.ref, 'refs/tags/v') }}
-    uses: ./.github/workflows/ci-s3.yml
-    with:
-      upstream_version: ${{ needs.resolve.outputs.upstream_version }}
-      upstream_base_url: ${{ needs.resolve.outputs.upstream_base_url }}
-      kmods_dir: ${{ needs.resolve.outputs.kmods_dir }}
-      kernel_package: ${{ needs.resolve.outputs.kernel_package }}
-      platform_version: ${{ needs.versions.outputs.platform_version }}
-      variant: true
-      boots: false
-
   # Stage 7: A/B state machine - commit, abandon and rollback through the ESP state.
   s4:
     name: S4 slots - A/B state machine

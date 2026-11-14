@@ -38,7 +38,7 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 
 | 第二份镜像从哪来 | 它叫什么 |
 |---|---|
-| `ci.yml` 里的 `s3-wan-ssh` job，只在 `v*` tag 上 | Actions 产物 `image-install-wan-ssh`，包里那个文件名是 `n5105-ab-image.img.gz` |
+| `ci-s3.yml` 里的 `Derive the convenience image` 步骤，每次构建都跑 | Actions 产物 `image-install-wan-ssh`，包里那个文件名是 `n5105-ab-image-wan-ssh.img.gz` |
 | `release.sh` 带 `CI_VARIANT_IMAGE=<便利镜像>` | `n5105-ab-<upstream>-install-wan-ssh.img.gz` |
 
 变体 job 故意跑 `boots: false`：两个镜像只差一个渲染文件，所以启动断言（S2、S3 验收）只在随默认镜像发出去的

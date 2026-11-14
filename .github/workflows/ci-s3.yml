@@ -18,7 +18,6 @@ on:
       kmods_dir: {description: "Kernel module directory name on the mirror", required: true, type: string}
       kernel_package: {description: "Kernel package version from the upstream manifest", required: true, type: string}
       platform_version: {description: "Platform version from the repository VERSION file", required: true, type: string}
-      variant: {description: "Build the convenience image (WAN SSH open) instead of the default one", required: false, type: boolean, default: false}
       boots: {description: "Run the boot assertions (the convenience variant only needs the image)", required: false, type: boolean, default: true}
     outputs:
       judge_line: {description: "Frozen S3 judge line from the first boot", value: "${{ jobs.s3.outputs.judge_line }}"}
@@ -42,10 +41,9 @@ jobs:
       CI_KMODS_DIR: ${{ inputs.kmods_dir }}
       CI_KERNEL_PACKAGE: ${{ inputs.kernel_package }}
       CI_PLATFORM_VERSION: ${{ inputs.platform_version }}
-      # One knob, derived: asking for the variant *is* asking for the open WAN. Two
-      # independent inputs could disagree and publish an open image under the default
-      # name, which is the one mistake this pair must make impossible.
-      CI_NET_WAN_SSH: ${{ inputs.variant && 'open' || 'closed' }}
+      # The image is always built closed; the convenience variant is derived from it in
+      # this same job (one build, one set of boot assertions behind both files).
+      CI_NET_WAN_SSH: closed
     outputs:
       judge_line: ${{ steps.boot1.outputs.judge_line }}
       judge_line_boot2: ${{ steps.boot2.outputs.judge_line }}
@@ -124,6 +122,21 @@ jobs:
           CI_INITRAMFS: ${{ steps.initramfs.outputs.initramfs_path }}
           CI_ESP_DIR: ${{ steps.esp.outputs.esp_dir }}
         run: bash scripts/ci/disk.sh 2>&1 | tee -a "${CI_LOG_DIR}/disk.log"
+
+      # One line away from the image we just built: @platform/etc/net-defaults.conf. The
+      # derived file inherits every boot assertion the default image passed, which the
+      # previous "build it a second time" approach could not claim.
+      - name: Derive the convenience image
+        id: variant
+        env:
+          CI_IMAGE: ${{ steps.disk.outputs.image_path }}
+        run: |
+          set -euo pipefail
+          out="${CI_IMAGE%.img}-wan-ssh.img"
+          bash scripts/ci/derive-variant.sh --image "${CI_IMAGE}" --out "${out}" \
+            2>&1 | tee -a "${CI_LOG_DIR}/variant.log"
+          gzip -9 -c "${out}" >"${out}.gz"
+          printf 'out=%s\n' "${out}" >>"${GITHUB_OUTPUT}"
 
       # The third boot hands the machine to the firmware, so prove the ESP is bootable first.
       # Runs for the convenience image too: it is the only proof that artifact gets, and it
@@ -238,21 +251,23 @@ jobs:
       # what a person reads in the run page, so it is spelled out rather than assembled
       # from an input (tests/modules/ci/test_display_names.sh holds that vocabulary).
       - name: Upload the install image
-        if: success() && !inputs.variant
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-install
-          path: ${{ runner.temp }}/ci/disk/*.img.gz
+          path: |
+            ${{ runner.temp }}/ci/disk/*.img.gz
+            !${{ runner.temp }}/ci/disk/*-wan-ssh.img.gz
           if-no-files-found: warn
           retention-days: 7
 
       - name: Upload the convenience image
-        if: success() && inputs.variant
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-install-wan-ssh
-          path: ${{ runner.temp }}/ci/disk/*.img.gz
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/ci/disk/*-wan-ssh.img.gz
+          if-no-files-found: error
           retention-days: 7
 
       # The five-column block, rendered by bash scripts/ci/stage-summary.sh --stage s3.
@@ -262,5 +277,5 @@ jobs:
         with:
           stage: s3
           result: ${{ job.status }}
-          artifact: ${{ inputs.variant && 'image-install-wan-ssh' || 'image-install' }}
+          artifact: image-install, image-install-wan-ssh
           artifact-file: ${{ runner.temp }}/ci/disk/n5105-ab-image.img.gz

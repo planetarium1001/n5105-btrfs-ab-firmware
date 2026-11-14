@@ -8,8 +8,10 @@
 # produces the second artifact on a tag build.
 #
 #   ac-6  the default render opens nothing; the convenience render opens exactly one rule
-#   ac-6  ci-s3.yml takes net_wan_ssh/artifact_name/boots and maps the first to the render
-#   ac-6  ci.yml builds the variant on tags only, without repeating the boot assertions
+#   ac-6  one build produces both images: ci-s3 always builds closed and derives the
+#         convenience one from it (scripts/ci/derive-variant.sh)
+#   ac-6  the derived image rewrites exactly one line, and refuses a template it cannot read
+#   ac-6  the two artifacts stay distinguishable in the run page and in the release
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -45,19 +47,44 @@ seed_hook="$root/platform/lib/net-defaults.sh"
 assert_contains "$(cat "$seed_hook")" 'nd_ssh}" = "open"' "ac-6 the hook keys the rule off the rendered value"
 assert_contains "$(cat "$seed_hook")" "wan-ssh-close:" "ac-6 the open branch prints how to close it"
 
+# --- ac-6: the derivation --------------------------------------------------
+# The convenience image is the default one with one line changed, so the rewrite is what
+# is asserted: it must touch exactly that line, and it must refuse a tree where the knob
+# is missing or duplicated rather than hand back an image nobody changed.
+derive="$root/scripts/ci/derive-variant.sh"
+tree="$tmp/tree"
+mkdir -p "$tree/etc"
+printf 'NET_WAN_DEV=eth0\nNET_WAN_SSH=closed\nNET_LAN_ADDR=192.168.100.1\n' >"$tree/etc/net-defaults.conf"
+out="$(bash "$derive" --rewrite-tree "$tree" 2>&1)"
+assert_eq "$?" "0" "ac-6 the rewrite succeeds on a rendered tree"
+assert_contains "$out" "derive-variant=ok net_wan_ssh=open" "ac-6 the rewrite reports what it produced"
+assert_eq "$(sed -n 's/^NET_WAN_SSH=//p' "$tree/etc/net-defaults.conf")" "open" \
+  "ac-6 the knob now reads open"
+assert_eq "$(sed -n 's/^NET_WAN_DEV=//p' "$tree/etc/net-defaults.conf")" "eth0" \
+  "ac-6 nothing else in the file moved"
+
+printf 'NET_WAN_DEV=eth0\n' >"$tree/etc/net-defaults.conf"
+out="$(bash "$derive" --rewrite-tree "$tree" 2>&1)"
+assert_eq "$?" "1" "ac-6 a template without the knob is refused"
+assert_contains "$out" "net-defaults-knob-count-0" "ac-6 the refusal says the knob was not found"
+
+printf 'NET_WAN_SSH=closed\nNET_WAN_SSH=open\n' >"$tree/etc/net-defaults.conf"
+out="$(bash "$derive" --rewrite-tree "$tree" 2>&1)"
+assert_eq "$?" "1" "ac-6 a duplicated knob is refused"
+
 # --- ac-6: the build wiring -------------------------------------------------
 s3="$(cat .github/workflows/ci-s3.yml)"
-assert_contains "$s3" "CI_NET_WAN_SSH: \${{ inputs.variant && 'open' || 'closed' }}" \
-  "ac-6 the WAN SSH default is derived from the variant, not a second input"
-assert_contains "$s3" "variant:" "ac-6 S3 takes a variant flag"
+assert_contains "$s3" "CI_NET_WAN_SSH: closed" "ac-6 the stage always builds the closed image"
+assert_contains "$s3" "name: Derive the convenience image" "ac-6 the variant is derived, not rebuilt"
+assert_contains "$s3" "derive-variant.sh --image" "ac-6 the derivation runs on the image just built"
+assert_contains "$s3" '*-wan-ssh.img.gz' "ac-6 the derived image is its own artifact"
 assert_contains "$s3" "name: image-install-wan-ssh" "ac-6 the variant artifact has a literal name"
-assert_contains "$s3" "boots:" "ac-6 S3 can skip the boot assertions for the variant"
 
 ci="$(cat .github/workflows/ci.yml)"
-assert_contains "$ci" "s3-wan-ssh:" "ac-6 the pipeline has a variant job"
-assert_contains "$ci" "variant: true" "ac-6 the variant job asks for the convenience image"
-assert_contains "$ci" "boots: false" "ac-6 the variant does not repeat the boot assertions"
-assert_contains "$ci" "startsWith(github.ref, 'refs/tags/v')" "ac-6 the variant is built on tags only"
+case "$ci" in
+  *"s3-wan-ssh:"*) assert_eq "present" "absent" "ac-6 there is no second build job" ;;
+  *) assert_eq "absent" "absent" "ac-6 there is no second build job" ;;
+esac
 
 # The published names have to be distinguishable at a glance.
 assert_contains "$(cat scripts/ci/release.sh)" '-install${release_variant:+-${release_variant}}.img.gz' \

@@ -43,7 +43,7 @@ whether `22/tcp` from the WAN is accepted.
 | --- | --- | --- |
 | GitHub release | `n5105-ab-<upstream>-install.img.gz` | write this one. No WAN rule at all, which is the same posture as an upstream ImmortalWrt image |
 | Convenience build, same tag | `n5105-ab-<upstream>-install-wan-ssh.img.gz` (artifact `image-install-wan-ssh` of the tag's run) | the same image plus one `allow_ssh_wan` rule: `22/tcp` from the WAN is accepted. Take it only when the machine cannot be reached from the LAN and cannot be given a keyboard and a monitor |
-| Actions artifact (tag builds) | `image-install`, `image-install-wan-ssh` | the two builds before the release stage names them; the file inside the convenience archive is still `n5105-ab-image.img.gz` |
+| Actions artifact | `image-install`, `image-install-wan-ssh` | the two images before the release stage names them; the convenience one is derived from the same build (`scripts/ci/derive-variant.sh`), so both sit on the boot assertions of that one run |
 | Actions artifact (every build) | `image-probe` | **never write this**: it is the S1 module probe, it looks for `/dev/vda` and powers off on real hardware |
 
 Both images come from the same upstream input and share one payload: `NET_WAN_SSH` is the only

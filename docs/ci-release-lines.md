@@ -44,7 +44,7 @@ of the one without it.
 
 | Where the second image comes from | What it is called |
 |---|---|
-| the `s3-wan-ssh` job in `ci.yml`, on a `v*` tag only | Actions artifact `image-install-wan-ssh`, file `n5105-ab-image.img.gz` inside it |
+| the `Derive the convenience image` step of `ci-s3.yml`, on every build | Actions artifact `image-install-wan-ssh`, file `n5105-ab-image-wan-ssh.img.gz` inside it |
 | `release.sh` with `CI_VARIANT_IMAGE=<the variant build>` | `n5105-ab-<upstream>-install-wan-ssh.img.gz` |
 
 The variant job deliberately runs `boots: false`: the two images differ in one rendered file,

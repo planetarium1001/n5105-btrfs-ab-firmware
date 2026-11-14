@@ -33,8 +33,8 @@ sha256sum -c SHA256SUMS
 | 位置 | 名称 | 用途 |
 | --- | --- | --- |
 | GitHub release | `n5105-ab-<upstream>-install.img.gz` | 写这个。完全没有任何 WAN 规则，与上游 ImmortalWrt 镜像同一个姿态 |
-| 同一 tag 的便利构建 | `n5105-ab-<upstream>-install-wan-ssh.img.gz`（该次运行里的产物名为 `image-install-wan-ssh`） | 同一份镜像，只多一条 `allow_ssh_wan`：WAN 侧接受 `22/tcp`。只在「从 LAN 够不到、也给不了键鼠」的机器上用 |
-| Actions 产物（tag 构建） | `image-install`、`image-install-wan-ssh` | 还没有被发布阶段命名的这两份构建；便利构建压缩包里那个文件名仍是 `n5105-ab-image.img.gz` |
+| 便利镜像（同一次构建派生） | `n5105-ab-<upstream>-install-wan-ssh.img.gz`（该次运行里的产物名为 `image-install-wan-ssh`） | 同一份镜像，只多一条 `allow_ssh_wan`：WAN 侧接受 `22/tcp`。只在「从 LAN 够不到、也给不了键鼠」的机器上用 |
+| Actions 产物 | `image-install`、`image-install-wan-ssh` | 还没有被发布阶段命名的这两份镜像；便利镜像由同一次构建派生（`scripts/ci/derive-variant.sh`），因此两份共享那一轮的引导断言 |
 | Actions 产物（每次构建） | `image-probe` | **永远不要写它**：它是 S1 模块探针，找 `/dev/vda`，在真机上会直接关机 |
 
 两个镜像来自同一批上游输入、共用同一个 payload：唯一不同的值是 `NET_WAN_SSH`，所以内核、rootfs、平台层与升级载荷逐字节相同。便利镜像是一条「进得去」的路，不是更安全的默认值 —— 它在一台 root 可能还没有口令的机器上放开 WAN 侧的 `22/tcp`，而且它自己会在控制台上说出来。
