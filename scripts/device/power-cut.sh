@@ -118,6 +118,20 @@ require_idle_machine() {
     return 0
 }
 
+# require_counter_in_initrd <case> <slot>: the case only means something on a machine whose
+# initramfs carries the counter. A payload from before this change boots exactly as it always
+# did - the marker is ignored - and the run would report a FAIL against the wrong half of the
+# machine. Checking first turns that into a GAP with a line that says what to install.
+require_counter_in_initrd() {
+    _case=$1
+    _slot=$2
+    if dev_ssh "gzip -dc /boot/initrd-${_slot} 2>/dev/null | grep -qa wf_boot_attempt_guard"; then
+        return 0
+    fi
+    CASE_NOTE="initramfs of slot ${_slot} has no candidate counter; install a payload built from this source first"
+    return 4
+}
+
 # inject_marker <slot> <attempt>: write the candidate marker in the form the boot writes.
 inject_marker() {
     _slot=$1
@@ -139,7 +153,7 @@ run_retry() {
 
     if [ "${DRY_RUN}" = "1" ]; then
         printf '%s 1/6 arm pending=%s (ab-slot pending %s)\n' "${_case}" "${_target}" "${_target}"
-        printf '%s 2/6 inject candidate marker attempt=1 for slot %s\n' "${_case}" "${_target}"
+        printf '%s 2/6 require the counter in /boot/initrd-%s, then inject attempt=1\n' "${_case}" "${_target}"
         printf '%s 3/6 reboot, wait for ssh, settle\n' "${_case}"
         printf '%s 4/6 expect stage=interrupted ... result=retry in the ring log\n' "${_case}"
         printf '%s 5/6 expect committed=%s pending=none\n' "${_case}" "${_target}"
@@ -152,6 +166,7 @@ run_retry() {
         CASE_NOTE="ab-slot pending ${_target} refused"
         return 4
     fi
+    require_counter_in_initrd "${_case}" "${_target}" || return $?
     if ! _marker=$(inject_marker "${_target}" 1); then
         CASE_NOTE="could not write the candidate marker on the ESP"
         return 4
@@ -205,6 +220,7 @@ run_cap() {
         CASE_NOTE="ab-slot pending ${_target} refused"
         return 4
     fi
+    require_counter_in_initrd "${_case}" "${_target}" || return $?
     if ! inject_marker "${_target}" "${_past}" >/dev/null; then
         CASE_NOTE="could not write the candidate marker on the ESP"
         return 4
