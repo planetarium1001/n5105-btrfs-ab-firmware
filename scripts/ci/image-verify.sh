@@ -158,7 +158,7 @@ done
 # read-back ran a moment too early, and the refusal then named the wrong cause downstream.
 for index in 1 2 3 4; do
     ci_wait_part_field "${loopdev}p${index}" PARTLABEL \
-        || ci_die "part-label-timeout: ${loopdev}p${index} carries no readable GPT PARTNAME after 10s"
+        || ci_die "part-label-timeout: ${loopdev}p${index} never became readable, so its GPT PARTNAME could not be checked"
 done
 
 # shellcheck disable=SC2024  # the redirect target is owned by the runner user

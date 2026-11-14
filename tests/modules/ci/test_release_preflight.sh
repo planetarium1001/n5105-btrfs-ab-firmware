@@ -24,6 +24,7 @@ cd "$root" || exit 1
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/logs"
 
 preflight="$root/scripts/ci/release-preflight.sh"
 grub_cfg_fixture="$here/fixtures/release-preflight/grub.cfg"
@@ -148,7 +149,10 @@ run_preflight() {
   local dir="$1"
   shift
   rm -f "$tmp/out.env"
-  env CI_TMP_ROOT="$tmp/ci" CI_OUTPUT_ENV="$tmp/out.env" \
+  # CI_LOG_DIR set the way setup-ci sets it - an existing directory of its own - so the
+  # scratch root under CI_TMP_ROOT has to be created rather than arrived at through the
+  # log directory. Without that this suite passed on a laptop and failed on the runner.
+  env CI_TMP_ROOT="$tmp/ci" CI_LOG_DIR="$tmp/logs" CI_OUTPUT_ENV="$tmp/out.env" \
     bash "$preflight" \
     --image-dir "$dir/image" \
     --payload-manifest "$dir/stage/manifest.json" \

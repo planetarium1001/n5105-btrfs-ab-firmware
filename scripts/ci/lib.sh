@@ -152,7 +152,12 @@ ci_stage_init() {
     CI_TMP_ROOT="${CI_TMP_ROOT:-${RUNNER_TEMP:-/tmp}/ci}"
     CI_LOG_DIR="${CI_LOG_DIR:-${CI_TMP_ROOT}/logs}"
     export CI_STAGE CI_TMP_ROOT CI_LOG_DIR
-    mkdir -p "${CI_LOG_DIR}"
+    # Both roots, not just the log directory: stages put their scratch under CI_TMP_ROOT
+    # with `mktemp -d`. setup-ci exports CI_LOG_DIR inside CI_TMP_ROOT, so creating the
+    # logs used to create both by accident; anything that overrides one of the two (the
+    # release preflight test overrides CI_TMP_ROOT and inherits CI_LOG_DIR from the job)
+    # left the scratch root missing and every mktemp under it failed.
+    mkdir -p "${CI_TMP_ROOT}" "${CI_LOG_DIR}"
     # The local output file belongs to a single stage run; truncate it so a second
     # local run does not leave stale keys in front of the fresh ones. The Actions
     # output file is appended to by design and is never touched here.

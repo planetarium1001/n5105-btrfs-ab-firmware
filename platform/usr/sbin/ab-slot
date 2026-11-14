@@ -957,9 +957,11 @@ cmd_packages_revert() {
     _layer="$(packages_layer)"
     _dir="${_layer}/apk/snapshots"
     if [ -z "${_to}" ]; then
-        # Sorted as file names, not as stripped ids: `snapshot-<id>.txt` and
-        # `snapshot-<id>-2.txt` are told apart by '.' against '-', and stripping first
-        # would invert which of the two sorts last (the same-second case in packages.sh).
+        # Sorted as file names, exactly as the `ls -1 | sort | tail -n 1` this replaces
+        # did: '.' (0x2e) sorts after '-' (0x2d), so `snapshot-<id>.txt` lands last and a
+        # bare revert replays the same snapshot as before. Stripping the prefix first
+        # would pick the `-N` write of the same second instead - a different snapshot,
+        # and the one packages.sh's sort key calls the later write.
         _to=$(find "${_dir}" -maxdepth 1 -name 'snapshot-*.txt' 2>/dev/null \
             | sed 's#^.*/##' | sort | tail -n 1 | sed 's/^snapshot-//; s/\.txt$//')
     fi

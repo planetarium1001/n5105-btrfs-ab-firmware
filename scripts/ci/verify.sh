@@ -255,7 +255,7 @@ if [ "${test_rc}" -ne 0 ]; then
         [ "${shown}" -lt 5 ] || break
         grep -q '^not ok' "${log}" 2>/dev/null || continue
         shown=$((shown + 1))
-        printf '----- %s (last 30 lines) -----\n' "${log#"${CI_REPO_ROOT}"/}" >&2
+        printf '%s\n' "----- ${log#"${CI_REPO_ROOT}"/} (last 30 lines) -----" >&2
         tail -n 30 "${log}" >&2 || true
     done
 fi
