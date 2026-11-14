@@ -160,7 +160,8 @@ uci commit firewall
 同时保留 `.apk` 包体，因为仓库只留最新版本。候选槽首启没走到健康检查（掉电）现在会被计数并记成
 `stage=interrupted`，重试一次之后机器会被移回已提交槽，而不是一直重试同一个槽。`VERSION` 终于和
 tag 对得上，镜像出厂自带更新源（`/etc/ab/update.conf`）指向本仓库的 release，所以刚刷完的机器上
-`ab-upgrade --feed-check` 直接可用。
+`ab-upgrade --feed-check` 不需要任何设置——在出现带 `index.txt` 的发布之前，它会以
+`feed-unreachable` 拒绝并说明原因，而不是悄悄给一个空答案。
 
 首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
 `config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认

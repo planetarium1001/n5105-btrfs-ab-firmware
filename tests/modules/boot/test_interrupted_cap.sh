@@ -75,6 +75,10 @@ assert_eq "$([ -f "$marker" ] && echo kept || echo gone)" "kept" \
   "ac-6 the marker survives so the next boot can try again"
 assert_eq "$([ -s "$tmp/reboot.trace" ] && echo rebooted || echo quiet)" "quiet" \
   "ac-6 a failed fail-safe write does not reboot into a slot the menu still points at"
+assert_contains "$(cat "$record")" "result=abandon-failed" \
+  "ac-6 the record stops claiming an abandon that did not happen"
+assert_contains "$(cat "$record")" "reason=" \
+  "ac-6 the failed abandon carries the reason the fail-safe reported"
 
 # --- ac-5: ab-boot publishes the record into the ring log -----------------
 boot_src="$(cat "$root/platform/etc/init.d/ab-boot")"
@@ -95,6 +99,11 @@ assert_eq "$([ -n "$guard_line" ] && echo found || echo missing)" "found" \
 assert_eq "$([ -n "$guard_line" ] && [ -n "$switch_line" ] && [ "$guard_line" -lt "$switch_line" ] && echo ordered || echo unordered)" \
   "ordered" "ac-6 the guard runs before the root switch (${guard_line:-?} < ${switch_line:-?})"
 assert_contains "$init_src" "wf_interrupted_escalate" "ac-6 init escalates an abandon decision"
+# An empty `last` field (a damaged or hand-edited marker) must not be read as an attempt
+# number in the log line: `retry 2 ` has no timestamp, and printing the 2 as `last=` would
+# be a line that lies about when the interrupted boot started.
+assert_contains "$init_src" 'candidate_last="?"' \
+  "ac-5 init names a missing timestamp instead of reusing the attempt"
 
 # --- ac-8: ab-commit clears both files when it decides --------------------
 commit_src="$(cat "$root/platform/etc/init.d/ab-commit")"

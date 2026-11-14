@@ -400,6 +400,16 @@ verdict is `revert result=fail` and the exit status is 1; a snapshot with no pac
 `upgrade.log`. Every verdict also prints `world=<M> matched=<K>`, the number of world
 entries and how many of them the snapshot's package set covers.
 
+The package path has reason tokens of its own, printed on the same
+`ab-slot: refused, reason=<token>` line:
+
+| Reason | Exit | What it means |
+| --- | --- | --- |
+| `apk-info-unparsed` | 1 | `apk info -v` printed a line that is not `name-version`, so the snapshot refuses to write a record with packages missing. A machine whose apk prints names only is the defect this catches |
+| `revert-payload-mismatch` | 74 | a `.apk` in the snapshot does not match the sha256 recorded in it. Nothing is installed: a set that does not verify is not a set |
+| `revert-across-base` | 74 | the snapshot was taken on another base; use `ab-slot rollback` instead |
+| `payload-gap` (a line, not a refusal) | - | the snapshot was written without payloads, and this line says why (`apk-fetch-failed`, `payload-incomplete`, `payloads-unwritable`). The manifest is still valid |
+
 The two ways back, side by side:
 
 | You want to undo | Use | What it restores |
@@ -416,6 +426,11 @@ Every question the tool asks has the same shape: `Proceed? [y/N] `. Enter, `n`, 
 `ab-upgrade: declined, nothing was written reason=declined` and exits `0`. Only `y`, `Y`,
 `yes` and `YES` accept. A firmware write that starts because somebody pressed Enter is a
 bug, so the safe answer is the default; scripts pass `--yes` instead of piping a `y`.
+
+`AB_UPGRADE_ASSUME_TTY=1` exists only for the test suite, which runs without a terminal: it
+makes the prompt read stdin as if one were attached. It does not change which answers
+accept, but it does bypass the `feed-noninteractive` refusal - so a pipeline that sets it can
+reach the prompt where it would otherwise be refused. Nothing in this project sets it.
 
 ## Exit status
 

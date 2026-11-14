@@ -179,7 +179,9 @@ slot whose first boot never reaches the health check - a power cut - is now coun
 recorded as `stage=interrupted`, and after one retry the machine is moved back to the
 committed slot instead of retrying it forever. `VERSION` finally matches the tag, and the
 image ships an update source (`/etc/ab/update.conf`) that points at this repository's own
-releases, so `ab-upgrade --feed-check` works on a freshly flashed machine.
+releases, so `ab-upgrade --feed-check` needs no setup on a freshly flashed machine - until a
+release carrying `index.txt` exists it refuses with `feed-unreachable` and says so, which is
+the honest answer rather than a silent one.
 
 The first-boot network generation arrived in `0.0.7`, by reusing the
 upstream `board_detect` and `config_generate` and layering this project's defaults on top:

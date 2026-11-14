@@ -708,6 +708,10 @@ cmd_pending() {
     _generation="$(state_generation)" || die "state has no generation"
     _committed="$(state_committed)" || die "state has no committed slot"
     write_state "${_generation}" "${_committed}" "${_slot}"
+    # A new candidate is a new try: the attempt counter and the interruption record belong
+    # to the campaign that just ended. Without this a slot armed again after an interrupted
+    # boot would inherit its count and could be abandoned on its first boot.
+    rm -f "${AB_ESP}/ab/candidate" "${AB_ESP}/ab/interrupted" 2>/dev/null || :
     say "ab-slot: slot ${_slot} is pending, next boot will try it"
     sync_or_die
 }
@@ -1116,7 +1120,8 @@ cmd_packages_revert() {
     # does not verify installs nothing at all rather than half of it.
     _pdir="${_dir}/snapshot-${_to}.d/payloads"
     _verify=0
-    _verified=$(ab_packages_payloads_verified "${_snap}" "${_pdir}") || _verify=$?
+    _verified_files=$(ab_packages_payload_files "${_snap}" "${_pdir}") || _verify=$?
+    _verified=$(printf '%s\n' "${_verified_files}" | grep -c . 2>/dev/null || true)
     if [ "${_verify}" -eq 2 ]; then
         say "ab-slot: refused, reason=revert-payload-mismatch"
         say "  A payload of snapshot ${_to} does not match the sha256 recorded in it."
@@ -1128,15 +1133,17 @@ cmd_packages_revert() {
     if [ "${_verify}" -eq 0 ]; then
         say "apkfile verified ${_verified} payloads in ${_pdir}"
         _packages_world_report "${_snap}"
-        if apk add --allow-untrusted "${_pdir}"/*.apk >>"${LOGDIR}/upgrade.log" 2>&1; then
+        # shellcheck disable=SC2086  # one path per line, expanded into arguments
+        if apk add --allow-untrusted ${_verified_files} >>"${LOGDIR}/upgrade.log" 2>&1; then
             say "revert result=ok changed=${_total} path=payloads"
             packages_log "revert result=ok changed=${_total} path=payloads snapshot=${_to}"
             return 0
         fi
-        # One transaction: it either lands or it does not, so there is nothing to report
-        # per package and nothing was changed.
-        say "revert result=fail changed=0 failed=${_total} path=payloads"
-        packages_log "revert result=fail changed=0 failed=${_total} path=payloads snapshot=${_to}"
+        # One transaction: a failure is a failure of the transaction, not "N packages
+        # failed", and apk does not promise that a commit that broke halfway changed
+        # nothing. The verdict says what is known instead of inventing a count.
+        say "revert result=fail changed=unknown failed=transaction path=payloads"
+        packages_log "revert result=fail changed=unknown failed=transaction path=payloads snapshot=${_to}"
         exit 1
     fi
     if [ -d "${_pdir}" ]; then

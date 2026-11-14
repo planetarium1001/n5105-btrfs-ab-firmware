@@ -599,8 +599,12 @@ case "${candidate_verdict}" in
         candidate_kind=${candidate_verdict%% *}
         candidate_rest=${candidate_verdict#* }
         candidate_attempt=${candidate_rest%% *}
-        candidate_last=${candidate_rest#* }
-        wf_say "[boot] stage=interrupted slot=${slot} attempt=${candidate_attempt} last=${candidate_last:-?} result=${candidate_kind}"
+        case "${candidate_rest}" in
+            *" "*) candidate_last=${candidate_rest#* } ;;
+            *) candidate_last="" ;;
+        esac
+        [ -n "${candidate_last}" ] || candidate_last="?"
+        wf_say "[boot] stage=interrupted slot=${slot} attempt=${candidate_attempt} last=${candidate_last} result=${candidate_kind}"
         if [ "${candidate_kind}" = "abandon" ]; then
             wf_interrupted_escalate "$(wf_candidate_path)" "${slot}" \
                 "${candidate_attempt}" "${candidate_last}"

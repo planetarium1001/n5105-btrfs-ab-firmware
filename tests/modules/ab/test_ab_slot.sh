@@ -343,6 +343,19 @@ slot_cmd abandon >/dev/null 2>&1
 assert_contains "$(cat "$esp/ab/state.json")" '"pending": null' "ac-2 abandon clears pending"
 assert_contains "$(cat "$esp/ab/state.json")" '"committed": "a"' "ac-2 abandon leaves committed alone"
 
+# A freshly armed candidate is a fresh try. The attempt counter and the interruption record
+# belong to the campaign that just ended, so arming a slot clears them; otherwise a slot
+# re-armed after an interrupted boot would inherit its count and could be abandoned on its
+# first boot.
+printf 'b 2026-11-14T21:00:00Z 2\n' >"$esp/ab/candidate"
+printf 'slot=b attempt=2 last=2026-11-14T20:00:00Z result=retry\n' >"$esp/ab/interrupted"
+write_state a none 2
+slot_cmd pending b >/dev/null 2>&1
+assert_eq "$([ -f "$esp/ab/candidate" ] && printf kept || printf gone)" "gone" \
+  "ac-5 arming a candidate clears the previous attempt counter"
+assert_eq "$([ -f "$esp/ab/interrupted" ] && printf kept || printf gone)" "gone" \
+  "ac-5 arming a candidate clears the previous interruption record"
+
 # no temporary file is left behind
 assert_eq "$(find "$esp/ab" -name 'state.json.tmp.*' | wc -l | tr -d ' ')" "0" \
   "ac-2 the atomic write leaves no temporary file"

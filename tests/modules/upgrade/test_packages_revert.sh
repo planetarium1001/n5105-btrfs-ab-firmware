@@ -380,6 +380,29 @@ assert_contains "$out" "revert world=3 matched=2" \
 assert_contains "$out" "world-unmatched  zlib" \
   "ac-3 a world entry with no package in the snapshot is named"
 assert_contains "$out" "apkfile verified 7" "ac-4 every payload's digest is verified before installing"
+# The install set is the verified set. `apk fetch --recursive` also drops dependency
+# archives into the directory, and a glob would install the ones the snapshot never listed
+# and nothing ever checked.
+extra="$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_id.d/payloads/extra-not-listed-9.9-r9.apk"
+printf 'NOT IN THE SNAPSHOT\n' >"$extra"
+: >"$APK_CALLS"
+out="$(slot_run packages revert --to "$snap_id")"
+assert_eq "$(grep -c 'extra-not-listed' "$APK_CALLS")" "0" \
+  "ac-4 a file the snapshot does not list is never installed"
+assert_eq "$(grep -c '^add ' "$APK_CALLS")" "1" \
+  "ac-4 the transaction still runs once over the verified files"
+rm -f "$extra"
+
+# A transaction that fails is a failed transaction. It is not "N packages failed" and it is
+# not "0 changed": apk makes no promise about a commit that broke halfway.
+: >"$APK_CALLS"
+out="$(APK_ADD_FAIL=1 slot_run packages revert --to "$snap_id")"
+rc=$?
+assert_eq "$rc" "1" "ac-4 a failed payload transaction exits 1"
+assert_contains "$out" "revert result=fail changed=unknown failed=transaction" \
+  "ac-4 a failed transaction is reported as one, not as per-package failures"
+assert_eq "$(printf '%s' "$out" | grep -c 'changed=0')" "0" \
+  "ac-4 a broken transaction does not claim that nothing changed"
 
 # A payload that does not match its recorded digest means the record cannot be trusted:
 # nothing is installed at all.

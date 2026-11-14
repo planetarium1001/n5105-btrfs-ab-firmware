@@ -359,6 +359,15 @@ ab-slot packages revert          # 按最新一份快照回放版本
 是 `revert result=empty`。`failed` 行说的是哪个包，不是原因：apk 说了什么在 `upgrade.log` 里。
 每个结论还会打 `world=<M> matched=<K>`：world 条目数与快照包集合覆盖了多少。
 
+包这条路有自己的 reason token，同样打在 `ab-slot: refused, reason=<token>` 行上：
+
+| reason | 退出码 | 含义 |
+| --- | --- | --- |
+| `apk-info-unparsed` | 1 | `apk info -v` 打出了一行不是 `name-version` 的内容，快照因此拒绝写一条会丢包的记录。只打包名的 apk 正是这条要抓的缺陷 |
+| `revert-payload-mismatch` | 74 | 快照里的某个 `.apk` 与记录的 sha256 不符。一个装不了一套的集合就不是集合：什么都不装 |
+| `revert-across-base` | 74 | 快照是在另一个 base 上取的；跨 base 请用 `ab-slot rollback` |
+| `payload-gap`（是一行，不是拒绝） | - | 快照没带包体，这一行说明原因（`apk-fetch-failed`、`payload-incomplete`、`payloads-unwritable`）。清单仍然有效 |
+
 两条回退路径并列：
 
 | 想撤销什么 | 用什么 | 恢复什么 |
@@ -374,6 +383,10 @@ ab-slot packages revert          # 按最新一份快照回放版本
 而不确认不是错误——它打一行 `ab-upgrade: declined, nothing was written reason=declined` 并以 `0` 退出。
 只有 `y`、`Y`、`yes`、`YES` 才算同意。按一下回车就开始写固件是 bug，所以安全答案才是默认；
 脚本要同意就传 `--yes`，不要塞一个 `y` 进管道。
+
+`AB_UPGRADE_ASSUME_TTY=1` 只给测试套件用（它没有终端）：让提示把 stdin 当作终端来读。
+它不改变哪些答案算同意，但确实绕过了 `feed-noninteractive` 的拒绝——所以设了它的管道
+能走到本来会被拒绝的那个提示。本项目里没有任何地方设置它。
 
 ## 退出码
 

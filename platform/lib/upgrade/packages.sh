@@ -341,24 +341,36 @@ _packages_payload_file() {
 # `UNTRUSTED signature` and we do not carry its keyring, so `--allow-untrusted` is only
 # safe because the record says what each byte should be.
 ab_packages_payloads_verified() {
+    _verified_files=$(ab_packages_payload_files "$1" "$2") || return $?
+    printf '%s\n' "${_verified_files}" | grep -c .
+}
+
+# ab_packages_payload_files <snapshot> <payload-dir>: the .apk paths the snapshot lists and
+# whose digest matches, one per line. Same returns as ab_packages_payloads_verified.
+#
+# The caller installs exactly these paths instead of a glob of the directory: a file that
+# apk fetch dropped in but the snapshot does not list was never checked by anything, and
+# installing it would put a package on the machine that no record vouches for.
+ab_packages_payload_files() {
     _snap=$1
     _pdir=$2
     _apkfiles=$(sed -n 's/^apkfile  *//p' "${_snap}" 2>/dev/null)
     [ -n "${_apkfiles}" ] || return 1
     [ -d "${_pdir}" ] || return 1
-    _n=0
+    _found=""
     while IFS=' ' read -r _name _sha; do
         [ -n "${_name}" ] || continue
         _file=$(_packages_payload_file "${_pdir}" "${_name}" "") || return 1
         _got=$(_packages_sha256 "${_file}")
         [ -n "${_got}" ] || return 2
         [ "${_got}" = "${_sha}" ] || return 2
-        _n=$((_n + 1))
+        _found="${_found}${_file}
+"
     done <<APKFILES
 ${_apkfiles}
 APKFILES
-    [ "${_n}" -gt 0 ] || return 1
-    printf '%s\n' "${_n}"
+    [ -n "${_found}" ] || return 1
+    printf '%s' "${_found}"
 }
 
 # _packages_world_report <snapshot>: reconcile the world with the package set. The count

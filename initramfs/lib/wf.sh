@@ -545,12 +545,25 @@ wf_boot_attempt_guard() {
     # attempt 1 is the first candidate boot; AB_BOOT_RETRY_MAX is how many *retries* are
     # allowed after an interruption, so the cap is reached at attempt max+1.
     if [ "${_bg_next}" -gt "$((_bg_max + 1))" ]; then
-        wf_interrupted_record "${_bg_record}" "${_bg_slot}" "${_bg_next}" "${_bg_mlast}" \
-            abandon attempt-limit
+        _bg_result=abandon
+    else
+        _bg_result=retry
+    fi
+    if [ "${_bg_result}" = "abandon" ]; then
+        if ! wf_interrupted_record "${_bg_record}" "${_bg_slot}" "${_bg_next}" \
+            "${_bg_mlast}" abandon attempt-limit; then
+            # The ESP refused the record. The breadcrumb ladder still has a p4 zone, and an
+            # interruption nobody can read is the defect this whole counter exists for.
+            wf_mark interrupted "record-unwritable" "slot=${_bg_slot}" \
+                "attempt=${_bg_next}" "last=${_bg_mlast:-?}" "result=abandon"
+        fi
         printf 'abandon %s %s\n' "${_bg_next}" "${_bg_mlast}"
         return 0
     fi
-    wf_interrupted_record "${_bg_record}" "${_bg_slot}" "${_bg_next}" "${_bg_mlast}" retry
+    if ! wf_interrupted_record "${_bg_record}" "${_bg_slot}" "${_bg_next}" "${_bg_mlast}" retry; then
+        wf_mark interrupted "record-unwritable" "slot=${_bg_slot}" \
+            "attempt=${_bg_next}" "last=${_bg_mlast:-?}" "result=retry"
+    fi
     printf 'retry %s %s\n' "${_bg_next}" "${_bg_mlast}"
 }
 
@@ -582,6 +595,11 @@ wf_interrupted_escalate() {
             ;;
         *)
             wf_log "fail-safe abandon did not write (${WF_ABANDON_STATE:-skip}); booting the candidate and keeping the marker"
+            # The record that made this decision said `result=abandon`; the machine did not
+            # abandon. Rewriting it is what keeps the next runtime boot from publishing a
+            # line that is not true.
+            wf_interrupted_record "$(wf_interrupted_path)" "${_ie_slot}" "${_ie_attempt}" \
+                "${_ie_last}" abandon-failed "${AB_SLOT_CFG_REASON:-unknown}"
             return 1
             ;;
     esac
