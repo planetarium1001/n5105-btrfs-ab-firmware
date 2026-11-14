@@ -12,6 +12,8 @@
 #   ac-5  no previous release: skipped, with the reason spelled out
 #   ac-6  the image a caller hands over may be compressed: a .gz is decompressed, a plain
 #         file is copied, and a torn archive says so instead of reaching losetup
+#   ac-7  the two boots are handed the old image's own kernel and initrd, an unreadable ESP
+#         is a fail verdict, and a failed boot leaves its exit status in the serial log
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -146,6 +148,45 @@ assert_contains "${torn}" "cannot-decompress" \
   "ac-6 the refusal names the compression, so nobody reads it as a loop-device error"
 assert_eq "$([ -e "$tmp/staged-torn.img" ] && echo present || echo absent)" "absent" \
   "ac-6 a torn archive leaves no half-written image behind"
+
+# --- ac-7: the boots are handed the old image's own kernel --------------------
+# The two boots run in uefi-disk mode, where OVMF boots the disk through GRUB: the log has to
+# describe the system being upgraded, and the payload's kernel is the new one. qemu-smoke
+# requires CI_KERNEL and CI_INITRAMFS even in that mode, which is how a boot with neither used
+# to die unrecorded. The selection half is reachable without a loop device, so it is asserted
+# for real: the mount half needs sudo and is CI's to prove.
+stage_boot_files() { bash "$script" stage-boot-files --esp "$1" --dest "$2" 2>&1; }
+
+mkdir -p "$tmp/esp"
+printf 'kernel of the old image\n' >"$tmp/esp/vmlinuz-a"
+printf 'initrd of the old image\n' >"$tmp/esp/initrd-a"
+stage_boot_files "$tmp/esp" "$tmp/boot-staged" >/dev/null
+assert_eq "$?" "0" "ac-7 the old image's boot files are staged"
+assert_eq "$(cat "$tmp/boot-staged/kernel.bin" 2>/dev/null)" "kernel of the old image" \
+  "ac-7 the staged kernel is the one on the ESP"
+assert_eq "$(cat "$tmp/boot-staged/initrd.cpio.gz" 2>/dev/null)" "initrd of the old image" \
+  "ac-7 the staged initrd is the one on the ESP"
+
+mkdir -p "$tmp/esp-no-kernel"
+printf 'initrd only\n' >"$tmp/esp-no-kernel/initrd-a"
+assert_eq "$(stage_boot_files "$tmp/esp-no-kernel" "$tmp/boot-missing" >/dev/null; echo "$?")" "1" \
+  "ac-7 an ESP without a kernel is refused"
+assert_eq "$([ -e "$tmp/boot-missing/kernel.bin" ] && echo present || echo absent)" "absent" \
+  "ac-7 a refused ESP stages nothing"
+
+stage_text="$(cat "$script")"
+assert_eq "$(grep -c 'CI_KERNEL="${_boot}/kernel.bin"' "$script")" "2" \
+  "ac-7 both boots get the kernel the old image carries"
+assert_eq "$(grep -c 'CI_INITRAMFS="${_boot}/initrd.cpio.gz"' "$script")" "2" \
+  "ac-7 both boots get that image's initrd"
+assert_contains "${stage_text}" "cannot-read-the-old-esp" \
+  "ac-7 an ESP that cannot be read is a fail verdict, not a skip"
+assert_contains "${stage_text}" "[cross] boot 1 exited" \
+  "ac-7 a failed first boot leaves its exit status in the serial log"
+assert_contains "${stage_text}" "[cross] boot 2 exited" \
+  "ac-7 a failed second boot leaves its exit status in the serial log"
+assert_eq "$(grep -c 'qemu-smoke.sh" .*|| true' "$script")" "0" \
+  "ac-7 no boot swallows its own failure"
 
 # A machine without QEMU says so instead of pretending it ran.
 if command -v qemu-system-x86_64 >/dev/null 2>&1; then

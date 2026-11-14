@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: the cross grading output reaches the run log
+# reason: ci: the cross boots take the old image kernel, not the payload one
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -54,6 +54,7 @@ sh-flag scripts/ci/boot-member.sh --group
 sh-flag scripts/ci/boot-member.sh --numeric-owner
 sh-flag scripts/ci/boot-member.sh --owner
 sh-flag scripts/ci/cross-upgrade.sh --dest
+sh-flag scripts/ci/cross-upgrade.sh --esp
 sh-flag scripts/ci/cross-upgrade.sh --find
 sh-flag scripts/ci/cross-upgrade.sh --help
 sh-flag scripts/ci/cross-upgrade.sh --image
@@ -226,7 +227,9 @@ sh-fn scripts/ci/boot-restart.sh boot_restart_counts
 sh-fn scripts/ci/boot-restart.sh boot_restart_verdict
 sh-fn scripts/ci/cross-upgrade.sh cross_prepare
 sh-fn scripts/ci/cross-upgrade.sh cross_stage_image
+sh-fn scripts/ci/cross-upgrade.sh esp_boot_files
 sh-fn scripts/ci/cross-upgrade.sh esp_digests
+sh-fn scripts/ci/cross-upgrade.sh esp_stage_boot_files
 sh-fn scripts/ci/cross-upgrade.sh extract_blocks
 sh-fn scripts/ci/cross-upgrade.sh field
 sh-fn scripts/ci/cross-upgrade.sh grade
@@ -417,7 +420,9 @@ sh-var scripts/ci/boot-member.sh CI_REQUIRE_BOOTLOADER
 sh-var scripts/ci/boot-member.sh CI_SCRIPT_DIR
 sh-var scripts/ci/boot-member.sh CI_TMP_ROOT
 sh-var scripts/ci/boot-member.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/cross-upgrade.sh CI_INITRAMFS
 sh-var scripts/ci/cross-upgrade.sh CI_JUDGE_PREFIX
+sh-var scripts/ci/cross-upgrade.sh CI_KERNEL
 sh-var scripts/ci/cross-upgrade.sh CI_MIN_UPSTREAM_MAJOR
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_CASE
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_DISK

@@ -42,6 +42,8 @@ usage: cross-upgrade.sh <subcommand>
   parse   --serial <file> --out <dir>    split the status blocks out of a saved serial log
   stage-image --src <file> --dest <file> write the image as a plain disk image (a .gz is
                                          decompressed, anything else is copied)
+  stage-boot-files --esp <dir> --dest <dir> copy an ESP's vmlinuz-* and initrd-* into a
+                                         staging directory as kernel.bin and initrd.cpio.gz
 USAGE
 }
 
@@ -249,6 +251,56 @@ extract_blocks() {
     ' "${_serial}"
 }
 
+# esp_stage_boot_files <esp-dir> <dest-dir>: the boot files an already-mounted ESP carries.
+#
+# Kept apart from the mount below so the selection is reachable without a loop device: a test
+# hands it a directory. It stages the first vmlinuz-* as kernel.bin and the first initrd-* as
+# initrd.cpio.gz, and stages nothing when the tree carries no such pair.
+esp_stage_boot_files() {
+    local _esp=$1 _dest=$2 _cand _kernel="" _initrd=""
+    for _cand in "${_esp}"/vmlinuz-*; do
+        [ -f "${_cand}" ] || continue
+        _kernel=${_cand}
+        break
+    done
+    for _cand in "${_esp}"/initrd-*; do
+        [ -f "${_cand}" ] || continue
+        _initrd=${_cand}
+        break
+    done
+    [ -n "${_kernel}" ] && [ -n "${_initrd}" ] || return 1
+    mkdir -p "${_dest}" || return 1
+    cp "${_kernel}" "${_dest}/kernel.bin" 2>/dev/null &&
+        cp "${_initrd}" "${_dest}/initrd.cpio.gz" 2>/dev/null && return 0
+    rm -f "${_dest}/kernel.bin" "${_dest}/initrd.cpio.gz"
+    return 1
+}
+
+# esp_boot_files <image> <dest-dir>: mount the image's ESP read-only and stage its boot files.
+#
+# The two boots in run_stage hand qemu-smoke the kernel and initrd of the system being
+# upgraded, not the payload's: in uefi-disk mode the firmware boots the disk through GRUB, so
+# the log has to describe the old image, and the payload's kernel is the new one.
+esp_boot_files() {
+    local _image=$1 _dest=$2 _loop _mnt _ok
+    _loop=$(sudo losetup --find --show --partscan "${_image}") || return 1
+    _mnt=$(mktemp -d)
+    sudo mount -o ro "${_loop}p1" "${_mnt}" || {
+        sudo losetup -d "${_loop}"
+        rmdir "${_mnt}" 2>/dev/null || :
+        return 1
+    }
+    if esp_stage_boot_files "${_mnt}" "${_dest}"; then
+        _ok=0
+    else
+        _ok=1
+    fi
+    sudo umount "${_mnt}"
+    sudo losetup -d "${_loop}"
+    rmdir "${_mnt}" 2>/dev/null || :
+    return "${_ok}"
+}
+
 # esp_digests <image> <out>: the kernel and initrd actually written to the ESP.
 esp_digests() {
     # local, not the file's usual bare underscore style: run_stage also owns _image and
@@ -300,15 +352,31 @@ run_stage() {
         return 0
     }
 
+    # The kernels the two boots are handed come from the old image's own ESP, not from the
+    # payload: uefi-disk boots the disk through GRUB, and the log has to describe the system
+    # being upgraded. qemu-smoke requires both names in that mode too, and the payload's
+    # kernel is the new one.
+    _boot="${_work}/boot"
+    if ! esp_boot_files "${_work}/old.img" "${_boot}"; then
+        printf 'cross-upgrade=fail reason=cannot-read-the-old-esp\n'
+        return 0
+    fi
+
     # Boot 1 installs and prints the pending status; boot 2 commits and prints the third.
+    # A failed boot is still graded, never trusted: the line below keeps the exit status in
+    # the serial log, because swallowing it is how a missing CI_KERNEL once disappeared.
     CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
+        CI_KERNEL="${_boot}/kernel.bin" CI_INITRAMFS="${_boot}/initrd.cpio.gz" \
         CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
         CI_QEMU_CASE="cross-boot1" \
-        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/serial.log" 2>&1 || true
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/serial.log" 2>&1 ||
+        printf '[cross] boot 1 exited %s\n' "$?" >>"${_out}/serial.log"
     CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
+        CI_KERNEL="${_boot}/kernel.bin" CI_INITRAMFS="${_boot}/initrd.cpio.gz" \
         CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
         CI_QEMU_CASE="cross-boot2" \
-        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >>"${_out}/serial.log" 2>&1 || true
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >>"${_out}/serial.log" 2>&1 ||
+        printf '[cross] boot 2 exited %s\n' "$?" >>"${_out}/serial.log"
 
     extract_blocks "${_out}/serial.log" "${_out}"
     esp_digests "${_work}/old.img" "${_out}/esp.sha256" || :
@@ -356,6 +424,18 @@ case "${cmd}" in
         [ -n "${serial}" ] && [ -n "${out}" ] || ci_die "--serial and --out are required"
         mkdir -p "${out}"
         extract_blocks "${serial}" "${out}"
+        ;;
+    stage-boot-files)
+        esp="" dest=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --esp) esp=${2:?--esp needs a value}; shift 2 ;;
+                --dest) dest=${2:?--dest needs a value}; shift 2 ;;
+                *) ci_die "unknown argument $1" ;;
+            esac
+        done
+        [ -n "${esp}" ] && [ -n "${dest}" ] || ci_die "--esp and --dest are required"
+        esp_stage_boot_files "${esp}" "${dest}"
         ;;
     stage-image)
         src="" dest=""
