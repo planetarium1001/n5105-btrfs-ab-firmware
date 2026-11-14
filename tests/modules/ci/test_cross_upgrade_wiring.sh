@@ -172,4 +172,13 @@ assert_contains "$script" "cross-upgrade=ok" "ac-3 the script prints a verdict"
 assert_contains "$script" "cross-upgrade=fail reason=" "ac-3 a failure names its reason"
 assert_contains "$script" "abandon-not-recorded" "ac-4 the injected failure is graded"
 
+# --- ac-2: a crashed grading must not be silent ----------------------------
+# The verdict is captured with $( ), so the script's own output has to be tee-ed to the
+# run log as well: run 43575531830 failed with a bare "exit code 1" and the real reason
+# (a missing CI_KERNEL for qemu-smoke) was only in an artifact.
+assert_contains "$stage" 'tee -a "${log}"' \
+  "ac-2 the grading output reaches the run log, not only the captured verdict"
+assert_contains "$stage" 'produced no verdict line' \
+  "ac-2 a script that dies before printing a verdict says so"
+
 finish

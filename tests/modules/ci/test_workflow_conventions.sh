@@ -236,7 +236,9 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # deliberately when a stage is added (cross-version upgrade: two reusable calls and a
 # selector). The baseline it replaced was 3269.
 #
-# Raised 2520 -> 2540 for a cross-cutting fix, not a stage: every workflow that pipes a
+# Raised 2580 -> 2600 for the cross grading step's diagnostics (it now tees the script's
+# output to the run log and refuses a run that produced no verdict), and earlier
+# 2520 -> 2540 for a cross-cutting fix, not a stage: every workflow that pipes a
 # stage script into tee now carries `defaults: {run: {shell: bash}}`, one line each. The
 # runner's default shell drops a pipeline's exit status, so without it a gate cannot fail
 # its step (run 43553833091: image-verify refused the image and the step stayed green).
@@ -249,7 +251,7 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # The artifact suffixes that keep the cross stage's two builds apart (ci-fetch, ci-s3) fit in
 # this budget: deleting the stage's duplicate payload build paid for them. Measured 2578
 # (the cross job's runner preparation is three of those lines).
-CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2580}
+CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2600}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le "${CI_WORKFLOW_LINE_CEILING}" ]; then

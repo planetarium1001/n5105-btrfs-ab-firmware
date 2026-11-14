@@ -224,10 +224,20 @@ jobs:
         run: |
           set -euo pipefail
           out="${RUNNER_TEMP}/ci/cross-out"
+          log="${CI_LOG_DIR:-/tmp}/cross.log"
           image="$(find "${RUNNER_TEMP}/ci/cross" -name '*.img.gz' -print -quit)"
           payload="$(find "${RUNNER_TEMP}/ci/cross-payload" -name '*.tar' -print -quit)"
-          verdict="$(bash scripts/ci/cross-upgrade.sh run \
-            --image "${image}" --payload "${payload}" --out "${out}" | tee -a "${CI_LOG_DIR:-/tmp}/cross.log")"
+          # The verdict is captured, so the script's own output has to reach the run log as
+          # well: with only $( ) the step died on "exit code 1" and said nothing, and the
+          # reason sat in an artifact nobody had downloaded yet (run 43575531830).
+          bash scripts/ci/cross-upgrade.sh run \
+            --image "${image}" --payload "${payload}" --out "${out}" 2>&1 \
+            | tee -a "${log}" || true
+          verdict="$(sed -n 's/^cross-upgrade=/cross-upgrade=/p' "${log}" | tail -n 1)"
+          [ -n "${verdict}" ] || {
+            echo "::error::cross-upgrade.sh produced no verdict line; its output is above"
+            exit 1
+          }
           printf '%s\n' "${verdict}" | tee -a "${GITHUB_STEP_SUMMARY}"
           printf 'verdict=%s\n' "${verdict}" >>"${GITHUB_OUTPUT}"
           case "${verdict}" in
