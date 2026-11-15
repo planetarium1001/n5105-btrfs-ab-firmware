@@ -14,6 +14,8 @@
 #         file is copied, and a torn archive says so instead of reaching losetup
 #   ac-7  the two boots are handed the old image's own kernel and initrd, an unreadable ESP
 #         is a fail verdict, and a failed boot leaves its exit status in the serial log
+#   ac-1  the run half appends the guest serial qemu-smoke copies into CI_LOG_DIR, in boot
+#         order, and keeps the wrapper's stdout as diagnostics only
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -242,5 +244,123 @@ mkdir -p "$empty_dir"
 out="$(bash "$script" assert --out "$empty_dir" 2>&1)"
 assert_contains "$out" "cross-upgrade=fail reason=status-after-missing" \
   "ac-7 a missing status block is a verdict, not a silent exit"
+
+# --- ac-1: the guest serial, not qemu-smoke's stdout ------------------------
+# qemu-smoke keeps the guest console in ${CI_LOG_DIR}/serial-<case>.log; its stdout is
+# stage progress for a human. The stage used to redirect the stdout into serial.log, so
+# extract_blocks never found a CROSS-STATUS-* line and every graded run ended
+# reason=status-after-missing (tag run 43622253559). The run half needs sudo and a loop
+# device, so it is exercised against a copy of the script whose qemu-smoke is a stub that
+# writes the real serial copy and a decoy on stdout. The copy lives next to a copy of
+# lib.sh on purpose: the script resolves both from its own directory, so nothing inside
+# the script has to be patched for the test.
+fake="$tmp/fake-cross"
+mkdir -p "$fake"
+cp "$script" "$fake/cross-upgrade.sh"
+cp "$root/scripts/ci/lib.sh" "$fake/lib.sh"
+cat >"$fake/qemu-smoke.sh" <<'STUB'
+#!/usr/bin/env bash
+# Stub qemu-smoke: the guest serial goes where qemu-smoke puts it, progress goes to stdout.
+set -euo pipefail
+case_label="${CI_QEMU_CASE:?CI_QEMU_CASE is required}"
+mkdir -p "${CI_LOG_DIR}"
+# If the stage grades this stdout, "wrong" is what it grades.
+printf 'CROSS-STATUS-BEFORE\nslot=wrong upper=@stdout generation=0 committed=z pending=z next=z\n'
+printf 'stage progress for %s\n' "${case_label}"
+case "${case_label}" in
+  cross-boot1)
+    cat >"${CI_LOG_DIR}/serial-${case_label}.log" <<'SERIAL1'
+CROSS-STATUS-BEFORE
+slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=none next=a
+CROSS-INSTALL
+ab-upgrade: installed 25.12.4 into slot b
+CROSS-STATUS-PENDING
+slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=b next=b
+CROSS-STATUS-DONE
+SERIAL1
+    ;;
+  cross-boot2)
+    cat >"${CI_LOG_DIR}/serial-${case_label}.log" <<'SERIAL2'
+CROSS-STATUS-COMMITTED
+slot=b upper=@overlay-25.12.4 generation=2 committed=b pending=none next=b packages=aligned
+stage=commit slot=b result=ok
+CROSS-STATUS-DONE
+SERIAL2
+    ;;
+  *)
+    printf 'unexpected case label: %s\n' "${case_label}" >&2
+    exit 1
+    ;;
+esac
+STUB
+
+# The host side of run_stage, stubbed: a loop device that answers losetup, a mount that
+# populates the mount point instead of mounting (p1 is the ESP, p4 carries the writable
+# layer), and the two commands run_stage only asks to exist.
+stubs="$tmp/bin"
+mkdir -p "$stubs"
+printf '#!/bin/sh\nexec "$@"\n' >"$stubs/sudo"
+printf '#!/bin/sh\ncase "$1" in --find) printf "loop-test\\n" ;; esac\nexit 0\n' >"$stubs/losetup"
+printf '#!/bin/sh\nexit 0\n' >"$stubs/umount"
+printf '#!/bin/sh\nexit 0\n' >"$stubs/qemu-system-x86_64"
+cat >"$stubs/mount" <<'MOUNT'
+#!/usr/bin/env bash
+# Stub mount: the last argument is the mount point; fill it like the image would.
+set -euo pipefail
+mnt="${!#}"
+dev=""
+for arg in "$@"; do
+  [ "$arg" = "$mnt" ] && continue
+  case "$arg" in -*) continue ;; esac
+  dev="$arg"
+done
+mkdir -p "$mnt"
+case "$dev" in
+  *p1)
+    printf 'kernel of the old image\n' >"$mnt/vmlinuz-a"
+    printf 'initrd of the old image\n' >"$mnt/initrd-a"
+    ;;
+  *p4) mkdir -p "$mnt/@overlay-25.12.2/upper" ;;
+esac
+MOUNT
+chmod +x "$stubs"/*
+
+printf 'a small disk image, not a block device\n' >"$tmp/run-old.img"
+mkdir -p "$tmp/run-payload"
+printf 'kernel of the old image\n' >"$tmp/run-payload/kernel.bin"
+printf 'initrd of the old image\n' >"$tmp/run-payload/initramfs.cpio.gz"
+tar -cf "$tmp/run-payload.tar" -C "$tmp/run-payload" kernel.bin initramfs.cpio.gz
+
+run_ci="$tmp/run-ci"
+mkdir -p "$run_ci/logs"
+run_out="$tmp/run-out"
+run_text="$(PATH="$stubs:$PATH" \
+  CI_REPO_ROOT="$root" CI_TMP_ROOT="$run_ci" CI_LOG_DIR="$run_ci/logs" \
+  bash "$fake/cross-upgrade.sh" run \
+  --image "$tmp/run-old.img" --payload "$tmp/run-payload.tar" --out "$run_out" 2>&1)"
+run_rc=$?
+assert_eq "$run_rc" "0" "ac-1 the run half completes with a stub qemu-smoke"
+assert_contains "${run_text}" "cross-upgrade=ok slot=b generation=2" \
+  "ac-1 the verdict is graded from the guest serial of both boots"
+assert_file_exists "$run_out/status.before" "ac-1 the first boot's serial block is graded"
+assert_file_exists "$run_out/status.after" "ac-1 the pending block is graded"
+assert_file_exists "$run_out/status.committed" "ac-1 the commit block is graded"
+assert_contains "$(cat "$run_out/status.before" 2>/dev/null)" "upper=@overlay-25.12.2" \
+  "ac-1 the before block is the guest's, not the decoy on stdout"
+assert_eq "$(grep -c 'slot=wrong' "$run_out/status.before" 2>/dev/null || true)" "0" \
+  "ac-1 qemu-smoke's stdout never reaches a status block"
+assert_eq "$(grep -c '^stage progress' "$run_out/serial.log" 2>/dev/null || true)" "0" \
+  "ac-1 the graded serial log carries the guest's words only"
+assert_eq "$(grep -c '^CROSS-STATUS-BEFORE$' "$run_out/serial.log" 2>/dev/null || true)" "1" \
+  "ac-1 the first boot's serial is appended once"
+assert_eq "$(grep -c '^CROSS-STATUS-PENDING$' "$run_out/serial.log" 2>/dev/null || true)" "1" \
+  "ac-1 the pending block is appended once"
+assert_eq "$(grep -c '^CROSS-STATUS-COMMITTED$' "$run_out/serial.log" 2>/dev/null || true)" "1" \
+  "ac-1 the second boot's serial is appended, not dropped"
+assert_eq "$(grep -n '^CROSS-STATUS-\(BEFORE\|PENDING\|COMMITTED\)$' "$run_out/serial.log" 2>/dev/null | cut -d: -f2 | tr '\n' ' ')" \
+  "CROSS-STATUS-BEFORE CROSS-STATUS-PENDING CROSS-STATUS-COMMITTED " \
+  "ac-1 both serials are appended in boot order"
+assert_contains "$(cat "$run_out/boot1.stdout.log" 2>/dev/null)" "stage progress for cross-boot1" \
+  "ac-1 the wrapper's stdout is kept as a diagnostic file"
 
 finish

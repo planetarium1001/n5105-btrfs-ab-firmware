@@ -20,7 +20,7 @@
 #   status.committed       `ab-slot status` after the reboot that commits the slot
 #   esp.sha256             `sha256sum` of vmlinuz-<slot> and initrd-<slot> on the ESP
 #   payload.sha256         `sha256sum` of kernel.bin and initramfs.cpio.gz in the payload
-#   serial.log             the guest's serial output
+#   serial.log             the guest's serial output, both boots appended in boot order
 #   skip                   present when there was no previous release to upgrade from
 #
 # Output: `cross-upgrade=ok|fail|skipped` plus `reason=` and the fields that disagreed.
@@ -147,7 +147,8 @@ grade() {
 #
 # The hook is this stage's own, not ab-fixtures': the three status blocks it prints are
 # exactly the facts `assert` reads, and a shared fixture would have to grow options for
-# a stage that is not S5.
+# a stage that is not S5. The network fixture beside it is the one thing the stage does
+# borrow: the candidate's health check needs a WAN the single-NIC boot would not have.
 # --------------------------------------------------------------------------- #
 
 cross_prepare() {
@@ -192,26 +193,35 @@ else
 fi
 echo "CROSS-STATUS-DONE" >/dev/console
 exit 0
-RCLOCAL'
-#!/bin/sh
-# Cross-version fixture. Prints the status line three times - before the install, with
-# the candidate pending, and on the next boot after the commit - and removes itself so a
-# later boot does not repeat any of it.
-echo "CROSS-STATUS-BEFORE" >/dev/console
-ab-slot status >/dev/console 2>&1
-if [ -f /payload.tar ]; then
-  echo "CROSS-INSTALL" >/dev/console
-  ab-upgrade /payload.tar >/dev/console 2>&1
-  echo "ab-upgrade: exit=$?" >/dev/console
-  echo "CROSS-STATUS-PENDING" >/dev/console
-  ab-slot status >/dev/console 2>&1
-  rm -f /payload.tar
-fi
-echo "CROSS-STATUS-DONE" >/dev/console
-rm -f /etc/rc.local
-exit 0
 RCLOCAL
     sudo chmod 0755 "${_upper}/etc/rc.local"
+
+    # The candidate boots with one virtio NIC. net-seed reads a machine with a single
+    # ethernet port as "LAN only", writes a static br-lan and no wan section at all, and
+    # ab-commit's wan-present probe then fails with no-wan-device-in-uci: boot 2 of tag
+    # run 43622253559 printed "ab-commit: abandoned slot=b reason=healthcheck-failed" for
+    # exactly that. A minimal network file in the same writable layer closes the gap
+    # without a second NIC, because net-seed only generates a configuration when
+    # /etc/config/network is absent, and the probe then has a wan to find. The shape is
+    # the one the ab stage writes into its image for S5 - loopback plus wan on eth0 - so
+    # the two stages do not grow two answers to what a single-NIC machine looks like.
+    sudo mkdir -p "${_upper}/etc/config"
+    sudo tee "${_upper}/etc/config/network" >/dev/null <<'NETWORK'
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config interface 'wan'
+	option device 'eth0'
+	option proto 'dhcp'
+
+config interface 'wan6'
+	option device 'eth0'
+	option proto 'dhcpv6'
+NETWORK
+
     sudo sync
     sudo umount "${_mnt}"
     sudo losetup -d "${_loop}"
@@ -371,18 +381,43 @@ run_stage() {
     # Boot 1 installs and prints the pending status; boot 2 commits and prints the third.
     # A failed boot is still graded, never trusted: the line below keeps the exit status in
     # the serial log, because swallowing it is how a missing CI_KERNEL once disappeared.
+    #
+    # The guest's words are not qemu-smoke's stdout. qemu-smoke writes the console to a
+    # file in its own qemu scratch directory and copies it to
+    # ${CI_LOG_DIR}/serial-<case>.log; its stdout is stage progress for a human. This
+    # stage used to redirect that stdout into serial.log, so extract_blocks never found a
+    # CROSS-STATUS-* line and every graded run ended reason=status-after-missing (tag run
+    # 43622253559). Each boot's guest serial is appended below, in boot order, to the one
+    # file the grader reads; the stdout is kept next to it for diagnosis only.
+    #
+    # The fallback is qemu-smoke's own, line for line: when CI_LOG_DIR is unset it logs
+    # under ${CI_TMP_ROOT}/logs, and a local run has to read the copy from the same place.
+    _log_dir="${CI_LOG_DIR:-${CI_TMP_ROOT:-${RUNNER_TEMP:-/tmp}/ci}/logs}"
+    : >"${_out}/serial.log"
     CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
         CI_KERNEL="${_boot}/kernel.bin" CI_INITRAMFS="${_boot}/initrd.cpio.gz" \
         CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
         CI_QEMU_CASE="cross-boot1" \
-        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/serial.log" 2>&1 ||
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/boot1.stdout.log" 2>&1 ||
         printf '[cross] boot 1 exited %s\n' "$?" >>"${_out}/serial.log"
+    _serial="${_log_dir}/serial-cross-boot1.log"
+    if [ -s "${_serial}" ] && cat "${_serial}" >>"${_out}/serial.log"; then
+        :
+    else
+        printf '[cross] boot 1: no guest serial at %s\n' "${_serial}" >>"${_out}/serial.log"
+    fi
     CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
         CI_KERNEL="${_boot}/kernel.bin" CI_INITRAMFS="${_boot}/initrd.cpio.gz" \
         CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
         CI_QEMU_CASE="cross-boot2" \
-        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >>"${_out}/serial.log" 2>&1 ||
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/boot2.stdout.log" 2>&1 ||
         printf '[cross] boot 2 exited %s\n' "$?" >>"${_out}/serial.log"
+    _serial="${_log_dir}/serial-cross-boot2.log"
+    if [ -s "${_serial}" ] && cat "${_serial}" >>"${_out}/serial.log"; then
+        :
+    else
+        printf '[cross] boot 2: no guest serial at %s\n' "${_serial}" >>"${_out}/serial.log"
+    fi
 
     extract_blocks "${_out}/serial.log" "${_out}"
     esp_digests "${_work}/old.img" "${_out}/esp.sha256" || :

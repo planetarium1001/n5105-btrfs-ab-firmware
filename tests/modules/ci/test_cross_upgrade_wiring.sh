@@ -8,6 +8,9 @@
 #   ac-5  a run with no previous release is reported as skipped, never as passed
 #   ac-6  the stage is in the documents that describe the pipeline
 #   ac-7  the PR chain is untouched: ci.yml does not call it
+#   ac-1  the run grades the guest serial qemu-smoke leaves in CI_LOG_DIR, never its own
+#         progress on stdout, and cross_prepare gives the candidate a wan to pass the
+#         health check on a single-NIC boot
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -16,13 +19,14 @@ source "$root/tests/lib/assert.sh"
 
 cd "$root" || exit 1
 
+script_path="scripts/ci/cross-upgrade.sh"
 stage="$(cat .github/workflows/ci-upgrade-cross.yml)"
 release="$(cat .github/workflows/release.yml)"
 main="$(cat .github/workflows/ci.yml)"
 fetch="$(cat .github/workflows/ci-fetch.yml)"
 s3wf="$(cat .github/workflows/ci-s3.yml)"
 setup_action="$(cat .github/actions/setup-ci/action.yml)"
-script="$(cat scripts/ci/cross-upgrade.sh)"
+script="$(cat "$script_path")"
 readme="$(cat scripts/ci/README.md)"
 pipeline="$(cat docs/ci-pipeline.md)"
 pipeline_zh="$(cat docs/ci-pipeline.zh-CN.md)"
@@ -180,5 +184,64 @@ assert_contains "$stage" 'tee -a "${log}"' \
   "ac-2 the grading output reaches the run log, not only the captured verdict"
 assert_contains "$stage" 'produced no verdict line' \
   "ac-2 a script that dies before printing a verdict says so"
+
+# --- ac-1: the graded serial is the guest's, not qemu-smoke's stdout -------
+# qemu-smoke's stdout is stage progress; the guest console is the copy it leaves in
+# ${CI_LOG_DIR}/serial-<case>.log. The stage graded the stdout, extract_blocks never saw
+# a CROSS-STATUS-* line, and every graded run ended reason=status-after-missing (tag run
+# 43622253559). Where the serial comes from and that the stdout no longer reaches the
+# graded file are both asserted here; the run half itself is exercised in test_cross_upgrade.
+run_fn="$(sed -n '/^run_stage()/,/^}/p' "$script_path")"
+assert_contains "$run_fn" 'CI_LOG_DIR' \
+  "ac-1 run_stage looks for the guest serial where qemu-smoke leaves it"
+assert_contains "$run_fn" '_log_dir="${CI_LOG_DIR:-' \
+  "ac-1 the serial directory falls back the way qemu-smoke does, so a local run reads the same file"
+assert_eq "$(grep -cF 'serial-cross-boot1.log' "$script_path")" "1" \
+  "ac-1 the first boot's serial copy is named"
+assert_eq "$(grep -cF 'serial-cross-boot2.log' "$script_path")" "1" \
+  "ac-1 the second boot's serial copy is named"
+assert_eq "$(grep -cF 'cat "${_serial}" >>"${_out}/serial.log"' "$script_path")" "2" \
+  "ac-1 both boots are appended to the one log the grader reads"
+assert_eq "$(grep -cF ': >"${_out}/serial.log"' "$script_path")" "1" \
+  "ac-1 the graded serial log starts empty once, then only grows by appending"
+assert_eq "$(grep -cF 'no guest serial at' "$script_path")" "2" \
+  "ac-1 an absent serial copy is spelled out instead of graded as an empty boot"
+assert_contains "$run_fn" 'boot1.stdout.log' \
+  "ac-1 the wrapper's stdout is kept as a diagnostic file"
+assert_contains "$run_fn" 'boot2.stdout.log' \
+  "ac-1 the second wrapper's stdout is kept as a diagnostic file"
+assert_eq "$(grep -cF 'qemu-smoke.sh" >"${_out}/serial.log"' "$script_path")" "0" \
+  "ac-1 qemu-smoke's stdout is not redirected into the graded serial log"
+assert_eq "$(grep -cF 'qemu-smoke.sh" >>"${_out}/serial.log"' "$script_path")" "0" \
+  "ac-1 nor appended to it by the second boot"
+extract_line=$(grep -nF 'extract_blocks "${_out}/serial.log" "${_out}"' "$script_path" | cut -d: -f1)
+last_serial_line=$(grep -nF 'serial-cross-boot2.log' "$script_path" | head -n 1 | cut -d: -f1)
+assert_eq "$([ -n "${extract_line}" ] && [ -n "${last_serial_line}" ] && [ "${last_serial_line}" -lt "${extract_line}" ] && echo after)" \
+  "after" "ac-1 the serial is appended before the blocks are extracted, not after"
+
+# --- ac-1: the candidate has a wan to pass the health check ----------------
+# The boot has one virtio NIC, so net-seed degrades to lan-only and ab-commit's
+# wan-present probe fails; boot 2 of tag run 43622253559 abandoned the candidate with
+# reason=healthcheck-failed. cross_prepare has to write the network fixture itself, into
+# the same writable layer as the boot hook.
+prepare_fn="$(sed -n '/^cross_prepare()/,/^}/p' "$script_path")"
+assert_contains "$prepare_fn" 'etc/config/network' \
+  "ac-1 cross_prepare writes the network fixture into the writable layer"
+assert_contains "$prepare_fn" 'sudo tee "${_upper}/etc/config/network"' \
+  "ac-1 the fixture lands where the guest reads it"
+assert_contains "$prepare_fn" "config interface 'loopback'" \
+  "ac-1 the fixture carries the loopback interface"
+assert_contains "$prepare_fn" "config interface 'wan'" \
+  "ac-1 the fixture names a wan section, which is what the probe reads"
+assert_contains "$prepare_fn" "option device 'eth0'" \
+  "ac-1 that wan is the single NIC the QEMU boot provides"
+assert_contains "$prepare_fn" "option proto 'dhcp'" \
+  "ac-1 the wan is a dhcp client, like the ab stage's fixture"
+assert_contains "$prepare_fn" 'etc/rc.local' \
+  "ac-1 the boot hook is still written beside it"
+assert_contains "$prepare_fn" 'payload.tar' \
+  "ac-1 and so is the payload it installs"
+assert_eq "$(grep -c "^RCLOCAL'$" "$script_path")" "0" \
+  "ac-1 the rc.local heredoc terminator is not left quoted, so the file holds one hook"
 
 finish
