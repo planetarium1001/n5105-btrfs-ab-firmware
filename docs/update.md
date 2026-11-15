@@ -379,6 +379,21 @@ means the writable layer's `world` pins the kernel this slot runs and `distfeeds
 release it runs. Upgrading packages behind a stale pin installs modules for a kernel the
 machine is not running.
 
+
+`packages=` is a verdict about the running slot's metadata, so it can say `unknown` too. The
+`packages_reason=` beside it names why:
+
+| `packages_reason=` | What it means | What to do |
+| --- | --- | --- |
+| `none` | the record speaks for this slot and the aligner ran | nothing |
+| a token from the aligner (`payload-incomplete`, ...) | the record speaks for this slot but the aligner could not finish | the message names the step; re-run the system update |
+| `other-slot` | the last record describes the *other* slot (a candidate that was installed and then abandoned) | it is honest, not broken: the next `ab-upgrade` rewrites the record, and `ab-slot rollback` retargets it |
+| `no-record` | a rollback retargeted the record and there was no verdict for the new committed slot | the next `ab-upgrade` writes one |
+| `unknown` | the record is missing or unreadable | re-run the system update |
+
+Until an update or rollback rewrites it, `ab-slot packages upgrade` refuses on `unknown`: a
+package transaction is only started when the metadata describes the running kernel and release.
+
 Do the system update first and the package upgrade second. An `apk upgrade` rewrites
 `/lib/upgrade/*`, whose names upstream's sysupgrade interface uses too; the writable layer
 would then shadow this project's upgrade adapter and the next payload install would fail at

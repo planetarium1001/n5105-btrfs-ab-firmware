@@ -347,6 +347,20 @@ ab-slot packages revert          # 按最新一份快照回放版本
 钉着本槽正在跑的内核、`distfeeds` 指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核
 装模块。
 
+
+`packages=` 是对当前槽元数据的判定，因此也可能是 `unknown`；旁边的 `packages_reason=` 说明原因：
+
+| `packages_reason=` | 含义 | 怎么办 |
+| --- | --- | --- |
+| `none` | 记录描述的就是本槽，aligner 已跑过 | 不用处理 |
+| aligner 的 token（`payload-incomplete` 等） | 记录属于本槽，但 aligner 没完成 | token 指向步骤；重跑系统升级 |
+| `other-slot` | 最后一条记录描述的是*另一个*槽（候选装了又被 abandon） | 这是诚实状态、不是坏了：下一次 `ab-upgrade` 会重写记录，`ab-slot rollback` 也会重定向它 |
+| `no-record` | rollback 重定向后，新 committed 槽没有对应判定 | 下一次 `ab-upgrade` 会写一条 |
+| `unknown` | 记录缺失或读不了 | 重跑系统升级 |
+
+在更新或 rollback 重写之前，`ab-slot packages upgrade` 会因 `unknown` 拒绝：只有元数据描述当前内核与发布时，
+才允许开始包事务。
+
 顺序是**先系统升级、再包升级**。`apk upgrade` 会重写 `/lib/upgrade/*`，这些文件名也是上游 sysupgrade
 接口用的；可写层会因此遮蔽本项目的升级适配器，下一次 payload 安装会在 `platform_upgrade_begin`
 失败。0.1.0 起适配器从软件包遮蔽不了的来源加载，快照启动时把被遮蔽的副本移到
