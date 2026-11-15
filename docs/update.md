@@ -291,6 +291,14 @@ Update  base     25.12.2 -> 25.18.0
 Proceed? [y/N]
 ```
 
+What backs the `Tested PARTLY` line: a minor jump is the one case CI covers by building the
+previous formal release and upgrading it with this release's payload - the cross-version
+stage. On the tagged line that stage is a gate: `release.yml` declares
+`publish: needs: [build, cross]`, so a run whose cross stage is red or skipped publishes
+nothing (v0.0.9 went out while cross was red; that is the hole the gate closes). A release
+published from now on is therefore one whose cross-line upgrade was proved, not assumed. The
+stage and the gate are described in [ci-release-lines.md](ci-release-lines.md).
+
 Y2, several release lines forward:
 
 ```

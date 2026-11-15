@@ -544,4 +544,21 @@ assert_contains "$(cat scripts/ci/assemble.sh)" 'check_platform="${check_dir}/pl
 assert_contains "$(cat scripts/ci/assemble.sh)" 'sh "${check_platform}/usr/sbin/ab-upgrade" --check' \
   "ac-5 the payload is validated by the copy it carries"
 
+# --------------------------------------------------------------------------- #
+# ac-1: the publish gate on cross is documented in both languages
+#
+# release.yml now declares `publish: needs: [build, cross]`: a tagged release publishes
+# only after the cross-version upgrade passed. The three pages that describe what a release
+# proves say so, and they have to say it in both languages - an English-only sentence would
+# leave the Chinese page making the old claim (the five stages are the whole proof), and a
+# page that never mentions the gate would describe a pipeline that no longer exists.
+# --------------------------------------------------------------------------- #
+
+for doc in docs/ci-release-lines docs/ci-pipeline docs/update; do
+  for lang in md zh-CN.md; do
+    assert_contains "$(cat "${doc}.${lang}")" 'needs: [build, cross]' \
+      "ac-1 ${doc}.${lang} states the publish gate on build and cross"
+  done
+done
+
 finish

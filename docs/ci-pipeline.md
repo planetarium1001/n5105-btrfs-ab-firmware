@@ -1,9 +1,9 @@
 # CI pipeline
 
 Sixteen workflow files, four entry points, five stages on every run plus a cross-version
-stage that only runs on tags, and a fixed set of artifacts. Twelve of the sixteen files are
-reusable (`workflow_call` only) and can never start a run; the four that can are `ci.yml`,
-`ci-debug.yml`, `release.yml` and `upstream-watch.yml`. Every decision
+stage that only runs on the tagged release line, and a fixed set of artifacts. Twelve of the
+sixteen files are reusable (`workflow_call` only) and can never start a run; the four that
+can are `ci.yml`, `ci-debug.yml`, `release.yml` and `upstream-watch.yml`. Every decision
 lives in `scripts/ci/`, so a stage can be reproduced without GitHub. This page is the map:
 which workflow to run, what each stage proves, which file is the one to write to a disk, and
 how to run a stage on your own machine. The stage scripts are documented in
@@ -258,7 +258,8 @@ this one is the map.
 ## The cross-version stage
 
 One stage answers a different question from the five above: not "is this release sound"
-but "does this release install over the previous one". It runs on tags only.
+but "does this release install over the previous one". It runs on the tagged line only
+(`release.yml`); the upstream release line's publish job does not run it.
 
 | Stage | Job label | What it proves |
 | --- | --- | --- |
@@ -268,6 +269,12 @@ It is expensive - it builds a second image from another upstream release - so th
 chain never runs it. The selector (`matrix-select.sh`) names the previous release; when it
 cannot (`gaps>0`), the stage reports `cross-upgrade=skipped` and the run is not green:
 a skipped proof is not a passed proof.
+
+On the tagged line the stage is a gate, not a report. `release.yml` declares
+`publish: needs: [build, cross]`, so a red or skipped cross publishes nothing. The release
+history is why: v0.0.9 went out while cross was red (run 43622253559) because `publish` only
+needed `build`, and a release that cannot install over the previous one is exactly the
+release the cross stage exists to refuse.
 
 `scripts/ci/cross-upgrade.sh assert --out <dir>` grades a run from five files - the status
 lines before, during and after, the ESP digests, the payload digests and the serial log -

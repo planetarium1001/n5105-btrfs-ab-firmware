@@ -1,6 +1,6 @@
 # CI 流水线
 
-十六个 workflow 文件、四个入口、每次运行五个阶段（另有一个只在 tag 上跑的跨版本阶段）和一套固定的产物。
+十六个 workflow 文件、四个入口、每次运行五个阶段（另有一个只在代码线 tag 上跑的跨版本阶段）和一套固定的产物。
 十六个里有十二个是 reusable
 （只有 `workflow_call`），自己永远起不来一次 run；能起 run 的四个是 `ci.yml`、`ci-debug.yml`、
 `release.yml` 和 `upstream-watch.yml`。所有判断都在 `scripts/ci/`，所以一个阶段不依赖 GitHub
@@ -230,7 +230,7 @@ gh workflow run ci.yml --ref main -f stage=s3 -f upstream_version=25.12.2
 ## 跨版本阶段
 
 有一个阶段回答的问题与上面五个不同：不是「这个发布自身是否健全」，而是「它能不能装在上一个
-发布之上」。它只在 tag 上跑。
+发布之上」。它只在代码线上跑（`release.yml`）；上游发布线的 publish job 不跑它。
 
 | 阶段 | job 名 | 证明什么 |
 | --- | --- | --- |
@@ -239,6 +239,11 @@ gh workflow run ci.yml --ref main -f stage=s3 -f upstream_version=25.12.2
 它很贵——要再用另一个上游发布构建一份镜像——所以 PR 链永远不跑它。选择器（`matrix-select.sh`）
 给出上一个正式版；给不出时（`gaps>0`）阶段报 `cross-upgrade=skipped`，并且这次运行**不算绿**：
 跳过一项证明不等于通过一项证明。
+
+在代码线上这个阶段是门，不是报告。`release.yml` 声明 `publish: needs: [build, cross]`，
+所以 cross 红着或被跳过时不发布任何东西。发布历史就是理由：v0.0.9 在 cross 红着的时候发了出去
+（run 43622253559），因为 `publish` 只依赖 `build`；而「装不上上一版」正是 cross 阶段存在的
+意义。
 
 `scripts/ci/cross-upgrade.sh assert --out <dir>` 用五个文件复判一次运行——装机前、装机后与提交后的
 状态行、ESP 摘要、payload 摘要、串口日志——所以不必重跑 QEMU 也能复核结论。

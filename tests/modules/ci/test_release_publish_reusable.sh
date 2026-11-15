@@ -178,6 +178,37 @@ assert_eq "$(grep -c 'runs-on:' "$release")" "0" \
   "ac-6 release.yml schedules no job of its own, so it needs no timeout"
 
 # --------------------------------------------------------------------------- #
+# ac-1: the tagged line publishes only after the cross-version upgrade passed
+#
+# v0.0.9 went out published while cross was red (run 43622253559) because `publish` only
+# needed `build`. The stage is a gate now: a red cross - or a skipped one, which the stage
+# reports as not-green because a skipped proof is not a passed proof - publishes nothing.
+# --------------------------------------------------------------------------- #
+
+# job_needs <workflow> <job-id>: the needs list of one job, normalized to words so the
+# assertion does not depend on whether it is written as a flow or a block sequence.
+job_needs() {
+  awk -v want="$2" '
+    /^  [A-Za-z0-9_-]+:$/ { job = $1; sub(":$", "", job); injob = (job == want); next }
+    injob && /^    needs:/ {
+      sub(/^[[:space:]]*needs:[[:space:]]*/, "")
+      gsub(/[][,]/, " ")
+      gsub(/[[:space:]]+/, " ")
+      sub(/^ /, ""); sub(/ $/, "")
+      print; exit
+    }
+  ' "$1"
+}
+
+assert_eq "$(job_needs "$release" publish)" "build cross" \
+  "ac-1 the publish gate waits for the build and the cross-version upgrade"
+assert_contains "$(sed -n '/^  cross:/,/^  publish:/p' "$release")" \
+  'uses: ./.github/workflows/ci-upgrade-cross.yml' \
+  "ac-1 the second gate is the cross stage, not a second build"
+assert_eq "$(grep -c '^  cross:$' "$release")" "1" \
+  "ac-1 the cross job still exists for the gate to wait on"
+
+# --------------------------------------------------------------------------- #
 # ac-6 / ac-10 tail: the three floating @v4 pins in release.yml are gone
 # --------------------------------------------------------------------------- #
 

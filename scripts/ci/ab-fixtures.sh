@@ -76,13 +76,24 @@ cleanup() {
 trap cleanup EXIT
 
 loopdev="$(sudo losetup --find --show --partscan "${image}")"
-attempt=0
-until [ -b "${loopdev}p4" ] || [ "${attempt}" -ge 40 ]; do
-    attempt=$((attempt + 1))
-    sleep 0.25
-done
+
+# The loop device exists now, but the kernel names p1..p4 after that and udev creates
+# their nodes after that. Waiting for one of them and then reading the rest is the race
+# that lost S5 on run 43627138902: "partition 1 did not appear", 24 ms after the mount.
+# So settle udev when it is there, prove the loop carries the image this stage asked for
+# (a stale loop device answers --find --show too), and then wait for every node the
+# actions below mount. A timeout prints the kernel's own view before dying, because the
+# next red run should not need a second red run to explain itself.
+ci_udev_settle
+if ! ci_loop_matches "${loopdev}" "${image}"; then
+    ci_loop_diagnostics "${loopdev}" "${image}"
+    ci_die "loop ${loopdev} is not bound to ${image} (backing_file: $(ci_loop_backing "${loopdev}"))"
+fi
 for part in 1 2 3 4; do
-    [ -b "${loopdev}p${part}" ] || ci_die "partition ${part} did not appear"
+    if ! ci_wait_block "${loopdev}p${part}"; then
+        ci_loop_diagnostics "${loopdev}" "${image}"
+        ci_die "partition ${part} did not appear on ${loopdev} (40 polls of 0.25s)"
+    fi
 done
 
 mount_one() { # <device> <name>

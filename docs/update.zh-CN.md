@@ -265,6 +265,13 @@ Update  base     25.12.2 -> 25.18.0
 Proceed? [y/N]
 ```
 
+`Tested PARTLY` 这行靠什么支撑：minor 跳跃是 CI 唯一会覆盖的情形——在同一次 run 里构建上一个
+正式版，并用本发布的 payload 升级它，也就是跨版本阶段。在代码线上这个阶段是门：`release.yml`
+声明 `publish: needs: [build, cross]`，所以 cross 红着或被跳过的那次 run 不发布任何东西
+（v0.0.9 就是 cross 红着时发出去的，这个门堵的就是这个洞）。因此从这里往后发布出来的 release，
+其跨线升级都是被证明过的，而不是被假设的。这个阶段与这道门见
+[ci-release-lines.zh-CN.md](ci-release-lines.zh-CN.md)。
+
 Y2，前进几条发布线：
 
 ```

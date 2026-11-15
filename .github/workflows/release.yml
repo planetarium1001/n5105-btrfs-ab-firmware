@@ -4,6 +4,10 @@ name: Firmware CI - release
 # releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
 # something the same stages already proved.
 #
+# The cross-version upgrade is a gate on top of that proof: a release that cannot install
+# over the previous formal release is not published. v0.0.9 went out while cross was red
+# (run 43622253559) because publish only waited for build; `publish` now waits for both.
+#
 #   git tag -a v0.0.8 -m "0.0.8: ..." && git push origin v0.0.8
 #
 # The publishing steps are not here: they live in release-publish.yml, which the upstream
@@ -41,7 +45,10 @@ jobs:
 
   publish:
     name: publish
-    needs: build
+    # The cross-version stage is a gate, not an advisory: a red cross - or a skipped one,
+    # which is not a passed proof - publishes nothing. `needs` has to name both jobs; a
+    # publish that only needs build is how v0.0.9 shipped while cross was red.
+    needs: [build, cross]
     permissions:
       contents: write
       actions: read

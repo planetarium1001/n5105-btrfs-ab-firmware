@@ -214,6 +214,88 @@ ci_wait_part_field() {
     done
 }
 
+# --------------------------------------------------------------------------- #
+# Loop devices
+#
+# `losetup --find --show --partscan` returns as soon as the loop device exists. The
+# kernel names its partitions afterwards and udev creates their nodes after that, so a
+# stage that reads p1..p4 right away races the mount. Run 43627138902 lost S5 to exactly
+# that: the fixture waited for p4 only, then read p1 and died 24 ms in with "partition 1
+# did not appear". The helpers below are shared by every stage that mounts an image file.
+# --------------------------------------------------------------------------- #
+
+# ci_udev_settle [timeout-seconds]: let udev finish naming the nodes it just received.
+# Used when udevadm exists (the runner and a Linux laptop); a host without it skips the
+# settle, and the bounded block-device poll below is what proves the nodes exist.
+ci_udev_settle() {
+    local timeout="${1:-10}"
+    ci_have udevadm || return 0
+    udevadm settle --timeout="${timeout}" 2>/dev/null || true
+}
+
+# ci_loop_backing <loop-device>: the image file sysfs says the loop device is bound to.
+# An empty answer means the device is gone or is not a loop device: the caller decides
+# whether that is a mount that has not finished or a mount that failed.
+ci_loop_backing() {
+    local loopdev="$1" name path
+    name="$(basename "${loopdev}")"
+    path="/sys/block/${name}/loop/backing_file"
+    [ -f "${path}" ] || return 0
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${path}" 2>/dev/null || true
+}
+
+# ci_path_absolute <path>: the absolute spelling of a path, resolved through the
+# directory that has to exist already. sysfs records the path losetup was given, and
+# that may be relative, so comparing it with the caller's image needs one spelling.
+ci_path_absolute() {
+    local path="$1" dir
+    dir="$(cd "$(dirname "${path}")" 2>/dev/null && pwd -P)" || {
+        printf '%s\n' "${path}"
+        return 0
+    }
+    printf '%s/%s\n' "${dir}" "$(basename "${path}")"
+}
+
+# ci_loop_matches <loop-device> <image>: true when the loop device carries <image>.
+# A loop device left over from an earlier stage also answers --find --show; waiting for
+# its partitions would wait on a disk that will never carry these partitions.
+ci_loop_matches() {
+    local loopdev="$1" image="$2" backing
+    backing="$(ci_loop_backing "${loopdev}")"
+    [ -n "${backing}" ] || return 1
+    [ "$(ci_path_absolute "${backing}")" = "$(ci_path_absolute "${image}")" ]
+}
+
+# ci_wait_block <block-device> [attempts] [interval]: wait for one block device node.
+# `-b` rather than `-e` on purpose: the mount that follows needs a block device, and a
+# leftover plain file with that name would pass an existence test it cannot mount.
+ci_wait_block() {
+    local device="$1" attempts="${2:-40}" interval="${3:-0.25}" i=0
+    until [ -b "${device}" ]; do
+        i=$((i + 1))
+        [ "${i}" -ge "${attempts}" ] && return 1
+        sleep "${interval}"
+    done
+}
+
+# ci_loop_diagnostics <loop-device> [image]: the three views a failed loop mount needs,
+# printed before ci_die. The interesting half of the failure is in the kernel, not in the
+# stage script: losetup says which file the loop carries, lsblk says which partition nodes
+# exist, and dmesg says why the partition scan did not produce them. One run with these
+# lines replaces a rerun with a guess.
+ci_loop_diagnostics() {
+    local loopdev="$1" image="${2:-unknown image}" tag="${CI_STAGE:-ci}"
+    {
+        printf '[%s] loop %s on %s did not come up\n' "${tag}" "${loopdev}" "${image}"
+        printf '[%s] sudo losetup -a:\n' "${tag}"
+        sudo losetup -a 2>&1 || true
+        printf '[%s] lsblk %s:\n' "${tag}" "${loopdev}"
+        sudo lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL "${loopdev}" 2>&1 || true
+        printf '[%s] dmesg | tail -20:\n' "${tag}"
+        sudo dmesg 2>&1 | tail -20 || true
+    } >&2
+}
+
 # ci_require_var <name>: fail early when a required value is empty.
 ci_require_var() {
     local name="$1"

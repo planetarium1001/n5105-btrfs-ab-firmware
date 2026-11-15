@@ -11,6 +11,10 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 [`release-preflight.sh`](../scripts/ci/release-preflight.sh)。两个调用者、一份实现，这是两条线
 不会漂移的原因，也是 watch 自动发的 release 与手发的那次被同样检查的原因。
 
+代码线在这道检查之外还多一道门：它的 `publish` job 要等构建**和**跨版本升级都通过才跑。
+`release.yml` 声明的是 `publish: needs: [build, cross]`，所以 cross 红着 —— 或者因为找不到上一个
+正式版而被跳过 —— 的 tag 不会产生任何 release。上游线则相反：它的 publish 门是 merge，不跑跨版本阶段。
+
 ## 两条发布线并列对比
 
 | | 代码线 | 上游线 |
@@ -53,6 +57,11 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 tag 是一个主张，preflight 就是核对这个主张的地方。`release-publish.yml` 先挂上镜像、证明镜像里
 的 initrd 就是生产那份，再跑 preflight，这些都在 `gh release create` 之前；拒绝就是非零退出，不是
 一条警告，而且什么都没创建。
+
+这个主张的另一半由单独一个 job 证明：跨版本阶段用上一个正式版构建镜像，装上本发布的 payload，
+要求它启动、提交，并带着 payload 里的内核与 initrd。`publish` 同时依赖 `build` 与 `cross`，
+所以 cross 红着或被跳过时这个 tag 不会出现 release —— v0.0.9 就是 cross 红着发出去的
+（run 43622253559），这个门堵的正是这个洞。
 
 两条 policy 共有的检查：
 

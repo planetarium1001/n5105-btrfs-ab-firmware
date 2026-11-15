@@ -88,6 +88,40 @@ assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'initramfs-tools.sh" --tools
 assert_contains "$(cat "$CI_SCRIPTS/initramfs.sh")" 'glibc artifact in the initramfs' \
   "builder fails when a glibc artifact reaches the initramfs"
 
+# ac-1 the image fixture waits for every partition node it mounts
+#
+# `losetup --find --show --partscan` returns before the kernel names p1..p4 and before udev
+# creates their nodes. The fixture used to wait for p4 only and then demand p1..p3 exist,
+# which lost S5 on run 43627138902 24 ms in with "partition 1 did not appear". The contract
+# is asserted statically: on a laptop there is no losetup to race, and running the script
+# without one would exercise the error path instead of the race.
+fixture_script="$(cat "$CI_SCRIPTS/ab-fixtures.sh")"
+fixture_lib="$(cat "$CI_SCRIPTS/lib.sh")"
+
+assert_contains "$fixture_script" 'ci_udev_settle' \
+  "ac-1 ab-fixtures lets udev settle after mounting the image"
+assert_contains "$fixture_script" 'ci_loop_matches' \
+  "ac-1 ab-fixtures proves the loop carries the image it was given"
+assert_contains "$fixture_script" 'for part in 1 2 3 4' \
+  "ac-1 ab-fixtures waits for every partition, not just p4"
+assert_contains "$fixture_script" 'ci_wait_block "${loopdev}p${part}"' \
+  "ac-1 each partition node is polled, one at a time"
+assert_contains "$fixture_script" 'ci_loop_diagnostics' \
+  "ac-1 a partition that never appears prints the kernel view before dying"
+assert_eq "$(printf '%s\n' "${fixture_script}" | grep -cF 'until [ -b "${loopdev}p4" ]' || true)" "0" \
+  "ac-1 no partition is read before its own wait"
+
+assert_contains "$fixture_lib" 'udevadm settle' \
+  "ac-1 the settle helper uses udevadm when it exists"
+assert_contains "$fixture_lib" '/sys/block/${name}/loop/backing_file' \
+  "ac-1 the loop binding is read from sysfs, not guessed"
+assert_contains "$fixture_lib" 'sudo losetup -a' \
+  "ac-1 the failure diagnostics print losetup -a"
+assert_contains "$fixture_lib" 'lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL' \
+  "ac-1 the failure diagnostics print lsblk"
+assert_contains "$fixture_lib" 'dmesg 2>&1 | tail -20' \
+  "ac-1 the failure diagnostics print the last 20 dmesg lines"
+
 # local static verification
 for script in "$CI_SCRIPTS"/*.sh "$root/tests/run.sh"; do
   assert_command_ok "bash -n $(basename "$script")" bash -n "$script"

@@ -14,6 +14,12 @@ differ in what publishing means: both call
 callers and one implementation is what keeps the two lines from drifting, and it is why a
 release made by the watch is checked the same way as one made by hand.
 
+The tagged line adds one gate to that check: its `publish` job waits for the cross-version
+upgrade as well as for the build. `release.yml` declares `publish: needs: [build, cross]`, so
+a tag whose cross stage is red, or skipped because no previous formal release could be
+found, creates no release at all. The upstream line gates its publish on the merge instead; it
+does not run the cross-version stage.
+
 ## The two lines side by side
 
 | | Tagged line | Upstream line |
@@ -62,6 +68,12 @@ A tag is a claim, and the preflight is where the claim is checked. `release-publ
 the image, proves the initrd inside it is the production one, and then runs the preflight -
 all of it before `gh release create`; a refusal is a non-zero exit, not a warning, and nothing
 is created.
+
+Half of that proof runs as a separate job: the cross-version stage builds an image from the
+previous formal release, upgrades it with this release's payload, and requires it to boot,
+commit and carry the payload's kernel and initrd. `publish` needs both `build` and `cross`, so
+a red or skipped cross leaves the tag without a release - the hole that let v0.0.9 publish
+while cross was red (run 43622253559).
 
 The checks below hold under both policies:
 
