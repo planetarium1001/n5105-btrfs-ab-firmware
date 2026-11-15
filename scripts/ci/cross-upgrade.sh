@@ -173,12 +173,17 @@ cross_prepare() {
     sudo cp "${_payload}" "${_upper}/payload.tar"
     sudo tee "${_upper}/etc/rc.local" >/dev/null <<'RCLOCAL'
 #!/bin/sh
-# Cross-version fixture, first half. It installs once per image, and it must not install
-# again on the candidate boot: the snapshot that becomes the candidate's writable layer
-# carries /payload.tar and this very rc.local with it, which is the documented "one-shot
-# hook runs twice on a snapshot" trap. The installed marker lives on the shared ESP, not in
-# the layer, so the candidate boot (and a post-abandon boot) sees it and does nothing.
-# The post-commit status is printed by S100ab-cross-status, after ab-commit at S99.
+# Cross-version fixture. Three boots are involved:
+#   boot 1  /payload.tar is present, no install marker exists: install once, print the
+#           status BEFORE and after staging, then DONE (the caller stops here).
+#   boot 2  the candidate first boot. The snapshot carried /payload.tar and this hook into
+#           the candidate's writable layer, but /boot/cross-fixture-installed lives on the
+#           shared ESP and says the install already happened, so this hook is a no-op.
+#           ab-commit commits at S99 and the caller stops on its console line.
+#   boot 3  the committed slot: the state is settled (pending=none, slot==committed), so
+#           this hook prints the post-commit status the grader reads, then disarms itself.
+# Printing the committed status from boot 2 would describe a state ab-commit has not
+# produced yet: rc.local is S95 and ab-commit is S99.
 if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]; then
   : >/boot/cross-fixture-installed
   echo "CROSS-STATUS-BEFORE" >/dev/console
@@ -190,42 +195,30 @@ if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]; then
   ab-slot status >/dev/console 2>&1
   rm -f /payload.tar
   echo "CROSS-STATUS-DONE" >/dev/console
+else
+  [ -f /boot/cross-fixture-installed ] || exit 0
+  line="$(ab-slot status 2>/dev/null | sed -n '1p')"
+  case "${line}" in
+    *" pending=none "*) : ;;
+    *) exit 0 ;;
+  esac
+  slot=""
+  committed=""
+  for field in ${line}; do
+    case "${field}" in
+      slot=*) slot="${field#slot=}" ;;
+      committed=*) committed="${field#committed=}" ;;
+    esac
+  done
+  [ -n "${slot}" ] && [ "${slot}" = "${committed}" ] || exit 0
+  echo "CROSS-STATUS-COMMITTED" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  echo "CROSS-STATUS-DONE" >/dev/console
+  rm -f /boot/cross-fixture-installed /etc/rc.local
 fi
 exit 0
 RCLOCAL
     sudo chmod 0755 "${_upper}/etc/rc.local"
-
-    # The second half has to run *after* ab-commit (START=99): only then does the state say
-    # pending=none with the candidate as committed, which is the status the grader reads.
-    # It is gated on the fixture marker and on a settled state, so the boot that still has
-    # a pending candidate prints nothing. v0.0.10-rc1 got as far as a commit and then failed
-    # with reason=packages-not-aligned-after-commit because this file did not exist: the
-    # candidate's rc.local had already removed itself, so the third status block was empty.
-    sudo tee "${_upper}/etc/rc.d/S100ab-cross-status" >/dev/null <<'INITSTATUS'
-#!/bin/sh
-# Cross-version fixture, second half: print the committed status after ab-commit.
-[ -f /boot/cross-fixture-installed ] || exit 0
-line="$(ab-slot status 2>/dev/null | sed -n '1p')"
-case "${line}" in
-  *" pending=none "*) : ;;
-  *) exit 0 ;;
-esac
-slot=""
-committed=""
-for field in ${line}; do
-  case "${field}" in
-    slot=*) slot="${field#slot=}" ;;
-    committed=*) committed="${field#committed=}" ;;
-  esac
-done
-[ -n "${slot}" ] && [ "${slot}" = "${committed}" ] || exit 0
-echo "CROSS-STATUS-COMMITTED" >/dev/console
-ab-slot status >/dev/console 2>&1
-echo "CROSS-STATUS-DONE" >/dev/console
-rm -f /boot/cross-fixture-installed /etc/rc.local /etc/rc.d/S100ab-cross-status
-exit 0
-INITSTATUS
-    sudo chmod 0755 "${_upper}/etc/rc.d/S100ab-cross-status"
 
     # The candidate boots with one virtio NIC. net-seed reads a machine with a single
     # ethernet port as "LAN only", writes a static br-lan and no wan section at all, and
@@ -409,7 +402,8 @@ run_stage() {
         return 0
     fi
 
-    # Boot 1 installs and prints the pending status; boot 2 commits and prints the third.
+    # Boot 1 installs and prints the pending status; boot 2 commits; boot 3 prints the committed
+    # status from the settled state (the fixture hook is a no-op on boot 2).
     # A failed boot is still graded, never trusted: the line below keeps the exit status in
     # the serial log, because swallowing it is how a missing CI_KERNEL once disappeared.
     #
@@ -439,7 +433,8 @@ run_stage() {
     fi
     CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
         CI_KERNEL="${_boot}/kernel.bin" CI_INITRAMFS="${_boot}/initrd.cpio.gz" \
-        CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
+        CI_QEMU_STOP_PATTERN='^(ab-commit: committed slot=|ab-commit: abandoned slot=)' \
+        CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
         CI_QEMU_CASE="cross-boot2" \
         bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/boot2.stdout.log" 2>&1 ||
         printf '[cross] boot 2 exited %s\n' "$?" >>"${_out}/serial.log"
@@ -448,6 +443,20 @@ run_stage() {
         :
     else
         printf '[cross] boot 2: no guest serial at %s\n' "${_serial}" >>"${_out}/serial.log"
+    fi
+    # Boot 3: the committed slot. The only boot where the state is settled at S95, so the
+    # fixture hook can print the post-commit status without racing ab-commit.
+    CI_QEMU_MODE="uefi-disk" CI_QEMU_DISK="${_work}/old.img" CI_JUDGE_PREFIX="" \
+        CI_KERNEL="${_boot}/kernel.bin" CI_INITRAMFS="${_boot}/initrd.cpio.gz" \
+        CI_QEMU_STOP_PATTERN='CROSS-STATUS-DONE' CI_QEMU_TIMEOUT="${CI_QEMU_TIMEOUT:-900}" \
+        CI_QEMU_CASE="cross-boot3" \
+        bash "${CI_SCRIPT_DIR}/qemu-smoke.sh" >"${_out}/boot3.stdout.log" 2>&1 ||
+        printf '[cross] boot 3 exited %s\n' "$?" >>"${_out}/serial.log"
+    _serial="${_log_dir}/serial-cross-boot3.log"
+    if [ -s "${_serial}" ] && cat "${_serial}" >>"${_out}/serial.log"; then
+        :
+    else
+        printf '[cross] boot 3: no guest serial at %s\n' "${_serial}" >>"${_out}/serial.log"
     fi
 
     extract_blocks "${_out}/serial.log" "${_out}"

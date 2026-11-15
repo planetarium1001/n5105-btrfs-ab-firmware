@@ -177,10 +177,10 @@ assert_eq "$([ -e "$tmp/boot-missing/kernel.bin" ] && echo present || echo absen
   "ac-7 a refused ESP stages nothing"
 
 stage_text="$(cat "$script")"
-assert_eq "$(grep -c 'CI_KERNEL="${_boot}/kernel.bin"' "$script")" "2" \
-  "ac-7 both boots get the kernel the old image carries"
-assert_eq "$(grep -c 'CI_INITRAMFS="${_boot}/initrd.cpio.gz"' "$script")" "2" \
-  "ac-7 both boots get that image's initrd"
+assert_eq "$(grep -c 'CI_KERNEL="${_boot}/kernel.bin"' "$script")" "3" \
+  "ac-7 all three boots get the kernel the old image carries"
+assert_eq "$(grep -c 'CI_INITRAMFS="${_boot}/initrd.cpio.gz"' "$script")" "3" \
+  "ac-7 all three boots get that image's initrd"
 assert_contains "${stage_text}" "cannot-read-the-old-esp" \
   "ac-7 an ESP that cannot be read is a fail verdict, not a skip"
 assert_contains "${stage_text}" "[cross] boot 1 exited" \
