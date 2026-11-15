@@ -567,10 +567,13 @@ rm -f /mnt/p4/@overlay-*/upper/lib/upgrade/platform.sh \
       /mnt/p4/@overlay-*/upper/lib/upgrade/tar.sh
 ```
 
-or keep the copies and point one run at a clean adapter:
+or keep the copies and run one install with a clean adapter taken from the payload itself (the
+`shadow-backup` directory holds the *upstream* files that were moved aside, not a usable adapter):
 
 ```sh
-AB_LIB=/mnt/p4/ab/shadow-backup-<timestamp>/lib/upgrade/platform.sh \
+tar -xf /root/n5105-ab-<upstream>-upgrade.tar platform.tar
+mkdir -p /tmp/ab-platform && tar -xf platform.tar -C /tmp/ab-platform
+AB_LIB=/tmp/ab-platform/lib/upgrade/platform.sh \
     ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar
 ```
 

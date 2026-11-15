@@ -433,10 +433,13 @@ rm -f /mnt/p4/@overlay-*/upper/lib/upgrade/platform.sh \
       /mnt/p4/@overlay-*/upper/lib/upgrade/tar.sh
 ```
 
-或者保留副本，只让这一次运行使用干净的适配器：
+或者保留副本，从 payload 里取一份干净的适配器只给这一次运行用（`shadow-backup` 里放的是被移走的
+**上游**文件，不是可用的适配器）：
 
 ```sh
-AB_LIB=/mnt/p4/ab/shadow-backup-<时间戳>/lib/upgrade/platform.sh \
+tar -xf /root/n5105-ab-<upstream>-upgrade.tar platform.tar
+mkdir -p /tmp/ab-platform && tar -xf platform.tar -C /tmp/ab-platform
+AB_LIB=/tmp/ab-platform/lib/upgrade/platform.sh \
     ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar
 ```
 
