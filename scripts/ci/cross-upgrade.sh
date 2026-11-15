@@ -72,7 +72,7 @@ grade() {
     # and the machine must come back to the slot it was on. Grading it with the success
     # rules would call the healthy outcome a failure.
     if [ -f "${_out}/inject" ]; then
-        grep -q 'stage=abandon .*action=reboot-to-committed' "${_out}/serial.log" 2>/dev/null ||
+        grep -Eq 'stage=abandon .*action=reboot-to-committed|ab-commit: abandoned slot=' "${_out}/serial.log" 2>/dev/null ||
             _fail="abandon-not-recorded"
         if [ -z "${_fail}" ]; then
             [ "$(field "${_out}/status.committed" pending)" = "none" ] || _fail="pending-not-cleared"
@@ -116,10 +116,13 @@ grade() {
         [ -s "${_out}/payload.sha256" ] || _fail="payload-digests-missing"
         if [ -z "${_fail}" ]; then
             # Compare by name, not by position: the payload and the ESP name the same
-            # two members differently (kernel.bin vs vmlinuz-<slot>).
-            _kernel_esp=$(awk '$2 ~ /vmlinuz/ { print $1 }' "${_out}/esp.sha256")
+            # two members differently (kernel.bin vs vmlinuz-<slot>). The ESP carries the
+            # boot files of both slots; only the committed slot's pair is comparable with
+            # the payload, and a bare /vmlinuz/ match would concatenate both digests.
+            _slot_done=$(field "${_out}/status.committed" committed)
+            _kernel_esp=$(awk -v slot="${_slot_done}" '$2 == "vmlinuz-" slot { print $1 }' "${_out}/esp.sha256")
             _kernel_pay=$(awk '$2 ~ /kernel\.bin/ { print $1 }' "${_out}/payload.sha256")
-            _initrd_esp=$(awk '$2 ~ /initrd/ { print $1 }' "${_out}/esp.sha256")
+            _initrd_esp=$(awk -v slot="${_slot_done}" '$2 == "initrd-" slot { print $1 }' "${_out}/esp.sha256")
             _initrd_pay=$(awk '$2 ~ /initramfs/ { print $1 }' "${_out}/payload.sha256")
             if [ -z "${_kernel_esp}" ] || [ "${_kernel_esp}" != "${_kernel_pay}" ]; then
                 _fail="kernel-on-esp-is-not-the-payload-kernel"
@@ -130,7 +133,7 @@ grade() {
     fi
 
     if [ -z "${_fail}" ]; then
-        grep -q 'stage=commit .*result=ok' "${_out}/serial.log" 2>/dev/null ||
+        grep -Eq 'stage=commit .*result=ok|ab-commit: committed slot=' "${_out}/serial.log" 2>/dev/null ||
             _fail="commit-not-recorded-in-serial"
     fi
 

@@ -230,7 +230,7 @@ printf ' slot=b committed=b pending=none generation=4 packages=aligned\n' >"$gra
 printf ' slot=a committed=a pending=none generation=2\n' >"$grade_dir/status.before"
 # Same digests, different member names on each side: the ESP names the kernel vmlinuz-*,
 # the payload names it kernel.bin.
-printf 'a1b2c3  vmlinuz-a\na1b2c3  initrd-a\n' >"$grade_dir/esp.sha256"
+printf 'a1b2c3  vmlinuz-b\na1b2c3  initrd-b\n' >"$grade_dir/esp.sha256"
 printf 'a1b2c3  kernel.bin\na1b2c3  initramfs.cpio.gz\n' >"$grade_dir/payload.sha256"
 printf 'ab-commit: stage=commit slot=b result=ok\n' >"$grade_dir/serial.log"
 out="$(bash "$script" assert --out "$grade_dir" 2>&1)"
@@ -280,12 +280,19 @@ CROSS-STATUS-DONE
 SERIAL1
     ;;
   cross-boot2)
+    # The candidate boot: ab-commit commits and the stage stops on its console line.
     cat >"${CI_LOG_DIR}/serial-${case_label}.log" <<'SERIAL2'
+ab-commit: committed slot=b upper=@overlay-25.12.4
+SERIAL2
+    ;;
+  cross-boot3)
+    # The committed slot's next boot: the state is settled, so the fixture can print the
+    # post-commit status the grader reads.
+    cat >"${CI_LOG_DIR}/serial-${case_label}.log" <<'SERIAL3'
 CROSS-STATUS-COMMITTED
 slot=b upper=@overlay-25.12.4 generation=2 committed=b pending=none next=b packages=aligned
-stage=commit slot=b result=ok
 CROSS-STATUS-DONE
-SERIAL2
+SERIAL3
     ;;
   *)
     printf 'unexpected case label: %s\n' "${case_label}" >&2
@@ -319,6 +326,8 @@ case "$dev" in
   *p1)
     printf 'kernel of the old image\n' >"$mnt/vmlinuz-a"
     printf 'initrd of the old image\n' >"$mnt/initrd-a"
+    printf 'kernel of the old image\n' >"$mnt/vmlinuz-b"
+    printf 'initrd of the old image\n' >"$mnt/initrd-b"
     ;;
   *p4) mkdir -p "$mnt/@overlay-25.12.2/upper" ;;
 esac
