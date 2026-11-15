@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci: render the shipped update.conf at all three staging times (ci_render_update_conf + CI_UPDATE_* overrides)
+# reason: release publish gates on build+cross; cross reads guest serial from CI_LOG_DIR with a wan fixture; ab-fixtures waits for every loop partition
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -141,6 +141,7 @@ sh-flag scripts/ci/lib.sh --retry-delay
 sh-flag scripts/ci/lib.sh --show
 sh-flag scripts/ci/lib.sh --show-error
 sh-flag scripts/ci/lib.sh --silent
+sh-flag scripts/ci/lib.sh --timeout
 sh-flag scripts/ci/matrix-select.sh --count
 sh-flag scripts/ci/matrix-select.sh --help
 sh-flag scripts/ci/matrix-select.sh --index
@@ -304,8 +305,12 @@ sh-fn scripts/ci/lib.sh ci_have
 sh-fn scripts/ci/lib.sh ci_load_env_file
 sh-fn scripts/ci/lib.sh ci_log
 sh-fn scripts/ci/lib.sh ci_lookup_sha256
+sh-fn scripts/ci/lib.sh ci_loop_backing
+sh-fn scripts/ci/lib.sh ci_loop_diagnostics
+sh-fn scripts/ci/lib.sh ci_loop_matches
 sh-fn scripts/ci/lib.sh ci_match
 sh-fn scripts/ci/lib.sh ci_part_field
+sh-fn scripts/ci/lib.sh ci_path_absolute
 sh-fn scripts/ci/lib.sh ci_platform_modes
 sh-fn scripts/ci/lib.sh ci_platform_startlinks
 sh-fn scripts/ci/lib.sh ci_render_net_defaults
@@ -316,8 +321,10 @@ sh-fn scripts/ci/lib.sh ci_require_var
 sh-fn scripts/ci/lib.sh ci_sha256
 sh-fn scripts/ci/lib.sh ci_sha256_text
 sh-fn scripts/ci/lib.sh ci_stage_init
+sh-fn scripts/ci/lib.sh ci_udev_settle
 sh-fn scripts/ci/lib.sh ci_upstream_pin_file
 sh-fn scripts/ci/lib.sh ci_upstream_pin_read
+sh-fn scripts/ci/lib.sh ci_wait_block
 sh-fn scripts/ci/lib.sh ci_wait_part_field
 sh-fn scripts/ci/lib.sh ci_warn
 sh-fn scripts/ci/lib.sh ci_write_upstream_pin
@@ -424,6 +431,7 @@ sh-var scripts/ci/boot-member.sh CI_UPSTREAM_VERSION
 sh-var scripts/ci/cross-upgrade.sh CI_INITRAMFS
 sh-var scripts/ci/cross-upgrade.sh CI_JUDGE_PREFIX
 sh-var scripts/ci/cross-upgrade.sh CI_KERNEL
+sh-var scripts/ci/cross-upgrade.sh CI_LOG_DIR
 sh-var scripts/ci/cross-upgrade.sh CI_MIN_UPSTREAM_MAJOR
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_CASE
 sh-var scripts/ci/cross-upgrade.sh CI_QEMU_DISK
@@ -2482,7 +2490,7 @@ yaml .github/workflows/release.yml jobs.build.uses = ./.github/workflows/ci.yml
 yaml .github/workflows/release.yml jobs.cross.needs = [build]
 yaml .github/workflows/release.yml jobs.cross.permissions = 
 yaml .github/workflows/release.yml jobs.cross.uses = ./.github/workflows/ci-upgrade-cross.yml
-yaml .github/workflows/release.yml jobs.publish.needs = build
+yaml .github/workflows/release.yml jobs.publish.needs = [build, cross]
 yaml .github/workflows/release.yml jobs.publish.permissions = 
 yaml .github/workflows/release.yml jobs.publish.uses = ./.github/workflows/release-publish.yml
 yaml .github/workflows/release.yml jobs.publish.with = 
