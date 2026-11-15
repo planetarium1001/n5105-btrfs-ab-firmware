@@ -69,7 +69,9 @@ CASES=""
 payload=""
 armed=0
 inject=uci-wan
-INJECT_CMD=/tmp/ab-recovery-inject.sh
+# The helper has to survive the candidate boot: /tmp is tmpfs and is empty after the reboot,
+# which is how the restore step used to fail and leave wan.device=ab-inject-none0 behind.
+INJECT_CMD=${INJECT_CMD:-/mnt/p4/ab/recovery-inject.sh}
 
 usage() {
     sed -n '17,24p' "$0"
@@ -259,6 +261,7 @@ esac
 '
 
 push_inject_helper() {
+    dev_ssh 'mkdir -p /mnt/p4/ab' >/dev/null 2>&1 || return 1
     if ! hlp=$(mktemp "${TMPDIR:-/tmp}/ab-recovery-inject.XXXXXX"); then
         return 1
     fi
@@ -310,7 +313,7 @@ run_bad_version() {
 ' "${_case}" "${AB_WAIT_UP_HARD}"
         printf '%s 5/8 expect stage=abandon .*action=reboot-to-committed in the ring log
 ' "${_case}"
-        printf '%s 6/8 expect committed unchanged, pending=none, slot=<committed>, generation unchanged
+        printf '%s 6/8 expect committed unchanged, pending=none, slot=<committed>, generation +0 or +1 (abandon writes the ESP counter)
 ' "${_case}"
         printf '%s 7/8 expect the rootfs version and the markers from before the install
 ' "${_case}"
@@ -466,8 +469,26 @@ run_bad_version() {
     _assert_eq "${_case}" "pending_after" "$(_field "${after_status}" pending)" "none" "ab-slot status"
     _assert_eq "${_case}" "slot_after" "$(_field "${after_status}" slot)" "${before_committed}" \
         "ab-slot status   # the machine has to be running the slot it was on"
-    _assert_eq "${_case}" "generation_after" "$(_field "${after_status}" generation)" "${before_generation}" \
-        "ab-slot status   # an abandon is not a commit, so the generation does not move"
+    # An abandon is not a commit, but it does write the ESP counter (measured: 7 -> 8 on
+    # 2026-11-15). The invariant is "the committed slot did not move and the counter did not
+    # jump by more than the one abandon write", not "the generation is frozen".
+    after_generation=$(_field "${after_status}" generation)
+    case "${after_generation}" in
+        '' | *[!0-9]*)
+            _fail "${_case}" "generation_after is not a number (${after_generation:-empty})" \
+                "ab-slot status"
+            ;;
+        *)
+            if [ "${after_generation}" -ge "${before_generation}" ] &&
+                [ "${after_generation}" -le "$((before_generation + 1))" ]; then
+                _ok "${_case}" "generation ${before_generation} -> ${after_generation} (an abandon may write the ESP counter once)"
+            else
+                _fail "${_case}" \
+                    "generation moved ${before_generation} -> ${after_generation}; an abandon may advance it by at most one" \
+                    "ab-slot status; ab-slot log --prev"
+            fi
+            ;;
+    esac
     after_version=$(dev_running_version 2>/dev/null) || after_version=""
     _assert_eq "${_case}" "rootfs_after" "${after_version}" "${before_version}" "ab-slot rootfs"
     _assert_eq "${_case}" "markers_after" "$(marker_read)" "${before_markers}" \

@@ -10,8 +10,9 @@
 #   scripts/device/feed-install.sh --case check      # ac-12 only: nothing is written
 #   scripts/device/feed-install.sh --case install    # ac-13 only: install whatever is out there
 #   scripts/device/feed-install.sh                   # both, in that order
-#   scripts/device/feed-install.sh --expect 0.0.10   # pin the candidate this run expects
+#   scripts/device/feed-install.sh --expect 0.0.10   # pin the candidate this run expects (default 0.0.10)
 #   scripts/device/feed-install.sh --feed-url https://mirror.example/n5105/feed/v1
+#   scripts/device/feed-install.sh --release-base https://gh-proxy.com/https://github.com
 #   scripts/device/feed-install.sh --index-file /tmp/index.txt   # no host network
 #   AB_DRY_RUN=1 scripts/device/feed-install.sh      # print the steps, touch nothing
 #
@@ -44,14 +45,15 @@ AB_FEED_INSTALL_RESULTS=${AB_FEED_INSTALL_RESULTS:-feed-install-results.tsv}
 AB_DEVICE_FEED_DIR=${AB_DEVICE_FEED_DIR:-/tmp/ab-feed}
 DRY_RUN=${AB_DRY_RUN:-0}
 
-expect="0.0.9"
+expect="0.0.10"
 conf=/etc/ab/update.conf
 feed_url=""
+release_base=""
 index_file=""
 cases=""
 
 usage() {
-    sed -n '8,20p' "$0"
+    sed -n '8,21p' "$0"
     exit 2
 }
 
@@ -67,6 +69,7 @@ while [ "$#" -gt 0 ]; do
         --expect) expect=${2:?--expect needs a platform version}; shift 2 ;;
         --conf) conf=${2:?--conf needs a path}; shift 2 ;;
         --feed-url) feed_url=${2:?--feed-url needs a url}; shift 2 ;;
+        --release-base) release_base=${2:?--release-base needs a url}; shift 2 ;;
         --index-file) index_file=${2:?--index-file needs a path}; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help) usage ;;
@@ -303,6 +306,7 @@ run_check() {
 
     check_cmd="ab-upgrade --feed-check"
     [ -n "${feed_url}" ] && check_cmd="${check_cmd} --feed-url '${feed_url}'"
+    [ -n "${release_base}" ] && check_cmd="${check_cmd} --release-base '${release_base}'"
     out=$(dev_ssh "${check_cmd}" 2>&1)
     rc=$?
     printf '%s\n' "${out}" | sed 's/^/  | /' >&2
@@ -404,6 +408,7 @@ run_install() {
 
     install_cmd="ab-upgrade --feed --yes"
     [ -n "${feed_url}" ] && install_cmd="${install_cmd} --feed-url '${feed_url}'"
+    [ -n "${release_base}" ] && install_cmd="${install_cmd} --release-base '${release_base}'"
     out=$(dev_ssh "${install_cmd}" 2>&1)
     rc=$?
     printf '%s\n' "${out}" | sed 's/^/  | /' >&2
