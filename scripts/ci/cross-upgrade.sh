@@ -96,6 +96,7 @@ grade() {
     [ -z "${_fail}" ] && [ "${_next}" = "${_pending}" ] || _fail=${_fail:-next-does-not-point-at-the-candidate}
     [ -z "${_fail}" ] && [ "${_committed}" != "${_pending}" ] || _fail=${_fail:-candidate-already-committed}
 
+    _gen_before=$(field "${_out}/status.before" generation)
     _gen_after=$(field "${_out}/status.after" generation)
     _gen_done=$(field "${_out}/status.committed" generation)
     if [ -z "${_fail}" ]; then
@@ -103,9 +104,20 @@ grade() {
             _fail="pending-not-cleared-after-commit"
         [ "$(field "${_out}/status.committed" committed)" = "${_pending}" ] ||
             _fail="candidate-not-committed"
+        # The install bumps the generation (it writes the pending candidate); the commit
+        # keeps it. Measured on 0.0.10-rc4: before=1, after install=2, after commit=2. So the
+        # invariants are "the transaction advanced past the starting generation" and "the
+        # committed state did not move backwards", not "the commit bumps generation".
         case "${_gen_done}" in
             '' | *[!0-9]*) _fail="generation-unreadable" ;;
-            *) [ "${_gen_done}" -gt "${_gen_after:-0}" ] || _fail="generation-did-not-advance" ;;
+            *)
+                case "${_gen_before}" in
+                    '' | *[!0-9]*) _fail="generation-unreadable" ;;
+                    *) [ "${_gen_done}" -gt "${_gen_before}" ] || _fail="generation-did-not-advance" ;;
+                esac
+                [ -n "${_fail}" ] || [ "${_gen_done}" -ge "${_gen_after:-0}" ] ||
+                    _fail="generation-moved-backwards"
+                ;;
         esac
         [ "$(field "${_out}/status.committed" packages)" = "aligned" ] ||
             _fail="packages-not-aligned-after-commit"
