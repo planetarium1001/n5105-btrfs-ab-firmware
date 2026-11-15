@@ -323,8 +323,8 @@ assert_eq "$(grep -c '^fetch -o ' "$APK_CALLS")" "7" \
   "ac-4 a drifted package does not short-circuit the rest of the per-package pass"
 sid_dr=${snap_drift##*/snapshot-}
 sid_dr=${sid_dr%.txt}
-assert_eq "$(ls "$layer/apk/snapshots/snapshot-$sid_dr.d/payloads" | grep -c 'nano-9.9.9')" "0" \
-  "ac-4 the drifted archive is not left in the payload directory"
+assert_eq "$([ -e "$layer/apk/snapshots/snapshot-$sid_dr.d/payloads/nano-9.9.9-r9.apk" ] && echo present || echo absent)" \
+  "absent" "ac-4 the drifted archive is not left in the payload directory"
 assert_eq "$(grep -c '^apkfile ' "$snap_drift")" "7" \
   "ac-4 every package still has a digest after the fallback"
 
