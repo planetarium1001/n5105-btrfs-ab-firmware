@@ -204,4 +204,103 @@ assert_contains "$s5_body" "CI_PLATFORM_RUNTIME_DIR: \${{ runner.temp }}/ci/runt
 assert_eq "$(printf '%s\n' "$s5_body" | grep -c 'CI_PLATFORM_RUNTIME_DIR:')" "2" \
   "ac-4 both the image and the payload use the runtime tree"
 
+# --------------------------------------------------------------------------- #
+# ac-5 (F1 ac-2): the snapshot inherits a package shadow, so the copy clears it
+# --------------------------------------------------------------------------- #
+# The new slot's writable layer is a snapshot of the running one, so it also inherits the
+# upstream /lib/upgrade files an apk upgrade wrote into the upper. Upper wins over every
+# lower layer, so the platform layer installed right after the snapshot would never be
+# the adapter the slot loads. The copy has to move them aside - after the snapshot,
+# before @sys is replaced - keep them under /mnt/p4/ab/shadow-backup-<ts>/ and never fail
+# the install when it cannot.
+
+shadow_body="$(sed -n '/^_upgrade_shadow_clean()/,/^}/p' "$platform_sh")"
+assert_eq "$([ -n "$shadow_body" ] && echo present)" "present" \
+  "ac-5 the cleanup is one helper"
+for rel in lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/upgrade/tar.sh; do
+  assert_contains "$shadow_body" "$rel" "ac-5 the cleanup covers ${rel}"
+done
+assert_contains "$shadow_body" 'shadow-backup-' \
+  "ac-5 the moved files are kept under a backup directory"
+assert_contains "$shadow_body" 'reason=shadow-backup-failed' \
+  "ac-5 a failed backup records a token"
+assert_contains "$shadow_body" 'reason=shadow-move-failed' \
+  "ac-5 a failed move records a token"
+
+copy_body="$(sed -n '/^platform_copy_rootfs()/,/^}/p' "$platform_sh")"
+snap_line="$(printf '%s\n' "$copy_body" | grep -n 'snapshotted' | head -n 1 | cut -d: -f1)"
+shadow_line="$(printf '%s\n' "$copy_body" | grep -n -F '_upgrade_shadow_clean "${_new_layer}"' | head -n 1 | cut -d: -f1)"
+sys_line="$(printf '%s\n' "$copy_body" | grep -n "replace the target slot's system tree" | head -n 1 | cut -d: -f1)"
+assert_eq "$([ -n "$snap_line" ] && [ -n "$shadow_line" ] && [ -n "$sys_line" ] &&
+  [ "$snap_line" -lt "$shadow_line" ] && [ "$shadow_line" -lt "$sys_line" ] && echo ordered)" \
+  "ordered" "ac-5 the shadow is cleared after the snapshot and before @sys is replaced"
+
+# The helper itself, on a fixture writable layer: four files moved, the user's files and
+# the rest of lib/upgrade untouched, one backup that still carries the original bytes.
+shadow_p4="$tmp/shadow-p4"
+shadow_layer="@overlay-25.12.2"
+mkdir -p "$shadow_p4/$shadow_layer/upper/lib/upgrade" "$shadow_p4/$shadow_layer/upper/etc"
+for rel in platform.sh fwtool.sh stage2 tar.sh; do
+  printf 'upstream %s\n' "$rel" >"$shadow_p4/$shadow_layer/upper/lib/upgrade/$rel"
+done
+printf 'user edit\n' >"$shadow_p4/$shadow_layer/upper/etc/banner"
+printf 'platform only\n' >"$shadow_p4/$shadow_layer/upper/lib/upgrade/other.sh"
+
+out="$(AB_P4="$shadow_p4" AB_ESP="$tmp/esp" AB_PARTITIONS_LIB="$tmp/no-partitions.sh" \
+  sh -c '. "$1"; _upgrade_shadow_clean "@overlay-25.12.2"' sh "$platform_sh" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-5 a cleanup failure never fails the copy"
+assert_eq "$(ls "$shadow_p4/$shadow_layer/upper/lib/upgrade" 2>/dev/null | tr '\n' ' ')" \
+  "other.sh " "ac-5 exactly the four upstream files are moved out of the upper"
+assert_file_exists "$shadow_p4/$shadow_layer/upper/etc/banner" \
+  "ac-5 the user's own upper files are left alone"
+backup="$(find "$shadow_p4/ab" -mindepth 1 -maxdepth 1 -name 'shadow-backup-*' 2>/dev/null | head -n 1)"
+assert_eq "$([ -n "$backup" ] && echo present)" "present" "ac-5 the move leaves a backup directory"
+for rel in platform.sh fwtool.sh stage2 tar.sh; do
+  assert_file_exists "$backup/lib/upgrade/$rel" "ac-5 the backup keeps ${rel}"
+done
+assert_eq "$(cat "$backup/lib/upgrade/platform.sh" 2>/dev/null)" "upstream platform.sh" \
+  "ac-5 the backup carries the bytes that were there"
+assert_contains "$out" "shadow moved out of the snapshot: lib/upgrade/platform.sh" \
+  "ac-5 each moved file is named"
+assert_contains "$out" "backup " "ac-5 the backup path is reported"
+
+# Nothing to move: no backup directory is created.
+out="$(AB_P4="$tmp/shadow-empty" AB_ESP="$tmp/esp" AB_PARTITIONS_LIB="$tmp/no-partitions.sh" \
+  sh -c '. "$1"; _upgrade_shadow_clean "@overlay-1"' sh "$platform_sh" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-5 a layer without an upper is a no-op"
+assert_eq "$([ -d "$tmp/shadow-empty/ab" ] && echo created || echo none)" "none" \
+  "ac-5 and it creates no backup directory"
+
+# The backup cannot be made: token, no failure, the file stays where it was.
+fail_p4="$tmp/shadow-fail"
+mkdir -p "$fail_p4/$shadow_layer/upper/lib/upgrade"
+printf 'upstream platform\n' >"$fail_p4/$shadow_layer/upper/lib/upgrade/platform.sh"
+printf 'not a directory\n' >"$fail_p4/ab"
+out="$(AB_P4="$fail_p4" AB_ESP="$tmp/esp" AB_PARTITIONS_LIB="$tmp/no-partitions.sh" \
+  sh -c '. "$1"; _upgrade_shadow_clean "@overlay-25.12.2"' sh "$platform_sh" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-5 a backup that cannot be created does not fail the copy"
+assert_contains "$out" "reason=shadow-backup-failed" "ac-5 and the token says why"
+assert_file_exists "$fail_p4/$shadow_layer/upper/lib/upgrade/platform.sh" \
+  "ac-5 nothing is moved when there is nowhere to keep it"
+
+# --------------------------------------------------------------------------- #
+# ac-6 (F1 ac-2): the shadow does not come back on the next apk upgrade
+# --------------------------------------------------------------------------- #
+# The cleanup repairs a snapshot that already carries the shadow. The prevention is apk's
+# own protected-path list: apk-tools 3 (`apk-protected_paths(5)`) reads
+# /etc/apk/protected_paths.d/*.list and does not overwrite a protected path; a `+` rule
+# protects a file only when the visible file is not the one in the apk database, which is
+# this case. The platform layer therefore has to ship the list.
+protected="$root/platform/etc/apk/protected_paths.d/ab-upgrade-adapter.list"
+assert_file_exists "$protected" "ac-6 the platform layer carries an apk protected-path list"
+protected_src="$(cat "$protected" 2>/dev/null)"
+for rel in lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/upgrade/tar.sh; do
+  assert_contains "$protected_src" "+${rel}" "ac-6 ${rel} is protected from being overwritten"
+done
+assert_contains "$protected_src" "upper" "ac-6 the comment says what the rule prevents"
+assert_contains "$protected_src" "apk-new" "ac-6 the comment says where the package's copy goes"
+
 finish

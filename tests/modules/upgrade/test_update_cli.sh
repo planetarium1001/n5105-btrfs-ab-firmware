@@ -417,4 +417,137 @@ set -e
 assert_eq "$rc" "74" "ac-15 no terminal and no --yes is a refusal"
 assert_contains "$out" "reason=feed-noninteractive" "ac-15 and the reason says why"
 
+# --- the adapter load path: a shadowed copy is never sourced ---------------
+# `/lib/upgrade/platform.sh` is a merged-overlay path whose name upstream's sysupgrade
+# interface uses too. When a package upgrade leaves the upstream file in the writable
+# layer's upper, sourcing it used to fail only at `platform_upgrade_begin: not found`,
+# after all validation had passed. The loader has to notice before sourcing and fall back
+# to an immutable copy, or refuse with the recovery path. Everything below runs
+# ab-upgrade in --check mode, so no slot, ESP or btrfs is touched: the load step is
+# reached, which is the whole point. The refusals below are expected non-zero exits.
+set +e
+adapter_bin="$tmp/adapter-bin"
+mkdir -p "$adapter_bin" "$tmp/p4" "$tmp/esp" "$tmp/slots"
+cat >"$adapter_bin/sha256sum" <<'STUB'
+#!/bin/sh
+for f in "$@"; do
+  [ -f "$f" ] && printf '%s  %s\n' "$(shasum -a 256 "$f" | cut -d' ' -f1)" "$f"
+done
+STUB
+cat >"$adapter_bin/ab-slot" <<'STUB'
+#!/bin/sh
+case "${1:-status}" in
+  status) printf 'slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=none p4=ok\n' ;;
+  rootfs) printf '25.12.2\n' ;;
+  *) exit 0 ;;
+esac
+STUB
+# A mount of the running slot's @platform subvolume lands the fixture adapter in the
+# mount point; every other mount the checker tries fails, which is what a machine without
+# the filesystem looks like.
+cat >"$adapter_bin/mount" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *subvol=/@platform*)
+    mp=""
+    for arg in "$@"; do mp="$arg"; done
+    mkdir -p "$mp" && cp -a "${ADAPTER_FIXTURE}/." "$mp/"
+    exit 0
+    ;;
+esac
+exit 1
+STUB
+cat >"$adapter_bin/umount" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+# An explicitly named partition lookup is used as given; this one answers with a device
+# node so the @platform fallback reaches the mount stub.
+cat >"$adapter_bin/partitions-stub.sh" <<'STUB'
+ab_find_partition() { printf '/dev/fake'; }
+STUB
+chmod +x "$adapter_bin"/*
+
+adapter_fixture="$tmp/adapter-fixture"
+mkdir -p "$adapter_fixture/lib/upgrade"
+cp "$root/platform/lib/upgrade/platform.sh" "$adapter_fixture/lib/upgrade/platform.sh"
+# What a package upgrade leaves in the upper: the upstream script, which has no
+# platform_upgrade_begin. Never sourced by the fixed loader.
+shadow_lib="$tmp/shadow/lib/upgrade/platform.sh"
+mkdir -p "$(dirname "$shadow_lib")"
+printf '#!/bin/sh\n# upstream sysupgrade platform library\nplatform_check_image() { return 0; }\n' >"$shadow_lib"
+
+# adapter_payload <dir> <platform-tree>: a payload that passes validation and reaches the
+# adapter load step under --check. <platform-tree> is what its platform.tar carries.
+adapter_payload() {
+  local dir=$1 platform_dir=$2 first=1 member sha size
+  rm -rf "$dir"
+  mkdir -p "$dir/rootfs/etc"
+  printf 'banner\n' >"$dir/rootfs/etc/banner"
+  tar -czf "$dir/rootfs.tar.gz" -C "$dir/rootfs" .
+  printf 'vermagic=6.12.103 SMP mod_unload \n' >"$dir/kernel.bin"
+  printf 'vermagic=6.12.103 SMP mod_unload \n' | gzip -9 >"$dir/initramfs.cpio.gz"
+  tar -cf "$dir/platform.tar" -C "$platform_dir" .
+  {
+    printf '{"format":"ab-payload/1","rootfs":"0.0.9-test1","members":{'
+    for member in rootfs.tar.gz kernel.bin initramfs.cpio.gz platform.tar; do
+      sha=$(shasum -a 256 "$dir/$member" | cut -d' ' -f1)
+      size=$(wc -c <"$dir/$member" | tr -d ' ')
+      [ "$first" = "1" ] || printf ','
+      first=0
+      printf '"%s":{"size":%s,"sha256":"%s"}' "$member" "$size" "$sha"
+    done
+    printf '}}\n'
+  } >"$dir/manifest.json"
+  tar -cf "$dir/payload.tar" -C "$dir" manifest.json rootfs.tar.gz kernel.bin \
+    initramfs.cpio.gz platform.tar
+  printf '%s' "$dir/payload.tar"
+}
+
+# run_adapter <lib> <payload> [ENV=value...]: --check against the stubbed machine.
+run_adapter() {
+  local lib=$1 payload=$2
+  shift 2
+  env PATH="$adapter_bin:$PATH" AB_ESP="$tmp/esp" AB_P4="$tmp/p4" \
+    AB_SLOTS_ROOT="$tmp/slots" AB_LIB="$lib" ADAPTER_FIXTURE="$adapter_fixture" \
+    "$@" sh "$upgrade" --check "$payload" 2>&1
+}
+
+payload_ok=$(adapter_payload "$tmp/payload-adapter" "$adapter_fixture")
+
+out=$(run_adapter "$root/platform/lib/upgrade/platform.sh" "$payload_ok")
+rc=$?
+assert_eq "$rc" "0" "the healthy path still passes the check"
+assert_contains "$out" "upgrade: platform adapter source=running" \
+  "the adapter line names the running path when it is this project's"
+
+out=$(run_adapter "$shadow_lib" "$payload_ok" AB_PARTITIONS_LIB="$adapter_bin/partitions-stub.sh")
+rc=$?
+assert_eq "$rc" "0" "a shadowed adapter falls back instead of failing the check"
+assert_contains "$out" "upgrade: platform adapter source=immutable" \
+  "the fallback names the running slot's @platform subvolume"
+assert_contains "$out" "is not this project's adapter (shadowed by a package)" \
+  "the shadow is reported before the fallback runs"
+
+out=$(run_adapter "$shadow_lib" "$payload_ok" AB_PARTITIONS_LIB="$tmp/no-partitions.sh")
+rc=$?
+assert_eq "$rc" "0" "a payload platform layer is the second fallback"
+assert_contains "$out" "upgrade: platform adapter source=payload" \
+  "the fallback names the platform layer the payload carries"
+
+upstream_tree="$tmp/upstream-platform"
+mkdir -p "$upstream_tree/lib/upgrade"
+printf '#!/bin/sh\nplatform_check_image() { return 0; }\n' >"$upstream_tree/lib/upgrade/platform.sh"
+payload_shadow=$(adapter_payload "$tmp/payload-shadow" "$upstream_tree")
+out=$(run_adapter "$shadow_lib" "$payload_shadow" AB_PARTITIONS_LIB="$tmp/no-partitions.sh")
+rc=$?
+assert_eq "$rc" "74" "with no usable copy the check is refused before anything is written"
+assert_contains "$out" "reason=platform-layer-shadowed" \
+  "the refusal token names the shadow"
+assert_contains "$out" "rm -f " "the recovery prints the copies to remove"
+assert_contains "$out" "AB_LIB=<path-to>/lib/upgrade/platform.sh" \
+  "the recovery prints the immutable-copy invocation"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'platform_upgrade_begin: not found')" "0" \
+  "the shadowed file is never sourced, so the old not-found failure is gone"
+
 finish

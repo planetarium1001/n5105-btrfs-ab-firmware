@@ -1,0 +1,21 @@
+# Keep the upstream sysupgrade files out of the writable layer's upper.
+#
+# /lib/upgrade is also the path of this project's own upgrade adapter
+# (platform/lib/upgrade/platform.sh, installed by the platform layer). The running root is
+# an overlayfs composition of the platform layer over @sys, and a file the user's writable
+# layer (upper) carries wins over both. An `apk upgrade` that rewrites the upstream
+# /lib/upgrade/* files would therefore put an upper copy in front of the platform layer:
+# the next ab-upgrade sources upstream's script, which has no platform_upgrade_begin, and
+# the update path fails after every validation step has already passed.
+#
+# A leading `+` protects a path only when the visible file differs from the one recorded
+# in the apk database, which is exactly the case here: the platform layer ships a
+# different platform.sh (and no fwtool.sh/stage2/tar.sh of its own). The package's file is
+# written as `<name>.apk-new` next to it, the platform layer keeps precedence, and apk
+# itself still upgrades its database normally. Do not remove these rules without a device
+# check: the cleanup in platform_copy_rootfs only repairs snapshots taken after a shadow
+# already exists, this file is what stops the shadow from being created again.
++lib/upgrade/platform.sh
++lib/upgrade/fwtool.sh
++lib/upgrade/stage2
++lib/upgrade/tar.sh

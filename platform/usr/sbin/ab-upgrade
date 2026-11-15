@@ -124,6 +124,16 @@ refuse() {
     exit 74
 }
 
+# console_milestone <line...>: the console copy of a milestone that is not a refusal.
+# console_say itself tolerates a missing console, but a shell that cannot open
+# /dev/console prints the redirection error itself, and that line lands in the log of
+# whoever invoked this script (a CI checker, a test). A milestone is therefore mirrored
+# only when the console can take it; on a device running as root it always can.
+console_milestone() {
+    [ -w "${AB_CONSOLE_DEV:-/dev/console}" ] || return 0
+    console_say "$@"
+}
+
 fail() {
     say "ab-upgrade: failed, reason=${1}"
     console_say "ab-upgrade: failed, reason=${1}"
@@ -720,8 +730,175 @@ say "ab-upgrade: modules agree on ${module_short}"
 upgrade_reason=""
 UPGRADE_NEW_LAYER=""
 UPGRADE_NEW_VERSION=""
-# shellcheck source=platform/lib/upgrade/platform.sh disable=SC1090
-. "${LIB}" || fail "cannot-load-${LIB}"
+
+# --------------------------------------------------------------------------- #
+# 3b. The upgrade adapter, loaded from a source a package cannot shadow
+# --------------------------------------------------------------------------- #
+# ${LIB} is a merged-overlay path, and `/lib/upgrade/platform.sh` is the name upstream's
+# sysupgrade interface uses too. An `apk upgrade` that rewrites that file leaves an upper
+# copy in the writable layer, the upper copy wins over the platform layer, and the
+# library that gets sourced is upstream's: every validation step passes and then the
+# install dies with `platform_upgrade_begin: not found`. The content is therefore
+# checked before it is sourced, and when it is not this project's adapter the loader
+# falls back to an immutable copy - the running slot's read-only @platform subvolume,
+# then the platform layer the payload carries - and refuses with a recovery path only
+# when none of them is usable.
+#
+# What the loader settled on is logged as `upgrade: platform adapter source=<token>`:
+#   running    the path ${LIB} names (AB_LIB or the default /lib/upgrade/platform.sh)
+#   immutable  the running slot's @platform subvolume, mounted read-only
+#   payload    the platform layer inside the payload
+
+# The partition lookup the immutable fallback needs. A path set by the caller is used as
+# given (the boot environment and the tests pin it); a checkout falls back to the in-tree
+# copy, the same way the other libraries above do.
+ADAPTER_SOURCE=""
+ADAPTER_PATH=""
+adp_partitions_pinned=0
+if [ -n "${AB_PARTITIONS_LIB:-}" ]; then
+    adp_partitions_pinned=1
+else
+    AB_PARTITIONS_LIB=/lib/ab-partitions.sh
+    [ -f "${AB_PARTITIONS_LIB}" ] || AB_PARTITIONS_LIB="$(dirname "$0")/../../lib/ab-partitions.sh"
+fi
+
+# adapter_is_ours <file>: the file is this project's adapter, not upstream's. The marker
+# is the entry point the rest of this script calls; upstream's platform.sh does not
+# define it, which is exactly what makes a shadowed copy unusable.
+adapter_is_ours() {
+    [ -f "$1" ] || return 1
+    grep -q '^platform_upgrade_begin()' "$1" 2>/dev/null
+}
+
+# adapter_from_file <source-token> <file>: source one verified candidate.
+adapter_from_file() {
+    adp_token="$1"
+    adp_file="$2"
+    adapter_is_ours "${adp_file}" || return 1
+    # shellcheck source=platform/lib/upgrade/platform.sh disable=SC1090
+    . "${adp_file}" || return 1
+    # Checked again after sourcing: a file that only mentions the entry point in a
+    # comment or inside a branch that did not run is not an adapter either.
+    command -v platform_upgrade_begin >/dev/null 2>&1 || return 1
+    ADAPTER_SOURCE="${adp_token}"
+    ADAPTER_PATH="${adp_file}"
+    return 0
+}
+
+# adapter_running_platform: source the adapter from the running slot's @platform
+# subvolume, mounted read-only. That subvolume is the platform layer itself; a package
+# can only write into the writable layer, so its copy cannot shadow this one. The device
+# node comes from the shared lookup (platform/lib/ab-partitions.sh); when the disk cannot
+# be identified the fallback is skipped instead of mounting a guessed partition.
+adapter_running_platform() {
+    adp_slot="$(ab-slot status 2>/dev/null | sed -n 's/^slot=\([ab]\) .*/\1/p')"
+    [ -n "${adp_slot}" ] || return 1
+    case "${adp_slot}" in
+        a) adp_part=2 ;;
+        b) adp_part=3 ;;
+        *) return 1 ;;
+    esac
+    [ -f "${AB_PARTITIONS_LIB}" ] || return 1
+    # shellcheck source=platform/lib/ab-partitions.sh disable=SC1090
+    . "${AB_PARTITIONS_LIB}" 2>/dev/null || return 1
+    command -v ab_find_partition >/dev/null 2>&1 || return 1
+    adp_dev="$(ab_find_partition "ab-slot-${adp_slot}" "${adp_part}")" || return 1
+    [ -n "${adp_dev}" ] || return 1
+    adp_mnt="${work}/adapter-platform"
+    mkdir -p "${adp_mnt}" || return 1
+    adp_root=""
+    if mount -o ro,subvol=/@platform "${adp_dev}" "${adp_mnt}" 2>/dev/null; then
+        adp_root="${adp_mnt}"
+    elif mount -o ro "${adp_dev}" "${adp_mnt}" 2>/dev/null; then
+        # A mount that cannot name the subvolume still exposes it as a directory of the
+        # filesystem root.
+        adp_root="${adp_mnt}/@platform"
+    else
+        rmdir "${adp_mnt}" 2>/dev/null || true
+        return 1
+    fi
+    adp_ok=0
+    adapter_from_file immutable "${adp_root}/lib/upgrade/platform.sh" && adp_ok=1
+    umount "${adp_mnt}" 2>/dev/null || say "ab-upgrade: warning: could not release ${adp_mnt}"
+    rmdir "${adp_mnt}" 2>/dev/null || true
+    [ "${adp_ok}" = "1" ]
+}
+
+# adapter_from_payload: extract the payload's platform layer into the work directory and
+# source the adapter from that copy. The whole layer is extracted, not just lib/upgrade:
+# the adapter sources its helpers from lib/, and half a layer is the same failure in a
+# new place. When the caller did not pin them, the helper paths are pointed at the
+# extracted tree too, so the adapter never mixes the version being installed with the
+# one that happens to be running.
+adapter_from_payload() {
+    [ -n "${platform_member}" ] || return 1
+    [ -f "${work}/${platform_member}" ] || return 1
+    adp_root="${work}/adapter-payload"
+    rm -rf "${adp_root}" 2>/dev/null || true
+    mkdir -p "${adp_root}" || return 1
+    tar -xf "${work}/${platform_member}" -C "${adp_root}" 2>/dev/null || return 1
+    if [ "${adp_partitions_pinned}" = "0" ]; then
+        if [ -f "${adp_root}/lib/ab-partitions.sh" ]; then
+            AB_PARTITIONS_LIB="${adp_root}/lib/ab-partitions.sh"
+            export AB_PARTITIONS_LIB
+        fi
+        if [ -f "${adp_root}/lib/disk-identity.sh" ] && [ -z "${AB_DISK_IDENTITY_LIB:-}" ]; then
+            AB_DISK_IDENTITY_LIB="${adp_root}/lib/disk-identity.sh"
+            export AB_DISK_IDENTITY_LIB
+        fi
+    fi
+    adapter_from_file payload "${adp_root}/lib/upgrade/platform.sh"
+}
+
+# adapter_recovery: what an operator can do when no copy can be loaded. Printed before
+# the refusal so it reaches the same console log the refusal reaches; the two documented
+# ways out are removing the upper copies and pointing the loader at a clean copy.
+adapter_recovery() {
+    adp_upper="$(ab-slot status 2>/dev/null | sed -n 's/^.*upper=\([^ ]*\) .*/\1/p')"
+    [ -n "${adp_upper}" ] || adp_upper="@overlay-<version>"
+    if [ -f "${LIB}" ]; then
+        say "ab-upgrade: recovery: ${LIB} is not this project's adapter: a package wrote"
+        say "ab-upgrade: recovery: the upstream copy into the writable layer and it wins over the platform layer."
+        say "ab-upgrade: recovery: remove the shadowing copies and retry:"
+        say "ab-upgrade: recovery:   rm -f ${AB_P4}/${adp_upper}/upper/lib/upgrade/platform.sh"
+        say "ab-upgrade: recovery:   rm -f ${AB_P4}/${adp_upper}/upper/lib/upgrade/fwtool.sh"
+        say "ab-upgrade: recovery:   rm -f ${AB_P4}/${adp_upper}/upper/lib/upgrade/stage2"
+        say "ab-upgrade: recovery:   rm -f ${AB_P4}/${adp_upper}/upper/lib/upgrade/tar.sh"
+        say "ab-upgrade: recovery: or install this run from a copy that is not shadowed:"
+        say "ab-upgrade: recovery:   AB_LIB=<path-to>/lib/upgrade/platform.sh ab-upgrade <payload.tar>"
+    else
+        say "ab-upgrade: recovery: ${LIB} is missing and the payload carries no usable copy."
+        say "ab-upgrade: recovery: the platform layer was removed or is shadowed; pass one explicitly:"
+        say "ab-upgrade: recovery:   AB_LIB=<path-to>/lib/upgrade/platform.sh ab-upgrade <payload.tar>"
+    fi
+}
+
+# adapter_load: try the three sources in order. The reason token is one value for every
+# way the load can fail, because what the operator has to do is the same: the machine
+# cannot start an upgrade from what it has, and the recovery lines say how.
+adapter_load() {
+    if [ -f "${LIB}" ] && ! adapter_is_ours "${LIB}"; then
+        say "ab-upgrade: warning: ${LIB} is not this project's adapter (shadowed by a package); looking for an immutable copy"
+        console_milestone "ab-upgrade: warning adapter-shadowed path=${LIB}"
+    elif [ ! -f "${LIB}" ]; then
+        say "ab-upgrade: warning: ${LIB} is missing; looking for the running slot's platform layer"
+        console_milestone "ab-upgrade: warning adapter-missing path=${LIB}"
+    fi
+    if adapter_from_file running "${LIB}"; then
+        :
+    elif adapter_running_platform; then
+        :
+    elif adapter_from_payload; then
+        :
+    else
+        adapter_recovery
+        refuse "platform-layer-shadowed"
+    fi
+    say "upgrade: platform adapter source=${ADAPTER_SOURCE} path=${ADAPTER_PATH}"
+    console_milestone "upgrade: platform adapter source=${ADAPTER_SOURCE}"
+}
+
+adapter_load
 
 # ab-slot status is the single source for both the layer name and the writable partition
 # state; a failure here used to be indistinguishable from a degraded partition.

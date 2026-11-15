@@ -540,6 +540,55 @@ platform_upgrade_begin() {
     return 0
 }
 
+# --------------------------------------------------------------------------- #
+# The package shadow a snapshot inherits
+# --------------------------------------------------------------------------- #
+# The writable layer carries the user's state, so it also carries whatever `apk upgrade`
+# wrote there. `/lib/upgrade/platform.sh` is a name upstream's sysupgrade interface uses
+# too: when a package upgrade writes that file into `<layer>/upper`, the upper copy is
+# the first thing overlayfs returns for the path and every boot of that layer loads an
+# adapter that is not this project's. platform_copy_rootfs snapshots the running layer,
+# so a new slot would inherit the shadow and the loader in ab-upgrade would have to fall
+# back on every single boot. The four files are moved aside instead - kept under
+# `<p4>/ab/shadow-backup-<timestamp>/` so an operator can still compare them - and the
+# lower @platform subvolume installed a moment later is what /lib/upgrade resolves to.
+#
+# Only the four names upstream's sysupgrade interface owns are touched; everything else
+# in the upper is the user's. Moving is best effort: a failure records a token and the
+# install continues, because the loader in ab-upgrade can still find an immutable copy.
+
+# _upgrade_shadow_clean <layer>: move the upstream shadow out of one layer's upper.
+# Always returns 0: the snapshot is the working state now, and a file that could not be
+# moved is reported rather than turned into a failed upgrade.
+_upgrade_shadow_clean() {
+    _usc_layer="$1"
+    _usc_upper="${AB_P4}/${_usc_layer}/upper"
+    [ -d "${_usc_upper}" ] || return 0
+    _usc_backup=""
+    _usc_moved=0
+    for _usc_rel in lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/upgrade/tar.sh; do
+        [ -f "${_usc_upper}/${_usc_rel}" ] || continue
+        if [ -z "${_usc_backup}" ]; then
+            _usc_backup="${AB_P4}/ab/shadow-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+            if ! mkdir -p "${_usc_backup}/lib/upgrade"; then
+                _upgrade_log "upgrade: shadow cleanup skipped reason=shadow-backup-failed path=${_usc_backup}"
+                return 0
+            fi
+        fi
+        if mv "${_usc_upper}/${_usc_rel}" "${_usc_backup}/${_usc_rel}" 2>/dev/null; then
+            _usc_moved=$((_usc_moved + 1))
+            _upgrade_log "upgrade: shadow moved out of the snapshot: ${_usc_rel}"
+        else
+            _upgrade_log "upgrade: shadow cleanup skipped reason=shadow-move-failed path=${_usc_rel}"
+        fi
+    done
+    if [ "${_usc_moved}" -gt 0 ]; then
+        sync
+        _upgrade_log "upgrade: ${_usc_moved} package shadow file(s) removed from ${_usc_layer}, backup ${_usc_backup}"
+    fi
+    return 0
+}
+
 # platform_copy_rootfs <payload-dir> <target-slot>
 #
 # The bootloader stage runs first (see upgrade_bootloader_install). If anything after it
@@ -574,6 +623,13 @@ platform_copy_rootfs() {
     btrfs subvolume snapshot "${AB_P4}/${_running_layer}" "${AB_P4}/${_new_layer}" >/dev/null ||
         upgrade_fail "snapshot-failed" || return 1
     _upgrade_log "upgrade: snapshotted ${_running_layer} -> ${_new_layer}"
+
+    # 1b. the snapshot inherited the running upper, including whatever a package wrote
+    #     into /lib/upgrade. Moving those four files aside before the new platform layer
+    #     is installed is what lets the lower @platform subvolume be the copy this slot
+    #     loads: upper wins over every lower layer. Best effort by design - the loader in
+    #     ab-upgrade can still find an immutable copy when this fails.
+    _upgrade_shadow_clean "${_new_layer}"
 
     # 2. replace the target slot's system tree
     _mp="$(upgrade_slot_mount "${_target}")" || upgrade_fail "slot-mount-failed" || return 1
