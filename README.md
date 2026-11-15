@@ -178,7 +178,7 @@ gates publishing on the cross-version upgrade - a release whose cross stage is r
 publishes nothing - and a machine on `0.0.9` can detect and install this release over the air.
 Because the upstream base is unchanged, taking it exercises the platform-only upgrade branch:
 the rootfs is reinstalled, the platform layer is replaced, and the writable layer is
-snapshotted. Two P1 defects remain and are fixed in `0.1.0`: `apk upgrade` can shadow
+snapshotted. Two P1 defects remain and are fixed in `0.0.11`: `apk upgrade` can shadow
 `/lib/upgrade/platform.sh` (the release notes carry the recovery command), and
 `ab-slot packages snapshot` can write `payload-incomplete` on a freshly flashed image until the
 base packages are upgraded.

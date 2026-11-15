@@ -158,7 +158,7 @@ uci commit firewall
 当前版本：`0.0.10`。这是**测试版**，不是 `0.1.0`：产品字节与 `0.0.9` 相同，唯一的身份变化是
 `/etc/platform-release` 里的平台版本。它用来在真机上验证更新链路：tag run 现在以跨版本升级为发布门
 （cross 红或跳过就不发布），`0.0.9` 的机器可以在线检测并安装这一版。因为上游 base 没变，这次升级
-走的是 platform-only 分支：rootfs 重装、platform 层替换、可写层做快照。还有两个 P1 缺陷在 `0.1.0`
+走的是 platform-only 分支：rootfs 重装、platform 层替换、可写层做快照。还有两个 P1 缺陷在 `0.0.11`
 修复：`apk upgrade` 可能遮蔽 `/lib/upgrade/platform.sh`（恢复命令见 release notes）；
 `ab-slot packages snapshot` 在新刷镜像上可能写 `payload-incomplete`，直到基础包被升级。
 

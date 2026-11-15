@@ -411,7 +411,7 @@ grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade
 `platform_upgrade_begin` 的库：所有校验都通过，然后安装以 `platform_upgrade_begin: not found`、
 `reason=` 为空失败。
 
-0.1.0 起 `ab-upgrade` 不再被这种遮蔽打败：
+0.0.11 起 `ab-upgrade` 不再被这种遮蔽打败：
 
 * source 之前先检查适配器。不是本项目的那份会被跳过，加载器依次回退到运行槽只读的 `@platform`
   子卷、payload 里的 platform 层；`upgrade: platform adapter source=` 会写明最终用的是哪一份，
@@ -423,7 +423,7 @@ grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade
 * `/etc/apk/protected_paths.d/ab-upgrade-adapter.list` 阻止 `apk upgrade` 再次把四个文件写进 upper；
   包里的文件落在受保护文件旁边的 `*.apk-new`，apk 数据库照常前进。
 
-已经在上 0.1.0 之前被遮蔽的机器：先做系统升级、再做包升级；若适配器被遮蔽，手工修复：
+已经在上 0.0.11 之前被遮蔽的机器：先做系统升级、再做包升级；若适配器被遮蔽，手工修复：
 
 ```sh
 ls -l /mnt/p4/@overlay-*/upper/lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}

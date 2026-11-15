@@ -541,7 +541,7 @@ that rewrites `/lib/upgrade/*` therefore leaves an upstream copy in the upper la
 that boot on `ab-upgrade` sources a library that has no `platform_upgrade_begin`: validation
 passes, then the install dies with `platform_upgrade_begin: not found` and an empty `reason=`.
 
-From 0.1.0 on `ab-upgrade` refuses to be defeated by that:
+From 0.0.11 on `ab-upgrade` refuses to be defeated by that:
 
 * the adapter is checked before it is sourced. A file that is not this project's is skipped,
   and the loader falls back to the running slot's read-only `@platform` subvolume, then to the
@@ -556,7 +556,7 @@ From 0.1.0 on `ab-upgrade` refuses to be defeated by that:
   four files into the upper layer again; the package's file lands as `*.apk-new` beside the
   protected one, and apk's database still moves forward.
 
-On a machine that was already shadowed before 0.1.0, run the system update before the package
+On a machine that was already shadowed before 0.0.11, run the system update before the package
 upgrade, and repair a shadow by hand:
 
 ```sh

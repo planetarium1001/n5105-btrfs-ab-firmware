@@ -363,10 +363,10 @@ ab-slot packages revert          # 按最新一份快照回放版本
 
 顺序是**先系统升级、再包升级**。`apk upgrade` 会重写 `/lib/upgrade/*`，这些文件名也是上游 sysupgrade
 接口用的；可写层会因此遮蔽本项目的升级适配器，下一次 payload 安装会在 `platform_upgrade_begin`
-失败。0.1.0 起适配器从软件包遮蔽不了的来源加载，快照启动时把被遮蔽的副本移到
+失败。0.0.11 起适配器从软件包遮蔽不了的来源加载，快照启动时把被遮蔽的副本移到
 `/mnt/p4/ab/shadow-backup-<时间戳>/`，并由 `/etc/apk/protected_paths.d/ab-upgrade-adapter.list`
 在 `apk upgrade` 时阻止重写（包里的文件落成 `*.apk-new`，apk 数据库照常前进）。
-已经在上 0.1.0 之前被遮蔽的机器，手工修复见 `docs/install.zh-CN.md`。
+已经在上 0.0.11 之前被遮蔽的机器，手工修复见 `docs/install.zh-CN.md`。
 
 快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本，
 以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。
@@ -374,7 +374,7 @@ ab-slot packages revert          # 按最新一份快照回放版本
 文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`，每个归档一行
 `apkfile <name> <sha256>`。这不是优化：仓库里一个包只留最新那一个版本，所以光有版本清单，
 能回退的只有源上还在的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。
-0.1.0 起改为逐包抓取：每个 world 条目一次 `apk fetch`，源上已经解析不到的包不会拖垮整组。
+0.0.11 起改为逐包抓取：每个 world 条目一次 `apk fetch`，源上已经解析不到的包不会拖垮整组。
 apk-tools 3 不接受 `apk fetch` 的版本钉子（报 `unable to select package (or its dependencies)`），
 所以按包名抓、再拿下载到的文件和已装版本核对：源在机器安装后滚过版本的包会拿到更新的文件，这种文件
 会被丢弃并计入缺失，然后才用一次 `--recursive` 兜底。空间不够的机器可以 `--no-payloads`，得到只记清单的

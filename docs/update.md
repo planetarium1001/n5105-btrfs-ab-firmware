@@ -397,12 +397,12 @@ package transaction is only started when the metadata describes the running kern
 Do the system update first and the package upgrade second. An `apk upgrade` rewrites
 `/lib/upgrade/*`, whose names upstream's sysupgrade interface uses too; the writable layer
 would then shadow this project's upgrade adapter and the next payload install would fail at
-`platform_upgrade_begin`. From 0.1.0 the adapter is loaded from a source a package cannot
+`platform_upgrade_begin`. From 0.0.11 the adapter is loaded from a source a package cannot
 shadow, the shadowing copies are moved into `/mnt/p4/ab/shadow-backup-<timestamp>/` when a
 slot boots from that snapshot, and `/etc/apk/protected_paths.d/ab-upgrade-adapter.list` stops
 the rewrite at `apk upgrade` time (the package's file lands as `*.apk-new`, and apk's database
 still moves). `docs/install.md` has the manual repair for a machine that was already shadowed
-before 0.1.0.
+before 0.0.11.
 
 A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions, every
 world entry, every installed package with its version, and the counts that make the record
@@ -413,7 +413,7 @@ Alongside the text file the snapshot keeps the packages themselves, in
 That is not an optimisation: the repositories carry one version of a package - the newest -
 so a version list on its own can only ever restore what the source still has. `apk fetch`
 fills the directory at snapshot time, which costs about 300 MiB and needs the network once.
-From 0.1.0 the fetch is per package: one `apk fetch` per world entry, so a package the feed
+From 0.0.11 the fetch is per package: one `apk fetch` per world entry, so a package the feed
 no longer resolves cannot fail the whole set. apk-tools 3 rejects a version pin in `apk fetch`
 (`unable to select package (or its dependencies)`), so the fetch names the package and then
 checks the file it got against the installed version. A feed that has rolled since the machine
