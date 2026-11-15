@@ -374,10 +374,13 @@ ab-slot packages revert          # 按最新一份快照回放版本
 文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`，每个归档一行
 `apkfile <name> <sha256>`。这不是优化：仓库里一个包只留最新那一个版本，所以光有版本清单，
 能回退的只有源上还在的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。
-0.1.0 起改为逐包抓取：每个 world 条目一次 `apk fetch`，源上已经解析不到的包不会拖垮整组；仍有缺失时
-再用一次 `--recursive` 兜底，然后才放弃。空间不够的机器可以 `--no-payloads`，得到只记清单的快照
-（`payloads no`，下一行写原因）。原因 `payload-incomplete` 表示抓取跑了但没下来全部归档：这种快照
-仍可按版本回退，但不能离线装回；需要包体就腾空间或换可达的源重跑一次。
+0.1.0 起改为逐包抓取：每个 world 条目一次 `apk fetch`，源上已经解析不到的包不会拖垮整组。
+apk-tools 3 不接受 `apk fetch` 的版本钉子（报 `unable to select package (or its dependencies)`），
+所以按包名抓、再拿下载到的文件和已装版本核对：源在机器安装后滚过版本的包会拿到更新的文件，这种文件
+会被丢弃并计入缺失，然后才用一次 `--recursive` 兜底。空间不够的机器可以 `--no-payloads`，得到只记清单的
+快照（`payloads no`，下一行写原因）。原因 `payload-incomplete` 表示抓取跑了但没下来全部归档——通常是源上
+已经不再保留已装版本：这种快照仍可按版本回退，但不能离线装回；需要包体就换仍保留这些版本或与已装集合
+一致的源重跑一次。
 
 `revert` 优先用包体：逐个核对快照里的 sha256，然后一次 `apk add` 事务装回。本地归档用
 `--allow-untrusted` 安装，因为设备上没有它们的 keyring；这里的信任来自快照内的摘要清单（写在同一个分区上），

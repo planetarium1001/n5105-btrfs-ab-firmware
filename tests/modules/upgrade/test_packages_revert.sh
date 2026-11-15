@@ -102,14 +102,27 @@ case "${1:-}" in
     [ -n "$dir" ] || exit 1
     mkdir -p "$dir" || exit 1
     for pin in $pins; do
-      name=${pin%%=*}
-      ver=${pin#*=}
-      # A package the feed no longer resolves by its pinned name: the per-package fetch
-      # fails for it, while the recursive one-shot is still allowed to land the set.
+      case "$pin" in
+        *=*) name=${pin%%=*}; ver=${pin#*=} ;;
+        *)
+          # Per-package fetch names the package only (apk-tools 3.0.5 rejects version
+          # pins); the version the file carries is whatever the feed resolves.
+          name=$pin
+          ver=$(sed -n "s/^${name}-\([0-9].*\)$/\1/p" "${APK_INFO_LIST:-/dev/null}" | head -n 1)
+  ;;
+      esac
+      # A package the feed no longer resolves: the per-package fetch fails for it, while
+      # the recursive one-shot is still allowed to land the set.
       [ "$recursive" = "0" ] && [ "${APK_FETCH_PKG_FAIL:-}" = "$name" ] && exit 1
       # apk exits 0 but the file never lands: the digest check must call that a partial
       # set, not a success.
       [ "${APK_FETCH_OMIT:-}" = "$name" ] && continue
+      if [ "$recursive" = "0" ] && [ "${APK_FETCH_DRIFT:-}" = "$name" ]; then
+        # The feed has rolled since the machine was installed: apk hands back a newer
+        # version than the installed set names, which the record must not accept.
+        printf 'APK %s drifted\n' "$name" >"$dir/$name-9.9.9-r9.apk" || exit 1
+        continue
+      fi
       printf 'APK %s %s\n' "$name" "$ver" >"$dir/$name-$ver.apk" || exit 1
     done
     ;;
@@ -293,6 +306,27 @@ sid_fb=${snap_fb##*/snapshot-}
 sid_fb=${sid_fb%.txt}
 assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_fb.d/payloads" ] && printf present || printf absent)" \
   "present" "ac-4 the fallback keeps the payload directory it completed"
+
+# A feed that has rolled since the machine was installed hands back a newer file than the
+# installed set names. apk-tools 3.0.5 rejects version pins in `apk fetch`, so the
+# per-package pass can only ask by name and must reject the drifted result: the file is
+# dropped, the recursive fallback may still land the right one, and no stray archive is
+# left for a later revert to install.
+: >"$APK_CALLS"
+snap_drift=$(APK_FETCH_DRIFT=nano ab_packages_snapshot "$layer" 25.12.2 0.0.8 2>"$tmp/drift.err") || snap_drift=""
+assert_file_exists "$snap_drift" "ac-4 a drifted feed still writes the manifest"
+assert_eq "$(sed -n 's/^payloads //p' "$snap_drift")" "yes" \
+  "ac-4 the recursive fallback recovers a set the per-package pass dropped"
+assert_contains "$(cat "$tmp/drift.err")" "fell back to --recursive" \
+  "ac-4 the drift fallback is logged"
+assert_eq "$(grep -c '^fetch -o ' "$APK_CALLS")" "7" \
+  "ac-4 a drifted package does not short-circuit the rest of the per-package pass"
+sid_dr=${snap_drift##*/snapshot-}
+sid_dr=${sid_dr%.txt}
+assert_eq "$(ls "$layer/apk/snapshots/snapshot-$sid_dr.d/payloads" | grep -c 'nano-9.9.9')" "0" \
+  "ac-4 the drifted archive is not left in the payload directory"
+assert_eq "$(grep -c '^apkfile ' "$snap_drift")" "7" \
+  "ac-4 every package still has a digest after the fallback"
 
 # When both routes answer but a file never lands, the set is incomplete and is named as
 # such: a list-only snapshot plus the stable reason, never a payload directory that a later

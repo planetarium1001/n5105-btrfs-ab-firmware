@@ -332,6 +332,30 @@ _packages_payload_file() {
     printf '%s' "${_found}"
 }
 
+
+# _packages_prune_payloads <payload-dir> <packages>: drop archives that are not the
+# installed set's name-version pair. A per-package fetch that hit a rolled feed leaves the
+# newer file behind, and the recursive fallback may add another version; the record only
+# ever lists the expected files, but a leftover would still be installed by a glob-style
+# consumer, so it is removed here.
+_packages_prune_payloads() {
+    _pr_dir=$1
+    for _pr_f in "${_pr_dir}"/*.apk; do
+        [ -f "${_pr_f}" ] || continue
+        _pr_keep=0
+        while IFS=' ' read -r _pr_name _pr_ver; do
+            [ -n "${_pr_name}" ] || continue
+            if [ "${_pr_f}" = "${_pr_dir}/${_pr_name}-${_pr_ver}.apk" ]; then
+                _pr_keep=1
+                break
+            fi
+        done <<PRUNE_LIST
+$2
+PRUNE_LIST
+        [ "${_pr_keep}" = "1" ] || rm -f "${_pr_f}"
+    done
+}
+
 # ab_packages_payloads_verified <snapshot> <payload-dir>: 0 when the snapshot lists
 # payloads, the directory holds them, and every recorded sha256 matches the file; the
 # number verified is printed. 1 when there is nothing usable to verify (no payload lines,
@@ -412,13 +436,35 @@ _packages_world_report() {
 # succeeded, 1 otherwise; whether the files actually landed is checked separately.
 _packages_fetch_per_package() {
     _pp_dir=$1
+    _pp_missing=0
+    # apk-tools 3.0.5 rejects a version pin in `apk fetch` ("unable to select package (or
+    # its dependencies)" for every `name=version` tried on the device), so the fetch has to
+    # name the package only. That still avoids the one-shot `--recursive` world solve, which
+    # was the F2 defect. The version is then checked against the installed set: a feed that
+    # has rolled since the machine was flashed hands back a newer file, and recording that
+    # file would make the snapshot describe a state that never existed. Such a package is
+    # dropped and counted as missing; the caller's recursive fallback may still land it, and
+    # otherwise the record says payload-incomplete instead of pretending.
     while IFS=' ' read -r _pp_name _pp_ver; do
         [ -n "${_pp_name}" ] || continue
-        apk fetch -o "${_pp_dir}" "${_pp_name}=${_pp_ver}" 2>/dev/null || return 1
+        if ! apk fetch -o "${_pp_dir}" "${_pp_name}" >/dev/null 2>&1; then
+            # A fetch that cannot run at all is a feed/network failure: stop here instead of
+            # paying a connection timeout for every installed package.
+            return 1
+        fi
+        if [ -f "${_pp_dir}/${_pp_name}-${_pp_ver}.apk" ]; then
+            for _pp_f in "${_pp_dir}/${_pp_name}-"*.apk; do
+                [ -f "${_pp_f}" ] || continue
+                [ "${_pp_f}" = "${_pp_dir}/${_pp_name}-${_pp_ver}.apk" ] || rm -f "${_pp_f}"
+            done
+        else
+            rm -f "${_pp_dir}/${_pp_name}-"*.apk 2>/dev/null || true
+            _pp_missing=$((_pp_missing + 1))
+        fi
     done <<PACKAGES
 $2
 PACKAGES
-    return 0
+    [ "${_pp_missing}" -eq 0 ]
 }
 
 # _packages_payload_record <payload-dir> <apkfile> <packages>: write one
@@ -485,11 +531,27 @@ ab_packages_snapshot() {
 
     _id=$(date -u +%Y%m%dT%H%M%SZ)
     _file="${_dir}/snapshot-${_id}.txt"
-    _n=1
-    while [ -e "${_file}" ]; do
-        _n=$((_n + 1))
+    # The id has one-second resolution; two snapshots in the same second are told apart by
+    # a -N suffix. Reusing the bare name after its predecessor was reaped would make a
+    # *new* snapshot sort before the -N files that are actually older, and the retention
+    # pass would delete it. So once any file exists for this id, the next one is
+    # max(+N)+1, never the bare name again.
+    if [ -e "${_file}" ] || ls "${_dir}/snapshot-${_id}-"*.txt >/dev/null 2>&1; then
+        _max=0
+        for _f in "${_dir}/snapshot-${_id}.txt" "${_dir}/snapshot-${_id}-"*.txt; do
+            [ -e "${_f}" ] || continue
+            _b=${_f##*/}
+            _b=${_b%.txt}
+            _b=${_b##*-}
+            case "${_b}" in
+                '' | *[!0-9]*) _s=1 ;;
+                *) _s=${_b} ;;
+            esac
+            [ "${_s}" -gt "${_max}" ] && _max=${_s}
+        done
+        _n=$((_max + 1))
         _file="${_dir}/snapshot-${_id}-${_n}.txt"
-    done
+    fi
     # The payload directory is named after the snapshot, not after the id: a same-second
     # second snapshot is `-2` and needs its own .d, or two records would share a payload
     # set that only one of them describes.
@@ -508,7 +570,11 @@ ab_packages_snapshot() {
         return 1
     fi
     _pkgnum=$(printf '%s\n' "${_packages}" | grep -c . || true)
+    # The world of an image-stage system lives in @sys, not in the writable layer: the
+    # first boot of a flashed image has an empty upper. Falling back to the merged view
+    # keeps `world=N` honest there; a payload slot always has its own file in upper.
     _worldfile="${_layer}/upper/etc/apk/world"
+    [ -f "${_worldfile}" ] || _worldfile=/etc/apk/world
     # A world with entries but no readable package list is not an empty machine, it is a
     # broken apk. Writing "0 packages" here would make every later revert a silent no-op.
     if [ "${_pkgnum}" -eq 0 ] && [ -s "${_worldfile}" ]; then
@@ -537,7 +603,8 @@ ab_packages_snapshot() {
                 printf 'packages: payload fetch fell back to --recursive (per-package fetch incomplete)\n' >&2
                 _pins=$(printf '%s\n' "${_packages}" | awk '{ print $1 "=" $2 }')
                 # shellcheck disable=SC2086  # one word per pin by construction
-                if apk fetch --recursive -o "${_pdir}" ${_pins} 2>/dev/null; then
+                if apk fetch --recursive -o "${_pdir}" ${_pins} >/dev/null 2>&1; then
+                    _packages_prune_payloads "${_pdir}" "${_packages}"
                     _missing=$(_packages_payload_record "${_pdir}" "${_apkfiles}" "${_packages}")
                 else
                     _fallback_failed=1

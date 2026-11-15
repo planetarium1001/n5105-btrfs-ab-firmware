@@ -414,12 +414,16 @@ That is not an optimisation: the repositories carry one version of a package - t
 so a version list on its own can only ever restore what the source still has. `apk fetch`
 fills the directory at snapshot time, which costs about 300 MiB and needs the network once.
 From 0.1.0 the fetch is per package: one `apk fetch` per world entry, so a package the feed
-no longer resolves cannot fail the whole set; if any package is still missing, the snapshot
-retries with one recursive `apk fetch` before it gives up. A machine without the room can pass
-`--no-payloads` and gets a list-only snapshot (`payloads no`, and the reason for it on the next
-line). The reason `payload-incomplete` means the fetch ran but did not land every archive; the
-snapshot can still restore by version, but not offline - re-run it with more room or a
-reachable feed if you need the archives.
+no longer resolves cannot fail the whole set. apk-tools 3 rejects a version pin in `apk fetch`
+(`unable to select package (or its dependencies)`), so the fetch names the package and then
+checks the file it got against the installed version. A feed that has rolled since the machine
+was updated hands back a newer file for some packages; those are dropped and counted missing,
+and the snapshot retries with one recursive `apk fetch` before it gives up. A machine without
+the room can pass `--no-payloads` and gets a list-only snapshot (`payloads no`, and the reason
+for it on the next line). The reason `payload-incomplete` means the fetch ran but did not land
+every archive - most often because the feed no longer carries the installed versions; the
+snapshot can still restore by version, but not offline. Re-run it against a feed that still
+holds those versions (or from a machine whose packages match it) if you need the archives.
 
 `revert` prefers the archives: it checks every sha256 against the snapshot, then installs
 them in one `apk add` transaction. Local archives are installed with `--allow-untrusted`,
