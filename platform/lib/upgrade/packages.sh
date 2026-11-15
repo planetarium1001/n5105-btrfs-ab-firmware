@@ -399,6 +399,55 @@ _packages_world_report() {
     ' "$1"
 }
 
+# _packages_fetch_per_package <payload-dir> <packages>: fetch every installed package on
+# its own, without `--recursive`. The installed set already contains the dependency closure
+# (apk installed it), so a recursive solve adds nothing but a reason to fail: it makes apk
+# resolve the pinned set against `/etc/apk/world`, and on a freshly flashed machine that
+# world is older than the feed, so the solve dies on `world[libopenssl3=...]` and takes
+# every payload with it.
+#
+# The loop stops at the first fetch that fails: one failure is enough to know this route
+# does not work here, and a machine whose feed is unreachable must not spend one connection
+# attempt per installed package before the caller falls back. Returns 0 when every fetch
+# succeeded, 1 otherwise; whether the files actually landed is checked separately.
+_packages_fetch_per_package() {
+    _pp_dir=$1
+    while IFS=' ' read -r _pp_name _pp_ver; do
+        [ -n "${_pp_name}" ] || continue
+        apk fetch -o "${_pp_dir}" "${_pp_name}=${_pp_ver}" 2>/dev/null || return 1
+    done <<PACKAGES
+$2
+PACKAGES
+    return 0
+}
+
+# _packages_payload_record <payload-dir> <apkfile> <packages>: write one
+# `apkfile <name> <sha256>` line per package whose archive is present and digestable, print
+# how many packages had no usable archive. A file without a digest is a missing payload,
+# not a line to write and hope: the digest list is the whole trust chain for a local .apk
+# (the device does not carry the feed's keyring), and a revert verifies every line of it.
+_packages_payload_record() {
+    _pr_dir=$1
+    _pr_apkfile=$2
+    : >"${_pr_apkfile}"
+    _pr_missing=0
+    while IFS=' ' read -r _pr_name _pr_ver; do
+        [ -n "${_pr_name}" ] || continue
+        _pr_sha=""
+        if _pr_file=$(_packages_payload_file "${_pr_dir}" "${_pr_name}" "${_pr_ver}"); then
+            _pr_sha=$(_packages_sha256 "${_pr_file}")
+        fi
+        if [ -z "${_pr_sha}" ]; then
+            _pr_missing=$((_pr_missing + 1))
+            continue
+        fi
+        printf 'apkfile  %s %s\n' "${_pr_name}" "${_pr_sha}" >>"${_pr_apkfile}"
+    done <<PACKAGES
+$3
+PACKAGES
+    printf '%s' "${_pr_missing}"
+}
+
 # ab_packages_snapshot <layer> <upstream> <platform> [--no-payloads]: write one snapshot,
 # print its path.
 #
@@ -408,6 +457,13 @@ _packages_world_report() {
 # partial fetch is recorded as `payloads no` plus one `payload-gap <reason>` line, and the
 # manifest still succeeds: the record of what this machine runs is the main deliverable,
 # the files are the part that needs a network.
+#
+# The fetch has two stages. Stage one is _packages_fetch_per_package above: no solver, one
+# package per call. Stage two is the historical one-shot `apk fetch --recursive`, kept as a
+# fallback for whatever stage one cannot fetch (a package a re-spelled feed answers to, an
+# apk that disagrees about `name=version` on the command line). Either stage is judged by
+# the files and digests on disk, never by the fetch command's exit status; a set that does
+# not cover every installed package is a `payload-gap`, and its directory is removed.
 ab_packages_snapshot() {
     _layer=${1:?ab_packages_snapshot needs a layer}
     _upstream=${2:?ab_packages_snapshot needs the upstream version}
@@ -470,34 +526,33 @@ ab_packages_snapshot() {
     if [ "${_want_payloads}" = "1" ] && [ "${_pkgnum}" -gt 0 ]; then
         _apkfiles="${_snapdir}/apkfile"
         if mkdir -p "${_pdir}" 2>/dev/null; then
-            _pins=$(printf '%s\n' "${_packages}" | awk '{ print $1 "=" $2 }')
-            # shellcheck disable=SC2086  # one word per pin by construction
-            if apk fetch --recursive -o "${_pdir}" ${_pins} 2>/dev/null; then
-                : >"${_apkfiles}"
-                _missing=0
-                while IFS=' ' read -r _pname _pver; do
-                    [ -n "${_pname}" ] || continue
-                    _sha=""
-                    if _pfile=$(_packages_payload_file "${_pdir}" "${_pname}" "${_pver}"); then
-                        _sha=$(_packages_sha256 "${_pfile}")
-                    fi
-                    if [ -z "${_sha}" ]; then
-                        _missing=$((_missing + 1))
-                        continue
-                    fi
-                    printf 'apkfile  %s %s\n' "${_pname}" "${_sha}" >>"${_apkfiles}"
-                done <<PKGS
-${_packages}
-PKGS
-                if [ "${_missing}" -eq 0 ]; then
-                    _payloads_written=1
+            # Stage one: no --recursive, no world solve. The installed set is the closure.
+            _packages_fetch_per_package "${_pdir}" "${_packages}" || true
+            _missing=$(_packages_payload_record "${_pdir}" "${_apkfiles}" "${_packages}")
+            _fallback_failed=0
+            if [ "${_missing}" != "0" ]; then
+                # Stage two: the historical one-shot fetch, for the machines where fetching
+                # pins one at a time does not land every file. It may hit the same world
+                # solve, which is why it is no longer the only attempt.
+                printf 'packages: payload fetch fell back to --recursive (per-package fetch incomplete)\n' >&2
+                _pins=$(printf '%s\n' "${_packages}" | awk '{ print $1 "=" $2 }')
+                # shellcheck disable=SC2086  # one word per pin by construction
+                if apk fetch --recursive -o "${_pdir}" ${_pins} 2>/dev/null; then
+                    _missing=$(_packages_payload_record "${_pdir}" "${_apkfiles}" "${_packages}")
                 else
-                    _payload_gap="payload-incomplete"
+                    _fallback_failed=1
                 fi
-            else
+            fi
+            if [ "${_missing}" = "0" ]; then
+                _payloads_written=1
+            elif [ "${_fallback_failed}" = "1" ]; then
                 # A feed that cannot be reached and a disk that filled up look the same
                 # from here, and either way the manifest is still worth writing.
                 _payload_gap="apk-fetch-failed"
+            else
+                # Both fetch routes answered and the set is still short. Naming it
+                # incomplete keeps the reason stable for a reader; nothing is claimed.
+                _payload_gap="payload-incomplete"
             fi
         else
             _payload_gap="payloads-unwritable"

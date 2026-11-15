@@ -91,10 +91,11 @@ case "${1:-}" in
     shift
     dir=""
     pins=""
+    recursive=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o) dir="$2"; shift 2 ;;
-        --recursive) shift ;;
+        --recursive) recursive=1; shift ;;
         *) pins="$pins $1"; shift ;;
       esac
     done
@@ -103,6 +104,12 @@ case "${1:-}" in
     for pin in $pins; do
       name=${pin%%=*}
       ver=${pin#*=}
+      # A package the feed no longer resolves by its pinned name: the per-package fetch
+      # fails for it, while the recursive one-shot is still allowed to land the set.
+      [ "$recursive" = "0" ] && [ "${APK_FETCH_PKG_FAIL:-}" = "$name" ] && exit 1
+      # apk exits 0 but the file never lands: the digest check must call that a partial
+      # set, not a success.
+      [ "${APK_FETCH_OMIT:-}" = "$name" ] && continue
       printf 'APK %s %s\n' "$name" "$ver" >"$dir/$name-$ver.apk" || exit 1
     done
     ;;
@@ -169,6 +176,9 @@ layer="$tmp/overlay-25.12.2"
 mkdir -p "$layer/upper/etc/apk"
 printf 'kernel\nhtop\nnano\nzlib\n' >"$layer/upper/etc/apk/world"
 
+# The call log starts clean here: the assertions below are about what this snapshot asked
+# apk for, not about the parse checks above.
+: >"$APK_CALLS"
 snap=$(ab_packages_snapshot "$layer" 25.12.2 0.0.8) || snap=""
 assert_file_exists "$snap" "ac-1 a snapshot file is written"
 contents="$(cat "$snap" 2>/dev/null)"
@@ -219,6 +229,20 @@ assert_eq "$(grep -c '^end$' "$snap")" "1" "ac-4 the apkfile lines come before t
 assert_eq "$(awk '/^apkfile /{ last = NR } /^end$/{ print (last < NR) ? "before" : "after"; exit }' "$snap")" \
   "before" "ac-4 the apkfile lines are inside the record"
 
+# The default route fetches one installed package per call and never passes --recursive:
+# `apk fetch --recursive` makes apk solve the pinned set against /etc/apk/world, and on a
+# freshly flashed machine that world is older than the feed, so the solve fails on
+# world[libopenssl3=...] and the whole snapshot loses its payloads. The installed set is
+# already the dependency closure, so no solver is needed.
+assert_eq "$(grep -c '^fetch -o ' "$APK_CALLS")" "7" \
+  "ac-4 every installed package is fetched on its own"
+assert_eq "$(grep -c -- '--recursive' "$APK_CALLS")" "0" \
+  "ac-4 the default route never asks apk to solve the world"
+assert_eq "$(awk '$1 == "fetch" && $2 == "-o" && NF != 4 { bad = 1 } END { print bad ? "mixed" : "single" }' "$APK_CALLS")" \
+  "single" "ac-4 each per-package fetch carries exactly one pinned package"
+assert_eq "$(find "$pdir" -maxdepth 1 -name '*.apk' | wc -l | tr -d ' ')" "7" \
+  "ac-4 the per-package route lands exactly the installed set"
+
 # --no-payloads: the manifest is the main deliverable, the payloads are optional.
 : >"$APK_CALLS"
 snap_np=$(ab_packages_snapshot "$layer" 25.12.2 0.0.8 --no-payloads) || snap_np=""
@@ -232,15 +256,62 @@ assert_eq "$(grep -c '^fetch' "$APK_CALLS")" "0" "ac-4 --no-payloads does not as
 
 # A fetch that fails is a gap in the record, not a broken snapshot: the feed can be
 # unreachable while the machine still needs a list of what it has.
+: >"$APK_CALLS"
 snap_gap=$(APK_FETCH_FAIL=1 ab_packages_snapshot "$layer" 25.12.2 0.0.8 2>/dev/null) || snap_gap=""
 assert_file_exists "$snap_gap" "ac-4 a failed fetch still leaves the manifest"
 assert_eq "$(sed -n 's/^payloads //p' "$snap_gap")" "no" "ac-4 a failed fetch is recorded as no payloads"
 assert_eq "$(sed -n 's/^payload-gap //p' "$snap_gap")" "apk-fetch-failed" \
   "ac-4 the gap names why the payloads are missing"
+assert_eq "$(grep -c '^fetch -o ' "$APK_CALLS")" "1" \
+  "ac-4 a dead feed stops the per-package pass at its first failure"
+assert_eq "$(grep -c '^fetch --recursive' "$APK_CALLS")" "1" \
+  "ac-4 when per-package fetch fails the recursive route is still tried"
 sid_gap=${snap_gap##*/snapshot-}
 sid_gap=${sid_gap%.txt}
 assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_gap.d" ] && printf present || printf absent)" \
   "absent" "ac-4 a failed fetch leaves no half-populated payload directory"
+
+# A package the feed cannot answer by its pinned name falls back to the recursive
+# one-shot instead of giving up on the payloads: this is the machine where the old route
+# still works, and the record must not lose the files it could have.
+: >"$APK_CALLS"
+snap_fb=$(APK_FETCH_PKG_FAIL=htop ab_packages_snapshot "$layer" 25.12.2 0.0.8 2>"$tmp/fb.err") || snap_fb=""
+assert_file_exists "$snap_fb" "ac-4 a per-package failure still writes the manifest"
+assert_contains "$(cat "$tmp/fb.err")" "fell back to --recursive" \
+  "ac-4 the fallback is logged instead of silently switching routes"
+assert_eq "$(sed -n 's/^payloads //p' "$snap_fb")" "yes" \
+  "ac-4 the recursive fallback recovers the complete payload set"
+assert_eq "$(grep -c '^apkfile ' "$snap_fb")" "7" \
+  "ac-4 the recovered set records one digest per package"
+assert_eq "$(sed -n 's/^payload-gap //p' "$snap_fb")" "" \
+  "ac-4 a recovered set is not recorded as a gap"
+assert_eq "$(grep -c '^fetch -o ' "$APK_CALLS")" "5" \
+  "ac-4 the per-package pass ran until the package the feed cannot answer"
+assert_eq "$(grep -c '^fetch --recursive' "$APK_CALLS")" "1" \
+  "ac-4 a partial per-package set falls back to the recursive fetch once"
+sid_fb=${snap_fb##*/snapshot-}
+sid_fb=${sid_fb%.txt}
+assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_fb.d/payloads" ] && printf present || printf absent)" \
+  "present" "ac-4 the fallback keeps the payload directory it completed"
+
+# When both routes answer but a file never lands, the set is incomplete and is named as
+# such: a list-only snapshot plus the stable reason, never a payload directory that a later
+# revert would refuse. The reason stays in the documented vocabulary.
+: >"$APK_CALLS"
+snap_inc=$(APK_FETCH_OMIT=nano ab_packages_snapshot "$layer" 25.12.2 0.0.8 2>/dev/null) || snap_inc=""
+assert_file_exists "$snap_inc" "ac-4 an incomplete set still writes the manifest"
+assert_eq "$(sed -n 's/^payloads //p' "$snap_inc")" "no" \
+  "ac-4 a set that does not cover every package is list-only"
+assert_eq "$(sed -n 's/^payload-gap //p' "$snap_inc")" "payload-incomplete" \
+  "ac-4 the gap keeps the stable reason for a short set"
+assert_eq "$(grep -c '^apkfile ' "$snap_inc")" "0" \
+  "ac-4 no digest lines are written for a set that is not complete"
+assert_eq "$(grep -c '^fetch --recursive' "$APK_CALLS")" "1" \
+  "ac-4 the short set tried the recursive fallback too"
+sid_inc=${snap_inc##*/snapshot-}
+sid_inc=${sid_inc%.txt}
+assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_inc.d" ] && printf present || printf absent)" \
+  "absent" "ac-4 the short set leaves no payload directory behind"
 
 # --- ac-1: retention keeps the newest three, payloads included --------------
 for _ in 1 2 3; do
@@ -380,9 +451,9 @@ assert_contains "$out" "revert world=3 matched=2" \
 assert_contains "$out" "world-unmatched  zlib" \
   "ac-3 a world entry with no package in the snapshot is named"
 assert_contains "$out" "apkfile verified 7" "ac-4 every payload's digest is verified before installing"
-# The install set is the verified set. `apk fetch --recursive` also drops dependency
-# archives into the directory, and a glob would install the ones the snapshot never listed
-# and nothing ever checked.
+# The install set is the verified set. A fetch (in particular the recursive fallback) can
+# drop dependency archives into the directory, and a glob would install the ones the
+# snapshot never listed and nothing ever checked.
 extra="$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_id.d/payloads/extra-not-listed-9.9-r9.apk"
 printf 'NOT IN THE SNAPSHOT\n' >"$extra"
 : >"$APK_CALLS"
@@ -515,6 +586,18 @@ out="$(APK_ADD_FAIL_ALL=1 slot_run packages revert --to "$snap_id")"
 rc=$?
 assert_eq "$rc" "1" "a revert where nothing could be restored fails"
 assert_contains "$out" "revert result=fail" "the verdict says fail, not partial"
+
+# The CLI carries the gap into its one-line report: an operator sees that the manifest is
+# list-only, and why, without opening the file.
+: >"$APK_CALLS"
+out="$(APK_FETCH_FAIL=1 slot_run packages snapshot)"
+rc=$?
+assert_eq "$rc" "0" "ac-4 a failed payload fetch is not a failed snapshot"
+assert_contains "$out" "payloads=no" \
+  "ac-4 the CLI reports the list-only snapshot"
+assert_contains "$out" "payload_gap=apk-fetch-failed" \
+  "ac-4 the CLI reports the stable reason the payloads are missing"
+assert_contains "$out" "packages=7" "ac-4 the list-only snapshot still counts the packages"
 
 # Files written in the same second are ordered by their -N suffix, which is the later
 # write; plain sort would put them first and reap the newer one.
