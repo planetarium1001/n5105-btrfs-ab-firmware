@@ -155,13 +155,12 @@ uci commit firewall
 - `MINOR` 表示项目目标彻底达成，只有那时才升到 `0.1.0`。
 - `PATCH` 表示阶段性里程碑，目标尚未达成。
 
-当前版本：`0.0.9`。这一版修的是 2026-11-14 真机验收暴露的问题：apk-tools 3 下包快照读错了栏位
-（`apk info` 只打印包名，不是 `name-version`），导致 `ab-slot packages revert` 逐包失败；快照现在
-同时保留 `.apk` 包体，因为仓库只留最新版本。候选槽首启没走到健康检查（掉电）现在会被计数并记成
-`stage=interrupted`，重试一次之后机器会被移回已提交槽，而不是一直重试同一个槽。`VERSION` 终于和
-tag 对得上，镜像出厂自带更新源（`/etc/ab/update.conf`）指向本仓库的 release，所以刚刷完的机器上
-`ab-upgrade --feed-check` 不需要任何设置——在出现带 `index.txt` 的发布之前，它会以
-`feed-unreachable` 拒绝并说明原因，而不是悄悄给一个空答案。
+当前版本：`0.0.10`。这是**测试版**，不是 `0.1.0`：产品字节与 `0.0.9` 相同，唯一的身份变化是
+`/etc/platform-release` 里的平台版本。它用来在真机上验证更新链路：tag run 现在以跨版本升级为发布门
+（cross 红或跳过就不发布），`0.0.9` 的机器可以在线检测并安装这一版。因为上游 base 没变，这次升级
+走的是 platform-only 分支：rootfs 重装、platform 层替换、可写层做快照。还有两个 P1 缺陷在 `0.1.0`
+修复：`apk upgrade` 可能遮蔽 `/lib/upgrade/platform.sh`（恢复命令见 release notes）；
+`ab-slot packages snapshot` 在新刷镜像上可能写 `payload-incomplete`，直到基础包被升级。
 
 首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
 `config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认
