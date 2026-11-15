@@ -244,4 +244,24 @@ assert_contains "$prepare_fn" 'payload.tar' \
 assert_eq "$(grep -c "^RCLOCAL'$" "$script_path")" "0" \
   "ac-1 the rc.local heredoc terminator is not left quoted, so the file holds one hook"
 
+# --- ac-1: the committed status is printed after the commit, not before it ---
+# rc.local runs at S95 and ab-commit at S99, so a status printed from rc.local is the
+# pre-commit state. v0.0.10-rc1 committed the candidate and still failed with
+# reason=packages-not-aligned-after-commit because the third block was empty: the
+# candidate's rc.local had removed itself before the snapshot. The post-commit status
+# therefore comes from a S100 hook that runs after ab-commit, gated on a settled state.
+assert_contains "$prepare_fn" 'etc/rc.d/S100ab-cross-status' \
+  "ac-1 the post-commit status hook is installed after ab-commit"
+assert_contains "$prepare_fn" ' pending=none ' \
+  "ac-1 the hook only prints when the state has settled (pending=none)"
+assert_contains "$prepare_fn" 'CROSS-STATUS-COMMITTED' \
+  "ac-1 the hook is the one that announces the committed status"
+assert_contains "$prepare_fn" 'cross-fixture-pending' \
+  "ac-1 the fixture marker gates the hook, so an unrelated boot prints nothing"
+case "$prepare_fn" in
+  *'rm -f /etc/rc.local'*) assert_eq "removed-before-install" "kept-until-commit" \
+    "ac-1 rc.local must survive into the candidate snapshot, or the second half never runs" ;;
+  *) assert_eq "kept-until-commit" "kept-until-commit" "ac-1 rc.local is not removed before the snapshot" ;;
+esac
+
 finish
