@@ -28,6 +28,9 @@
 #   probe=initrd    ac-11  the target slot's /boot/initrd-<slot> carries wf_boot_attempt_guard
 #                          (handoff §5.2, moved from power-cut.sh to right after the flash)
 #   probe=packages  ac-6   ab-slot status says packages=aligned and docker is executable
+#   probe=adapter   ac-3   /lib/upgrade/platform.sh is this project's adapter and the
+#                          writable layer carries no upper copy of the upstream sysupgrade
+#                          files (the F1 precondition: a package can no longer shadow it)
 #
 # A failure prints the verdict line first and then one or more `  next:` lines that can be
 # pasted back into a shell on the machine. A `gap`/`skip` prints one too: "nothing was
@@ -80,7 +83,7 @@ export AB_REPO_ROOT
 DRY_RUN=${AB_DRY_RUN:-0}
 SELECTED=""
 INITRD_SLOT=""
-PROBES_ALL="grow network wan22 key platform initrd packages"
+PROBES_ALL="grow network wan22 key platform adapter initrd packages"
 
 # Tunables. The floors are assertions; the ceilings exist to catch "grown onto something
 # that is not this disk" and are loose on purpose, because df reports the filesystem size of
@@ -102,7 +105,7 @@ usage() {
 usage: probes.sh [--probe <name>]... [--initrd-slot <a|b>] [--dry-run]
 
   --probe <name>     run one probe; repeatable. One of:
-                     grow network wan22 key platform initrd packages (default: all)
+                     grow network wan22 key platform adapter initrd packages (default: all)
   --initrd-slot <s>  slot whose /boot/initrd-<s> is checked (default: the slot not running,
                      i.e. the one the next candidate boot would use)
   --dry-run          print the remote scripts and exit; same as AB_DRY_RUN=1
@@ -893,6 +896,85 @@ probe_platform() {
     _next "ab-upgrade --version   # PLATFORM_STAGE/PLATFORM_VERSION from the same release file"
 }
 
+
+# _remote_adapter: is the merged adapter this project's, and does the writable layer carry
+# uppercopies of the four upstream sysupgrade files? One fact per line.
+_remote_adapter() {
+    cat <<REMOTE
+line=\$(ab-slot status 2>/dev/null | sed -n '1p')
+slot=\$(printf '%s\\n' "\$line" | sed -n 's/^slot=\\([ab]\\) .*/\\1/p')
+upper=\$(printf '%s\\n' "\$line" | sed -n 's/^.*upper=\\([^ ]*\\) .*/\\1/p')
+printf 'slot=%s\\n' "\${slot:-unknown}"
+printf 'upper=%s\\n' "\${upper:-unknown}"
+merged=/lib/upgrade/platform.sh
+if [ ! -f "\$merged" ]; then
+    printf 'adapter=missing\\n'
+elif grep -q '^platform_upgrade_begin()' "\$merged" 2>/dev/null; then
+    printf 'adapter=running\\n'
+else
+    printf 'adapter=shadowed\\n'
+fi
+shadow=none
+for name in platform.sh fwtool.sh stage2 tar.sh; do
+    if [ -n "\$upper" ] && [ -f "/mnt/p4/\$upper/upper/lib/upgrade/\$name" ]; then
+        printf 'shadow_file=%s\\n' "\$name"
+        shadow=present
+    fi
+done
+printf 'shadow=%s\\n' "\$shadow"
+REMOTE
+}
+
+probe_adapter() {
+    _ac=ac-3
+    if [ "${DRY_RUN}" = "1" ]; then
+        _emit adapter "${_ac}" skip reason=dry-run
+        _dry_plan adapter "${_ac}" read-adapter-and-upper "$(_remote_adapter)"
+        return 0
+    fi
+    if [ "${REACH}" != "ok" ]; then
+        _unreachable adapter "${_ac}"
+        return 0
+    fi
+
+    _facts=$(dev_ssh "$(_remote_adapter)" 2>/dev/null) || _facts=""
+    _state=$(_field "${_facts}" adapter)
+    _shadow=$(_field "${_facts}" shadow)
+    _slot=$(_field "${_facts}" slot)
+    _upper=$(_field "${_facts}" upper)
+
+    _begin
+    case "${_state}" in
+        running) : ;;
+        shadowed) _bad adapter-shadowed ;;
+        missing) _bad adapter-missing ;;
+        *) _bad adapter-unreadable ;;
+    esac
+    # A shadowed adapter is a failure; an upper copy of the other three files is the F1
+    # precondition: the adapter still loads today, but the next apk upgrade can shadow it.
+    if [ "${_state}" = "running" ] && [ "${_shadow}" = "present" ]; then
+        _bad upper-shadow-present
+    fi
+
+    _tokens="adapter=${_state:-unknown} shadow=${_shadow:-unknown} slot=${_slot:-unknown} upper=${_upper:-unknown}"
+    if [ -z "${REASONS}" ]; then
+        _emit adapter "${_ac}" pass "${_tokens}"
+        return 0
+    fi
+    _emit adapter "${_ac}" fail "reasons=${REASONS}" "${_tokens}"
+    case "${REASONS}" in
+        *adapter-shadowed*)
+            _next "ab-upgrade --version   # then repair: see docs/install.md 'When a package shadows the upgrade adapter'"
+            _next "rm -f /mnt/p4/${_upper}/upper/lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}"
+            ;;
+        *adapter-missing*) _next "ls -l /lib/upgrade/   # this image does not carry this project's platform layer" ;;
+        *upper-shadow-present*)
+            _next "ls -l /mnt/p4/${_upper}/upper/lib/upgrade/   # the four names upstream sysupgrade uses"
+            _next "ab-slot packages snapshot && ab-slot packages upgrade   # after a system update, not before it"
+            ;;
+    esac
+}
+
 # --------------------------------------------------------------------------- #
 # probe=initrd (ac-11, the handoff §5.2 hole)
 # --------------------------------------------------------------------------- #
@@ -1036,6 +1118,7 @@ for _probe in ${SELECTED}; do
         wan22) probe_wan22 ;;
         key) probe_key ;;
         platform) probe_platform ;;
+        adapter) probe_adapter ;;
         initrd) probe_initrd ;;
         packages) probe_packages ;;
     esac

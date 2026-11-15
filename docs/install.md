@@ -532,6 +532,48 @@ grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade
 `bootloader-esp-` is a prefix, not a token: the two behind it are `bootloader-esp-dirty` and
 `bootloader-esp-unreadable`.
 
+### When a package shadows the upgrade adapter
+
+`/lib/upgrade/platform.sh` is the name of both this project's upgrade adapter (shipped in the
+platform layer) and upstream's sysupgrade script. The running root is an overlay of the
+platform layer over `@sys`, and a file in the writable layer wins over both. An `apk upgrade`
+that rewrites `/lib/upgrade/*` therefore leaves an upstream copy in the upper layer, and from
+that boot on `ab-upgrade` sources a library that has no `platform_upgrade_begin`: validation
+passes, then the install dies with `platform_upgrade_begin: not found` and an empty `reason=`.
+
+From 0.1.0 on `ab-upgrade` refuses to be defeated by that:
+
+* the adapter is checked before it is sourced. A file that is not this project's is skipped,
+  and the loader falls back to the running slot's read-only `@platform` subvolume, then to the
+  platform layer inside the payload; `upgrade: platform adapter source=` names the copy it
+  settled on, and a shadowed file also logs `warning adapter-shadowed path=...`.
+* if none of the three can be loaded, the run refuses with `74`, reason
+  `platform-layer-shadowed`, prints the commands below and writes nothing.
+* `platform_copy_rootfs` moves upper copies of `lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}`
+  from the snapshot it is about to boot into `/mnt/p4/ab/shadow-backup-<timestamp>/`, so a slot
+  that was already shadowed boots clean.
+* `/etc/apk/protected_paths.d/ab-upgrade-adapter.list` keeps `apk upgrade` from writing those
+  four files into the upper layer again; the package's file lands as `*.apk-new` beside the
+  protected one, and apk's database still moves forward.
+
+On a machine that was already shadowed before 0.1.0, run the system update before the package
+upgrade, and repair a shadow by hand:
+
+```sh
+ls -l /mnt/p4/@overlay-*/upper/lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}
+rm -f /mnt/p4/@overlay-*/upper/lib/upgrade/platform.sh \
+      /mnt/p4/@overlay-*/upper/lib/upgrade/fwtool.sh \
+      /mnt/p4/@overlay-*/upper/lib/upgrade/stage2 \
+      /mnt/p4/@overlay-*/upper/lib/upgrade/tar.sh
+```
+
+or keep the copies and point one run at a clean adapter:
+
+```sh
+AB_LIB=/mnt/p4/ab/shadow-backup-<timestamp>/lib/upgrade/platform.sh \
+    ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar
+```
+
 ### Rescuing a torn bootloader
 
 Two copies of the bootloader exist by design, in two places for two reasons:

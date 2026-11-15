@@ -347,13 +347,23 @@ ab-slot packages revert          # 按最新一份快照回放版本
 钉着本槽正在跑的内核、`distfeeds` 指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核
 装模块。
 
+顺序是**先系统升级、再包升级**。`apk upgrade` 会重写 `/lib/upgrade/*`，这些文件名也是上游 sysupgrade
+接口用的；可写层会因此遮蔽本项目的升级适配器，下一次 payload 安装会在 `platform_upgrade_begin`
+失败。0.1.0 起适配器从软件包遮蔽不了的来源加载，快照启动时把被遮蔽的副本移到
+`/mnt/p4/ab/shadow-backup-<时间戳>/`，并由 `/etc/apk/protected_paths.d/ab-upgrade-adapter.list`
+在 `apk upgrade` 时阻止重写（包里的文件落成 `*.apk-new`，apk 数据库照常前进）。
+已经在上 0.1.0 之前被遮蔽的机器，手工修复见 `docs/install.zh-CN.md`。
+
 快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本，
 以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。
 
 文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`，每个归档一行
 `apkfile <name> <sha256>`。这不是优化：仓库里一个包只留最新那一个版本，所以光有版本清单，
-能回退的只有源上还在的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次；
-空间不够的机器可以 `--no-payloads`，得到只记清单的快照（`payloads no`，下一行写原因）。
+能回退的只有源上还在的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。
+0.1.0 起改为逐包抓取：每个 world 条目一次 `apk fetch`，源上已经解析不到的包不会拖垮整组；仍有缺失时
+再用一次 `--recursive` 兜底，然后才放弃。空间不够的机器可以 `--no-payloads`，得到只记清单的快照
+（`payloads no`，下一行写原因）。原因 `payload-incomplete` 表示抓取跑了但没下来全部归档：这种快照
+仍可按版本回退，但不能离线装回；需要包体就腾空间或换可达的源重跑一次。
 
 `revert` 优先用包体：逐个核对快照里的 sha256，然后一次 `apk add` 事务装回。本地归档用
 `--allow-untrusted` 安装，因为设备上没有它们的 keyring；这里的信任来自快照内的摘要清单（写在同一个分区上），

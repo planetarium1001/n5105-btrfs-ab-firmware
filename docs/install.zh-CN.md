@@ -403,6 +403,43 @@ grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade
 
 `bootloader-esp-` 是个前缀而不是 token：它后面那两个是 `bootloader-esp-dirty` 与 `bootloader-esp-unreadable`。
 
+### 当软件包遮蔽升级适配器
+
+`/lib/upgrade/platform.sh` 既是本项目的升级适配器（在 platform 层里），也是上游 sysupgrade 的脚本名。
+运行根是 platform 层叠在 `@sys` 上的 overlay，可写层里的同名文件优先于两者。`apk upgrade` 一旦重写
+`/lib/upgrade/*`，就会在 upper 里留下上游副本；从那次启动起，`ab-upgrade` source 到的是没有
+`platform_upgrade_begin` 的库：所有校验都通过，然后安装以 `platform_upgrade_begin: not found`、
+`reason=` 为空失败。
+
+0.1.0 起 `ab-upgrade` 不再被这种遮蔽打败：
+
+* source 之前先检查适配器。不是本项目的那份会被跳过，加载器依次回退到运行槽只读的 `@platform`
+  子卷、payload 里的 platform 层；`upgrade: platform adapter source=` 会写明最终用的是哪一份，
+  被遮蔽时还会打印 `warning adapter-shadowed path=...`。
+* 三份都不可用时以 `74`、reason `platform-layer-shadowed` 拒绝，打印下面的修复命令，不写任何东西。
+* `platform_copy_rootfs` 会把它即将启动的那份快照里 upper 的
+  `lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}` 移到 `/mnt/p4/ab/shadow-backup-<时间戳>/`，
+  让已经被遮蔽的槽也能干净启动。
+* `/etc/apk/protected_paths.d/ab-upgrade-adapter.list` 阻止 `apk upgrade` 再次把四个文件写进 upper；
+  包里的文件落在受保护文件旁边的 `*.apk-new`，apk 数据库照常前进。
+
+已经在上 0.1.0 之前被遮蔽的机器：先做系统升级、再做包升级；若适配器被遮蔽，手工修复：
+
+```sh
+ls -l /mnt/p4/@overlay-*/upper/lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}
+rm -f /mnt/p4/@overlay-*/upper/lib/upgrade/platform.sh \
+      /mnt/p4/@overlay-*/upper/lib/upgrade/fwtool.sh \
+      /mnt/p4/@overlay-*/upper/lib/upgrade/stage2 \
+      /mnt/p4/@overlay-*/upper/lib/upgrade/tar.sh
+```
+
+或者保留副本，只让这一次运行使用干净的适配器：
+
+```sh
+AB_LIB=/mnt/p4/ab/shadow-backup-<时间戳>/lib/upgrade/platform.sh \
+    ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar
+```
+
 ### 救援：ESP 上的引导器被写坏
 
 引导器有两份副本，这是设计，放在两个地方各有各的理由：

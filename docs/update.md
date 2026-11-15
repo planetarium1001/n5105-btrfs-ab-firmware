@@ -379,6 +379,16 @@ means the writable layer's `world` pins the kernel this slot runs and `distfeeds
 release it runs. Upgrading packages behind a stale pin installs modules for a kernel the
 machine is not running.
 
+Do the system update first and the package upgrade second. An `apk upgrade` rewrites
+`/lib/upgrade/*`, whose names upstream's sysupgrade interface uses too; the writable layer
+would then shadow this project's upgrade adapter and the next payload install would fail at
+`platform_upgrade_begin`. From 0.1.0 the adapter is loaded from a source a package cannot
+shadow, the shadowing copies are moved into `/mnt/p4/ab/shadow-backup-<timestamp>/` when a
+slot boots from that snapshot, and `/etc/apk/protected_paths.d/ab-upgrade-adapter.list` stops
+the rewrite at `apk upgrade` time (the package's file lands as `*.apk-new`, and apk's database
+still moves). `docs/install.md` has the manual repair for a machine that was already shadowed
+before 0.1.0.
+
 A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions, every
 world entry, every installed package with its version, and the counts that make the record
 self-checking (`packages=`, `world=`, `payloads=`). The newest three are kept.
@@ -387,9 +397,14 @@ Alongside the text file the snapshot keeps the packages themselves, in
 `snapshots/snapshot-<id>.d/payloads/`, with one `apkfile <name> <sha256>` line per archive.
 That is not an optimisation: the repositories carry one version of a package - the newest -
 so a version list on its own can only ever restore what the source still has. `apk fetch`
-fills the directory at snapshot time, which costs about 300 MiB and needs the network once;
-a machine without the room can pass `--no-payloads` and gets a list-only snapshot
-(`payloads no`, and the reason for it on the next line).
+fills the directory at snapshot time, which costs about 300 MiB and needs the network once.
+From 0.1.0 the fetch is per package: one `apk fetch` per world entry, so a package the feed
+no longer resolves cannot fail the whole set; if any package is still missing, the snapshot
+retries with one recursive `apk fetch` before it gives up. A machine without the room can pass
+`--no-payloads` and gets a list-only snapshot (`payloads no`, and the reason for it on the next
+line). The reason `payload-incomplete` means the fetch ran but did not land every archive; the
+snapshot can still restore by version, but not offline - re-run it with more room or a
+reachable feed if you need the archives.
 
 `revert` prefers the archives: it checks every sha256 against the snapshot, then installs
 them in one `apk add` transaction. Local archives are installed with `--allow-untrusted`,
