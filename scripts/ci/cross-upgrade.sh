@@ -173,13 +173,14 @@ cross_prepare() {
     sudo cp "${_payload}" "${_upper}/payload.tar"
     sudo tee "${_upper}/etc/rc.local" >/dev/null <<'RCLOCAL'
 #!/bin/sh
-# Cross-version fixture, first half. On the boot that carries the payload it prints the
-# status before and after staging, then installs. The candidate boot runs through this file
-# as a no-op: rc.local is S95, before ab-commit at S99, so printing the post-commit status
-# here would describe a state the commit has not produced yet. /cross-fixture-pending is
-# the marker that tells the second half (S100ab-cross-status) this machine is a fixture.
-if [ -f /payload.tar ]; then
-  : >/cross-fixture-pending
+# Cross-version fixture, first half. It installs once per image, and it must not install
+# again on the candidate boot: the snapshot that becomes the candidate's writable layer
+# carries /payload.tar and this very rc.local with it, which is the documented "one-shot
+# hook runs twice on a snapshot" trap. The installed marker lives on the shared ESP, not in
+# the layer, so the candidate boot (and a post-abandon boot) sees it and does nothing.
+# The post-commit status is printed by S100ab-cross-status, after ab-commit at S99.
+if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]; then
+  : >/boot/cross-fixture-installed
   echo "CROSS-STATUS-BEFORE" >/dev/console
   ab-slot status >/dev/console 2>&1
   echo "CROSS-INSTALL" >/dev/console
@@ -203,7 +204,7 @@ RCLOCAL
     sudo tee "${_upper}/etc/rc.d/S100ab-cross-status" >/dev/null <<'INITSTATUS'
 #!/bin/sh
 # Cross-version fixture, second half: print the committed status after ab-commit.
-[ -f /cross-fixture-pending ] || exit 0
+[ -f /boot/cross-fixture-installed ] || exit 0
 line="$(ab-slot status 2>/dev/null | sed -n '1p')"
 case "${line}" in
   *" pending=none "*) : ;;
@@ -221,7 +222,7 @@ done
 echo "CROSS-STATUS-COMMITTED" >/dev/console
 ab-slot status >/dev/console 2>&1
 echo "CROSS-STATUS-DONE" >/dev/console
-rm -f /cross-fixture-pending /etc/rc.local /etc/rc.d/S100ab-cross-status
+rm -f /boot/cross-fixture-installed /etc/rc.local /etc/rc.d/S100ab-cross-status
 exit 0
 INITSTATUS
     sudo chmod 0755 "${_upper}/etc/rc.d/S100ab-cross-status"

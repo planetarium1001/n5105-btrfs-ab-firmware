@@ -256,8 +256,10 @@ assert_contains "$prepare_fn" ' pending=none ' \
   "ac-1 the hook only prints when the state has settled (pending=none)"
 assert_contains "$prepare_fn" 'CROSS-STATUS-COMMITTED' \
   "ac-1 the hook is the one that announces the committed status"
-assert_contains "$prepare_fn" 'cross-fixture-pending' \
-  "ac-1 the fixture marker gates the hook, so an unrelated boot prints nothing"
+assert_contains "$prepare_fn" '/boot/cross-fixture-installed' \
+  "ac-1 the installed marker lives on the shared ESP, so a snapshot cannot replay the install"
+assert_contains "$prepare_fn" 'if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]' \
+  "ac-1 the candidate boot (snapshot carries payload + rc.local) does not install a second time"
 case "$prepare_fn" in
   *'rm -f /etc/rc.local'*) assert_eq "removed-before-install" "kept-until-commit" \
     "ac-1 rc.local must survive into the candidate snapshot, or the second half never runs" ;;
