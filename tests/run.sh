@@ -23,7 +23,13 @@ OUT_DIR="$ROOT/tests/.out"
 # stdout fails on a machine where the suite is supposed to pass. Measured on an
 # ubuntu-latest runner: three tests failed there and passed on a laptop for exactly this
 # reason. The suite owns its environment, so it takes those channels away from the tests.
-unset GITHUB_OUTPUT GITHUB_ENV GITHUB_STEP_SUMMARY GITHUB_PATH GITHUB_STATE
+#
+# CI_OUTPUT_ENV is the same channel under a different name: scripts/ci/lib.sh's
+# ci_emit_output writes to it for local reproduction, so a shell that exported it turns a
+# script's output away from stdout exactly like GITHUB_OUTPUT does (measured 2026-11-16:
+# three upgrade tests failed, 78/81, purely because CI_OUTPUT_ENV was set). It is unset
+# here for the same reason the GITHUB_* channels are.
+unset GITHUB_OUTPUT GITHUB_ENV GITHUB_STEP_SUMMARY GITHUB_PATH GITHUB_STATE CI_OUTPUT_ENV
 
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 MODULE_FILTER=""

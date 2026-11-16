@@ -302,7 +302,12 @@ if [ -n "$dev" ]; then
     addr=$(ip -4 addr show dev "$dev" 2>/dev/null | sed -n 's/.*inet \([0-9.]*\/[0-9]*\).*/\1/p' | head -n 1)
 fi
 printf 'wan_addr=%s\n' "${addr:-none}"
-printf 'wan_ssh=%s\n' "$(nft list ruleset 2>/dev/null | grep -c 'tcp dport 22' || true)"
+# `grep 'tcp dport 22'` also counts `tcp dport 2222`: measured on a machine whose ruleset
+# carries both (2222 is a lab SSH rule, 22 is the WAN rule this probe asks about), the loose
+# pattern answered 2 while the machine has exactly one 22/tcp rule. The count is compared
+# against AB_PROBE_WAN_SSH_RULES (=1), so the loose pattern turned a healthy machine into a
+# permanent FAIL. Anchor the port on a non-digit boundary instead of matching a prefix.
+printf 'wan_ssh=%s\n' "$(nft list ruleset 2>/dev/null | grep -cE 'tcp[[:space:]]+dport[[:space:]]+22([^0-9]|$)' || true)"
 printf 'dropbear_iface=%s\n' "$(uci show dropbear 2>/dev/null | grep -c 'Interface' || true)"
 REMOTE
 }
