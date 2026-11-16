@@ -404,6 +404,37 @@ the rewrite at `apk upgrade` time (the package's file lands as `*.apk-new`, and 
 still moves). `docs/install.md` has the manual repair for a machine that was already shadowed
 before 0.0.11.
 
+That rule is a `+` rule, and `apk-protected_paths(5)` defines `+` as *conditional*: it
+protects a path only when the visible file's checksum differs from the one apk's database
+records. Only `lib/upgrade/platform.sh` meets that condition, because it is the one of the
+four paths this platform layer replaces; the other three are upstream's files and apk
+keeping them in step with upstream is the point. `scripts/device/apk-protection-probe.sh`
+asks apk for that condition on a running machine and looks for a shadow in the writable
+layer. Run it before and after the next real `apk upgrade` - a baseline that already is the
+newest release has no upgrade candidate, so the probe is the part that can be checked
+today and the `*.apk-new` count going up is the part only a real upgrade can show.
+
+Why the protection cannot be "tested" by forcing a transaction: `apk fix <pkg>` is a no-op on
+the apk-tools this image ships (3.0.5). It answers `(1/1) [APK unavailable, skipped]
+Reinstalling <pkg> (<version>)` with exit status 0 - it neither downloads nor commits anything,
+for `base-files` and `busybox` alike, with the package fetchable, with a local repository apk
+recognises, with a hand-filled cache, and inside a throwaway `--root` where the file was
+deliberately missing. So `*.apk-new` cannot be produced on demand; it appears only when a real
+`apk upgrade` has a candidate, and a machine that is already on the newest release has none.
+That is why the probe asserts the premise instead, and why the proof is the before/after pair
+around the next real upgrade. (The count the probe prints covers `/lib/upgrade` and `/etc/apk`,
+the paths these rules and the adapter live in - not every `*.apk-new` on the machine, of which
+the 0.0.11 device carries eleven unrelated ones.)
+
+Why the package list can look empty: `apk version -l '<'` answers from the cached index,
+and a machine that has never run `apk update` has no index at all. It then prints
+`WARNING: opening from cache ...: No such file or directory` and
+`apk upgrade --simulate` stops with `ERROR: Not continuing due to stale/unavailable
+repositories`; after `apk update` the same command answers `OK: ... in 282 packages` and
+`apk version -l '<'` is an empty table. Both shapes print an empty table, so read the
+warnings and the exit status, not the table. A machine on the newest release genuinely has
+zero candidates - that is not a broken feed.
+
 A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions, every
 world entry, every installed package with its version, and the counts that make the record
 self-checking (`packages=`, `world=`, `payloads=`). The newest three are kept.

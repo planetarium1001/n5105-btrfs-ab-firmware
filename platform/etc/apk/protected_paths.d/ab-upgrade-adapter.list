@@ -9,12 +9,27 @@
 # the update path fails after every validation step has already passed.
 #
 # A leading `+` protects a path only when the visible file differs from the one recorded
-# in the apk database, which is exactly the case here: the platform layer ships a
-# different platform.sh (and no fwtool.sh/stage2/tar.sh of its own). The package's file is
-# written as `<name>.apk-new` next to it, the platform layer keeps precedence, and apk
-# itself still upgrades its database normally. Do not remove these rules without a device
-# check: the cleanup in platform_copy_rootfs only repairs snapshots taken after a shadow
-# already exists, this file is what stops the shadow from being created again.
+# in the apk database (`apk-protected_paths(5)`, 2025-03-10: "Protect matching paths only
+# if the file's checksum does not match the one in the apk database"; `!` is the
+# unconditional form). That condition is a fact that can be asked for, and only
+# `platform.sh` satisfies it here: the platform layer ships its own platform.sh, while
+# fwtool.sh, stage2 and tar.sh are upstream's files with nothing shadowing them. So this
+# file is one rule that will fire and three that will not, and the three are listed on
+# purpose - they are the upstream sysupgrade interface this project has to notice if
+# upstream ever starts replacing one of them.
+#
+# What the rule buys: an apk that rewrites a protected path writes the package's copy as
+# `<name>.apk-new` beside it, the platform layer keeps precedence, and apk's database
+# still upgrades normally. What the three no-op rules buy: nothing today, and that is
+# fine - apk should keep those three in step with upstream. Do not turn them into `!`
+# rules to make the file look symmetric: that would freeze upstream fixes out.
+#
+# The condition is checked on a device by scripts/device/apk-protection-probe.sh, and the
+# proof (a real transaction writing `*.apk-new`) needs an upgrade candidate; a baseline
+# that is already newest has none, so the probe is re-run around the next real upgrade.
+# Do not remove these rules without a device check: the cleanup in platform_copy_rootfs
+# only repairs a snapshot that already carries a shadow, and this file is what stops the
+# shadow from being created again.
 #
 # The list below is the exception, not the general rule: it names the four paths of
 # upstream's sysupgrade interface, which all belong to base-files. Every other layer file
