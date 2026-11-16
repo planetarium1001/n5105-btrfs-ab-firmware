@@ -13,6 +13,12 @@ name: Firmware CI - upstream watch
 #           └─ bump -> build -> locks -> merge -> publish         -> done, success
 #                            └─ any failure -> issue              -> done, failure
 #
+# A failed run is recovered by dispatching this workflow with the same version and a
+# `resume` stage: `merge` re-runs the graph for a failure before the merge, `publish`
+# finishes a release whose merge and tag already happened. `detect` reports the state the
+# recovery continues from (pin in the base branch, merge commit, tag) instead of
+# rediscovering a release, and `merge` splits its idempotency into skip-merge and skip-tag.
+#
 # The build runs ci.yml through `workflow_call` with `upstream_version`, so the branch and
 # this run cannot disagree about which upstream release is being built; the PR carries only
 # data (the pin and the three lockfiles) and `merge` asserts exactly that before merging.
@@ -23,9 +29,12 @@ name: Firmware CI - upstream watch
 defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   schedule:
-    # 20:00 UTC = 04:00 in Beijing: after the upstream mirrors settle for the day and
-    # outside the hours anyone here dispatches a build by hand.
-    - cron: "0 20 * * *"
+    # 16:00 UTC = 00:00 in Beijing. GitHub's `schedule` trigger is best-effort: measured on
+    # this repository, runs queued for a 20:00 UTC cron actually started at 23:30-00:48 UTC
+    # (+3.5~+4.8h). The nominal time is therefore set four hours early, so the delay lands
+    # the build around 04:00 Beijing instead of mid-morning. The 04:00 target is an
+    # expectation, not a guarantee: a late queue can still start it later.
+    - cron: "0 16 * * *"
   workflow_dispatch:
     inputs:
       version:
@@ -40,6 +49,10 @@ on:
         description: "Branch the PR is opened against and merged into"
         type: string
         default: "main"
+      resume:
+        description: "Recover a failed run: empty discovers, merge re-runs from the merge, publish finishes a merged release"
+        type: string
+        default: ""
 
 # The workflow-level grant is the floor, not the ceiling: each job asks for exactly what it
 # writes, which is where the audit of this file starts. The comments below record the two
@@ -62,6 +75,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # The release's merge commit is read back from the pull request below, so a recovery
+      # can prove that an existing tag names it.
+      pull-requests: read
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
       version: ${{ steps.detect.outputs.version }}
@@ -69,9 +85,23 @@ jobs:
       candidates: ${{ steps.matrix.outputs.candidates }}
       gaps: ${{ steps.matrix.outputs.gaps }}
       heartbeat: ${{ steps.heartbeat.outputs.action }}
+      mode: ${{ steps.detect.outputs.mode }}
+      resume-stage: ${{ steps.detect.outputs.resume_stage }}
+      pin-in-base: ${{ steps.detect.outputs.pin_in_base }}
+      merged-sha: ${{ steps.detect.outputs.merged_sha }}
+      tag-exists: ${{ steps.detect.outputs.tag_exists }}
+      tag-sha: ${{ steps.detect.outputs.tag_sha }}
     steps:
+      # The heartbeat decides from tag history and from the commit that last touched the
+      # pin, and the diff guard in `merge` needs a common ancestor: neither works on
+      # actions/checkout's default depth-1, tag-less clone. A shallow checkout makes the
+      # pin's commit its own root, so `days_since` is always 0 and the heartbeat is never
+      # due - that is why this checkout carries the same tags and depth as `heartbeat`.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with: {persist-credentials: false}
+        with:
+          fetch-tags: true
+          fetch-depth: 50
+          persist-credentials: false
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
 
@@ -79,6 +109,13 @@ jobs:
         id: detect
         env:
           CI_FORCE_VERSION: ${{ inputs.version }}
+          CI_RESUME: ${{ inputs.resume }}
+          CI_BASE: ${{ inputs.base }}
+          # The tag state is read from the remote, not from the checkout: a tag this run did
+          # not fetch must not read as "does not exist", and the recovery contract compares
+          # the tag with the merge commit the API reports.
+          CI_REMOTE_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/ci/upstream-watch.sh detect 2>&1 | tee -a "${CI_LOG_DIR}/detect.log"
 
       # The candidates are the new release plus the three formal releases before it. They
@@ -93,8 +130,6 @@ jobs:
 
       - name: Decide whether a heartbeat tag is due
         id: heartbeat
-        env:
-          CI_MATRIX_CANDIDATES: ${{ steps.matrix.outputs.candidates }}
         run: bash scripts/ci/heartbeat-tag.sh --dry-run 2>&1 | tee -a "${CI_LOG_DIR}/heartbeat.log"
 
   # A scheduled workflow in a public repository is disabled after 60 days without
@@ -188,6 +223,21 @@ jobs:
           # The single write entry for the pin: scripts/ci/lib.sh owns the format.
           bash scripts/ci/upstream-watch.sh pin "${VERSION}" 2>&1 | tee -a "${CI_LOG_DIR}/pin.log"
           git add .github/upstream-pin.conf
+          if git diff --cached --quiet; then
+            # A recovery for a release whose merge already happened: the base branch
+            # carries the pin, so there is nothing to commit. The failed run's branch was
+            # deleted by the squash merge, so the branch is recreated at the base tip; the
+            # downstream jobs then check out a tree that already carries the pin and the
+            # lockfiles, derive the same lockfiles and commit nothing.
+            echo "the base already pins ${VERSION}; recreating ${branch} at ${base}"
+            git fetch --no-tags origin "refs/heads/${base}"
+            git checkout -B "${branch}" "origin/${base}"
+            git push --force-with-lease="${branch}:" "${remote}" "HEAD:refs/heads/${branch}" 2>/dev/null \
+              || git push "${remote}" "HEAD:refs/heads/${branch}"
+            printf 'branch=%s\n' "${branch}" >>"${GITHUB_OUTPUT}"
+            printf 'base=%s\n' "${base}" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
           git commit -m "chore(ci): pin upstream ${VERSION}"
           # A re-run replaces the branch it created last time. --force-with-lease needs to
           # know what it is replacing, and a fresh checkout does not have the remote ref,
@@ -357,9 +407,15 @@ jobs:
       pull-requests: write
     outputs:
       tag: ${{ needs.detect.outputs.version }}
+    # The rehearsal switch lives at job level so the two steps that would publish cannot
+    # read it as anything but a boolean string: an `if:` on the step reads `env`, not
+    # `inputs`, and `inputs.dry-run` on a schedule run is empty rather than "false".
+    env:
+      DRY_RUN: ${{ inputs.dry-run }}
     steps:
       # The diff guard compares two branches, which a shallow clone cannot do: without the
-      # full history `git diff base...branch` fails with "no merge base".
+      # full history `git diff base...branch` fails with "no merge base". Tags are fetched
+      # too, because the idempotency check compares the pushed tag with the merge commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
@@ -367,30 +423,38 @@ jobs:
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
 
-      # Two overlapping runs converge instead of merging twice: if the base branch already
-      # carries this pin, the release happened while this run was building.
-      - name: Stop when the release has already happened
-        id: already
+      # The one already-happened check, and it now answers two questions instead of one:
+      # whether the base branch already carries this pin (skip the squash) and whether the
+      # remote tag already names the merge commit (skip the tag). Both halves of the
+      # idempotency are needed, because a failure can land between them. `merge-state` only
+      # reads; nothing is written before the diff guard.
+      - name: Read the merge state
+        id: state
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BASE: ${{ needs.bump.outputs.base }}
+          BASE: ${{ inputs.base || 'main' }}
           VERSION: ${{ needs.detect.outputs.version }}
+          BRANCH: auto/upstream-${{ needs.detect.outputs.version }}
+          PR: ${{ needs.bump.outputs.pr }}
+          CI_BASE: ${{ inputs.base || 'main' }}
+          CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
+          CI_BRANCH: auto/upstream-${{ needs.detect.outputs.version }}
+          CI_PR: ${{ needs.bump.outputs.pr }}
+          CI_REMOTE_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "${BASE}"
-          released="$(git show "origin/${BASE}:.github/upstream-pin.conf" | sed -n 's/^UPSTREAM_VERSION=//p' | tail -n 1)"
-          if [ "${released}" = "${VERSION}" ]; then
-            echo "::warning title=auto-release::${BASE} already pins ${VERSION}; this run only verifies the build"
-            echo "skip=true" >>"${GITHUB_OUTPUT}"
-          else
-            echo "skip=false" >>"${GITHUB_OUTPUT}"
+          git fetch --no-tags origin "refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          bash scripts/ci/upstream-watch.sh merge-state "${VERSION}" 2>&1 | tee -a "${CI_LOG_DIR}/merge-state.log"
+          if [ "$(git rev-parse --verify --quiet "refs/remotes/origin/${BASE}" >/dev/null && echo ok || echo no)" = "no" ]; then
+            echo "could not read origin/${BASE}: the merge state cannot be decided" >&2
+            exit 1
           fi
 
       # What was built is what gets merged: the branch may carry the pin and the three
       # lockfiles and nothing else. A workflow that quietly touches a fourth file has
       # published something nobody built.
       - name: Guard the diff
-        if: steps.already.outputs.skip != 'true'
+        if: steps.state.outputs.skip_merge != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ needs.bump.outputs.branch }}
@@ -411,8 +475,12 @@ jobs:
           fi
           printf 'the automatic branch changes exactly:\n%s\n' "${changed}"
 
+      # The two steps that publish are the two a rehearsal may not perform. They are gated
+      # on `env.DRY_RUN` rather than skipped by a job-level `if:`, so the rehearsal still
+      # runs the state check, the diff guard and the build, and the run page says why the
+      # step did not merge.
       - name: Squash merge the pull request
-        if: steps.already.outputs.skip != 'true'
+        if: steps.state.outputs.skip_merge != 'true' && env.DRY_RUN != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ needs.bump.outputs.pr }}
@@ -424,31 +492,93 @@ jobs:
             --body "Automatic upstream release: pin ${VERSION}, lockfiles moved, build green."
           gh pr view "${PR}" --json state,mergedAt --jq '.state + " " + (.mergedAt // "")'
 
+      - name: Report the skipped squash merge
+        if: steps.state.outputs.skip_merge == 'true' || env.DRY_RUN == 'true'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          SKIP_MERGE: ${{ steps.state.outputs.skip_merge }}
+        run: |
+          set -euo pipefail
+          if [ "${SKIP_MERGE}" = "true" ]; then
+            reason="the base branch already pins ${VERSION}"
+          else
+            reason="dry run: a rehearsal may not merge"
+          fi
+          echo "skipping the squash merge of ${VERSION}: ${reason}"
+          {
+            printf '## Merge skipped\n\n'
+            printf 'The squash merge of `%s` was not performed: %s.\n' "${VERSION}" "${reason}"
+            printf 'The build and the lockfiles were still verified in this run.\n'
+          } >>"${GITHUB_STEP_SUMMARY}"
+
       # A bare X.Y.Z tag: the release is identified by the system version, and a bare tag
       # never matches the v* line, so tagging cannot start a second release.
       - name: Tag the merged commit
-        if: steps.already.outputs.skip != 'true'
+        if: steps.state.outputs.skip_tag != 'true' && env.DRY_RUN != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ needs.bump.outputs.branch }}
           BASE: ${{ needs.bump.outputs.base }}
           PR: ${{ needs.bump.outputs.pr }}
           VERSION: ${{ needs.detect.outputs.version }}
+          MERGED_SHA: ${{ steps.state.outputs.merged_sha }}
         run: |
           set -euo pipefail
           case "${VERSION}" in
             v*) echo "refusing to tag ${VERSION}: the automatic line publishes bare versions" >&2; exit 1 ;;
           esac
           # The merge commit the API reports, not whatever the base branch happens to point
-          # at by now: a concurrent push must not become the tagged release.
-          sha="$(gh pr view "${PR}" --json mergeCommit --jq '.mergeCommit.oid')"
+          # at by now: a concurrent push must not become the tagged release. A recovery run
+          # has no pull request of its own, so it reads the commit `detect` already resolved
+          # from the same API, and refuses to guess when neither is known.
+          if [ -n "${MERGED_SHA}" ]; then
+            sha="${MERGED_SHA}"
+          elif [ -n "${PR}" ] && [ "${PR}" != "null" ]; then
+            sha="$(gh pr view "${PR}" --json mergeCommit --jq '.mergeCommit.oid')"
+          else
+            echo "no merge commit for ${VERSION}: pass a version whose pull request is known" >&2
+            exit 1
+          fi
           [ -n "${sha}" ] && [ "${sha}" != "null" ] || { echo "the merged pull request reports no merge commit" >&2; exit 1; }
+          # An existing tag is never moved. `merge-state` already hard-fails a tag that
+          # names another commit; this is the last line of defence against a race.
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            existing="$(git ls-remote --tags origin "refs/tags/${VERSION}^{}" "refs/tags/${VERSION}" | awk '$2 ~ /\^\{\}$/ { print $1; exit }')"
+            [ -n "${existing}" ] || existing="$(git ls-remote --tags origin "refs/tags/${VERSION}" | awk '{ print $1; exit }')"
+            if [ "${existing}" = "${sha}" ]; then
+              echo "tag ${VERSION} already names ${sha}; nothing to do"
+              exit 0
+            fi
+            echo "tag ${VERSION} points at ${existing}, not at ${sha}: tags are immutable, refusing to force one" >&2
+            exit 1
+          fi
           git fetch --no-tags origin "${sha}"
           git config user.name "upstream-watch[bot]"
           git config user.email "upstream-watch@users.noreply.github.com"
           git tag -a "${VERSION}" -m "ImmortalWrt ${VERSION} through the N5105 A/B pipeline" "${sha}"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${VERSION}"
           echo "tagged ${sha} as ${VERSION}"
+
+      - name: Report the skipped tag
+        if: steps.state.outputs.skip_tag == 'true' || env.DRY_RUN == 'true'
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          SKIP_TAG: ${{ steps.state.outputs.skip_tag }}
+          TAG_SHA: ${{ steps.state.outputs.tag_sha }}
+          MERGED_SHA: ${{ steps.state.outputs.merged_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${SKIP_TAG}" = "true" ]; then
+            reason="tag ${VERSION} already names the merge commit ${MERGED_SHA:-${TAG_SHA}}"
+          else
+            reason="dry run: a rehearsal may not push a tag"
+          fi
+          echo "skipping the tag of ${VERSION}: ${reason}"
+          {
+            printf '## Tag skipped\n\n'
+            printf 'The tag `%s` was not pushed: %s.\n' "${VERSION}" "${reason}"
+            printf 'A rehearsal still publishes a draft release from the build artifacts.\n'
+          } >>"${GITHUB_STEP_SUMMARY}"
 
   # Same implementation as the v* release line, same preflight: the two lines cannot drift.
   publish:
@@ -497,6 +627,15 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # What the recovery contract needs: whether this was a resume, and what the base
+          # branch, the merge commit and the tag already say. A failure after the merge must
+          # not be reported as "nothing was touched", so the body is chosen from these.
+          CI_MODE: ${{ needs.detect.outputs.mode }}
+          CI_RESUME_STAGE: ${{ needs.detect.outputs.resume-stage }}
+          CI_PIN_IN_BASE: ${{ needs.detect.outputs.pin-in-base }}
+          CI_MERGED_SHA: ${{ needs.detect.outputs.merged-sha }}
+          CI_TAG_EXISTS: ${{ needs.detect.outputs.tag-exists }}
+          CI_TAG_SHA: ${{ needs.detect.outputs.tag-sha }}
         run: |
           set -euo pipefail
           failed=""
@@ -516,7 +655,13 @@ jobs:
             printf '\n## Jobs\n\n| job | result |\n| --- | --- |\n'
             printf '| bump | %s |\n| build | %s |\n| locks | %s |\n| merge | %s |\n| publish | %s |\n\n' \
               "${BUMP}" "${BUILD}" "${LOCKS}" "${MERGE}" "${PUBLISH}"
-            printf 'The automatic release stopped before publishing. Nothing was published for %s.\n' "${VERSION:-unknown}"
+            # The sentence has to match the state: after the merge it is no longer true that
+            # the release stopped before publishing, and saying so would hide the tag.
+            if [ "${CI_PIN_IN_BASE:-}" = "${VERSION}" ] || [ "${CI_TAG_EXISTS:-false}" = "true" ]; then
+              printf 'The merge already landed for %s; the recovery scripts above decide what is left.\n' "${VERSION:-unknown}"
+            else
+              printf 'The automatic release stopped before merging. Nothing was published for %s.\n' "${VERSION:-unknown}"
+            fi
           } >>"${RUNNER_TEMP}/issue.md"
           gh label create auto-release --color BFD4F2 --description "Automatic upstream release" 2>/dev/null || true
           existing="$(gh issue list --label auto-release --state open --json number,title \

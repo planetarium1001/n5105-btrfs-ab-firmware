@@ -11,15 +11,16 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 [`release-preflight.sh`](../scripts/ci/release-preflight.sh)。两个调用者、一份实现，这是两条线
 不会漂移的原因，也是 watch 自动发的 release 与手发的那次被同样检查的原因。
 
-代码线在这道检查之外还多一道门：它的 `publish` job 要等构建**和**跨版本升级都通过才跑。
-`release.yml` 声明的是 `publish: needs: [build, cross]`，所以 cross 红着 —— 或者因为找不到上一个
-正式版而被跳过 —— 的 tag 不会产生任何 release。上游线则相反：它的 publish 门是 merge，不跑跨版本阶段。
+代码线在这道检查之外还多两道门：它的 `publish` job 要等构建、跨版本升级**和**同 base 升级都通过
+才跑。`release.yml` 声明的是 `publish: needs: [build, cross, same-base]`；只有 cross 门那半句
+`needs: [build, cross]` 证明不了更新提示里「补丁范围已覆盖」那句话。门红着 —— 或者因为找不到上一个
+正式版而被跳过 —— 的 tag 不会产生任何 release。上游线则相反：它的 publish 门是 merge，两道门都不跑。
 
 ## 两条发布线并列对比
 
 | | 代码线 | 上游线 |
 |---|---|---|
-| 触发 | push `v*` tag（`release.yml`） | `schedule`（`0 20 * * *`），或 `upstream-watch.yml` 的 `workflow_dispatch` |
+| 触发 | push `v*` tag（`release.yml`） | `schedule`（`0 16 * * *`），或 `upstream-watch.yml` 的 `workflow_dispatch` |
 | tag 形状 | `v<X.Y.Z>`，例如 `v0.0.8` | 裸 `<X.Y.Z>`，例如 `25.13.0` |
 | `VERSION` | tag 必须等于它：tag 去掉 `v` 就是本次发布的平台版本 | 发布不改它；它必须仍然是镜像里记录的那个平台版本 |
 | 构建哪个上游 | `.github/upstream-pin.conf` 里的 pin；不传版本输入 | `detect` 刚发现的版本，作为 `upstream_version` 传给 `ci.yml` |
@@ -49,8 +50,11 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 那一份上证明一次。便利镜像是给"从 LAN 够不到的机器"留的一条进路，不是第二条产品线 —— 也正是因为它在，默认值
 才关得起。
 
-`dry-run: true` 在两条线上含义相同：每一步都跑、字节都上传，但 release 建成 **draft**。彩排和
-真发布只差这一点。
+`dry-run: true` 是 publisher 的彩排开关：每一步都跑、字节都上传并校验，但 release 建成 **draft** 而
+不是正式 release。造出 draft 的那次 run 自己永远不会把它转正。在上游线上，彩排还会跳过会合并、会打
+tag 的那两步，所以它推不动分支、也推不出 tag —— 完整行为与清理命令在
+[daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)。代码线自己没有 `dry-run` 输入：
+一个 tag 要么发布，要么什么都不发布。
 
 ## tag 必须证明什么
 
@@ -58,9 +62,10 @@ tag 是一个主张，preflight 就是核对这个主张的地方。`release-pub
 的 initrd 就是生产那份，再跑 preflight，这些都在 `gh release create` 之前；拒绝就是非零退出，不是
 一条警告，而且什么都没创建。
 
-这个主张的另一半由单独一个 job 证明：跨版本阶段用上一个正式版构建镜像，装上本发布的 payload，
-要求它启动、提交，并带着 payload 里的内核与 initrd。`publish` 同时依赖 `build` 与 `cross`，
-所以 cross 红着或被跳过时这个 tag 不会出现 release —— v0.0.9 就是 cross 红着发出去的
+这个主张的另一半由单独的 job 证明。跨版本阶段用上一个正式版构建镜像，装上本发布的 payload，
+要求它启动、提交，并带着 payload 里的内核与 initrd。同 base 阶段则用上一个 release 自己**已发布**
+的镜像，装上本发布的 payload，并判据基线与内核没有移动。`publish` 依赖 `build`、`cross` 与
+`same-base`，所以门红着或被跳过时这个 tag 不会出现 release —— v0.0.9 就是 cross 红着发出去的
 （run 43622253559），这个门堵的正是这个洞。
 
 两条 policy 共有的检查：
@@ -98,7 +103,8 @@ tag 是一个主张，preflight 就是核对这个主张的地方。`release-pub
 ## 上游 watch
 
 `upstream-watch.yml` 是一个 run 图，因为用 `GITHUB_TOKEN` 推的 commit 或 tag 不会触发 workflow：
-「推 bump、让 CI 构建、让 tag 发布」这种设计根本不可能工作。
+「推 bump、让 CI 构建、让 tag 发布」这种设计根本不可能工作。这张图怎么运维 —— 什么时候跑、怎么读一次
+run、怎么彩排、失败怎么恢复 —— 写在 [daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)。
 
 | job | needs | 权限 | 干什么 |
 |---|---|---|---|
@@ -107,7 +113,7 @@ tag 是一个主张，preflight 就是核对这个主张的地方。`release-pub
 | `bump` | `detect` | `contents: write`、`pull-requests: write` | 在 `auto/upstream-<version>` 分支上只改 `.github/upstream-pin.conf` 并开 PR。它永不直接 push `main` |
 | `build` | `detect`、`bump` | `contents: read`、`actions: read` | 以 `upstream_version=<新版本>` 调 `ci.yml`，新基线在同一次 run 里由同样的五个阶段构建 |
 | `locks` | `detect`、`bump`、`build` | `contents: write` | 从 `upstream-files` 产物派生三个 lockfile，提交到分支，然后用 `CI_LOCK_STRICT=1` 断言**已提交的那份** |
-| `merge` | `detect`、`bump`、`build`、`locks` | `contents: write`、`pull-requests: write` | base 分支已 pin 该版本时跳过；守护 diff；squash 合并并删分支；用 PR 的 `mergeCommit.oid` 打 tag |
+| `merge` | `detect`、`bump`、`build`、`locks` | `contents: write`、`pull-requests: write` | 读 merge 状态（base 的 pin、merge commit、tag）；base 分支已 pin 该版本时跳过 squash，tag 已指向 merge commit 时跳过打 tag；守护 diff；squash 合并并删分支；用 PR 的 `mergeCommit.oid` 打 tag。`dry-run` 下只读状态并守 diff，合并与 tag 两步都跳过 |
 | `publish` | `detect`、`merge` | `contents: write`、`actions: read` | 以 `tag-policy: bare` 调 `release-publish.yml`，矩阵候选作为补充说明 |
 | `issue` | 上面全部七个 | `contents: read`、`issues: write` | 在 `failure() || cancelled()` 时跑，写下唯一要看的地方 |
 
@@ -166,7 +172,8 @@ gh run view 43238859287 --json name,event,headBranch,conclusion
 gh release view v0.0.8 --json tagName,isDraft,publishedAt,assets
 ```
 
-上游线目前还没有发布实例 —— 本仓库的 tag 只有 `v0.0.5` 到 `v0.0.8`：
+上游线在本仓库里还没有发布过：这里的 tag 全是 `v*` tag，而 watch 发出来的 release 带的是裸
+`X.Y.Z` tag。这条命令在你读到的当天回答这个问题：
 
 ```sh
 gh api repos/:owner/:repo/tags --jq '.[].name'
@@ -186,26 +193,32 @@ git push origin "v$(tr -d '[:space:]' < VERSION)"
 push tag 就是启动构建的那一下，不需要再派发任何东西。与 `VERSION` 不一致的 tag 会被 preflight
 拒绝，release 不会出现。
 
-**上游线**用来换 ImmortalWrt 基线，通常什么都不用做：`schedule` 每天 20:00 UTC（北京时间 04:00）
-跑一次，没有新版本时以成功结束。
+**上游线**用来换 ImmortalWrt 基线，通常什么都不用做：`schedule` 名义上是 UTC 16:00，没有新版本时
+以成功结束。GitHub 启动定时 run 会晚 —— 本仓库实测 3.5 到 4.8 小时 —— 所以通常落在北京时间 04:00
+附近；时间、判读与恢复写在 [daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)。
 
 ```sh
 gh workflow run upstream-watch.yml --ref main
 ```
 
-两个输入是为彩排和刻意的手动跑准备的：
+这些输入是为彩排和刻意的手动跑准备的：
 
 | 输入 | 它改变什么 |
 |---|---|
 | `version` | 把这个正式版当成新版本，而不是去发现；按 pin 的规则校验，所以必须是 `X.Y.Z` |
-| `dry-run` | 合并进 `base` 指定的分支并创建 draft release；打开时 `bump` job 拒绝把 `main` 或 `master` 当 base |
+| `dry-run` | 彩排：`merge` 跳过 squash 合并与打 tag，`publish` 建成 **draft** release；打开时 `bump` job 拒绝把 `main` 或 `master` 当 base |
 | `base` | PR 开向并合并进的分支；默认 `main` |
+| `resume` | `merge` 或 `publish`：续跑一次失败的 run、跳过发现；它要求 `version` |
 
-所以彩排要指定一个临时 base，而且什么都不发布：
+所以彩排要指定一个临时 base；它不合并、也不打 tag —— 临时 base 分支与远端 tag 集合都不变 ——
+但可能留下一个 draft release：
 
 ```sh
 gh workflow run upstream-watch.yml --ref main -f version=25.13.0 -F dry-run=true -f base=rehearsal-25.13.0
 ```
+
+那个 draft、那个 PR 和两个分支是彩排自己的残留。[daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)
+里有清掉它们的命令、两套恢复 dispatch，以及「tag 永不移动」这条规则。
 
 回答「今天自动化做了什么」的命令是这个 workflow 的 run 列表；回答「它挂了吗」的命令是
 `auto-release` 的 issue 列表：

@@ -4,9 +4,13 @@ name: Firmware CI - release
 # releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
 # something the same stages already proved.
 #
-# The cross-version upgrade is a gate on top of that proof: a release that cannot install
-# over the previous formal release is not published. v0.0.9 went out while cross was red
-# (run 43622253559) because publish only waited for build; `publish` now waits for both.
+# Two upgrade gates sit on top of that proof: a release that cannot install over the
+# previous formal release is not published, and neither is one that moved the upstream base
+# or the kernel while claiming the same-base upgrade. Both live in ci-upgrade-gates.yml -
+# the cross gate reuses ci-upgrade-cross.yml unchanged, the same-base gate installs this
+# run's payload over the previous release's own published image. v0.0.9 went out while cross
+# was red (run 43622253559) because publish only waited for build; `publish` now waits for
+# the build and both gates, and a skipped gate is not a passed one.
 #
 #   git tag -a v0.0.8 -m "0.0.8: ..." && git push origin v0.0.8
 #
@@ -36,6 +40,10 @@ jobs:
       # run fails at startup and no job ever appears.
       actions: read
 
+  # The cross gate keeps the call it has always had. It is the tag line's original proof and
+  # moving it behind the wrapper would make a rename in the wrapper able to unhook it; the
+  # wrapper's cross mode exists for the other caller (the automatic line), where the gate has
+  # to be reachable under the same contract as the same-base one.
   cross:
     name: cross-version upgrade
     needs: [build]
@@ -43,12 +51,28 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-upgrade-cross.yml
 
+  same-base:
+    name: same-base upgrade
+    needs: [build]
+    permissions:
+      contents: read
+    # The second gate: the previous release shares this one's upstream base and kernel, and
+    # this release installs over it. Without it a release could move the base while the
+    # cross gate stayed green - a real upgrade, but not the same-base upgrade the update
+    # prompt's "patch ranges are covered" sentence claims.
+    uses: ./.github/workflows/ci-upgrade-gates.yml
+    with:
+      mode: same-base
+
   publish:
     name: publish
-    # The cross-version stage is a gate, not an advisory: a red cross - or a skipped one,
-    # which is not a passed proof - publishes nothing. `needs` has to name both jobs; a
-    # publish that only needs build is how v0.0.9 shipped while cross was red.
-    needs: [build, cross]
+    # Input is never a release. Two gates, not one: cross proves an upgrade across whatever
+    # the two releases pinned, same-base proves the patch-range claim, and a red gate - or a
+    # skipped one, which is not a passed proof - publishes nothing. `needs` has to name every
+    # job a release depends on; a publish that only needed build is how v0.0.9 shipped while
+    # cross was red (run 43622253559), and the same mistake with one of these added is how a
+    # base move would ship while its own gate said nothing.
+    needs: [build, cross, same-base]
     permissions:
       contents: write
       actions: read

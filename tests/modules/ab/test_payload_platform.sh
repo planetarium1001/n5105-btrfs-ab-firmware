@@ -215,10 +215,23 @@ assert_eq "$(printf '%s\n' "$s5_body" | grep -c 'CI_PLATFORM_RUNTIME_DIR:')" "2"
 # the install when it cannot.
 
 shadow_body="$(sed -n '/^_upgrade_shadow_clean()/,/^}/p' "$platform_sh")"
+manifest_body="$(sed -n '/^_upgrade_shadow_manifest()/,/^}/p' "$platform_sh")"
 assert_eq "$([ -n "$shadow_body" ] && echo present)" "present" \
   "ac-5 the cleanup is one helper"
+# The set to clear is derived from the payload's own platform.tar, not from a name list in
+# the helper: the layer about to be installed is what a leftover upper copy would shadow,
+# so the payload defines the set. The four upstream names survive only as the fallback for
+# a payload whose member cannot be listed.
+assert_contains "$manifest_body" 'platform.tar' \
+  "ac-5 the path set is derived from the payload's platform layer"
+assert_contains "$manifest_body" 'tar -tvf' \
+  "ac-5 the derivation reads the member types, not only the names"
+assert_contains "$shadow_body" 'derived ' \
+  "ac-5 the run reports how many paths the layer list had"
+assert_contains "$shadow_body" 'reason=platform-tar-unreadable' \
+  "ac-5 an unreadable member falls back to the upstream names and says so"
 for rel in lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/upgrade/tar.sh; do
-  assert_contains "$shadow_body" "$rel" "ac-5 the cleanup covers ${rel}"
+  assert_contains "$shadow_body" "$rel" "ac-5 the fallback still names ${rel}"
 done
 assert_contains "$shadow_body" 'shadow-backup-' \
   "ac-5 the moved files are kept under a backup directory"
@@ -234,9 +247,15 @@ sys_line="$(printf '%s\n' "$copy_body" | grep -n "replace the target slot's syst
 assert_eq "$([ -n "$snap_line" ] && [ -n "$shadow_line" ] && [ -n "$sys_line" ] &&
   [ "$snap_line" -lt "$shadow_line" ] && [ "$shadow_line" -lt "$sys_line" ] && echo ordered)" \
   "ordered" "ac-5 the shadow is cleared after the snapshot and before @sys is replaced"
+# The call has to hand the payload over. Without it the helper cannot derive anything and
+# every run would silently take the fallback.
+assert_contains "$copy_body" '_upgrade_shadow_clean "${_new_layer}" "${_payload}"' \
+  "ac-5 the copy passes the payload the list is derived from"
 
-# The helper itself, on a fixture writable layer: four files moved, the user's files and
-# the rest of lib/upgrade untouched, one backup that still carries the original bytes.
+# The helper itself, on a fixture writable layer: the four files moved, the user's files and
+# the rest of lib/upgrade untouched, one backup that still carries the original bytes. No
+# payload is passed, so this is the fallback path - the case a payload without a readable
+# platform.tar takes, and the behaviour the function had before the list was derived.
 shadow_p4="$tmp/shadow-p4"
 shadow_layer="@overlay-25.12.2"
 mkdir -p "$shadow_p4/$shadow_layer/upper/lib/upgrade" "$shadow_p4/$shadow_layer/upper/etc"
@@ -254,6 +273,8 @@ assert_eq "$(ls "$shadow_p4/$shadow_layer/upper/lib/upgrade" 2>/dev/null | tr '\
   "other.sh " "ac-5 exactly the four upstream files are moved out of the upper"
 assert_file_exists "$shadow_p4/$shadow_layer/upper/etc/banner" \
   "ac-5 the user's own upper files are left alone"
+assert_contains "$out" "reason=platform-tar-unreadable" \
+  "ac-5 with no payload the fallback is named in the log"
 backup="$(find "$shadow_p4/ab" -mindepth 1 -maxdepth 1 -name 'shadow-backup-*' 2>/dev/null | head -n 1)"
 assert_eq "$([ -n "$backup" ] && echo present)" "present" "ac-5 the move leaves a backup directory"
 for rel in platform.sh fwtool.sh stage2 tar.sh; do
@@ -287,6 +308,260 @@ assert_file_exists "$fail_p4/$shadow_layer/upper/lib/upgrade/platform.sh" \
   "ac-5 nothing is moved when there is nowhere to keep it"
 
 # --------------------------------------------------------------------------- #
+# ac-9 (F8): the cleanup set is the payload's platform layer, so the paths that are not
+# part of upstream's sysupgrade interface are cleared too
+# --------------------------------------------------------------------------- #
+# F8 on a real machine: a platform-only update from 0.0.9 to 0.0.10 left
+# upper/etc/platform-release holding the old version, overlay returned the upper copy, and
+# the machine kept reporting 0.0.9 although the new @platform said 0.0.10. The four-name
+# list above cannot fix that: /etc/platform-release is not one of the names. The set is
+# therefore derived from the payload's platform.tar - exactly the files the layer about to
+# be installed ships - and the upper copy of any of them is the shadow.
+
+mkplatform() { # <dir> [extra files...]: a platform.tar with the given regular members
+  local dir="$1" member
+  shift
+  mkdir -p "$dir/src"
+  for member in "$@"; do
+    mkdir -p "$dir/src/$(dirname "$member")"
+    printf 'layer %s\n' "$member" >"$dir/src/$member"
+  done
+  tar -cf "$dir/platform.tar" -C "$dir/src" .
+}
+
+# The layer a real payload carries, contracted to the paths this case is about.
+derived="$tmp/derived-payload"
+mkplatform "$derived" etc/platform-release lib/upgrade/platform.sh usr/sbin/ab-slot \
+  usr/lib/libfake.so.1 etc/rc.d/S15ab-boot
+
+# A manifest listing the member's regular files is what the helper reads.
+manifest_out="$(AB_P4="$tmp/none" sh -c '. "$1"; _upgrade_shadow_manifest "$2"' sh \
+  "$platform_sh" "$derived" 2>&1)"
+assert_contains "$manifest_out" "etc/platform-release" \
+  "ac-9 the derived list carries a layer file upstream does not own"
+assert_contains "$manifest_out" "lib/upgrade/platform.sh" \
+  "ac-9 and the one it does"
+assert_contains "$manifest_out" "usr/sbin/ab-slot" \
+  "ac-9 and the layer's own tools"
+# Directories and symlinks are not regular files: their upper copy is either meaningless or
+# not what this cleanup repairs, and moving one would delete the user's directory entry.
+assert_eq "$(printf '%s\n' "$manifest_out" | grep -c 'etc/rc.d/$' || true)" "0" \
+  "ac-9 a directory member is not in the derived list"
+assert_eq "$(printf '%s\n' "$manifest_out" | grep -c '\./$' || true)" "0" \
+  "ac-9 the archive's own root entry is not in the derived list"
+
+# The motivating F8 case: upper/etc/platform-release (the old version) is moved out and
+# backed up, and the merged view falls through to the layer the payload installs.
+derived_p4="$tmp/derived-p4"
+derived_layer="@overlay-25.12.2"
+mkdir -p "$derived_p4/$derived_layer/upper/etc" "$derived_p4/$derived_layer/upper/lib/upgrade" \
+  "$derived_p4/$derived_layer/upper/usr/sbin" "$derived_p4/$derived_layer/upper/usr/lib"
+printf 'PLATFORM_VERSION=0.0.9\n' >"$derived_p4/$derived_layer/upper/etc/platform-release"
+printf 'upstream platform\n' >"$derived_p4/$derived_layer/upper/lib/upgrade/platform.sh"
+# The user's own files, and a file the payload's layer does not ship: neither may be touched.
+printf 'user edit\n' >"$derived_p4/$derived_layer/upper/etc/banner"
+printf 'not in this platform.tar\n' >"$derived_p4/$derived_layer/upper/lib/upgrade/other.sh"
+printf 'shadow of a layer tool\n' >"$derived_p4/$derived_layer/upper/usr/sbin/ab-slot"
+# A symlink whose name happens to be a layer path: not a regular file in the tar, but the
+# upper has a link there. It must survive, because this cleanup moves files only.
+ln -sf ../init.d/ab-boot "$derived_p4/$derived_layer/upper/etc/rc.d" 2>/dev/null || true
+
+out="$(AB_P4="$derived_p4" AB_ESP="$tmp/esp" AB_PARTITIONS_LIB="$tmp/no-partitions.sh" \
+  sh -c '. "$1"; _upgrade_shadow_clean "@overlay-25.12.2" "$2"' sh \
+  "$platform_sh" "$derived" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-9 a derived cleanup never fails the copy"
+assert_contains "$out" "shadow cleanup derived 5 path(s) from platform.tar" \
+  "ac-9 the run reports how many paths it derived"
+assert_contains "$out" "shadow moved out of the snapshot: etc/platform-release" \
+  "ac-9 the F8 path is cleared even though no package owns it"
+assert_contains "$out" "shadow moved out of the snapshot: usr/sbin/ab-slot" \
+  "ac-9 and the layer's own tools, which the four-name list never covered"
+assert_eq "$([ -e "$derived_p4/$derived_layer/upper/etc/platform-release" ] && echo there || echo gone)" \
+  "gone" "ac-9 upper/etc/platform-release no longer shadows the new layer"
+assert_file_exists "$derived_p4/$derived_layer/upper/etc/banner" \
+  "ac-9 a user file that is not a layer path is left alone"
+assert_file_exists "$derived_p4/$derived_layer/upper/lib/upgrade/other.sh" \
+  "ac-9 a lib/upgrade file this payload does not ship is left alone"
+derived_backup="$(find "$derived_p4/ab" -mindepth 1 -maxdepth 1 -name 'shadow-backup-*' 2>/dev/null | head -n 1)"
+assert_eq "$(cat "$derived_backup/etc/platform-release" 2>/dev/null)" "PLATFORM_VERSION=0.0.9" \
+  "ac-9 the backup keeps the bytes that were shadowing the layer"
+assert_file_exists "$derived_backup/lib/upgrade/platform.sh" \
+  "ac-9 nested paths are backed up under their own relative path"
+assert_file_exists "$derived_backup/usr/sbin/ab-slot" \
+  "ac-9 and so are the layer's tools"
+
+# An empty layer list (a payload whose platform layer really carries no files) is not a
+# fallback: it moves nothing, creates no backup, and says the list was derived as empty.
+empty_derived="$tmp/derived-empty"
+mkdir -p "$empty_derived/src"
+tar -cf "$empty_derived/platform.tar" -C "$empty_derived/src" .
+empty_p4="$tmp/derived-empty-p4"
+mkdir -p "$empty_p4/$derived_layer/upper/etc"
+printf 'user edit\n' >"$empty_p4/$derived_layer/upper/etc/banner"
+out="$(AB_P4="$empty_p4" AB_ESP="$tmp/esp" AB_PARTITIONS_LIB="$tmp/no-partitions.sh" \
+  sh -c '. "$1"; _upgrade_shadow_clean "@overlay-25.12.2" "$2"' sh \
+  "$platform_sh" "$empty_derived" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-9 an empty derived list is not an error"
+assert_contains "$out" "shadow cleanup derived 0 path(s) from platform.tar" \
+  "ac-9 it reports an empty derivation instead of falling back"
+assert_eq "$([ -d "$empty_p4/ab" ] && echo created || echo none)" "none" \
+  "ac-9 an empty list creates no backup directory"
+assert_file_exists "$empty_p4/$derived_layer/upper/etc/banner" \
+  "ac-9 and touches nothing"
+
+# A damaged member is not silently treated as "the layer is empty": the fallback names the
+# upstream four and the token says why, so an operator can tell the two apart.
+broken_payload="$tmp/broken-payload"
+mkdir -p "$broken_payload"
+printf 'this is not a tar\n' >"$broken_payload/platform.tar"
+broken_p4="$tmp/broken-p4"
+mkdir -p "$broken_p4/$derived_layer/upper/lib/upgrade"
+printf 'upstream platform\n' >"$broken_p4/$derived_layer/upper/lib/upgrade/platform.sh"
+printf 'not a layer name\n' >"$broken_p4/$derived_layer/upper/lib/upgrade/other.sh"
+out="$(AB_P4="$broken_p4" AB_ESP="$tmp/esp" AB_PARTITIONS_LIB="$tmp/no-partitions.sh" \
+  sh -c '. "$1"; _upgrade_shadow_clean "@overlay-25.12.2" "$2"' sh \
+  "$platform_sh" "$broken_payload" 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-9 a damaged platform.tar does not fail the copy"
+assert_contains "$out" "reason=platform-tar-unreadable" \
+  "ac-9 a damaged member takes the fallback and says why"
+assert_eq "$([ -e "$broken_p4/$derived_layer/upper/lib/upgrade/platform.sh" ] && echo there || echo gone)" \
+  "gone" "ac-9 the fallback list is what gets cleared when the member cannot be read"
+assert_file_exists "$broken_p4/$derived_layer/upper/lib/upgrade/other.sh" \
+  "ac-9 and the fallback still only touches the four names upstream owns"
+
+# --------------------------------------------------------------------------- #
+# ac-9 (F8): the second layer, derived at build time - only apk-owned paths
+# --------------------------------------------------------------------------- #
+# The cleanup above repairs a snapshot; the prevention is `apk upgrade` refusing to write
+# over a protected path. A `+` rule compares the visible file with the apk database, so it
+# only applies to a path the database knows: /etc/platform-release has no owner (measured:
+# `apk info -W /etc/platform-release` reports no owner package) and a rule for it protects
+# nothing. The build therefore derives the list as the platform layer's files intersected
+# with the root filesystem's apk database, and this asserts the derivation on real bytes:
+# the real assembler, a rootfs whose database owns some of the layer's paths and not
+# others, and the member the stage publishes.
+assemble="$root/scripts/ci/assemble.sh"
+assert_file_exists "$assemble" "ac-9 the release assembler exists"
+# The stage requires an initramfs input before it reaches the platform layer. This case
+# never boots it: only the stage's staging of the layer is under test.
+printf 'initramfs\n' >"$tmp/derived-initramfs.cpio.gz"
+
+# A rootfs whose apk database owns lib/upgrade/platform.sh and usr/sbin/ab-slot, and does
+# not own etc/platform-release or usr/sbin/ab-upgrade. The record format is the one the
+# stage parses: F:<dir> starts a directory context, R:<name> is an entry inside it.
+apk_rootfs="$tmp/apk-rootfs"
+mkdir -p "$apk_rootfs/etc" "$apk_rootfs/lib/apk/db"
+printf 'init\n' >"$apk_rootfs/etc/init"
+cat >"$apk_rootfs/lib/apk/db/installed" <<'DB'
+C:Q1fixture=
+P:base-files
+V:1950~fixture
+F:
+R:lib
+F:lib/upgrade
+R:platform.sh
+F:usr/sbin
+R:ab-slot
+DB
+apk_fetch="$tmp/apk-fetch"
+mkdir -p "$apk_fetch/upstream"
+tar -czf "$apk_fetch/upstream/rootfs.tar.gz" -C "$apk_rootfs" .
+printf 'kernel\n' >"$apk_fetch/upstream/kernel.bin"
+apk_run="$tmp/apk-runtime"
+mkdir -p "$apk_run/usr/sbin"
+: >"$apk_run/usr/sbin/btrfs"
+chmod +x "$apk_run/usr/sbin/btrfs"
+
+# The stage stops after the platform layer when it cannot find a boot source; that failure
+# comes after platform.tar is written, so the member is there to read. The stage exits
+# non-zero on purpose, which is why the status is not asserted here.
+apk_ci="$tmp/apk-ci"
+mkdir -p "$apk_ci"
+# bsdtar refuses the GNU reproducibility flags the build uses for platform.tar.
+cat >"$tmp/apk-tar" <<'SHIM'
+#!/bin/sh
+kept=""
+for arg in "$@"; do
+  case "${arg}" in
+    --numeric-owner | --owner=* | --group=*) continue ;;
+  esac
+  kept="${kept} ${arg}"
+done
+exec /usr/bin/tar ${kept}
+SHIM
+chmod +x "$tmp/apk-tar"
+mkdir -p "$tmp/apk-bin"
+mv "$tmp/apk-tar" "$tmp/apk-bin/tar"
+PATH="$tmp/apk-bin:$PATH" \
+  CI_TMP_ROOT="$apk_ci" CI_LOG_DIR="$apk_ci/logs" CI_FETCH_DIR="$apk_fetch" \
+  CI_INITRAMFS="$tmp/derived-initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_VERSION="0.0.11-test" CI_KERNEL_PACKAGE="6.12.103-1-fixture" \
+  CI_PLATFORM_RUNTIME_DIR="$apk_run" CI_OUTPUT_ENV="$apk_ci/outputs.env" \
+  bash "$assemble" >"$tmp/apk-assemble.log" 2>&1
+apk_member="$apk_ci/assemble/payload/platform.tar"
+assert_file_exists "$apk_member" "ac-9 the stage publishes a platform.tar before the boot stage"
+apk_list="$(tar -xzOf "$apk_member" ./etc/apk/protected_paths.d/ab-platform-shadow.list 2>/dev/null)"
+assert_eq "$([ -n "$apk_list" ] && echo present)" "present" \
+  "ac-9 the derived protected-path list is inside the platform layer"
+assert_contains "$(cat "$tmp/apk-assemble.log")" "protected paths: 2 of" \
+  "ac-9 the stage reports the derived count"
+
+# Every entry: a `+` rule, a path inside the layer, and a path the database owns.
+rule_count=0
+bad_rule=0
+while IFS= read -r line; do
+  case "$line" in
+    '' | '#'*) continue ;;
+    +*) : ;;
+    *) bad_rule=$((bad_rule + 1)) ; continue ;;
+  esac
+  rule_count=$((rule_count + 1))
+  rel="${line#+}"
+  tar -tf "$apk_member" | sed 's|^\./||' | grep -qxF "$rel" || bad_rule=$((bad_rule + 1))
+done <<<"$apk_list"
+assert_eq "$bad_rule" "0" "ac-9 every rule is a + path the platform layer really ships"
+assert_eq "$rule_count" "2" "ac-9 the derivation finds exactly the owned layer files"
+assert_contains "$apk_list" "+lib/upgrade/platform.sh" \
+  "ac-9 an apk-owned layer file is protected"
+assert_contains "$apk_list" "+usr/sbin/ab-slot" \
+  "ac-9 and so is another path the database owns"
+# The core correctness claim: an unowned path is absent, because a rule for it would
+# protect nothing while reading as if the problem had been handled.
+assert_eq "$(printf '%s\n' "$apk_list" | grep -c 'platform-release' || true)" "0" \
+  "ac-9 a layer file no package owns is not in the list"
+assert_eq "$(printf '%s\n' "$apk_list" | grep -c 'ab-upgrade$' || true)" "0" \
+  "ac-9 nor is a layer file the database does not know"
+# A directory in the database is not a file to protect.
+assert_eq "$(printf '%s\n' "$apk_list" | grep -c '^+lib/upgrade$' || true)" "0" \
+  "ac-9 a directory entry is not turned into a rule"
+
+# A rootfs with no readable database: no list at all, and the stage still speaks. A guessed
+# list is the one outcome worse than none, because it could protect a path that should be
+# updated.
+apk_ci2="$tmp/apk-ci2"
+mkdir -p "$apk_ci2"
+apk_fetch2="$tmp/apk-fetch2"
+mkdir -p "$apk_fetch2/upstream" "$tmp/apk-rootfs2/etc"
+printf 'init\n' >"$tmp/apk-rootfs2/etc/init"
+tar -czf "$apk_fetch2/upstream/rootfs.tar.gz" -C "$tmp/apk-rootfs2" .
+printf 'kernel\n' >"$apk_fetch2/upstream/kernel.bin"
+PATH="$tmp/apk-bin:$PATH" \
+  CI_TMP_ROOT="$apk_ci2" CI_LOG_DIR="$apk_ci2/logs" CI_FETCH_DIR="$apk_fetch2" \
+  CI_INITRAMFS="$tmp/derived-initramfs.cpio.gz" CI_UPSTREAM_VERSION="25.12.2" \
+  CI_PLATFORM_VERSION="0.0.11-test" CI_KERNEL_PACKAGE="6.12.103-1-fixture" \
+  CI_PLATFORM_RUNTIME_DIR="$apk_run" CI_OUTPUT_ENV="$apk_ci2/outputs.env" \
+  bash "$assemble" >"$tmp/apk-assemble2.log" 2>&1
+apk_member2="$apk_ci2/assemble/payload/platform.tar"
+assert_file_exists "$apk_member2" "ac-9 a rootfs without an apk database still stages a layer"
+assert_eq "$(tar -tf "$apk_member2" 2>/dev/null | grep -c 'ab-platform-shadow.list' || true)" "0" \
+  "ac-9 and ships no derived list rather than a guessed one"
+assert_contains "$(cat "$tmp/apk-assemble2.log")" "no derived protected-path list" \
+  "ac-9 the missing database is reported"
+
+# --------------------------------------------------------------------------- #
 # ac-6 (F1 ac-2): the shadow does not come back on the next apk upgrade
 # --------------------------------------------------------------------------- #
 # The cleanup repairs a snapshot that already carries the shadow. The prevention is apk's
@@ -302,5 +577,10 @@ for rel in lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/
 done
 assert_contains "$protected_src" "upper" "ac-6 the comment says what the rule prevents"
 assert_contains "$protected_src" "apk-new" "ac-6 the comment says where the package's copy goes"
+# The list is now the exception; the general case is derived at build time.
+assert_contains "$protected_src" "ab-platform-shadow.list" \
+  "ac-6 the comment names the derived list that covers every other layer file"
+assert_contains "$protected_src" "scripts/ci/assemble.sh" \
+  "ac-6 the comment says where the derivation lives"
 
 finish

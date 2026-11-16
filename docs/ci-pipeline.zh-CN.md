@@ -28,7 +28,7 @@
 | `ci-debug.yml` | 仅 `workflow_dispatch`（`stage`、`boot_timeout`） | 否 | `debug-session`、`debug-<stage>-logs` | 需要一双眼睛盯着某个阶段时，在 runner 上开 upterm 会话 |
 | `release.yml` | push `v*` tag | 是，经由 `release-publish.yml` | 三个发布资产 | 发我们自己的版本：推一个 `v*` tag（[代码线](ci-release-lines.zh-CN.md)） |
 | `release-publish.yml` | 仅 `workflow_call`（`tag`、`tag-policy`、`title`、`dry-run` 等） | 是；`dry-run: true` 只建成 draft | `n5105-ab-<upstream>-install.img.gz`、`n5105-ab-<upstream>-upgrade.tar`、`SHA256SUMS` | 不要手跑：`release.yml` 与 `upstream-watch.yml` 调用它 |
-| `upstream-watch.yml` | `schedule`（`0 20 * * *`）与 `workflow_dispatch`（`version`、`dry-run`、`base`） | 是，打裸版本号 tag | 一个以 `<upstream version>` 命名的 release，或者一个 `[auto-release]` Issue | 每日上游发布，或对它做彩排 |
+| `upstream-watch.yml` | `schedule`（`0 16 * * *`）与 `workflow_dispatch`（`version`、`dry-run`、`base`、`resume`） | 是，打裸版本号 tag | 一个以 `<upstream version>` 命名的 release，或者一个 `[auto-release]` Issue | 每日上游发布，或对它做彩排（[运行手册](daily-upstream-watch.zh-CN.md)） |
 
 - **reusable 与入口。** 十二个文件只声明 `workflow_call`，因此起不了 run，也完全不声明
   `concurrency`：被调用的 workflow 跑在调用者的 run 里，而嵌套的 `concurrency` 组会让这次调用
@@ -240,13 +240,45 @@ gh workflow run ci.yml --ref main -f stage=s3 -f upstream_version=25.12.2
 给出上一个正式版；给不出时（`gaps>0`）阶段报 `cross-upgrade=skipped`，并且这次运行**不算绿**：
 跳过一项证明不等于通过一项证明。
 
-在代码线上这个阶段是门，不是报告。`release.yml` 声明 `publish: needs: [build, cross]`，
-所以 cross 红着或被跳过时不发布任何东西。发布历史就是理由：v0.0.9 在 cross 红着的时候发了出去
-（run 43622253559），因为 `publish` 只依赖 `build`；而「装不上上一版」正是 cross 阶段存在的
-意义。
+在代码线上这个阶段是门，不是报告。`release.yml` 声明
+`publish: needs: [build, cross, same-base]` —— 只有 cross 门那半句 `needs: [build, cross]` 只是
+一个发布要证明的一半 —— 所以 cross 红着或被跳过时不发布任何东西。发布历史就是理由：v0.0.9 在
+cross 红着的时候发了出去（run 43622253559），因为 `publish` 只依赖 `build`；而「装不上上一版」
+正是 cross 阶段存在的意义。
 
 `scripts/ci/cross-upgrade.sh assert --out <dir>` 用五个文件复判一次运行——装机前、装机后与提交后的
 状态行、ESP 摘要、payload 摘要、串口日志——所以不必重跑 QEMU 也能复核结论。
+
+## 升级门
+
+一个发布要证明两种不同的升级，[`ci-upgrade-gates.yml`](../.github/workflows/ci-upgrade-gates.yml)
+是同时提供两者的那一个 reusable 文件，所以调用者给的是 mode，而不是文件名：
+
+| mode | 证明什么 | 上限 |
+|---|---|---|
+| `cross` | 发布 N 能装在前一个发布 N-1 之上，不管两者各自 pin 的是哪个基线。就是原样调用的 [`ci-upgrade-cross.yml`](../.github/workflows/ci-upgrade-cross.yml) | 判题 job 35 分钟 |
+| `same-base` | 发布 N 能装在与它**同基线、同内核**的前一个发布 N-1 之上：旧 release 自己已发布的镜像，本 run 的 payload | 25 分钟 |
+
+same-base 模式把 tag 与摘要绑在一起，因为两个 release 可以发出同名资产（`v0.0.9` 与 `v0.0.10`
+都带 `n5105-ab-25.12.2-install.img.gz`）。这个契约由
+[`release-same-base.sh`](../scripts/ci/release-same-base.sh) 承担：`select` 回答是哪个 tag、哪个
+资产、哪个摘要，`fetch` 拒绝与那个 tag 自己 `SHA256SUMS` 不符的字节，`judge` 只凭文件判四条：
+旧镜像跑的基线正是本发布 pin 的基线、内核没移动、payload 摘要变了、平台版本是前进的。
+
+两道门在哪里跑：
+
+| 调用者 | job | 发布门 |
+|---|---|---|
+| `release.yml`（`v*` tag） | `build`、`cross`、`same-base`、`publish` | `publish: needs: [build, cross, same-base]` |
+| `upstream-watch.yml`（每日 watch） | `detect`、`bump`、`build`、`locks`、`merge`、`publish` | `publish: needs: [detect, merge]` |
+
+watch 两个 mode 都不调，所以一次绿的 watch run 证明的是构建与合并，不是那两种升级。一次 run 做什么、
+失败了怎么恢复写在 [daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)。
+
+**被跳过的门不算通过的门。** 两个 mode 在「没有上一个发布」「没有 QEMU」「没有 `SHA256SUMS`」以及
+阶段留下 `skip` 文件时都直接失败；写错的 `mode` 在 `guard` job 里失败，而不是让两道门一起跳过。
+same-base 的结论是每条判据一行（`same-base-check ...`）再加最后一行 `same-base=ok`；一行都没有的
+run 根本没判过一次同 base 升级，不管它的 cross 结论说了什么。
 
 ## 逻辑在哪里
 

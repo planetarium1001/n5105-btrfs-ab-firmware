@@ -213,6 +213,159 @@ assert_eq "$watch_status" "1" "ac-1 an unknown subcommand exits non-zero"
 assert_contains "$watch_log" "usage: upstream-watch.sh" "ac-1 an unknown subcommand prints the usage"
 
 # --------------------------------------------------------------------------- #
+# ac-3: detect can be told to recover a release instead of discovering one
+#
+# The recovery path exists because a failure after the merge leaves the pin equal to the
+# version being released. On the discovery path that is a refusal ("nothing to rehearse");
+# with `resume` set it is the state the run is supposed to start from.
+# --------------------------------------------------------------------------- #
+
+# A throw-away repository whose base branch pins <version>, so the pin-in-base read and
+# the tag comparison are exercised against real git state rather than a stub.
+repo="$tmp/repo"
+mkdir -p "$repo/.github"
+git -C "$repo" init -q .
+git -C "$repo" config user.name "ci test"
+git -C "$repo" config user.email "ci@example.test"
+# The base branch is named, not inherited from the runner's `init.defaultBranch`: the pin
+# is read from `main` by name, so a fixture on `master` would test the wrong thing.
+git -C "$repo" checkout -q -b main
+printf 'UPSTREAM_VERSION=25.12.2\n' >"$repo/.github/upstream-pin.conf"
+git -C "$repo" add -A
+GIT_AUTHOR_DATE="2026-11-01T00:00:00Z" GIT_COMMITTER_DATE="2026-11-01T00:00:00Z" \
+  git -C "$repo" commit -q -m "base"
+
+# detect_run <output-env-file> [VAR=value ...] -- <arguments...>: the same runner, but
+# pointed at the fixture repository instead of the checkout.
+detect_run() {
+  local out_env="$1"
+  shift
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do
+    envs+=("$1")
+    shift
+  done
+  [[ $# -gt 0 ]] && shift
+  watch_log="$(env -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY CI_OUTPUT_ENV="$out_env" \
+    CI_TMP_ROOT="$tmp/ci" CI_REPO_ROOT="$repo" CI_UPSTREAM_PIN_FILE="$repo/.github/upstream-pin.conf" \
+    GH_TOKEN= "${envs[@]+"${envs[@]}"}" bash "$SCRIPT" "$@" 2>&1)"
+  watch_status=$?
+}
+
+# The discovery path refuses a forced version that is already the pin: that refusal is the
+# bug this unit fixes the consequences of, so it is asserted to still exist.
+detect_run "$tmp/o-refuse.env" CI_FORCE_VERSION=25.12.2 -- detect
+assert_eq "$watch_status" "1" "ac-3 discovery still refuses a version that is already the pin"
+assert_contains "$watch_log" "already the pin" \
+  "ac-3 the refusal is the one the recovery has to get past"
+assert_contains "$watch_log" "pass resume=merge or resume=publish" \
+  "ac-3 the refusal names the recovery that is allowed to continue"
+
+# The same dispatch with resume=merge is the recovery: it does not compare against the
+# mirror at all, and it reports where the release stopped.
+detect_run "$tmp/o-resume.env" CI_FORCE_VERSION=25.12.2 CI_RESUME=merge -- detect
+assert_eq "$watch_status" "0" "ac-3 resume=merge gets past 'already the pin'"
+assert_eq "$(output_of "$tmp/o-resume.env" mode)" "resume" "ac-3 the run reports mode=resume"
+assert_eq "$(output_of "$tmp/o-resume.env" resume_stage)" "merge" \
+  "ac-3 the run reports which stage it resumes"
+assert_eq "$(output_of "$tmp/o-resume.env" changed)" "true" \
+  "ac-3 a recovery is a change even though it discovered nothing"
+assert_eq "$(output_of "$tmp/o-resume.env" version)" "25.12.2" \
+  "ac-3 a recovery builds the version it was told to recover"
+assert_eq "$(output_of "$tmp/o-resume.env" pin_in_base)" "25.12.2" \
+  "ac-3 the base branch is reported as already carrying the pin"
+assert_eq "$(output_of "$tmp/o-resume.env" tag_exists)" "false" \
+  "ac-3 no tag is reported before one is pushed"
+assert_eq "$(output_of "$tmp/o-resume.env" latest_formal)" "" \
+  "ac-3 a recovery does not rediscover a release from the mirror"
+assert_contains "$watch_log" "resume merge: version 25.12.2" \
+  "ac-3 the log says what it is resuming"
+
+# A recovery without a version is a usage error: it may not silently rediscover one.
+detect_run "$tmp/o-resume-nover.env" CI_RESUME=merge -- detect
+assert_eq "$watch_status" "1" "ac-3 resume without a version fails instead of discovering one"
+
+# Only the two stages the graph can resume from are accepted.
+detect_run "$tmp/o-resume-bad.env" CI_FORCE_VERSION=25.12.2 CI_RESUME=locks -- detect
+assert_eq "$watch_status" "1" "ac-3 an unknown resume stage is refused"
+assert_contains "$watch_log" "CI_RESUME must be empty" "ac-3 the refusal names the accepted values"
+
+# The discovery path is unchanged: a normal run still reports mode=discover.
+watch_run "$pin_readonly" "$tmp/o-discover.env" \
+  "CI_UPSTREAM_INDEX=$FIXTURES/releases-index.html" -- detect
+assert_eq "$(output_of "$tmp/o-discover.env" mode)" "discover" \
+  "ac-3 an ordinary run reports mode=discover"
+assert_eq "$(output_of "$tmp/o-discover.env" resume_stage)" "" \
+  "ac-3 an ordinary run has no resume stage"
+
+# --------------------------------------------------------------------------- #
+# ac-3: merge-state splits the idempotency into skip-merge and skip-tag
+#
+# A failure can land between the squash and the tag, so the two halves are decided
+# separately. A tag that exists and names another commit is a hard failure: the tag is the
+# release identity, and moving it would republish a release nobody rebuilt.
+# --------------------------------------------------------------------------- #
+
+# nothing merged yet: the base branch pins 25.12.2 and the release being recovered is
+# 25.13.0, so both halves still have work to do.
+watch_run "$pin_readonly" "$tmp/o-state-none.env" \
+  CI_REPO_ROOT="$repo" CI_BASE=main GH_TOKEN= -- merge-state 25.13.0
+assert_eq "$watch_status" "0" "ac-3 merge-state runs offline"
+assert_eq "$(output_of "$tmp/o-state-none.env" tag_exists)" "false" \
+  "ac-3 no tag exists before the merge"
+assert_eq "$(output_of "$tmp/o-state-none.env" skip_merge)" "false" \
+  "ac-3 an earlier pin means the merge still has to happen"
+assert_eq "$(output_of "$tmp/o-state-none.env" skip_tag)" "false" \
+  "ac-3 an earlier pin means the tag still has to happen"
+
+# merged: the base branch pins the version, so the squash is skipped and only the tag is left.
+git -C "$repo" checkout -q -B main
+printf 'UPSTREAM_VERSION=25.13.0\n' >"$repo/.github/upstream-pin.conf"
+git -C "$repo" add -A
+GIT_AUTHOR_DATE="2026-11-15T00:00:00Z" GIT_COMMITTER_DATE="2026-11-15T00:00:00Z" \
+  git -C "$repo" commit -q -m "pin 25.13.0"
+merged_sha="$(git -C "$repo" rev-parse HEAD)"
+
+watch_run "$pin_readonly" "$tmp/o-state-merged.env" \
+  CI_REPO_ROOT="$repo" CI_BASE=main GH_TOKEN= CI_MERGED_SHA="$merged_sha" -- merge-state 25.13.0
+assert_eq "$watch_status" "0" "ac-3 merge-state reads a merged release"
+assert_eq "$(output_of "$tmp/o-state-merged.env" pin_in_base)" "25.13.0" \
+  "ac-3 the base branch already pins the merged version"
+assert_eq "$(output_of "$tmp/o-state-merged.env" skip_merge)" "true" \
+  "ac-3 the squash is skipped once the base branch carries the pin"
+assert_eq "$(output_of "$tmp/o-state-merged.env" skip_tag)" "false" \
+  "ac-3 the tag is still owed: the merge landed without it"
+
+# tagged at the merge commit: both halves are done, which is what makes a re-run idempotent.
+git -C "$repo" tag -a 25.13.0 -m "tag 25.13.0" "$merged_sha"
+watch_run "$pin_readonly" "$tmp/o-state-tagged.env" \
+  CI_REPO_ROOT="$repo" CI_BASE=main GH_TOKEN= CI_MERGED_SHA="$merged_sha" -- merge-state 25.13.0
+assert_eq "$watch_status" "0" "ac-3 merge-state reads a merged and tagged release"
+assert_eq "$(output_of "$tmp/o-state-tagged.env" tag_exists)" "true" \
+  "ac-3 the pushed tag is visible"
+assert_eq "$(output_of "$tmp/o-state-tagged.env" tag_sha)" "$merged_sha" \
+  "ac-3 the annotated tag is read as the commit it points at, not as the tag object"
+assert_eq "$(output_of "$tmp/o-state-tagged.env" skip_tag)" "true" \
+  "ac-3 a tag that names the merge commit is an idempotent skip"
+
+# tagged at another commit: hard failure, never a force push.
+watch_run "$pin_readonly" "$tmp/o-state-moved.env" \
+  CI_REPO_ROOT="$repo" CI_BASE=main GH_TOKEN= CI_MERGED_SHA="$(git -C "$repo" rev-parse HEAD~1)" \
+  -- merge-state 25.13.0
+assert_eq "$watch_status" "1" "ac-3 a tag that points at another commit is a hard failure"
+assert_contains "$watch_log" "tags are immutable" \
+  "ac-3 the failure says why the tag will not be moved"
+assert_eq "$(grep -cE 'tag -f|push -f|push --force' "$SCRIPT" || true)" "0" \
+  "ac-3 the script has no force-tag or force-push path at all"
+
+# The version is required, and it goes through the same formal-release gate as the pin.
+watch_run "$pin_readonly" "$tmp/o-state-nover.env" CI_REPO_ROOT="$repo" GH_TOKEN= -- merge-state
+assert_eq "$watch_status" "1" "ac-3 merge-state requires a version"
+watch_run "$pin_readonly" "$tmp/o-state-vtag.env" \
+  CI_REPO_ROOT="$repo" GH_TOKEN= -- merge-state v25.13.0
+assert_eq "$watch_status" "1" "ac-3 merge-state refuses a v-prefixed version"
+
+# --------------------------------------------------------------------------- #
 # ac-1: a pin newer than the index is not a new release
 #
 # A pruned mirror, a lagging mirror or a pin bumped ahead of it must not turn into a

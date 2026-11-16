@@ -173,8 +173,91 @@ assert_eq "$(output_of "$tmp/o-pinned.env" action)" "skipped" \
   "ac-5 a recent pin bump makes the heartbeat unnecessary"
 
 # --------------------------------------------------------------------------- #
-# ac-5: the name never matches ^v, and the script never pushes
+# ac-1: what a shallow clone sees, and why the workflow fetches depth and tags
 # --------------------------------------------------------------------------- #
+#
+# The decision is "the newest activity this checkout can see", so `fetch-depth: 1` changes
+# the answer instead of only making it faster: the commit that last touched the pin becomes
+# the shallow root and its age reads as zero. The two cases below are real clones over
+# file:// (no network) and pin both halves: a shallow clone of a genuinely quiet repository
+# still fires, and a shallow clone of an active one silently answers too-soon while the
+# deep clone of the same repository is due.
+
+# clone_of <src> <dst> [--depth N]: a local clone, so the fixture needs no network.
+clone_of() {
+  local src=$1 dst=$2
+  shift 2
+  git clone -q "$@" "file://${src}" "$dst"
+}
+
+# quiet: the tip IS the commit that last touched the pin, and it is old.
+quiet="$tmp/quiet"
+new_repo "$quiet" "2026-01-05T00:00:00Z"
+mkdir -p "$quiet/.github"
+printf 'UPSTREAM_VERSION=25.12.2\n' >"$quiet/.github/upstream-pin.conf"
+git -C "$quiet" add .github/upstream-pin.conf
+GIT_AUTHOR_DATE="2026-01-05T00:00:00Z" GIT_COMMITTER_DATE="2026-01-05T00:00:00Z" \
+  git -C "$quiet" commit -q -m "pin 25.12.2"
+clone_of "$quiet" "$tmp/quiet-shallow" --depth 1
+assert_eq "$(git -C "$tmp/quiet-shallow" rev-parse --is-shallow-repository)" "true" \
+  "ac-1 the fixture really is a shallow clone"
+assert_eq "$(git -C "$tmp/quiet-shallow" tag -l | wc -l | tr -d ' ')" "0" \
+  "ac-1 a depth-1 clone carries no tags"
+tag_run "$tmp/quiet-shallow" "$tmp/o-quiet-shallow.env" --now 2026-11-15 --dry-run
+assert_eq "$tag_status" "0" "ac-1 a shallow clone of a quiet repository still exits 0"
+assert_eq "$(output_of "$tmp/o-quiet-shallow.env" shallow)" "true" \
+  "ac-1 the script reports that it judged a shallow clone"
+assert_eq "$(output_of "$tmp/o-quiet-shallow.env" action)" "would-create" \
+  "ac-1 a quiet repository is due even in a shallow clone"
+assert_eq "$(output_of "$tmp/o-quiet-shallow.env" reason)" "due" \
+  "ac-1 the shallow answer is due because the visible activity is genuinely old"
+
+# active: an unrelated recent commit hides an old pin bump from a depth-1 clone.
+active="$tmp/active"
+new_repo "$active" "2026-01-05T00:00:00Z"
+mkdir -p "$active/.github"
+printf 'UPSTREAM_VERSION=25.12.2\n' >"$active/.github/upstream-pin.conf"
+git -C "$active" add .github/upstream-pin.conf
+GIT_AUTHOR_DATE="2026-01-05T00:00:00Z" GIT_COMMITTER_DATE="2026-01-05T00:00:00Z" \
+  git -C "$active" commit -q -m "pin 25.12.2"
+printf 'a later, unrelated change\n' >"$active/unrelated.txt"
+git -C "$active" add unrelated.txt
+GIT_AUTHOR_DATE="2026-11-14T00:00:00Z" GIT_COMMITTER_DATE="2026-11-14T00:00:00Z" \
+  git -C "$active" commit -q -m "unrelated recent commit"
+clone_of "$active" "$tmp/active-shallow" --depth 1
+tag_run "$tmp/active-shallow" "$tmp/o-active-shallow.env" --now 2026-11-15 --dry-run
+assert_eq "$(output_of "$tmp/o-active-shallow.env" action)" "skipped" \
+  "ac-1 a depth-1 clone answers too-soon: the pin bump is its own root"
+assert_eq "$(output_of "$tmp/o-active-shallow.env" reason)" "too-soon" \
+  "ac-1 the wrong answer names the reason the workflow has to fetch history"
+assert_contains "$tag_log" "shallow clone" \
+  "ac-1 the skip says out loud that the checkout was shallow"
+
+# The control: the same repository, cloned deeply, is due. This is the behaviour the
+# workflow's fetch-depth/fetch-tags makes reachable; the assertion is on the clone, not on
+# a mock, so it fails if git ever changes what `--depth 1` hides.
+clone_of "$active" "$tmp/active-deep"
+assert_eq "$(git -C "$tmp/active-deep" rev-parse --is-shallow-repository)" "false" \
+  "ac-1 the control clone is complete"
+tag_run "$tmp/active-deep" "$tmp/o-active-deep.env" --now 2026-11-15 --dry-run
+assert_eq "$(output_of "$tmp/o-active-deep.env" shallow)" "false" \
+  "ac-1 a complete clone is reported as such"
+assert_eq "$(output_of "$tmp/o-active-deep.env" action)" "would-create" \
+  "ac-1 the deep clone of the same repository is due"
+assert_eq "$(output_of "$tmp/o-active-deep.env" reason)" "due" \
+  "ac-1 the deep clone's baseline is the old pin bump"
+assert_eq "$(output_of "$tmp/o-active-deep.env" days_since)" "314" \
+  "ac-1 the deep clone measures the real gap from the pin commit"
+
+# The workflow, not the script, is where the shallow case is fixed: the script reports what
+# it saw, and the detect job is the one that has to hand it tags and history.
+WORKFLOW="$root/.github/workflows/upstream-watch.yml"
+detect_block=$(awk '/^  detect:$/ { flag = 1 } flag && /^  [a-z-]+:$/ && !/^  detect:$/ { exit } flag' "$WORKFLOW")
+assert_contains "$detect_block" "fetch-tags: true" \
+  "ac-1 the detect job fetches tags, without which the heartbeat baseline is empty"
+assert_contains "$detect_block" "fetch-depth: 50" \
+  "ac-1 the detect job fetches enough history for the pin commit to have an age"
+
 
 assert_eq "$(git -C "$due" tag -l 'v*' | wc -l | tr -d ' ')" "0" \
   "ac-5 no tag in the repository matches v*"

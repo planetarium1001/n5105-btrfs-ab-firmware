@@ -14,17 +14,18 @@ differ in what publishing means: both call
 callers and one implementation is what keeps the two lines from drifting, and it is why a
 release made by the watch is checked the same way as one made by hand.
 
-The tagged line adds one gate to that check: its `publish` job waits for the cross-version
-upgrade as well as for the build. `release.yml` declares `publish: needs: [build, cross]`, so
-a tag whose cross stage is red, or skipped because no previous formal release could be
-found, creates no release at all. The upstream line gates its publish on the merge instead; it
-does not run the cross-version stage.
+The tagged line adds two gates to that check: its `publish` job waits for the cross-version
+upgrade and for the same-base upgrade as well as for the build. `release.yml` declares
+`publish: needs: [build, cross, same-base]`; the cross gate on its own, `needs: [build, cross]`,
+does not prove the same-base claim the update prompt makes. A tag whose gate is red, or skipped
+because no previous formal release could be found, creates no release at all. The upstream line
+gates its publish on the merge instead; it runs neither gate.
 
 ## The two lines side by side
 
 | | Tagged line | Upstream line |
 |---|---|---|
-| Trigger | push of a `v*` tag (`release.yml`) | `schedule` (`0 20 * * *`), or `workflow_dispatch` of `upstream-watch.yml` |
+| Trigger | push of a `v*` tag (`release.yml`) | `schedule` (`0 16 * * *`), or `workflow_dispatch` of `upstream-watch.yml` |
 | Tag shape | `v<X.Y.Z>`, for example `v0.0.8` | bare `<X.Y.Z>`, for example `25.13.0` |
 | `VERSION` | the tag must equal it: the tag without its `v` is the platform version being released | not edited by the release; it must still carry the platform version the image records |
 | Which upstream is built | the pin in `.github/upstream-pin.conf`; no version input is passed | the release `detect` just found, passed to `ci.yml` as `upstream_version` |
@@ -58,9 +59,12 @@ so the boot assertions (S2, S3 acceptance) are proved once, on the shipped defau
 convenience image is a way in for a machine that cannot be reached from the LAN, not a second
 product line - and it is the reason the default could be closed at all.
 
-`dry-run: true` means the same thing on both lines: every step runs, the bytes are uploaded,
-and the release is created as a **draft**. It is the only difference between a rehearsal and a
-publication.
+`dry-run: true` is the rehearsal switch of the publisher: every step runs, the bytes are uploaded
+and checked, and the release is created as a **draft** instead of a published one. A draft is
+never published by the run that made it. On the upstream line a rehearsal also skips the two
+steps that would merge and tag, so it cannot move a branch or push a tag - the full behaviour and
+the cleanup commands are in [daily-upstream-watch.md](daily-upstream-watch.md). The tagged line
+has no `dry-run` input of its own: a tag either publishes or publishes nothing.
 
 ## What the tag has to prove
 
@@ -69,11 +73,13 @@ the image, proves the initrd inside it is the production one, and then runs the 
 all of it before `gh release create`; a refusal is a non-zero exit, not a warning, and nothing
 is created.
 
-Half of that proof runs as a separate job: the cross-version stage builds an image from the
+Half of that proof runs as separate jobs. The cross-version stage builds an image from the
 previous formal release, upgrades it with this release's payload, and requires it to boot,
-commit and carry the payload's kernel and initrd. `publish` needs both `build` and `cross`, so
-a red or skipped cross leaves the tag without a release - the hole that let v0.0.9 publish
-while cross was red (run 43622253559).
+commit and carry the payload's kernel and initrd. The same-base stage installs this release's
+payload over the previous release's own published image and grades that the base and the kernel
+did not move. `publish` needs `build`, `cross` and `same-base`, so a red or skipped gate leaves
+the tag without a release - the hole that let v0.0.9 publish while cross was red (run
+43622253559).
 
 The checks below hold under both policies:
 
@@ -116,7 +122,9 @@ and opens it to read its own record before publishing.
 ## The upstream watch
 
 `upstream-watch.yml` is one run graph, because a commit or tag pushed with `GITHUB_TOKEN`
-starts no workflow: "push the bump, let CI build it, let the tag release it" cannot work.
+starts no workflow: "push the bump, let CI build it, let the tag release it" cannot work. The
+operation of that graph - when it runs, how to read a run, how to rehearse one and how to recover
+a failure - is [daily-upstream-watch.md](daily-upstream-watch.md).
 
 | job | needs | permissions | What it does |
 |---|---|---|---|
@@ -125,7 +133,7 @@ starts no workflow: "push the bump, let CI build it, let the tag release it" can
 | `bump` | `detect` | `contents: write`, `pull-requests: write` | edits only `.github/upstream-pin.conf` on `auto/upstream-<version>` and opens a pull request. It never pushes to `main` |
 | `build` | `detect`, `bump` | `contents: read`, `actions: read` | calls `ci.yml` with `upstream_version=<new release>`, so the new base is built by the same five stages in the same run |
 | `locks` | `detect`, `bump`, `build` | `contents: write` | derives the three lockfiles from the `upstream-files` artifact, commits them to the branch, then asserts **the committed files** with `CI_LOCK_STRICT=1` |
-| `merge` | `detect`, `bump`, `build`, `locks` | `contents: write`, `pull-requests: write` | skips when the base already pins this version; guards the diff; squash-merges with the branch deleted; tags the PR's `mergeCommit.oid` |
+| `merge` | `detect`, `bump`, `build`, `locks` | `contents: write`, `pull-requests: write` | reads the merge state (the pin in the base branch, the merge commit, the tag); skips the squash when the base already pins this version and the tag when it already names the merge commit; guards the diff; squash-merges with the branch deleted; tags the PR's `mergeCommit.oid`. With `dry-run` it reads and guards, then skips both the merge and the tag |
 | `publish` | `detect`, `merge` | `contents: write`, `actions: read` | calls `release-publish.yml` with `tag-policy: bare` and the matrix candidates as extra notes |
 | `issue` | all seven above | `contents: read`, `issues: write` | runs on `failure() || cancelled()` and writes the one place to look |
 
@@ -192,8 +200,9 @@ gh run view 43238859287 --json name,event,headBranch,conclusion
 gh release view v0.0.8 --json tagName,isDraft,publishedAt,assets
 ```
 
-The upstream line has no published instance yet - the tags in this repository are `v0.0.5` to
-`v0.0.8`:
+The upstream line has not published in this repository yet: every tag here is a `v*` tag, and a
+release made by the watch carries a bare `X.Y.Z` tag. The command answers it for the day you
+read this:
 
 ```sh
 gh api repos/:owner/:repo/tags --jq '.[].name'
@@ -214,25 +223,34 @@ The tag push is what starts the build; there is nothing to dispatch. A tag that 
 `VERSION` is refused by the preflight, and the release never appears.
 
 **The upstream line** is for a new ImmortalWrt base, and normally you do nothing: the `schedule`
-runs daily at 20:00 UTC (04:00 in Beijing) and ends successfully when there is nothing new.
+names 16:00 UTC and ends successfully when there is nothing new. GitHub starts a scheduled run
+late - measured at 3.5 to 4.8 hours on this repository - so it usually lands around 04:00 Beijing;
+[daily-upstream-watch.md](daily-upstream-watch.md) is the runbook for the time, the reading of a
+run and the recovery of a failure.
 
 ```sh
 gh workflow run upstream-watch.yml --ref main
 ```
 
-The two inputs exist for a rehearsal and for a deliberate run:
+The inputs exist for a rehearsal and for a deliberate run:
 
 | Input | What it changes |
 |---|---|
 | `version` | treats this formal release as the new one instead of discovering it; it is validated like a pin, so it must be `X.Y.Z` |
-| `dry-run` | merges into the branch named by `base` and creates a draft release; the `bump` job refuses `main` or `master` as a base when this is on |
+| `dry-run` | rehearses: `merge` skips the squash merge and the tag, and `publish` creates a **draft** release; the `bump` job refuses `main` or `master` as a base when this is on |
 | `base` | the branch the pull request is opened against and merged into; default `main` |
+| `resume` | `merge` or `publish`: continues a failed run, skipping discovery; it requires `version` |
 
-A rehearsal therefore names a scratch base, and it leaves nothing published:
+A rehearsal therefore names a scratch base, and it merges nothing and tags nothing - the scratch
+base branch and the remote tag set are unchanged - but it can leave a draft release behind:
 
 ```sh
 gh workflow run upstream-watch.yml --ref main -f version=25.13.0 -F dry-run=true -f base=rehearsal-25.13.0
 ```
+
+That draft, the pull request and the two branches are the rehearsal's own leftovers.
+[daily-upstream-watch.md](daily-upstream-watch.md) has the commands that remove them, the two
+recovery dispatches, and the rule that a tag is never moved.
 
 The command that answers "did the automation do anything today" is the run list of that
 workflow; the command that answers "did it fail" is the `auto-release` issue list:

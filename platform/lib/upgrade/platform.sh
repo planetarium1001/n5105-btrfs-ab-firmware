@@ -545,35 +545,103 @@ platform_upgrade_begin() {
 # --------------------------------------------------------------------------- #
 # The writable layer carries the user's state, so it also carries whatever `apk upgrade`
 # wrote there. `/lib/upgrade/platform.sh` is a name upstream's sysupgrade interface uses
-# too: when a package upgrade writes that file into `<layer>/upper`, the upper copy is
-# the first thing overlayfs returns for the path and every boot of that layer loads an
-# adapter that is not this project's. platform_copy_rootfs snapshots the running layer,
-# so a new slot would inherit the shadow and the loader in ab-upgrade would have to fall
-# back on every single boot. The four files are moved aside instead - kept under
-# `<p4>/ab/shadow-backup-<timestamp>/` so an operator can still compare them - and the
-# lower @platform subvolume installed a moment later is what /lib/upgrade resolves to.
+# too: when a package upgrade writes that file into `<layer>/upper`, the upper copy is the
+# first thing overlayfs returns for the path and every boot of that layer loads an adapter
+# that is not this project's. `/etc/platform-release` is the same failure with a different
+# symptom: a copy left in the upper (a hand edit, a restored backup) wins over the
+# `@platform` subvolume that was just installed, so a platform-only update still reports the
+# old version. platform_copy_rootfs snapshots the running layer, so a new slot would inherit
+# every such shadow and the loader in ab-upgrade would have to fall back on every boot.
 #
-# Only the four names upstream's sysupgrade interface owns are touched; everything else
-# in the upper is the user's. Moving is best effort: a failure records a token and the
-# install continues, because the loader in ab-upgrade can still find an immutable copy.
+# The set to move is therefore not a list of names kept here: it is derived from the payload
+# being installed. The payload's platform.tar *is* the platform layer this machine is about
+# to get, so its regular files are exactly the paths whose upper copy would win over the new
+# layer. A file is moved aside only when the payload ships it: what platform.tar does not
+# carry is the user's own, or belongs to the rootfs, and is never touched. The moved copies
+# are kept under `<p4>/ab/shadow-backup-<timestamp>/<rel>` so an operator can compare them,
+# and the lower @platform subvolume installed a moment later is what those paths resolve to.
+#
+# The derivation is why this covers every layer-1 path and not only the four names upstream
+# owns - but it is also why the fallback exists: a payload without a readable platform.tar
+# (an older payload, a damaged member) falls back to those four names, which is what this
+# function did before the list was derived. Moving is best effort either way: a failure
+# records a token and the install continues, because the loader in ab-upgrade can still find
+# an immutable copy.
 
-# _upgrade_shadow_clean <layer>: move the upstream shadow out of one layer's upper.
+# _upgrade_shadow_manifest <payload-dir>: the payload's platform layer as relative paths of
+# regular files, one per line. Returns non-zero when the member is missing or cannot be
+# listed, which is what sends the caller to the fallback list.
+#
+# Directories, symbolic links and every other archive member type are excluded: the upper
+# copy of a directory is meaningless (the directory exists on both sides) and an upper
+# symlink is not what this cleanup repairs. `tar -tvf`'s first field is the type flag; the
+# name is the first field after it that starts with `./` (both producers pack the tree as
+# `tar -cf platform.tar -C <stage> .`). The character class at the end is the safety net for
+# the move below: a name with a space, a newline or a `..` segment is dropped rather than
+# turned into a path outside the upper.
+_upgrade_shadow_manifest() {
+    _usm_tar="$1/platform.tar"
+    [ -f "${_usm_tar}" ] || return 1
+    _usm_listing="$(tar -tvf "${_usm_tar}" 2>/dev/null)" || return 1
+    [ -n "${_usm_listing}" ] || return 1
+    printf '%s\n' "${_usm_listing}" | awk '
+        substr($1, 1, 1) != "-" { next }
+        {
+            rel = ""
+            for (i = 2; i <= NF; i++) {
+                if (substr($i, 1, 2) == "./") {
+                    rel = $i
+                    for (j = i + 1; j <= NF; j++) rel = rel " " $j
+                    break
+                }
+            }
+            if (rel == "") rel = $NF
+            sub(/^\.\//, "", rel)
+            # The target of a symlink is printed after " -> " and never belongs to the path.
+            if (index(rel, " -> ") > 0) next
+            if (rel == "" || rel ~ /\/$/) next
+            if (rel !~ /^[A-Za-z0-9._+-]+(\/[A-Za-z0-9._+-]+)*$/) next
+            print rel
+        }
+    ' | sort -u
+}
+
+# _upgrade_shadow_clean <layer> [payload-dir]: move the platform shadow out of one layer's
+# upper. The payload directory defaults to the one platform_copy_rootfs set; a caller that
+# has no payload (the fallback case) gets the four upstream names.
 # Always returns 0: the snapshot is the working state now, and a file that could not be
 # moved is reported rather than turned into a failed upgrade.
 _upgrade_shadow_clean() {
     _usc_layer="$1"
+    _usc_payload="${2:-${_payload:-}}"
     _usc_upper="${AB_P4}/${_usc_layer}/upper"
     [ -d "${_usc_upper}" ] || return 0
     _usc_backup=""
     _usc_moved=0
-    for _usc_rel in lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/upgrade/tar.sh; do
+    if [ -n "${_usc_payload}" ] && _usc_paths="$(_upgrade_shadow_manifest "${_usc_payload}")"; then
+        # The count of derived paths is reported even when it is zero: "the payload's layer
+        # list was read and had nothing to clear" and "the list could not be read" are
+        # different facts, and an operator looking at a stale platform-release needs to
+        # know which one this run hit.
+        _usc_derived="$(printf '%s\n' "${_usc_paths}" | grep -c . || true)"
+        _upgrade_log "upgrade: shadow cleanup derived ${_usc_derived} path(s) from platform.tar"
+    else
+        _usc_paths="lib/upgrade/platform.sh lib/upgrade/fwtool.sh lib/upgrade/stage2 lib/upgrade/tar.sh"
+        _upgrade_log "upgrade: shadow cleanup list=fallback reason=platform-tar-unreadable"
+    fi
+    for _usc_rel in ${_usc_paths}; do
         [ -f "${_usc_upper}/${_usc_rel}" ] || continue
         if [ -z "${_usc_backup}" ]; then
             _usc_backup="${AB_P4}/ab/shadow-backup-$(date -u +%Y%m%dT%H%M%SZ)"
-            if ! mkdir -p "${_usc_backup}/lib/upgrade"; then
+            if ! mkdir -p "${_usc_backup}"; then
                 _upgrade_log "upgrade: shadow cleanup skipped reason=shadow-backup-failed path=${_usc_backup}"
                 return 0
             fi
+        fi
+        _usc_parent="$(dirname "${_usc_rel}")"
+        if [ "${_usc_parent}" != "." ] && ! mkdir -p "${_usc_backup}/${_usc_parent}" 2>/dev/null; then
+            _upgrade_log "upgrade: shadow cleanup skipped reason=shadow-move-failed path=${_usc_rel}"
+            continue
         fi
         if mv "${_usc_upper}/${_usc_rel}" "${_usc_backup}/${_usc_rel}" 2>/dev/null; then
             _usc_moved=$((_usc_moved + 1))
@@ -625,11 +693,14 @@ platform_copy_rootfs() {
     _upgrade_log "upgrade: snapshotted ${_running_layer} -> ${_new_layer}"
 
     # 1b. the snapshot inherited the running upper, including whatever a package wrote
-    #     into /lib/upgrade. Moving those four files aside before the new platform layer
-    #     is installed is what lets the lower @platform subvolume be the copy this slot
-    #     loads: upper wins over every lower layer. Best effort by design - the loader in
-    #     ab-upgrade can still find an immutable copy when this fails.
-    _upgrade_shadow_clean "${_new_layer}"
+    #     into /lib/upgrade and any hand-edited or restored /etc/platform-release. The list
+    #     of paths to clear comes out of the payload's own platform.tar, not from a name
+    #     list in this file: the layer about to be installed is what a leftover upper copy
+    #     would shadow, so the payload defines the set. Moving those files aside before the
+    #     new platform layer is installed is what lets the lower @platform subvolume be the
+    #     copy this slot loads: upper wins over every lower layer. Best effort by design -
+    #     the loader in ab-upgrade can still find an immutable copy when this fails.
+    _upgrade_shadow_clean "${_new_layer}" "${_payload}"
 
     # 2. replace the target slot's system tree
     _mp="$(upgrade_slot_mount "${_target}")" || upgrade_fail "slot-mount-failed" || return 1

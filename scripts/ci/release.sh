@@ -102,7 +102,12 @@ if [ -n "${image_gz_in}" ]; then
 else
     [ -f "${image}" ] || ci_die "image not found: ${image}"
     ci_log "compressing ${image} ($(ci_file_size "${image}") bytes)"
-    gzip -9 -c "${image}" >"${image_gz}"
+    # -n: no timestamp and no original file name in the gzip header. Without it the header
+    # carries the build time and the source name, so the same image compressed twice
+    # produces different bytes and the published digest changes for no reason - which makes
+    # "did this release change?" unanswerable from SHA256SUMS. -c is what sends the stream
+    # to stdout; without it gzip writes <image>.gz and deletes the input image.
+    gzip -9 -nc "${image}" >"${image_gz}"
 fi
 
 # Round trip: the published artefact must decompress to exactly the built image.
@@ -136,7 +141,9 @@ if [ -n "${variant_in}" ]; then
     else
         variant_gz="${release_dir}/${base}-install-wan-ssh.img.gz"
         ci_log "compressing the wan-ssh variant (${variant_in})"
-        gzip -9 -c "${variant_in}" >"${variant_gz}"
+        # -n for the same reason as the default image: a header timestamp would make the
+        # variant's digest depend on when it was built. -c keeps the stream on stdout.
+        gzip -9 -nc "${variant_in}" >"${variant_gz}"
         _variant_sha="$(gzip -dc "${variant_gz}" | sha256sum | cut -d' ' -f1)"
         [ "${_variant_sha}" = "$(ci_sha256 "${variant_in}")" ] ||
             ci_die "the compressed variant decompresses to ${_variant_sha}"

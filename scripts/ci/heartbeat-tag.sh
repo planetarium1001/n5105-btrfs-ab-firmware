@@ -12,6 +12,11 @@
 #   * it is created only when the newest of (last heartbeat tag, last formal release tag,
 #     last commit touching the pin) is at least CI_HEARTBEAT_INTERVAL_DAYS days old
 #   * no baseline at all means "due": the first heartbeat must be able to happen
+#   * the baseline is "the newest activity this checkout can see", so a shallow clone is
+#     reported: in a depth-1 checkout the commit that last touched the pin is the shallow
+#     root, the gap is always 0, and the heartbeat never fires. The workflow therefore
+#     fetches tags and 50 commits for this step, and a shallow clone says so instead of
+#     quietly answering too-soon
 #   * an existing `heartbeat-YYYYMM` makes the run a no-op with `reason=already-tagged`,
 #     so re-running the same month is idempotent: no second tag and no error
 #   * `heartbeat-` never matches `^v`, which is the release trigger. The name is asserted
@@ -35,6 +40,8 @@
 #   tag         the tag name for the month of --now
 #   days_since  days since the baseline, empty when there is no baseline
 #   reason      already-tagged | too-soon | first-heartbeat | due
+#   shallow     true | false: whether the checkout is a shallow clone, i.e. whether the
+#               baseline above it is invisible
 
 set -euo pipefail
 
@@ -116,6 +123,14 @@ fi
 
 now_epoch="$(to_epoch "${now_date}")" || ci_die "invalid --now date: ${now_date}"
 ci_log "heartbeat ${tag}, judged at ${now_date} (${now_epoch})"
+
+# A shallow clone is the failure mode this decision silently gets wrong: `fetch-depth: 1`
+# drops the tags and turns the commit that last touched the pin into the repository root,
+# so the newest visible activity is HEAD and the answer is always too-soon. The flag is
+# reported so a run that disagrees with reality says which way it saw the repository; the
+# workflow's job is to make it `false` by fetching tags and enough history.
+shallow="$(git -C "${repo}" rev-parse --is-shallow-repository 2>/dev/null || echo false)"
+[ "${shallow}" = "true" ] || shallow="false"
 
 # --------------------------------------------------------------------------- #
 # Baseline: the newest activity that proves someone is still looking at this repo
@@ -211,7 +226,13 @@ if [ "${action}" = "created" ]; then
 fi
 
 ci_log "action ${action} (${reason})"
+if [ "${shallow}" = "true" ] && [ "${action}" = "skipped" ]; then
+    # Said out loud, because this is the one case where a correct-looking answer is wrong:
+    # the baseline is the shallow root, so `too-soon` may only mean "the history is not here".
+    ci_warn "this checkout is a shallow clone, so the baseline is the newest visible commit; a skipped heartbeat may be missing history rather than recent activity"
+fi
 ci_emit_output "action" "${action}"
 ci_emit_output "tag" "${tag}"
 ci_emit_output "days_since" "${days_since}"
 ci_emit_output "reason" "${reason}"
+ci_emit_output "shallow" "${shallow}"

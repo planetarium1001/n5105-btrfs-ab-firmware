@@ -274,4 +274,119 @@ assert_contains "$script" 'serial-cross-boot3.log' \
 assert_contains "$script" "ab-commit: committed slot=" \
   "ac-1 boot 2 stops on the commit line, so boot 3 starts from a committed state"
 
+# --- ac-5: the second gate - same base, and it cannot be skipped ------------
+# The cross gate answers "release N installs over N-1". It never reads a base or a kernel, so
+# a release that moved the upstream base would pass it, and the update prompt's "patch ranges
+# are covered" sentence would keep claiming something CI never proved. The same-base gate is
+# the second half of ac-5, and it lives in a new reusable workflow so ci-upgrade-cross.yml -
+# the tag line's one long-standing gate - is not touched.
+gates_path=".github/workflows/ci-upgrade-gates.yml"
+assert_file_exists "$root/$gates_path" "ac-5 the new gates workflow exists"
+assert_eq "$(grep -c '' "$root/$gates_path" | awk '{print ($1 > 0) ? "yes" : "no"}')" "yes" \
+  "ac-5 and it carries content"
+
+# It is reusable, with the mode the caller picks and everything else optional: a caller that
+# only knows which gate it wants must not have to pass the versions, because release.yml
+# cannot (ci.yml exposes no workflow-level outputs) and a caller-supplied version that the
+# tree disagrees with is how two answers to one question appear.
+gates="$(cat "$gates_path")"
+assert_contains "$gates" "workflow_call:" "ac-5 the gates are a reusable workflow"
+for input in "mode:" "upstream_version:" "platform_version:" "previous-tag:"; do
+  assert_contains "$gates" "${input}" "ac-5 the caller can pass ${input%,:}"
+done
+assert_contains "$gates" "required: true" "ac-5 the mode is the only required input"
+
+# cross mode is the existing stage, reused rather than reimplemented: the risk of this unit
+# is the new same-base gate, and a second copy of the cross stage would be a second thing to
+# keep in step with the tag line.
+assert_contains "$gates" "uses: ./.github/workflows/ci-upgrade-cross.yml" \
+  "ac-5 the cross mode reuses the existing stage unchanged"
+assert_eq "$(grep -cE '^ +uses: \./\.github/workflows/ci-upgrade-cross\.yml$' "$root/$gates_path")" "1" \
+  "ac-5 and calls it exactly once"
+assert_eq "$(grep -c 'ci-assemble.yml' "$root/$gates_path")" "0" \
+  "ac-5 the gates stage never builds a second payload"
+assert_contains "$gates" "name: payload-upgrade" \
+  "ac-5 the same-base gate installs the payload this run already built"
+
+# The same-base gate boots an image, so its job needs the runner QEMU and loop devices come
+# with - the same preparation the cross stage gets, and the same budget class. It is cheaper
+# than cross because the old image is downloaded, not rebuilt: 25 minutes is the QEMU half.
+sb_job="$(awk '/^  same-base:$/ {found = 1} found {print}' "$root/$gates_path")"
+assert_contains "${sb_job}" "timeout-minutes: 25" \
+  "ac-5 the same-base job has a 25 minute ceiling"
+assert_contains "${sb_job}" 'uses: ./.github/actions/setup-ci' \
+  "ac-5 the same-base job prepares its runner"
+assert_contains "${sb_job}" 'qemu-system-x86' \
+  "ac-5 or the boot is skipped rather than graded"
+assert_contains "${sb_job}" "scripts/ci/release-same-base.sh" \
+  "ac-5 the previous release is selected by the stage's own script"
+assert_contains "${sb_job}" "args=(select --version" \
+  "ac-5 through the select subcommand, with the version it read from the tree"
+assert_contains "${sb_job}" "scripts/ci/release-same-base.sh fetch" \
+  "ac-5 and its image is fetched and verified by the same script"
+assert_contains "${sb_job}" "cross-upgrade.sh run" \
+  "ac-5 the install is the cross stage's own run half"
+assert_contains "${sb_job}" "--expect-same-base" \
+  "ac-5 and it runs with the same-base criteria switched on"
+
+# ac-5: the invariant. A gate that cannot judge must fail. The three ways a stage can end up
+# doing nothing - a skip file, an unreadable tool chain, a missing previous release - all end
+# in a failure here, never in a green step, because release.yml publishes only when this is.
+assert_contains "${sb_job}" 'if [ -f "${out}/skip" ]' \
+  "ac-5 the same-base step inspects the stage's skip file"
+assert_contains "${sb_job}" "a skipped gate is not a passed gate" \
+  "ac-5 and says why a skip is refused"
+assert_contains "${sb_job}" "grep -q '^same-base=ok'" \
+  "ac-5 the step requires a graded same-base verdict, not only a cross one"
+assert_contains "$(cat "$root/scripts/ci/release-same-base.sh")" \
+  "same-base=fail reason=no-previous-platform-release" \
+  "ac-5 no previous release is a failure in the selector"
+assert_contains "$(cat "$root/scripts/ci/release-same-base.sh")" \
+  "same-base=fail reason=previous-release-has-no-index" \
+  "ac-5 and so is a previous release the criteria cannot be read from"
+
+# The release line: publish waits for both gates, and the same-base gate is a job of its own
+# rather than a second mode squeezed into the cross job.
+assert_contains "$gates" "mode: same-base" "ac-5 same-base is one of the two modes"
+assert_contains "$release" "uses: ./.github/workflows/ci-upgrade-gates.yml" \
+  "ac-5 the tag line calls the gates workflow"
+assert_contains "$release" "mode: same-base" \
+  "ac-5 the tag line runs the same-base gate"
+
+# job_needs over release.yml: written as a flow list, compared as words so the assertion does
+# not depend on how the list is spelled.
+release_needs() {
+  awk -v want="$2" '
+    /^  [A-Za-z0-9_-]+:$/ { job = $1; sub(":$", "", job); injob = (job == want); next }
+    injob && /^    needs:/ {
+      sub(/^[[:space:]]*needs:[[:space:]]*/, "")
+      gsub(/[][,]/, " "); gsub(/[[:space:]]+/, " ")
+      sub(/^ /, ""); sub(/ $/, ""); print; exit
+    }
+  ' "$1"
+}
+publish_needs="$(release_needs .github/workflows/release.yml publish)"
+assert_contains "${publish_needs}" "same-base" \
+  "ac-5 publish waits for the same-base gate"
+assert_contains "${publish_needs}" "cross" \
+  "ac-5 and still waits for the cross gate"
+assert_contains "${publish_needs}" "build" \
+  "ac-5 and for the build, without which there is nothing to publish"
+
+# The release line's cross job is untouched: it is the tag line's original proof, and a
+# rename there is how a gate silently stops being waited for.
+assert_contains "$release" 'uses: ./.github/workflows/ci-upgrade-cross.yml' \
+  "ac-5 the tag line still calls the cross stage directly"
+assert_eq "$(grep -c '^  cross:$' .github/workflows/release.yml)" "1" \
+  "ac-5 the cross job is still a job of its own"
+
+# The gates file follows the same conventions as every other reusable workflow: no
+# concurrency (a reusable workflow inherits the caller's) and a pinned third-party action if
+# it uses one at all.
+assert_eq "$(grep -c '^concurrency:' "$root/$gates_path")" "0" \
+  "ac-5 the gates workflow leaves concurrency to its caller"
+floating_gates=$(grep -E '^\s*uses:' "$root/$gates_path" | sed -E 's/^[[:space:]]*uses:[[:space:]]*//' \
+  | grep -vE '^\./' | grep -vE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}( # v[0-9].*)?$' || true)
+assert_eq "${floating_gates}" "" "ac-5 every third-party action in the gates file is pinned"
+
 finish

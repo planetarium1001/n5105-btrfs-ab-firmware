@@ -127,6 +127,79 @@ ci_render_release "${platform_stage}/etc/platform-release" \
     "${platform_version}" "${upstream_version}" "payload"
 ci_render_net_defaults "${platform_stage}"
 ci_render_update_conf "${platform_stage}"
+
+# --------------------------------------------------------------------------- #
+# 2a. The protected-path list for the payload's own layer files
+#
+# A leading `+` rule in /etc/apk/protected_paths.d/*.list stops `apk upgrade` from
+# writing a package's copy of a path over the one the platform layer provides. It works
+# by comparing the visible file with the one recorded in the apk database, so it only
+# applies to a path the database knows: a file this project ships but no package owns
+# (/etc/platform-release is one, measured on the device) never reaches the rule, and
+# listing it would protect nothing while reading as if it had been handled.
+#
+# The list is therefore derived, never hand-written: the layer's own regular files
+# intersect the path set of the root filesystem's apk database. Every entry is a path a
+# package owns *and* this payload ships, which is exactly the set whose upper copy would
+# shadow the layer.
+#
+# Ownership is read from the database itself (lib/apk/db/installed), which is what
+# `apk info -W` answers from: one record per package, `F:<dir>` followed by `R:<name>`
+# entries relative to it, both including directories. scripts/ci/apk_tools.py has no
+# ownership query, so no new parser is invented for the package format: this reads the
+# two record types that carry a path, in the same way platform/lib/upgrade/packages.sh
+# already reads the same file for the kernel package.
+#
+# An unreadable database writes no list at all. A missing list only loses this
+# prevention layer, and the install-time cleanup in platform_copy_rootfs still repairs a
+# snapshot that carries a shadow; a list this stage guessed at could protect the wrong
+# paths, which is the one outcome worse than having none.
+# --------------------------------------------------------------------------- #
+
+protected_list="${platform_stage}/etc/apk/protected_paths.d/ab-platform-shadow.list"
+rm -f "${protected_list}"
+rootfs_installed="${assemble_dir}/rootfs-installed.txt"
+if tar -xzOf "${upstream_dir}/rootfs.tar.gz" ./lib/apk/db/installed \
+    >"${rootfs_installed}" 2>"${assemble_dir}/rootfs-installed.err"; then
+    # Path set of the installed database: every file and directory any package owns.
+    awk '
+        /^F:/ { dir = substr($0, 3); next }
+        /^R:/ {
+            rel = substr($0, 3)
+            if (dir == "") print rel
+            else print dir "/" rel
+            next
+        }
+    ' "${rootfs_installed}" | sort -u >"${assemble_dir}/apk-owned.txt"
+    # The layer's own regular files, as the tar below will carry them.
+    ( cd "${platform_stage}" && find . -type f | sed 's|^\./||' ) | sort -u \
+        >"${assemble_dir}/platform-files.txt"
+    if [ -s "${assemble_dir}/apk-owned.txt" ]; then
+        grep -F -x -f "${assemble_dir}/apk-owned.txt" "${assemble_dir}/platform-files.txt" \
+            >"${assemble_dir}/platform-owned.txt" || true
+    else
+        : >"${assemble_dir}/platform-owned.txt"
+    fi
+    owned_count="$(grep -c . "${assemble_dir}/platform-owned.txt" || true)"
+    mkdir -p "$(dirname "${protected_list}")"
+    {
+        printf '# Do not edit: generated at build time by scripts/ci/assemble.sh.\n'
+        printf '#\n'
+        printf '# The platform layer files that an apk package also owns. A leading + keeps\n'
+        printf '# `apk upgrade` from writing its copy of one of these over the layer, so the\n'
+        printf '# layer stays what the merged root resolves the path to.\n'
+        printf '#\n'
+        printf '# Derived as: the files in this payload platform.tar intersect the paths in\n'
+        printf '# the root filesystem apk database. A path this project ships but no package\n'
+        printf '# owns is not listed: the + rule compares against that database and would\n'
+        printf '# never apply to it.\n'
+        sed 's/^/+/' "${assemble_dir}/platform-owned.txt"
+    } >"${protected_list}"
+    ci_log "protected paths: ${owned_count} of $(grep -c . "${assemble_dir}/platform-files.txt" || true) platform layer file(s) are owned by an apk package"
+else
+    ci_warn "root filesystem apk database is unreadable, shipping no derived protected-path list: $(tr '\n' ' ' <"${assemble_dir}/rootfs-installed.err" 2>/dev/null || true)"
+fi
+
 ci_platform_modes "${platform_stage}"
 ci_platform_startlinks "${platform_stage}"
 [ -x "${platform_stage}/usr/sbin/btrfs" ] ||

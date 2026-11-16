@@ -36,8 +36,17 @@ job_block() {
 
 assert_contains "$text" "on:
   schedule:" "ac-2 the watch runs on a schedule"
-assert_contains "$text" 'cron: "0 20 * * *"' \
-  "ac-2 the watch runs at 20:00 UTC (04:00 in Beijing, outside the working day)"
+# 16:00 UTC is 00:00 in Beijing, four hours before the target: GitHub's `schedule` trigger
+# started a 20:00 UTC cron at 23:30-00:48 UTC on this repository, so a nominal time that
+# matches the target would land the build in the working morning.
+assert_contains "$text" 'cron: "0 16 * * *"' \
+  "ac-4 the watch runs at 16:00 UTC, so a delayed start lands around 04:00 Beijing"
+assert_eq "$(grep -c 'cron:' "$watch")" "1" \
+  "ac-4 one cron, not a pair: a second daily run buys a hit rate and costs a full build"
+assert_contains "$(sed -n '/^  schedule:/,/^    - cron:/p' "$watch")" "best-effort" \
+  "ac-4 the comment above the cron says the start time is best-effort, not a guarantee"
+assert_contains "$(sed -n '/^  schedule:/,/^    - cron:/p' "$watch")" "four hours early" \
+  "ac-4 the comment above the cron explains why the nominal time is ahead of the target"
 assert_contains "$text" "  workflow_dispatch:" "ac-2 the watch can be dispatched by hand"
 assert_eq "$(grep -c '^  push:' "$watch")" "0" \
   "ac-2 the watch is not triggered by a push: a push by GITHUB_TOKEN would not trigger it anyway"
@@ -52,8 +61,16 @@ assert_contains "$text" "GitHub cannot nest concurrency" \
   "ac-2 the reason the group is absent is written down where the group would be"
 assert_contains "$(job_block merge)" "already pins" \
   "ac-2 a second overlapping run stops when the base branch already carries the pin"
-assert_contains "$(job_block merge)" "if: steps.already.outputs.skip != 'true'" \
-  "ac-2 the merge is skipped when the release already happened"
+# Two halves of the idempotency, decided separately: a failure can land between the squash
+# and the tag, so "the release already happened" has two different answers.
+assert_contains "$(job_block merge)" "skip_merge" \
+  "ac-3 the merge reads whether the squash already landed"
+assert_contains "$(job_block merge)" "skip_tag" \
+  "ac-3 the merge reads whether the tag already exists"
+assert_contains "$(job_block merge)" "ls-remote --tags" \
+  "ac-3 the pushed tag is read from the remote, not from a checkout that may not have it"
+assert_contains "$(job_block merge)" "tags are immutable" \
+  "ac-3 a tag that points at another commit is refused, never moved"
 
 # --------------------------------------------------------------------------- #
 # ac-2: nothing happens when nothing is new
@@ -199,13 +216,97 @@ assert_contains "$(sed -n '/^permissions:/,/^$/p' "$watch")" "contents: read" \
 assert_eq "$(grep -c 'permissions:' "$watch" | awk '{print ($1 >= 6) ? "yes" : "no"}')" "yes" \
   "ac-2 every writing job narrows the grant itself"
 
-# The heartbeat decides from tag history, which a shallow tag-less clone does not have.
+# The heartbeat decides from tag history and from the commit that last touched the pin.
+# `detect` is where that decision runs, so `detect` is the checkout that has to carry the
+# tags and the history; the `heartbeat` job keeps its own for the push-time recheck.
+assert_contains "$(job_block detect)" "fetch-tags: true" \
+  "ac-1 the detect job fetches the tags the heartbeat decision reads"
+assert_contains "$(job_block detect)" "fetch-depth: 50" \
+  "ac-1 the detect job fetches enough history for the pin commit to have an age"
 assert_contains "$(job_block heartbeat)" "fetch-tags: true" \
   "ac-5 the heartbeat job fetches the tags it decides from"
+# The dead parameter: heartbeat-tag.sh never reads CI_MATRIX_CANDIDATES, so passing it looked
+# like wiring while carrying nothing.
+assert_eq "$(grep -c 'CI_MATRIX_CANDIDATES: \${{ steps.matrix' "$watch")" "0" \
+  "ac-1 the detect heartbeat step does not pass a variable the script never reads"
 
 # The tag has to name what the merge produced, not whatever the branch points at now.
 assert_contains "$(job_block merge)" "mergeCommit" \
   "ac-3 the tag is created on the merge commit the API reports"
+
+# --------------------------------------------------------------------------- #
+# ac-2: a rehearsal may not merge, tag or publish
+# --------------------------------------------------------------------------- #
+
+# The switch is the job-level env, read by the two steps that publish. `inputs.dry-run` on
+# a schedule run is empty rather than "false", so it is normalised once, at job level.
+assert_contains "$(job_block merge)" 'DRY_RUN: ${{ inputs.dry-run }}' \
+  "ac-2 the merge job normalises the rehearsal switch once"
+assert_eq "$(grep -c 'env.DRY_RUN != .true.' "$watch")" "2" \
+  "ac-2 exactly the two publishing steps are gated on the rehearsal switch"
+assert_contains "$(job_block merge)" "if: steps.state.outputs.skip_merge != 'true' && env.DRY_RUN != 'true'" \
+  "ac-2 a rehearsal does not squash-merge"
+assert_contains "$(job_block merge)" "if: steps.state.outputs.skip_tag != 'true' && env.DRY_RUN != 'true'" \
+  "ac-2 a rehearsal does not tag"
+# Skipping must be legible on the run page: a silently skipped step reads as a failure.
+assert_contains "$(job_block merge)" "A rehearsal still publishes a draft release" \
+  "ac-2 the skipped tag step says the rehearsal still publishes a draft"
+# What a rehearsal must still do, or it would prove nothing.
+for kept in "Guard the diff" "Squash merge" "Read the merge state"; do
+  _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+  if [ -n "$(job_block merge | grep -F -- "$kept")" ]; then
+    printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-2 the rehearsal still reaches '$kept'"
+  else
+    _assert_fail "ac-2 the rehearsal still reaches '$kept'" "the step is gone from the merge job"
+  fi
+done
+# Publishing is not skipped with the tag: a rehearsal creates the release as a draft, which
+# is the only way to prove the publishing half without publishing.
+assert_contains "$(job_block publish)" 'dry-run: ${{ inputs.dry-run }}' \
+  "ac-2 the publish is still called with the rehearsal switch, so it creates a draft"
+assert_eq "$(grep -c 'needs: \[detect, merge\]' "$watch")" "1" \
+  "ac-2 the publish still runs in the rehearsal: it is not short-circuited away"
+
+# --------------------------------------------------------------------------- #
+# ac-3: the recovery contract is wired through the graph
+# --------------------------------------------------------------------------- #
+
+# `resume` is an input, so a failed run can be told where to continue instead of being
+# rediscovered - which is impossible once the pin already moved.
+assert_contains "$(sed -n '/^    inputs:/,/^permissions:/p' "$watch")" "resume:" \
+  "ac-3 the dispatch accepts a resume stage"
+assert_contains "$(sed -n '/^      resume:/,/^      base:/p' "$watch")" "merge" \
+  "ac-3 the resume input documents the merge stage"
+assert_contains "$(sed -n '/^      resume:/,/^      base:/p' "$watch")" "publish" \
+  "ac-3 the resume input documents the publish stage"
+assert_contains "$(job_block detect)" 'CI_RESUME: ${{ inputs.resume }}' \
+  "ac-3 detection is told which stage it is resuming"
+assert_contains "$(job_block detect)" "resume-stage:" \
+  "ac-3 the detected resume stage is published as a job output"
+assert_contains "$(job_block detect)" "pin-in-base:" \
+  "ac-3 the pin the base branch carries is published as a job output"
+assert_contains "$(job_block detect)" "merged-sha:" \
+  "ac-3 the merge commit is published as a job output"
+assert_contains "$(job_block detect)" "tag-exists:" \
+  "ac-3 the tag state is published as a job output"
+# The issue body has to be chosen from the state, not assumed: after a merge the sentence
+# "nothing was merged" is false, and it is the sentence an on-call acts on.
+assert_contains "$(job_block issue)" 'CI_PIN_IN_BASE: ${{ needs.detect.outputs.pin-in-base }}' \
+  "ac-3 the failure issue is told what the base branch pins"
+assert_contains "$(job_block issue)" 'CI_MERGED_SHA: ${{ needs.detect.outputs.merged-sha }}' \
+  "ac-3 the failure issue is told the merge commit"
+assert_contains "$(job_block issue)" 'CI_TAG_EXISTS: ${{ needs.detect.outputs.tag-exists }}' \
+  "ac-3 the failure issue is told whether the tag was pushed"
+assert_contains "$(job_block issue)" "The merge already landed" \
+  "ac-3 a post-merge failure says the merge landed instead of pretending it did not"
+
+# The detect job reads tags and the merge commit, so it needs to see them: the remote URL is
+# how it reads a tag this checkout did not fetch, and the PR read permission is how it reads
+# the merge commit.
+assert_contains "$(job_block detect)" "CI_REMOTE_URL" \
+  "ac-3 the tag state is read from the remote, not from an unfetched local ref"
+assert_contains "$(job_block detect)" "pull-requests: read" \
+  "ac-3 the detect job may read the merge commit of the pull request"
 
 # An issue may not advertise an artifact the run never uploads.
 assert_eq "$(grep -c 'upload-artifact' "$watch")" "0" \

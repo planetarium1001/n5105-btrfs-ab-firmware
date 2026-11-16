@@ -29,7 +29,7 @@ how to run a stage on your own machine. The stage scripts are documented in
 | `ci-debug.yml` | `workflow_dispatch` only (`stage`, `boot_timeout`) | no | `debug-session`, `debug-<stage>-logs` | an interactive upterm session on a runner, when a stage needs eyes |
 | `release.yml` | push of a `v*` tag | yes, through `release-publish.yml` | the three release assets | releasing our own version: push a `v*` tag ([the tagged line](ci-release-lines.md)) |
 | `release-publish.yml` | `workflow_call` only (`tag`, `tag-policy`, `title`, `dry-run`, ...) | yes, as a draft with `dry-run: true` | `n5105-ab-<upstream>-install.img.gz`, `n5105-ab-<upstream>-upgrade.tar`, `SHA256SUMS` | never by hand: `release.yml` and `upstream-watch.yml` call it |
-| `upstream-watch.yml` | `schedule` (`0 20 * * *`) and `workflow_dispatch` (`version`, `dry-run`, `base`) | yes, with a bare-version tag | a release named `<upstream version>`, or one `[auto-release]` issue | the daily upstream release, or a rehearsal of it |
+| `upstream-watch.yml` | `schedule` (`0 16 * * *`) and `workflow_dispatch` (`version`, `dry-run`, `base`, `resume`) | yes, with a bare-version tag | a release named `<upstream version>`, or one `[auto-release]` issue | the daily upstream release, or a rehearsal of it ([runbook](daily-upstream-watch.md)) |
 
 - **Reusable and entry point.** Twelve files declare `workflow_call` and nothing else, so
   they cannot start a run, and they declare no `concurrency` at all: a called workflow runs
@@ -271,7 +271,8 @@ cannot (`gaps>0`), the stage reports `cross-upgrade=skipped` and the run is not 
 a skipped proof is not a passed proof.
 
 On the tagged line the stage is a gate, not a report. `release.yml` declares
-`publish: needs: [build, cross]`, so a red or skipped cross publishes nothing. The release
+`publish: needs: [build, cross, same-base]` - the cross gate on its own, `needs: [build, cross]`,
+is half of what a release has to prove - so a red or skipped cross publishes nothing. The release
 history is why: v0.0.9 went out while cross was red (run 43622253559) because `publish` only
 needed `build`, and a release that cannot install over the previous one is exactly the
 release the cross stage exists to refuse.
@@ -279,6 +280,42 @@ release the cross stage exists to refuse.
 `scripts/ci/cross-upgrade.sh assert --out <dir>` grades a run from five files - the status
 lines before, during and after, the ESP digests, the payload digests and the serial log -
 so the verdict can be re-checked without re-running QEMU.
+
+## The upgrade gates
+
+A release has to prove two different upgrades, and
+[`ci-upgrade-gates.yml`](../.github/workflows/ci-upgrade-gates.yml) is the one reusable file that
+offers both, so a caller names a mode instead of a file:
+
+| Mode | Proves | Ceiling |
+|---|---|---|
+| `cross` | release N installs over release N-1, whatever base each of them pinned. It is [`ci-upgrade-cross.yml`](../.github/workflows/ci-upgrade-cross.yml), called unchanged | 35 min on the grading job |
+| `same-base` | release N installs over release N-1 **with the same base and the same kernel**: the previous release's own published image, this run's payload | 25 min |
+
+The same-base mode keeps the tag and the digest together, because two releases can publish an
+asset with the same name (`v0.0.9` and `v0.0.10` both carry
+`n5105-ab-25.12.2-install.img.gz`). [`release-same-base.sh`](../scripts/ci/release-same-base.sh)
+is that contract: `select` answers which tag, which asset and which digest, `fetch` refuses bytes
+that do not hash to the digest the tag's own `SHA256SUMS` lists, and `judge` grades four criteria
+from files alone - the old image runs the base this release pins, the kernel did not move, the
+payload digest changed, and the platform version advances.
+
+Where the gates run:
+
+| Caller | Jobs | The publish gate |
+|---|---|---|
+| `release.yml` (a `v*` tag) | `build`, `cross`, `same-base`, `publish` | `publish: needs: [build, cross, same-base]` |
+| `upstream-watch.yml` (the daily watch) | `detect`, `bump`, `build`, `locks`, `merge`, `publish` | `publish: needs: [detect, merge]` |
+
+The watch calls neither mode, so a green watch run proves the build and the merge, not the two
+upgrades. What a run does and how to recover one is in
+[daily-upstream-watch.md](daily-upstream-watch.md).
+
+**A skipped gate is not a passed gate.** Both modes fail on a missing previous release, a missing
+QEMU, a missing `SHA256SUMS` or a `skip` file left by the stage, and an unrecognised `mode` fails
+in the `guard` job rather than skipping both gates. The same-base verdict is printed one criterion
+per line (`same-base-check ...`) plus a final `same-base=ok`; a run that produced neither judged
+no same-base upgrade, whatever its cross verdict said.
 
 ## Where the logic lives
 
