@@ -55,13 +55,17 @@ mkdir -p "$esp/ab/log" "$p4"
 
 # --- payload builder --------------------------------------------------------
 # build_payload <dir> <version> [--bad-format] [--missing <member>] [--bad-digest]
-#               [--vermagic <module-ver> <kernel-ver>] [--banner <text>] [--banner <text>]
+#               [--vermagic <module-ver> <kernel-ver>] [--banner <text>]
+#               [--platform <x.y.z>] [--no-platform]
+#
+# --platform is the project's own layer version the manifest declares; --no-platform omits
+# the field entirely, which is what a payload built before the field existed looks like.
 build_payload() {
   local dir="$1" version="$2"
   shift 2
   local bad_format=0 missing="" bad_digest=0 module_ver="6.12.103" kernel_ver="6.12.103"
   local empty_meta=0
-  local banner="" mixed_ver=""
+  local banner="" mixed_ver="" platform="" no_platform=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --bad-format) bad_format=1; shift ;;
@@ -71,6 +75,8 @@ build_payload() {
       --mixed-vermagic) mixed_ver="$2"; shift 2 ;;
       --empty-vermagic-meta) empty_meta=1; shift ;;
       --banner) banner="$2"; shift 2 ;;
+      --platform) platform="$2"; shift 2 ;;
+      --no-platform) no_platform=1; shift ;;
       *) echo "bad arg $1" >&2; return 1 ;;
     esac
   done
@@ -97,9 +103,10 @@ build_payload() {
   tar -cf "$dir/platform.tar" -C "$dir" platform-member.txt
   rm -rf "$dir/cpio" "$dir/rootfs" "$dir/platform-member.txt"
 
-  python3 - "$dir" "$version" "$bad_format" "$bad_digest" <<'PYTHON'
+  python3 - "$dir" "$version" "$bad_format" "$bad_digest" "$platform" "$no_platform" <<'PYTHON'
 import hashlib, json, pathlib, sys
 stage, version, bad_format, bad_digest = sys.argv[1], sys.argv[2], sys.argv[3] == "1", sys.argv[4] == "1"
+platform, no_platform = sys.argv[5], sys.argv[6] == "1"
 members = {}
 for name in ("initramfs.cpio.gz", "kernel.bin", "platform.tar", "rootfs.tar.gz"):
     data = (pathlib.Path(stage) / name).read_bytes()
@@ -108,9 +115,14 @@ for name in ("initramfs.cpio.gz", "kernel.bin", "platform.tar", "rootfs.tar.gz")
         digest = "0" * 64
     members[name] = {"size": len(data), "sha256": digest}
 fmt = "something-else/9" if bad_format else "ab-payload/1"
-(pathlib.Path(stage) / "manifest.json").write_text(
-    json.dumps({"format": fmt, "rootfs": version, "members": members}, indent=2) + "\n"
-)
+manifest = {"format": fmt, "rootfs": version}
+# The platform layer is its own version: the base says which upstream tree this is, and the
+# platform says which release of this project was laid on top of it. A payload that omits it
+# cannot say whether it differs from what runs, which is what the guard has to decide.
+if not no_platform:
+    manifest["platform"] = platform or version
+manifest["members"] = members
+(pathlib.Path(stage) / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 PYTHON
 
   if [ -n "$missing" ]; then rm -f "$dir/$missing"; fi
@@ -126,7 +138,7 @@ run_upgrade() {
   local payload="$1"
   shift
   env PATH="$bin:$PATH" AB_ESP="$esp" AB_P4="$p4" AB_LIB="$lib" \
-    AB_SLOTS_ROOT="$tmp/slots" "$@" \
+    AB_SLOTS_ROOT="$tmp/slots" AB_PLATFORM_RELEASE="$platform_release" "$@" \
     sh "$ab_upgrade" --check "$payload" 2>&1
 }
 
@@ -135,8 +147,16 @@ run_upgrade_flags() {
   local payload="$1"
   shift
   env PATH="$bin:$PATH" AB_ESP="$esp" AB_P4="$p4" AB_LIB="$lib" \
-    AB_SLOTS_ROOT="$tmp/slots" \
+    AB_SLOTS_ROOT="$tmp/slots" AB_PLATFORM_RELEASE="$platform_release" \
     sh "$ab_upgrade" --check "$@" "$payload" 2>&1
+}
+
+# set_running_platform <version>: what this slot says it is. The guard compares the payload
+# against it, so every case that reaches the guard has to state both sides.
+platform_release="$tmp/platform-release"
+set_running_platform() {
+  printf 'PLATFORM_VERSION=%s\nUPSTREAM_VERSION=%s\nPLATFORM_STAGE=payload\n' \
+    "$1" "${STUB_RUNNING_BASE:-25.12.2}" >"$platform_release"
 }
 
 # --- ac-1 happy path --------------------------------------------------------
@@ -204,6 +224,7 @@ mkdir -p "$tmp/p4"
 # slot that is being tested.
 make_baseline "distro default"
 installed_payload="$(build_payload "$tmp/c-installed" 25.12.3-test5 --banner "payload default")"
+set_running_platform 25.12.3-test5
 out="$(run_upgrade "$installed_payload" STUB_STATUS='slot=a upper=@overlay-25.12.3-test5 generation=2 committed=a pending=none p4=ok' \
   STUB_ROOTFS=25.12.3-test5)"
 assert_eq "$?" "74" "ac-1c a payload the running slot already carries is refused"
@@ -257,6 +278,7 @@ assert_contains "$out" "reason=initramfs-mixed-module-vermagic-2" \
 
 # --- ac-6 the same version needs --force ----------------------------------
 already="$(build_payload "$tmp/already" 25.12.3-test8)"
+set_running_platform 25.12.3-test8
 out="$(run_upgrade "$already" STUB_ROOTFS=25.12.3-test8)"
 assert_eq "$?" "74" "ac-6 the same version is still refused by default"
 assert_contains "$out" "reason=payload-already-installed" "ac-6 the default refusal is unchanged"
@@ -265,6 +287,46 @@ out="$(run_upgrade_flags "$already" --force)"
 assert_eq "$?" "0" "ac-6 --force reinstalls the version the slot already carries"
 assert_contains "$(run_upgrade_flags "$already" --force)" "check only, nothing written" \
   "ac-6 --force does not turn the check into a write"
+
+# --- ac-6b the same base, a newer platform layer: an update, not a reinstall ---
+# The measured defect (2026-11-16, real N5105): 0.0.10 and 0.0.11 are both upstream 25.12.2,
+# so `ab-slot rootfs` answers 25.12.2 for both and the guard called a platform-only update
+# "already installed" - `ab-upgrade <payload>` refused with 74 and the only way through was
+# `--force`, which the message did not even mention. The base says which upstream tree this
+# is; the platform says which release of this project was laid on top. Both make the identity,
+# and only the pair decides "already installed".
+set_running_platform 0.0.10
+forward="$(build_payload "$tmp/forward" 25.12.2 --platform 0.0.11)"
+out="$(run_upgrade "$forward" STUB_ROOTFS=25.12.2)"
+assert_eq "$?" "0" "ac-6b the same base with a newer platform is an update, not a reinstall"
+assert_contains "$out" "check only, nothing written" "ac-6b the update passes the check"
+
+# The mirror case: the rollback direction installs for the same reason.
+set_running_platform 0.0.11
+back="$(build_payload "$tmp/back" 25.12.2 --platform 0.0.10)"
+out="$(run_upgrade "$back" STUB_ROOTFS=25.12.2)"
+assert_eq "$?" "0" "ac-6b a platform-only downgrade installs as well"
+
+# --- ac-6c a payload that cannot say what platform it is -------------------
+# Refusing is the only safe answer: "cannot tell" must never be read as "different", or a
+# payload left lying on the machine could rewrite the healthy slot from the slot under test.
+set_running_platform 0.0.10
+unknown="$(build_payload "$tmp/unknown" 25.12.2 --no-platform)"
+out="$(run_upgrade "$unknown" STUB_ROOTFS=25.12.2)"
+assert_eq "$?" "74" "ac-6c a payload without a platform version is refused"
+assert_contains "$out" "reason=payload-platform-unknown" \
+  "ac-6c the refusal says the platform is unknown, not that the payload is installed"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'payload-already-installed' || true)" "0" \
+  "ac-6c an unknown platform is not reported as an installed payload"
+
+# --- ac-6d a real reinstall names the switch that overrides it --------------
+set_running_platform 0.0.10
+same="$(build_payload "$tmp/same" 25.12.2 --platform 0.0.10)"
+out="$(run_upgrade "$same" STUB_ROOTFS=25.12.2)"
+assert_eq "$?" "74" "ac-6d the same version and platform is refused"
+assert_contains "$out" "reason=payload-already-installed" "ac-6d the refusal names the reason"
+assert_contains "$out" "ab-upgrade --force" \
+  "ac-6d the refusal names the switch that overrides it"
 
 # --- ac-5 space and degraded writable layer --------------------------------
 out="$(run_upgrade "$good" STUB_DF_TOTAL=1000000 STUB_DF_AVAIL=10000)"

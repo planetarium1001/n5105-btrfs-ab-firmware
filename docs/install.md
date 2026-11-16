@@ -484,6 +484,26 @@ exits 2 before anything is read.
 | `--force` | repairing a slot by reinstalling the version it already runs | the `74 payload-already-installed` guard is skipped, so a payload left lying on the machine can rewrite the healthy slot from the slot you are testing |
 | `--check` | before every install | validates and writes nothing: no slot, no `ab/state.json`, no conflict report on the ESP. The bootloader rules run too (member present, manifest block complete, both digests, ESP headroom, `esp=` health), so a check cannot pass where the install would refuse |
 
+An ordinary update on the same upstream base needs no flag. The guard asks whether the
+machine already runs *this release*, and a release is its upstream base **and** this
+project's platform version: `0.0.10` over `0.0.11` share the base and differ in the
+platform, so the install goes ahead and prints `base unchanged, platform 0.0.10 -> 0.0.11`.
+Only a payload that matches both is refused, with `74` and reason
+`payload-already-installed` naming `--force` as the way past it.
+
+A payload on the **same base** that declares no platform version cannot answer that
+question, so it is refused with `74` and reason `payload-platform-unknown` rather than
+installed: a leftover payload of an older format must not be able to rewrite the healthy
+slot just because nobody can tell which release it is. A payload for a **different base**
+is unaffected — it is never "already installed", and it installs whether or not the field
+is there.
+
+> The guard belongs to the system that runs it. A machine still on `0.0.10` carries the
+> `0.0.10` code, so installing `0.0.11` over it is refused until that one machine is
+> updated once with `--force`; from `0.0.11` onwards the hop needs no flag. `ab-upgrade
+> --feed` was never affected, because the feed path recognises a platform-only update by
+> itself and does not ask.
+
 ### Exit status
 
 | Exit | Meaning | What is on the disk afterwards |
