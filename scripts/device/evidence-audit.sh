@@ -8,6 +8,7 @@
 # the PRD uses.
 #
 #   scripts/device/evidence-audit.sh                 # the whole table, one line per ac
+#   scripts/device/evidence-audit.sh --task <id>     # this round's record, by name
 #   scripts/device/evidence-audit.sh --quiet         # only the rows that are not covered
 #   scripts/device/evidence-audit.sh --names-only    # ac<TAB>name of what is still open
 #   scripts/device/evidence-audit.sh --strict        # evidence no ac names is a failure too
@@ -59,7 +60,18 @@ set -u
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 : "${AB_REPO_ROOT:=$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 
-TASK_ID=${AB_AUDIT_TASK:-20261115-01-real-device-full-acceptance-0-1-0}
+# The task whose record is audited. There is no way to derive it from the tree: the prd.md
+# under .workflow/tasks/ is the only list of acs, and several rounds keep one. So the id comes
+# from the caller -- `--task`, else AB_AUDIT_TASK, else AB_TASK_ID (the name full-test.sh and
+# the rest of the acceptance scripts use) -- and the last round's id is only the fallback for
+# a run that names nothing. A fallback audit is announced on stderr, because a green table
+# about another round's record is worse than no table at all.
+LAST_ROUND_TASK=20261115-01-real-device-full-acceptance-0-1-0
+TASK_ID=${AB_AUDIT_TASK:-${AB_TASK_ID:-${LAST_ROUND_TASK}}}
+TASK_ID_IS_DEFAULT=1
+if [ -n "${AB_AUDIT_TASK:-}" ] || [ -n "${AB_TASK_ID:-}" ]; then
+    TASK_ID_IS_DEFAULT=0
+fi
 PRD_FILE=""
 JSONL_FILE=""
 MANIFEST_FILE=""
@@ -77,7 +89,8 @@ usage: evidence-audit.sh [--task <id>] [--root <dir>] [--prd <file>]
                          [--jsonl <file>] [--manifest <file>]
                          [--strict] [--quiet] [--names-only] [--no-sha]
 
-  --task ID       task whose evidence is audited (default: 20261115-01-...)
+  --task ID       task whose evidence is audited (default: AB_AUDIT_TASK, else AB_TASK_ID,
+                  else the previous round's task - announced on stderr, never silent)
   --root DIR      repository root (default: two levels above this script)
   --prd FILE      the PRD that defines the acs (default: <root>/.workflow/tasks/<id>/prd.md)
   --jsonl FILE    command evidence (default: <root>/.workflow/tasks/<id>/evidence.jsonl)
@@ -91,7 +104,7 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --task) TASK_ID=${2:?--task needs a value}; shift 2 ;;
+        --task) TASK_ID=${2:?--task needs a value}; TASK_ID_IS_DEFAULT=0; shift 2 ;;
         --root) AB_REPO_ROOT=${2:?--root needs a value}; shift 2 ;;
         --prd) PRD_FILE=${2:?--prd needs a value}; shift 2 ;;
         --jsonl) JSONL_FILE=${2:?--jsonl needs a value}; shift 2 ;;
@@ -109,6 +122,13 @@ TASK_DIR="${AB_REPO_ROOT}/.workflow/tasks/${TASK_ID}"
 [ -n "${PRD_FILE}" ] || PRD_FILE="${TASK_DIR}/prd.md"
 [ -n "${JSONL_FILE}" ] || JSONL_FILE="${TASK_DIR}/evidence.jsonl"
 [ -n "${MANIFEST_FILE}" ] || MANIFEST_FILE="${TASK_DIR}/evidence/manifest.json"
+
+# A defaulted task id is said out loud, once, on stderr: the caller asked for "the audit" and
+# got the previous round's record, which is a fact about the record and not about this round.
+if [ "${TASK_ID_IS_DEFAULT}" = "1" ] && [ "${NAMES_ONLY}" != "1" ]; then
+    printf 'evidence-audit: no --task/AB_TASK_ID, auditing the previous round: %s\n' "${TASK_ID}" >&2
+    printf 'evidence-audit: pass --task <id> (or AB_TASK_ID) to audit this round\n' >&2
+fi
 
 [ -f "${PRD_FILE}" ] || die "no PRD at ${PRD_FILE}: there is no list of acs to audit"
 [ -r "${PRD_FILE}" ] || die "cannot read ${PRD_FILE}"

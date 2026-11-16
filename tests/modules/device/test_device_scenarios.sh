@@ -13,6 +13,11 @@
 #        packages whose version moved or vanished, a feed list that stayed behind is a
 #        FINDING (never a FAIL), and one install from the aligned feed is what proves the
 #        source works
+#   ac-4 an install-then-remove leaves no package record, no files and no extra world line
+#        behind, and a package the user already has is never removed to prove it
+#   ac-4 four broken configurations (network, firewall, docker daemon.json, 404 package feed)
+#        are each backed up first, refused or visibly degraded, and restored byte for byte,
+#        with a recovery record that names the backup and who put it back
 #   ac-4 --dry-run prints the steps in order and names a missing payload before a run does
 set -uo pipefail
 
@@ -108,9 +113,14 @@ case "${last}" in
         ;;
     "ab-slot status")
         if [ "$pending" = "none" ]; then next=${slot}; else next=${pending}; fi
-        printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=ok swap=ok next=%s disk=/dev/nvme0n1 method=partname boot=%s esp=%s\n' \
+        # The package pair is judged after a hop (ac-4), so the simulator answers it the way a
+        # machine that went through the aligner does; a test moves it with $dev/packages.
+        pk=$(cat "$dev/packages" 2>/dev/null || printf 'aligned')
+        pkr=$(cat "$dev/packages-reason" 2>/dev/null || printf 'none')
+        printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=ok swap=ok next=%s disk=/dev/nvme0n1 method=partname boot=%s esp=%s packages=%s packages_reason=%s\n' \
             "${slot}" "$(cat "$dev/upper-${slot}")" "$(cat "$dev/generation")" "${slot}" "${pending}" \
-            "$(cat "$dev/p4")" "$(cat "$dev/data")" "${next}" "$(cat "$dev/boot")" "$(cat "$dev/esp")"
+            "$(cat "$dev/p4")" "$(cat "$dev/data")" "${next}" "$(cat "$dev/boot")" "$(cat "$dev/esp")" \
+            "$pk" "$pkr"
         ;;
     "ab-slot rootfs")
         cat "$dev/rootfs-${slot}"
@@ -242,12 +252,14 @@ case "${last}" in
                     "$1" "${FAKE_KMOD_STATE:-$state}" "$kver" "$(ver_of "$1")" "$modver" "$depver"
                 ;;
             exec)
-                # cmd_exec runs the command it is given; the two the driver uses are a copy
-                # (writing the feed list) and an index refresh.
+                # cmd_exec runs the command it is given: a copy (writing the feed list and
+                # restoring a backup), an index refresh, and the read-only checks S8 makes.
                 set -- $args
                 case "${1:-}" in
                     cp)
-                        if [ -f "$dev/$(basename "$2")" ]; then
+                        if [ -n "${FAKE_CP_RC:-}" ]; then
+                            rc=${FAKE_CP_RC}
+                        elif [ -f "$dev/$(basename "$2")" ]; then
                             cp "$dev/$(basename "$2")" "$dev/$(basename "$3")"
                             rc=$?
                         else
@@ -256,8 +268,83 @@ case "${last}" in
                         printf 'cmd=cp %s %s rc=%s out=\n' "$2" "$3" "$rc"
                         ;;
                     apk)
-                        printf 'cmd=apk update rc=%s out=OK: %s packages\n' \
-                            "${FAKE_APK_UPDATE_RC:-0}" "${FAKE_APK_INDEX_COUNT:-11751}"
+                        # A feed list naming a release that is not there is a 404; the machine's
+                        # own list answers. That difference is what S8 reads.
+                        if grep -q 'ab-404' "$dev/distfeeds.list" 2>/dev/null; then
+                            printf 'cmd=apk update rc=%s out=ERROR: ab-scen-404: Bad file descriptor\n' \
+                                "${FAKE_APK_404_RC:-1}"
+                        else
+                            printf 'cmd=apk update rc=%s out=OK: %s packages\n' \
+                                "${FAKE_APK_UPDATE_RC:-0}" "${FAKE_APK_INDEX_COUNT:-11751}"
+                        fi
+                        ;;
+                    ip)
+                        # `ip link show <device>`: a link nothing has cannot exist. This is the
+                        # witness for "the broken network section was refused", because ubus
+                        # answers 0 whatever the sections say.
+                        printf 'cmd=%s rc=%s out=Device "%s" does not exist.\n' \
+                            "$*" "${FAKE_LINK_RC:-1}" "${4:-?}"
+                        ;;
+                    fw4 | fw3)
+                        # The check reads the ruleset in the file: refused while the broken rule
+                        # is still there, accepted once the backup is back.
+                        if [ "${FAKE_FW_ACCEPT:-0}" = "1" ]; then
+                            printf 'cmd=%s rc=0 out=\n' "$*"
+                        elif grep -q 'not-a-port' "$dev/firewall" 2>/dev/null; then
+                            printf 'cmd=%s rc=%s out=Error: Bad rule specification: not-a-port\n' \
+                                "$*" "${FAKE_FW_CHECK_RC:-1}"
+                        else
+                            printf 'cmd=%s rc=0 out=\n' "$*"
+                        fi
+                        ;;
+                    pidof)
+                        if [ "$(cat "$dev/dockerd" 2>/dev/null || printf running)" = "running" ]; then
+                            printf 'cmd=%s rc=0 out=1234\n' "$*"
+                        else
+                            printf 'cmd=%s rc=1 out=\n' "$*"
+                        fi
+                        ;;
+                    docker)
+                        if [ "$(cat "$dev/dockerd" 2>/dev/null || printf running)" = "running" ]; then
+                            printf 'cmd=%s rc=0 out=Server Version: 27.0\n' "$*"
+                        else
+                            printf 'cmd=%s rc=1 out=Cannot connect to the Docker daemon\n' "$*"
+                        fi
+                        ;;
+                    command)
+                        printf 'cmd=%s rc=%s out=%s\n' "$*" "${FAKE_DOCKERD_INSTALLED_RC:-0}" \
+                            "${FAKE_DOCKERD_BIN:-/usr/bin/dockerd}"
+                        ;;
+                    uci)
+                        # The broken rule exists only while the file still carries it, so this
+                        # is also the check that the restore really took it away.
+                        if grep -q 'not-a-port' "$dev/firewall" 2>/dev/null; then
+                            printf 'cmd=%s rc=0 out=not-a-port\n' "$*"
+                        else
+                            printf 'cmd=%s rc=%s out=\n' "$*" "${FAKE_UCI_GET_RC:-1}"
+                        fi
+                        ;;
+                    /etc/init.d/dockerd)
+                        # A daemon that cannot parse its config does not come up; with a file
+                        # the JSON parser accepts (the object is closed) it does.
+                        if [ "${FAKE_DOCKERD_NOINIT:-0}" = "1" ]; then
+                            # The binary is there and nothing can be told to restart it.
+                            printf 'cmd=%s rc=127 out=not found\n' "$*"
+                        elif [ "${FAKE_DOCKERD_RESTART_RC:-}" = "0" ]; then
+                            # An init script that answers 0 whatever the daemon did: the
+                            # daemon tolerated the file, and the class has to notice that.
+                            printf '%s' running >"$dev/dockerd"
+                            printf 'cmd=%s rc=0 out=\n' "$*"
+                        elif grep -q '^}$' "$dev/daemon.json" 2>/dev/null; then
+                            printf '%s' running >"$dev/dockerd"
+                            printf 'cmd=%s rc=0 out=\n' "$*"
+                        else
+                            printf '%s' stopped >"$dev/dockerd"
+                            printf 'cmd=%s rc=1 out=dockerd: unable to parse configuration file\n' "$*"
+                        fi
+                        ;;
+                    /etc/init.d/firewall)
+                        printf 'cmd=%s rc=%s out=\n' "$*" "${FAKE_FW_RELOAD_RC:-0}"
                         ;;
                     *)
                         printf 'cmd=%s rc=%s out=stub\n' "$*" "${FAKE_EXEC_RC:-0}"
@@ -289,7 +376,13 @@ case "${last}" in
                     fi
                     printf 'backup=%s -> %s/%s.bak ok=yes\n' "$f" "$bak" "$b"
                 done
-                printf 'backups=%s of=%s\n' "${FAKE_BACKUPS:-$n}" "$n"
+                # One class's backup can be made short on its own: a backup that fails for
+                # the network class must not silently also fail the other three.
+                bcount=${FAKE_BACKUPS:-$n}
+                case "$bak" in
+                    *badcfg-network*) bcount=${FAKE_BACKUPS_NETWORK:-$bcount} ;;
+                esac
+                printf 'backups=%s of=%s\n' "$bcount" "$n"
                 ;;
             cfg-write)
                 uci_set abscen "$2"
@@ -351,6 +444,57 @@ case "${last}" in
                 # judgement follow it.
                 cat "$dev/boottools" 2>/dev/null
                 ;;
+            pkgcycle)
+                # add -> run it once -> apk info -L -> del, with every witness a test can move.
+                # A package that is already installed is refused (the real helper does not
+                # uninstall what the user put there), and one the feeds refuse is unavailable.
+                set -- $args
+                pkc=$1
+                if grep -qx "$pkc" "$dev/pkginstalled" 2>/dev/null; then
+                    printf 'pkgcycle pkg=%s before=yes skipped=yes\n' "$pkc"
+                elif grep -qx "$pkc" "$dev/pkgcycle-unavailable" 2>/dev/null; then
+                    printf 'pkgcycle pkg=%s before=no add_rc=1 after_add=no exec=none exec_rc=na files=0 del_rc=1 after_del=no files_left=0 world_before=12 world_after=12 list=%s\n' \
+                        "$pkc" "$2"
+                    printf 'pkgcycle_err=ERROR: unable to select packages:\n'
+                else
+                    printf 'pkgcycle pkg=%s before=no add_rc=0 after_add=yes exec=/usr/bin/%s exec_rc=%s files=%s del_rc=%s after_del=%s files_left=%s world_before=%s world_after=%s list=%s\n' \
+                        "$pkc" "$pkc" "${FAKE_PKG_EXEC_RC:-0}" "${FAKE_PKG_FILES:-3}" \
+                        "${FAKE_PKG_DEL_RC:-0}" "${FAKE_PKG_AFTER_DEL:-no}" "${FAKE_PKG_FILES_LEFT:-0}" \
+                        "${FAKE_PKG_WORLD_BEFORE:-12}" "${FAKE_PKG_WORLD_AFTER:-12}" "$2"
+                fi
+                ;;
+            badcfg)
+                # The four writers of S8. Each one changes the file the driver backed up, so
+                # the comparison after the restore is a real before/after and not a claim.
+                set -- $args
+                case "${1:-}" in
+                    network)
+                        printf "config interface '%s'\n\toption device '%s'\n\toption proto '%s'\n" \
+                            "$2" "$3" "$4" >>"$dev/network"
+                        printf 'badcfg=network name=%s device=%s proto=%s commit_rc=0 parse=0\n' \
+                            "$2" "$3" "$4"
+                        ;;
+                    firewall)
+                        printf "config rule\n\toption name '%s'\n\toption dest_port 'not-a-port'\n\toption target 'AB-BOGUS'\n" \
+                            "$2" >>"$dev/firewall"
+                        printf 'badcfg=firewall name=%s sec=cfg0bad dest_port=not-a-port target=AB-BOGUS commit_rc=0 parse=0\n' \
+                            "$2"
+                        ;;
+                    docker)
+                        printf '{\n  "log-driver": "json-file",\n  "log-opts": {\n' >"$dev/daemon.json"
+                        printf 'badcfg=docker file=%s write_rc=0 bytes=%s\n' "$2" \
+                            "$(wc -c <"$dev/daemon.json" | tr -d ' ')"
+                        ;;
+                    apk)
+                        printf '%s\n' "$3" >"$dev/distfeeds.list"
+                        printf 'badcfg=apk file=%s write_rc=0 feeds=%s\n' "$2" "$3"
+                        ;;
+                    *)
+                        printf 'badcfg=%s rc=2 err=unknown-class\n' "${1:-none}"
+                        exit 2
+                        ;;
+                esac
+                ;;
             *)
                 exit 0
                 ;;
@@ -398,6 +542,20 @@ H aaa3 tree/a/one.txt
 H aaa4 docker-image-alpine.tar
 HASH
     cp "$FAKE_DEV/hash-now" "$FAKE_DEV/data.sha256"
+    # The four files S8 breaks, in the state a healthy machine has them. S8 is about what the
+    # machine does when one of them becomes wrong, so the starting point has to be right:
+    # a network and a firewall file that parse, a daemon.json that is valid JSON, and a feed
+    # list pointing at the machine's own mirror.
+    printf "config interface 'lan'\n\toption device 'br-lan'\n\toption proto 'static'\n" >"$FAKE_DEV/network"
+    printf "config defaults\n\toption input 'ACCEPT'\n" >"$FAKE_DEV/firewall"
+    printf '{\n  "log-driver": "json-file",\n  "log-opts": {"max-size": "1m"}\n}\n' >"$FAKE_DEV/daemon.json"
+    printf 'running' >"$FAKE_DEV/dockerd"
+    printf 'https://mirror.lan/releases/25.12.0/packages/x86_64/packages/packages.adb\n' >"$FAKE_DEV/distfeeds.list"
+    # What the package-cycle helper reads: nothing is installed by default, and the feed
+    # refuses nothing.
+    : >"$FAKE_DEV/pkginstalled"
+    : >"$FAKE_DEV/pkgcycle-unavailable"
+    rm -f "$FAKE_DEV/packages" "$FAKE_DEV/packages-reason" "$FAKE_DEV/sshdead"
     : >"$STUB_CALLS"
 }
 
@@ -476,6 +634,91 @@ printf 'no' >"$FAKE_DEV/apk"
 out=$(run_scen "$tmp/r-s1-noapk" --case S1)
 assert_eq "$?" "4" "a machine without apk is a gap for the preinstall case"
 assert_contains "$(note_of "$tmp/r-s1-noapk")" "no apk on this image" "the gap names the reason"
+
+# --- ac-4 (R5): install, run once, remove, and nothing left behind --------- #
+# The first package of the cycle is installed, run, listed and removed. All three witnesses
+# are compared on the host, and the note says what happened to the package the cycle used.
+setup_fake_device 25.12.2
+out=$(run_scen "$tmp/r-s1-cycle" --case S1)
+assert_eq "$?" "0" "an install-then-remove that leaves nothing behind keeps S1 green"
+assert_eq "$(verdict_of "$tmp/r-s1-cycle")" "PASS" "a clean uninstall is a PASS"
+assert_contains "$(note_of "$tmp/r-s1-cycle")" "install-then-remove nano removed cleanly" \
+    "the note names the package the cycle used and its outcome"
+cyclelog=$(cat "$(evidence_of "$tmp/r-s1-cycle" s1)")
+assert_contains "$cyclelog" "pkgcycle nano: installed, /usr/bin/nano --version ran, 3 file(s) listed, removed cleanly (world 12 -> 12)" \
+    "the cycle records what it installed, ran, listed and removed"
+assert_contains "$(cat "$STUB_CALLS")" "pkgcycle nano" "the second half of S1 runs on the machine, not on the host"
+
+# Residue is the thing R5 asks about: the package is gone from apk and its files are not.
+setup_fake_device 25.12.2
+export FAKE_PKG_FILES_LEFT=2
+out=$(run_scen "$tmp/r-s1-residue" --case S1)
+rc=$?
+unset FAKE_PKG_FILES_LEFT
+assert_eq "$rc" "1" "files left on disk after apk del fail the case"
+assert_contains "$out" "pkgcycle nano: 2 of the 3 file(s) apk listed are still on disk after the uninstall" \
+    "the residue is counted against the file list apk itself printed"
+
+setup_fake_device 25.12.2
+export FAKE_PKG_AFTER_DEL=yes
+out=$(run_scen "$tmp/r-s1-stillknown" --case S1)
+rc=$?
+unset FAKE_PKG_AFTER_DEL
+assert_eq "$rc" "1" "a package apk still answers for after apk del fails the case"
+assert_contains "$out" "apk info -e still answers after apk del" "the database witness is named"
+
+setup_fake_device 25.12.2
+export FAKE_PKG_WORLD_AFTER=13
+out=$(run_scen "$tmp/r-s1-world" --case S1)
+rc=$?
+unset FAKE_PKG_WORLD_AFTER
+assert_eq "$rc" "1" "an /etc/apk/world that grew after the uninstall fails the case"
+assert_contains "$out" "/etc/apk/world has 13 line(s) after the uninstall, it had 12 before" \
+    "the world file is compared as a count, before against after"
+
+# A package the user already has is never removed to prove a point: the cycle refuses it and
+# the case moves to the next name.
+setup_fake_device 25.12.2
+printf 'nano\n' >"$FAKE_DEV/pkginstalled"
+out=$(run_scen "$tmp/r-s1-cycle-skip" --case S1)
+assert_eq "$?" "0" "a package that is already installed is skipped, not uninstalled"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s1-cycle-skip" s1)")" \
+    "pkgcycle nano: already installed on this machine, so a cycle would not prove an uninstall" \
+    "the refusal is recorded with its reason"
+assert_contains "$(note_of "$tmp/r-s1-cycle-skip")" "install-then-remove less removed cleanly" \
+    "the next name in the list is the one that gets cycled"
+
+# A name the feeds do not serve: the list is several names long exactly so this does not end
+# the measurement -- the next name is tried, and the one that could not be used is in the log.
+setup_fake_device 25.12.2
+printf 'nano\n' >"$FAKE_DEV/pkgcycle-unavailable"
+out=$(run_scen "$tmp/r-s1-cycle-unavail" --case S1)
+assert_eq "$?" "0" "a package the feeds do not serve does not fail the cycle half of S1"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s1-cycle-unavail" s1)")" "pkgcycle nano" \
+    "the name that could not be used is still in the evidence"
+assert_contains "$(note_of "$tmp/r-s1-cycle-unavail")" "install-then-remove less removed cleanly" \
+    "the next name in the list is the one that gets cycled"
+
+# Not one of the names can be installed: the uninstall half was not measured, and that is a
+# FINDING with the last reason apk gave -- not a red case for a feed that lacks a small package.
+setup_fake_device 25.12.2
+printf 'nano\nless\njq\n' >"$FAKE_DEV/pkgcycle-unavailable"
+out=$(run_scen "$tmp/r-s1-cycle-allunavail" --case S1)
+assert_eq "$?" "0" "a feed that serves none of the cycle names does not fail S1"
+assert_contains "$(note_of "$tmp/r-s1-cycle-allunavail")" "jq could not be installed for the install-then-remove cycle" \
+    "the finding names the last name tried and its exit status"
+
+# Nothing in the list can be cycled at all: a FINDING about the image, not a red case.
+setup_fake_device 25.12.2
+printf 'nano\nless\njq\n' >"$FAKE_DEV/pkginstalled"
+out=$(run_scen "$tmp/r-s1-cycle-none" --case S1)
+assert_eq "$?" "0" "no package left to cycle with does not fail S1"
+case "$(note_of "$tmp/r-s1-cycle-none")" in
+    FINDING:*) assert_eq "prefixed" "prefixed" "the unmeasured uninstall is a FINDING" ;;
+    *) assert_eq "prefixed" "not-prefixed" "the unmeasured uninstall is a FINDING" ;;
+esac
+assert_contains "$(note_of "$tmp/r-s1-cycle-none")" "install-then-remove not measured" \
+    "the note says the uninstall half was not measured"
 
 # --- S2: the user's files, config and settings ------------------------------ #
 setup_fake_device 25.12.2
@@ -726,6 +969,28 @@ rc=$?
 unset FAKE_BOOT_AFTER
 assert_eq "$rc" "1" "a slot that did not come up healthy fails the jump"
 assert_contains "$out" "expected=ok got=degraded" "the field that disagreed is named"
+
+# --- ac-4: the package metadata a hop lands in ----------------------------- #
+# `packages` and `packages_reason` used to be reported and never judged. After a jump they are
+# judged: a machine left `limited` cannot install anything for its own kernel until the world
+# file or the feed list is fixed, and the failure has to name the reason the aligner recorded.
+setup_fake_world 25.12.0
+printf 'limited' >"$FAKE_DEV/packages"
+printf 'payload-gap' >"$FAKE_DEV/packages-reason"
+out=$(run_scen "$tmp/r-s3-pkgstate" --case S3)
+assert_eq "$?" "1" "a hop that lands on packages=limited fails the case"
+assert_eq "$(verdict_of "$tmp/r-s3-pkgstate")" "FAIL" "the verdict is FAIL, not a reported field"
+assert_contains "$out" "assert_field packages: expected=aligned got=limited" \
+    "the failure names the field and both values"
+assert_contains "$out" "assert_field packages_reason: expected=none got=payload-gap" \
+    "the reason the aligner recorded is named too, so the failure is actionable"
+
+setup_fake_world 25.12.0
+printf 'no-payloads' >"$FAKE_DEV/packages-reason"
+out=$(run_scen "$tmp/r-s3-pkgreason" --case S3)
+assert_eq "$?" "1" "aligned but with a reason left over is still a failed hop"
+assert_contains "$out" "assert_field packages_reason: expected=none got=no-payloads" \
+    "packages_reason is judged on its own"
 
 # --- S4: the downgrade ----------------------------------------------------- #
 setup_fake_world 25.12.2
@@ -1131,6 +1396,193 @@ assert_contains "$(note_of "$tmp/r-s7-gap")" "no feed list for 25.12.2" "the gap
 assert_eq "$(grep -c 'ab-upgrade' "$STUB_CALLS" || true)" "0" \
     "nothing was installed or jumped without the feeds of both ends"
 
+# --- ac-4 (R6): four broken configurations, and the way back ---------------- #
+# S8 asks the question the other cases cannot: a person with a text editor gets these files
+# wrong far more often than an upgrade does. Each class has to end with the change refused or
+# visibly degraded, the machine still reachable, and a backup whose bytes are back.
+#
+# What a machine with four classes all behaving well answers. The per-class witnesses are the
+# simulator's, but the judgements are the driver's.
+setup_fake_world 25.12.2
+out=$(run_scen "$tmp/r-s8" --case S8)
+assert_eq "$?" "0" "S8 exits zero when all four classes are refused or degraded and restored"
+assert_eq "$(verdict_of "$tmp/r-s8")" "PASS" "S8 records PASS"
+s8log=$(cat "$(evidence_of "$tmp/r-s8" s8)")
+assert_contains "$(note_of "$tmp/r-s8")" "4/4 broken configuration(s) refused or degraded with the machine intact" \
+    "the note counts the classes that were judged"
+assert_contains "$(note_of "$tmp/r-s8")" "/data/scen/backup/badcfg-<class>-" \
+    "the note says where the backups live, because that is the way back"
+
+# 1/4 network: the section is written, the reload goes through S2's net-apply, the device the
+# section names is never created, and the file goes back byte for byte.
+assert_contains "$(cat "$STUB_CALLS")" "badcfg network abscenbadnet ab-scen-nosuch0 ab-scen-badproto" \
+    "the broken section names a device and a proto nothing implements"
+assert_contains "$(cat "$STUB_CALLS")" "net-apply /data/scen/backup/badcfg-network-" \
+    "the network class reloads through S2's net-apply, not a second implementation"
+assert_contains "$s8log" "refused or ignored -- ab-scen-nosuch0 was never created" \
+    "the refusal is witnessed by the device not existing, not by net-reload's exit status"
+assert_contains "$s8log" "S8 network: ssh answered" "the session survived the broken section"
+assert_contains "$s8log" "/etc/config/network is byte-identical to /data/scen/backup/badcfg-network-" \
+    "the network file is compared with the backup, not just copied over it"
+assert_eq "$(grep -c 'ab-scen-nosuch0' "$FAKE_DEV/network")" "0" \
+    "the broken section is gone from the machine's network file"
+
+# 2/4 firewall: fw4's own check is the refusal witness, and the restored ruleset has to
+# translate and reload again -- a restore that cannot be applied is not a restore.
+assert_contains "$s8log" "fw4 check refused the broken rule" "the broken ruleset is refused by the firewall's own check"
+assert_contains "$s8log" "the restored ruleset translates again" \
+    "the restored configuration is proven parseable, which is the second half of the claim"
+assert_contains "$s8log" "the restored ruleset reloads" "and it is reloadable"
+assert_eq "$(grep -c 'not-a-port' "$FAKE_DEV/firewall")" "0" "the broken rule is gone from the restored file"
+assert_eq "$(grep -c '/etc/init.d/firewall reload' "$STUB_CALLS")" "1" \
+    "the live firewall is only ever given the restored ruleset, never the broken one"
+
+# 3/4 docker: the daemon does not come up on a file that is not JSON, the router is
+# unaffected, and the backup brings the daemon back.
+assert_contains "$s8log" "dockerd did not come up on the truncated daemon.json" \
+    "docker being unavailable is the degradation this class witnesses"
+assert_contains "$s8log" "dockerd is running again after the backup was restored" \
+    "the backup is what brings the daemon back, and that is asserted"
+assert_contains "$(cat "$FAKE_DEV/daemon.json")" '"max-size": "1m"' \
+    "the machine's own daemon.json is back, byte for byte"
+
+# 4/4 apk: the 404 feed fails the index refresh, the machine keeps running, and the machine's
+# own feed answers again -- that second update is what tells the 404 apart from a dead network.
+assert_contains "$s8log" "apk update failed on the 404 feed" "the bogus feed is witnessed failing"
+assert_contains "$s8log" "the machine's own feeds answer again (apk update rc=0)" \
+    "the restore is proven by a refresh that works, not by a copy"
+assert_contains "$(cat "$FAKE_DEV/distfeeds.list")" "mirror.lan" \
+    "the feed list the machine had is the one it has afterwards"
+
+# The recovery record: one row per class, each naming its backup and who put it back. "The
+# machine is still up" is not the question; "where is the copy and who restored it" is.
+record=$(cat "$FAKE_DEV"/badcfg-*.tsv 2>/dev/null || true)
+assert_eq "$(printf '%s\n' "$record" | grep -c '^network' || true)" "1" \
+    "the recovery record has a row for the network class"
+assert_eq "$(printf '%s\n' "$record" | grep -c '^firewall' || true)" "1" \
+    "the recovery record has a row for the firewall class"
+assert_eq "$(printf '%s\n' "$record" | grep -c '^docker' || true)" "1" \
+    "the recovery record has a row for the docker class"
+assert_eq "$(printf '%s\n' "$record" | grep -c '^apk' || true)" "1" \
+    "the recovery record has a row for the apk class"
+assert_contains "$record" "badcfg-network-" "every row names the backup directory it came from"
+assert_contains "$record" "host (net-rollback" "the network row names who restored the file"
+assert_file_exists "$(ls "$tmp"/r-s8/evidence/scen-badcfg-*.tsv 2>/dev/null | head -n 1)" \
+    "the record is also kept host-side, where a machine that stopped answering cannot take it"
+assert_contains "$s8log" "S8 recovery record: /data/scen/evidence/badcfg-" \
+    "the record is on the machine, next to the backups it names"
+
+# A broken section that took the session away is a FAIL, and both paths back are recorded.
+# Recording "we copied something" while the machine is unreachable would be the one thing S8
+# must not do.
+setup_fake_world 25.12.2
+export FAKE_BREAK_NET=1
+out=$(run_scen "$tmp/r-s8-ssh" --case S8)
+rc=$?
+unset FAKE_BREAK_NET
+assert_eq "$rc" "1" "a broken network section that took ssh away makes the run non-zero"
+assert_contains "$(note_of "$tmp/r-s8-ssh")" "ssh lost after the reload" \
+    "the note says what the machine lost, not that a step failed"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s8-ssh" s8)")" "the watchdog restores" \
+    "the machine's own revert is recorded as the path back"
+# The machine cannot be written to while it is unreachable, so the record has to exist
+# host-side too -- that is exactly the moment it is read.
+assert_contains "$(cat "$tmp"/r-s8-ssh/evidence/scen-badcfg-*.tsv)" "machine watchdog and host rollback" \
+    "the recovery record names both ways back, and survives on the host when /data cannot be written"
+assert_contains "$(note_of "$tmp/r-s8-ssh")" "firewall docker apk was not attempted" \
+    "the classes after the machine stopped answering are named as not attempted, not as broken backups"
+
+# docker not configured on this image: nothing to break, so a FINDING and not a FAIL. The
+# other three classes are still judged.
+setup_fake_world 25.12.2
+rm -f "$FAKE_DEV/daemon.json"
+out=$(run_scen "$tmp/r-s8-nodocker" --case S8)
+assert_eq "$?" "0" "an image without a docker config does not fail S8"
+case "$(note_of "$tmp/r-s8-nodocker")" in
+    FINDING:*) assert_eq "prefixed" "prefixed" "the skipped docker class is a FINDING" ;;
+    *) assert_eq "prefixed" "not-prefixed" "the skipped docker class is a FINDING" ;;
+esac
+assert_contains "$(note_of "$tmp/r-s8-nodocker")" "not judged: docker" \
+    "the note names which class could not be judged"
+assert_contains "$(note_of "$tmp/r-s8-nodocker")" "(network firewall apk)" \
+    "the three classes that were judged are the ones counted"
+assert_contains "$(note_of "$tmp/r-s8-nodocker")" "3/4 broken configuration(s)" \
+    "the three that could be judged are still counted"
+
+# dockerd present but the daemon rides out a file that is not JSON: nothing is broken, so
+# nothing is red -- and the fact is reported, because "the daemon ignored it" is worth knowing.
+setup_fake_world 25.12.2
+export FAKE_DOCKERD_RESTART_RC=0
+out=$(run_scen "$tmp/r-s8-dockertol" --case S8)
+rc=$?
+unset FAKE_DOCKERD_RESTART_RC
+assert_eq "$rc" "0" "a daemon that tolerated the broken file does not fail S8"
+assert_contains "$(note_of "$tmp/r-s8-dockertol")" "dockerd is still running with a truncated daemon.json" \
+    "the tolerated file is reported as a FINDING, not silently passed"
+
+# A restore that does not land is a FAIL, and the note names the class it happened in: "we
+# copied it back" without the bytes to show for it is the one claim S8 must not make.
+setup_fake_world 25.12.2
+export FAKE_CP_RC=1
+out=$(run_scen "$tmp/r-s8-norestore" --case S8)
+rc=$?
+unset FAKE_CP_RC
+assert_eq "$rc" "1" "a backup that cannot be copied back makes the run non-zero"
+assert_eq "$(verdict_of "$tmp/r-s8-norestore")" "FAIL" "a restore that did not land is a FAIL"
+assert_contains "$(note_of "$tmp/r-s8-norestore")" "network: the restore is not byte-identical" \
+    "the failure names the class and what was compared"
+assert_contains "$(note_of "$tmp/r-s8-norestore")" "docker: dockerd did not come back after the restore" \
+    "every class that went red is named, not just the first one"
+assert_contains "$(cat "$tmp"/r-s8-norestore/evidence/scen-badcfg-*.tsv)" "host (incomplete)" \
+    "the recovery record does not claim a restore that did not happen"
+
+# A docker binary with no init script: the degradation cannot be produced, so the class says
+# it could not judge it -- and the file still goes back.
+setup_fake_world 25.12.2
+export FAKE_DOCKERD_NOINIT=1
+out=$(run_scen "$tmp/r-s8-noinit" --case S8)
+rc=$?
+unset FAKE_DOCKERD_NOINIT
+assert_eq "$rc" "0" "a docker half that cannot be restarted does not fail S8"
+assert_contains "$(note_of "$tmp/r-s8-noinit")" "not judged: docker" \
+    "the class that cannot restart the daemon says so"
+assert_contains "$(cat "$FAKE_DEV/daemon.json")" '"max-size": "1m"' \
+    "the daemon.json goes back even on the path that could not judge it"
+
+# Both apk updates fail: the 404 and an unreachable network cannot be told apart, so the
+# class says it could not judge instead of claiming the 404 was witnessed.
+setup_fake_world 25.12.2
+export FAKE_APK_UPDATE_RC=1
+out=$(run_scen "$tmp/r-s8-nofeed" --case S8)
+rc=$?
+unset FAKE_APK_UPDATE_RC
+assert_eq "$rc" "0" "an unreachable mirror is a class that could not be judged, not a failure"
+assert_contains "$(note_of "$tmp/r-s8-nofeed")" "not judged: apk" \
+    "the apk class says it could not tell a 404 from a dead network"
+
+# A backup that does not land means nothing is written: a broken file with no way back is not
+# a measurement.
+setup_fake_world 25.12.2
+export FAKE_BACKUPS_NETWORK=2
+out=$(run_scen "$tmp/r-s8-nobackup" --case S8)
+rc=$?
+unset FAKE_BACKUPS_NETWORK
+assert_contains "$(cat "$(evidence_of "$tmp/r-s8-nobackup" s8)")" "S8 network: backup 2/3" \
+    "the class records how much of its backup landed"
+assert_eq "$(grep -c 'ab-scen-nosuch0' "$FAKE_DEV/network")" "0" \
+    "nothing was written to /etc/config/network when its backup was incomplete"
+assert_contains "$(note_of "$tmp/r-s8-nobackup")" "not judged: network" \
+    "the class that could not back up says so instead of passing"
+
+# Nothing to break at all is a GAP: the case did not judge anything, and saying PASS would be
+# a claim it never checked.
+setup_fake_world 25.12.2
+rm -f "$FAKE_DEV/daemon.json"
+out=$(FAKE_BACKUPS=0 run_scen "$tmp/r-s8-gap" --case S8)
+assert_eq "$?" "4" "S8 with nothing it could break exits with the gap status"
+assert_contains "$(note_of "$tmp/r-s8-gap")" "none of the four broken configurations could be judged" \
+    "the gap says nothing was refused and nothing was restored"
+
 # --- the red line ---------------------------------------------------------- #
 setup_fake_world 25.12.2
 printf 'none' >"$FAKE_DEV/committed"
@@ -1146,7 +1598,7 @@ calls_before=$(wc -l <"$STUB_CALLS" | tr -d ' ')
 out=$(run_scen "$tmp/dry" --dry-run)
 assert_eq "$?" "0" "scenarios.sh --dry-run exits zero"
 assert_eq "$(printf '%s\n' "$out" | grep '^# case ' | awk '{print $3}' | tr '\n' ' ')" \
-    "S1 S2 S3 S4 S5 S6 S7 " "the seven cases are planned in order"
+    "S1 S2 S3 S4 S5 S6 S7 S8 " "the eight cases are planned in order"
 assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S3" && $2 == "1/1" {print $3}' | tr '\n' ',')" \
     "unmount,push,check,install,reboot,wait_up,settle,status,assert," \
     "one hop runs the fixed skeleton in order"
@@ -1161,6 +1613,12 @@ assert_contains "$out" "S2 cfg-backup /etc/config/{network,firewall,system}" \
     "the plan says the backup comes before the change"
 assert_contains "$out" "S1 pkg-install luci-app-ttyd expect=installed|unavailable" \
     "the plan says an unavailable package is not a failure"
+assert_contains "$out" "S1 pkg-cycle nano expect=refused when nano is already installed" \
+    "the plan shows the install-then-remove step and that a user's package is never removed"
+assert_contains "$out" "S1 pkg-cycle assert expect=after_del=no" \
+    "the plan states the three uninstall witnesses before a machine is touched"
+assert_contains "$out" "S3 hop-packages assert packages=aligned packages_reason=none" \
+    "the plan says the package metadata after a hop is judged, not just reported"
 assert_contains "$out" "S6 assert sha256(<esp>/initrd-<slot>) == manifest initramfs.cpio.gz" \
     "the plan states the byte-for-byte rule S6 judges on"
 assert_contains "$out" "S6 version relation expect=same version is silent" \
@@ -1182,6 +1640,25 @@ assert_contains "$out" "S3 1/1 push $tmp/payloads-partial/payload-25.12.2.tar" \
 
 # S7's plan names the three feeds of each version before a machine is touched: the
 # user-space index, the target's own packages and the kmods of that release's kernel.
+# S8's plan: four classes, each with its backup, its refusal witness and its restore rule.
+# A plan that cannot name the witness is a plan that would report PASS without looking.
+calls_before=$(wc -l <"$STUB_CALLS" | tr -d ' ')
+out=$(run_scen "$tmp/dry-s8" --dry-run --case S8)
+assert_eq "$?" "0" "scenarios.sh --dry-run --case S8 exits zero"
+assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S8" && $2 ~ /^[1-4]\/4$/ {print $2}' | tr '\n' ' ')" \
+    "1/4 1/4 1/4 1/4 1/4 1/4 2/4 2/4 2/4 3/4 3/4 3/4 4/4 4/4 4/4 4/4 " \
+    "the four classes are planned in order, each with its own steps"
+assert_contains "$out" "S8 1/4 network refusal expect=ab-scen-nosuch0 was never created" \
+    "the plan names the network class's refusal witness"
+assert_contains "$out" "S8 2/4 firewall restore expect=byte-identical, the rule gone, and the restored ruleset passes fw4 check" \
+    "the plan says a restore has to translate again to count"
+assert_contains "$out" "S8 3/4 docker restore expect=byte-identical, then dockerd running again" \
+    "the plan says the daemon has to come back"
+assert_contains "$out" "S8 4/4 apk apk update expect=non-zero on the 404 feed" \
+    "the plan says the 404 has to be witnessed failing"
+assert_eq "$(wc -l <"$STUB_CALLS" | tr -d ' ')" "$calls_before" "planning S8 reaches no machine"
+assert_eq "$(test -e "$tmp/dry-s8/results.tsv" && echo yes || echo no)" "no" "planning S8 writes no results file"
+
 calls_before=$(wc -l <"$STUB_CALLS" | tr -d ' ')
 out=$(run_scen_payloads "$payloads_s7" "$tmp/dry-s7" --dry-run --case S7)
 assert_eq "$?" "0" "scenarios.sh --dry-run --case S7 exits zero"

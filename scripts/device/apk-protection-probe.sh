@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Does apk's protected-path list actually keep this project's upgrade adapter out of the
 # upper layer?
 #
@@ -39,7 +39,11 @@
 #                   must see as modified and must never shadow. The default is the repo
 #                   fact: platform/lib/upgrade/ ships platform.sh and packages.sh, and
 #                   packages.sh is not owned by any package, so only platform.sh is both.
-set -euo pipefail
+#
+# The device driver scripts in scripts/device are POSIX sh, because scripts/ci/verify.sh
+# lints them that way: they run on a workstation but they decide whether the machine on the
+# bench keeps a bootable slot, and one dialect everywhere is what keeps that check honest.
+set -eu
 
 AB_HOST="${AB_HOST:-root@192.168.2.49}"
 AB_LAYER_PATHS="${AB_LAYER_PATHS:-lib/upgrade/platform.sh}"
@@ -47,7 +51,10 @@ json="false"
 case "${1:-}" in
     --json) json="true" ;;
     -h | --help | help)
-        sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        # `$0` is this script, the file `sed` reads, so the help text cannot drift from the
+        # code that prints it. One `sed` and not `sed | sed`: the status of a pipeline is
+        # its last command's, so an unreadable `$0` would be reported by neither half.
+        sed -n -e '2,33{s/^# \{0,1\}//;p;}' "$0"
         exit 0
         ;;
     "") ;;
@@ -142,6 +149,21 @@ shadowed=""
 required=0
 upper=""
 upper_state="missing"
+# The report goes through a file, not a here-string: POSIX sh has no `<<<`, and a pipe
+# would run the loop in a subshell, where `unprotected`, `shadowed` and `required` would be
+# accumulated and then thrown away - the judgement would always answer "premise holds",
+# which is the one answer this probe must never invent. `printf '%s\n'` appends exactly the
+# newline `<<<` appends, so the sequence of lines `read` sees is unchanged.
+probe_tmp="$(mktemp "${TMPDIR:-/tmp}/ab-apk-probe.XXXXXX")" || {
+    echo "apk-protection-probe: cannot create a temporary file in ${TMPDIR:-/tmp}" >&2
+    exit 2
+}
+trap 'rm -f "${probe_tmp}"' EXIT
+# An interrupted run must not leave the file behind, and it must still exit the way an
+# untrapped shell would (128 + the signal), so the EXIT trap above does the removing.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf '%s\n' "${output}" >"${probe_tmp}"
 while read -r kind a b c; do
     [ -n "${kind:-}" ] || continue
     case "${kind}" in
@@ -188,7 +210,7 @@ while read -r kind a b c; do
             *) printf '%-8s %s\n' "${kind}" "${a} ${b:-} ${c:-}" ;;
         esac
     fi
-done <<<"${output}"
+done <"${probe_tmp}"
 
 if [ "${json}" != "true" ]; then
     echo

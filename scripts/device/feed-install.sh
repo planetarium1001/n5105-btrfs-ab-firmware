@@ -9,12 +9,21 @@
 #
 #   scripts/device/feed-install.sh --case check      # ac-12 only: nothing is written
 #   scripts/device/feed-install.sh --case install    # ac-13 only: install whatever is out there
-#   scripts/device/feed-install.sh                   # both, in that order
-#   scripts/device/feed-install.sh --expect 0.0.10   # pin the candidate this run expects (default 0.0.10)
+#   scripts/device/feed-install.sh --case pin        # ac-3 only: hold this machine, then release it
+#   scripts/device/feed-install.sh                   # check and install, in that order
+#   scripts/device/feed-install.sh --case all        # check, pin, install - the pin needs a candidate
+#   scripts/device/feed-install.sh --expect 0.0.12   # the candidate this run expects (default 0.0.10)
+#   AB_EXPECT=0.0.12 scripts/device/feed-install.sh  # the same, for a caller that sets an environment
 #   scripts/device/feed-install.sh --feed-url https://mirror.example/n5105/feed/v1
 #   scripts/device/feed-install.sh --release-base https://gh-proxy.com/https://github.com
 #   scripts/device/feed-install.sh --index-file /tmp/index.txt   # no host network
+#   AB_PAYLOAD_DIR=payloads scripts/device/feed-install.sh --case pin  # the payload it installs
 #   AB_DRY_RUN=1 scripts/device/feed-install.sh      # print the steps, touch nothing
+#
+# --expect is the candidate the run expects: the flag wins, AB_EXPECT is the same knob for a
+# caller that assembles an environment instead of a command line, and 0.0.10 is the default.
+# The pin case pins the release one patch below the candidate (0.0.12 -> 0.0.11), because a
+# pin equal to the candidate installs normally and would pass its judgements for free.
 #
 # What makes this different from feed-probe.sh, which is where ac-12 was going to be read
 # from: the probe prints `source=` and the machine line and exits 0 for *both* "update
@@ -27,6 +36,7 @@
 #
 #   ok [ac-12] source=release status=update platform_available=0.0.9 exit=10
 #   ok [ac-13] payload n5105-ab-25.12.2-upgrade.tar size 23500800 matches the index
+#   ok [ac-3] ab-upgrade --feed --yes exit=74 while UPDATE_PIN=0.0.11 held the machine
 #   FAIL [ac-13] the machine still runs 0.0.9 after the commit
 #     next: scripts/device/matrix.sh --case M1 --dry-run
 #
@@ -43,9 +53,13 @@ export AB_REPO_ROOT
 
 AB_FEED_INSTALL_RESULTS=${AB_FEED_INSTALL_RESULTS:-feed-install-results.tsv}
 AB_DEVICE_FEED_DIR=${AB_DEVICE_FEED_DIR:-/tmp/ab-feed}
+# Where a payload for the version under test is looked for on this host. The pin case is the
+# only case that needs one: it installs a named file while the pin is set, which is how the
+# "the pin never reaches the explicit payload path" judgement is made against the real CLI.
+AB_PAYLOAD_DIR=${AB_PAYLOAD_DIR:-payloads}
 DRY_RUN=${AB_DRY_RUN:-0}
 
-expect="0.0.10"
+expect=${AB_EXPECT:-0.0.10}
 conf=/etc/ab/update.conf
 feed_url=""
 release_base=""
@@ -53,16 +67,22 @@ index_file=""
 cases=""
 
 usage() {
-    sed -n '8,21p' "$0"
+    sed -n '10,26p' "$0"
     exit 2
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --case)
+            # The acceptance names are accepted as aliases, so a token copied out of a red
+            # row (`ac-3`, `ac-13`) is the same request as the case name the driver uses.
             case "${2:-}" in
-                check | install | both) cases=${2} ;;
-                *) printf 'feed-install.sh: --case takes check, install or both\n' >&2; usage ;;
+                check | ac-12) cases=check ;;
+                install | ac-13) cases=install ;;
+                pin | ac-3) cases=pin ;;
+                both) cases=both ;;
+                all) cases=all ;;
+                *) printf 'feed-install.sh: --case takes check, install, pin, both or all\n' >&2; usage ;;
             esac
             shift 2
             ;;
@@ -155,10 +175,17 @@ require_idle_machine() {
     return 0
 }
 
+# _release_field <KEY>: one value of the running slot's /etc/platform-release, empty when
+# the file or the key is missing. One reader, because PLATFORM_VERSION (which must move) and
+# UPSTREAM_VERSION (which must not) are read off the same file and have to be read the same way.
+_release_field() {
+    _out=$(dev_ssh 'cat /etc/platform-release 2>/dev/null' 2>/dev/null) || _out=""
+    printf '%s\n' "${_out}" | sed -n "s/^${1:?_release_field needs a key}=//p" | head -n 1
+}
+
 # _release_installed: the platform version the running slot records.
 _release_installed() {
-    _out=$(dev_ssh 'cat /etc/platform-release 2>/dev/null' 2>/dev/null) || _out=""
-    printf '%s\n' "${_out}" | sed -n 's/^PLATFORM_VERSION=//p' | head -n 1
+    _release_field PLATFORM_VERSION
 }
 
 # _index_entry <platform>: the `key=value` block of one AB-FEED entry, read from the index
@@ -256,6 +283,10 @@ _classify_refusal() {
             ;;
         feed-pinned)
             _fail "${_case}" "UPDATE_PIN holds this machine (reason=${_reason})" "ab-upgrade --unpin"
+            ;;
+        pin-write-failed)
+            _fail "${_case}" "the pin could not be written to the config file (reason=${_reason})" \
+                "ls -l /etc/ab/update.conf; df -k /etc"
             ;;
         feed-would-downgrade)
             _fail "${_case}" "the feed offers something older than this machine (reason=${_reason})" \
@@ -389,8 +420,9 @@ run_install() {
             "${_case}" "${AB_DEVICE_FEED_DIR}"
         printf '%s 4/6 expect pending=<other slot> and committed unchanged\n' "${_case}"
         printf '%s 5/6 reboot, wait for 22, wait for boot=ok pending=none\n' "${_case}"
-        printf '%s 6/6 expect slot=committed=<other>, PLATFORM_VERSION=%s, and action=commit in the ring log\n' \
+        printf '%s 6/6 expect slot=committed=<other>, PLATFORM_VERSION=%s, esp=ok, generation +1,\n' \
             "${_case}" "${expect}"
+        printf '%s     UPSTREAM_VERSION unchanged, and action=commit in the ring log\n' "${_case}"
         CASE_NOTE="dry-run"
         CASE_STATUS=PASS
         return 0
@@ -404,7 +436,9 @@ run_install() {
     before_status=$(dev_status 2>/dev/null) || before_status=""
     before_slot=$(status_field "${before_status}" slot) || before_slot=""
     before_committed=$(status_field "${before_status}" committed) || before_committed=""
+    before_generation=$(status_field "${before_status}" generation) || before_generation=""
     before_version=$(_release_installed)
+    before_upstream=$(_release_field UPSTREAM_VERSION)
 
     install_cmd="ab-upgrade --feed --yes"
     [ -n "${feed_url}" ] && install_cmd="${install_cmd} --feed-url '${feed_url}'"
@@ -530,10 +564,45 @@ run_install() {
     _assert_eq "${_case}" "committed" "$(status_field "${settled}" committed)" "${target:-?}" "ab-slot status"
     _assert_eq "${_case}" "pending" "$(status_field "${settled}" pending)" "none" "ab-slot status"
     _assert_eq "${_case}" "boot" "$(status_field "${settled}" boot)" "ok" "ab-slot log"
+    # boot= and esp= are the two facts a machine cannot claim without evidence (lib.sh, the
+    # `status` subcommand): how this boot started, and what the initramfs that started it
+    # thought of the ESP. Asserting only boot= leaves a payload whose bootloader write went
+    # half-way reporting green, which is the one write a machine cannot undo by itself.
+    _assert_eq "${_case}" "esp" "$(status_field "${settled}" esp)" "ok" \
+        "ab-slot status; ab-slot log   # esp= is the initramfs's verdict on the ESP it started from"
+
+    # generation is the counter that only grows and it moves when the payload is laid down,
+    # not when it commits (measured: 5 -> 6 at install, 6 after the commit boot), so the
+    # install under test is exactly one generation per payload.
+    case "${before_generation}" in
+        '' | *[!0-9]*)
+            _fail "${_case}" \
+                "generation could not be read before the install (${before_generation:-empty}), so the advance cannot be asserted" \
+                "ab-slot status"
+            ;;
+        *)
+            _assert_eq "${_case}" "generation" "$(status_field "${settled}" generation)" \
+                "$((before_generation + 1))" \
+                "ab-slot status   # one payload laid down advances it by one (before: ${before_generation})"
+            ;;
+    esac
 
     version_after=$(_release_installed)
     _assert_eq "${_case}" "PLATFORM_VERSION" "${version_after}" "${expect}" \
         "cat /etc/platform-release   # before this run it was ${before_version:-unknown}"
+
+    # The platform release moves and the base underneath it does not: a same-base update
+    # replaces the platform layer and leaves the upstream tree alone, and an UPSTREAM_VERSION
+    # that followed it would mean the payload rewrote the tree this case never meant to touch.
+    upstream_after=$(_release_field UPSTREAM_VERSION)
+    if [ -z "${before_upstream}" ] || [ -z "${upstream_after}" ]; then
+        _fail "${_case}" \
+            "UPSTREAM_VERSION could not be read on both sides (before='${before_upstream}' after='${upstream_after}')" \
+            "cat /etc/platform-release"
+    else
+        _assert_eq "${_case}" "UPSTREAM_VERSION" "${upstream_after}" "${before_upstream}" \
+            "cat /etc/platform-release   # the platform release moves; the base under it must not"
+    fi
 
     # The commit line is the machine's own statement that this boot finished and committed
     # (lib.sh searches boot-0.log, boot-1.log and `ab-slot log --prev` in that order, because
@@ -560,6 +629,384 @@ run_install() {
     return 0
 }
 
+# --------------------------------------------------------------------------- #
+# ac-3: the pin holds the automatic path, and only the automatic path
+#
+# PRD: `ab-upgrade --pin <ver>` 后 `--feed-check` 给 status=pinned 退 0、`--feed` 给 exit 74
+# reason=feed-pinned、`--unpin` 后回到 status=update 退 10、pin 期间显式 payload 仍可装、
+# 非法 pin 值给 pin-invalid-version. Every one of the five is read off the command an
+# operator runs; the config file is read once, to prove the machine was put back the way it
+# was. A driver that re-read UPDATE_PIN to decide `status=pinned` would stop testing the
+# command it claims to test.
+#
+# The pin sits below the candidate (and at or above the running release), which is the state
+# docs/update.md calls "held": a pin equal to the candidate installs normally, so it would
+# pass judgement 2 without proving anything. The case therefore needs a machine one release
+# behind and says so, instead of reporting a red row about a release that is fine.
+#
+# What it leaves behind: nothing pending - the payload it installs is abandoned at once,
+# because a pending slot is a machine that switches at the next boot - and no pin, which is
+# also the state it refuses to start from. What does stay is the other slot's payload, which
+# is a slot write and not a half-install: it is never booted here, the next install (ac-13, or
+# the same payload by hand) overwrites it, and `ab-slot gc` reaps the layer once the state
+# stops referencing it.
+# --------------------------------------------------------------------------- #
+
+# _version_before <MAJOR.MINOR.PATCH>: the release one patch below, or nothing. This project
+# ships 0.0.N, so "candidate - 1" is a patch step; a version with no such predecessor (patch
+# 0, or anything that is not three numbers) is refused here rather than guessed at.
+_version_before() {
+    case "${1:-}" in
+        '' | *[!0-9.]*) return 1 ;;
+    esac
+    printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+    _vb_patch=$(printf '%s' "$1" | awk -F. '{ print $NF }')
+    [ "${_vb_patch}" -gt 0 ] || return 1
+    printf '%s.%s\n' "$(printf '%s' "$1" | sed 's/\.[0-9]*$//')" "$((_vb_patch - 1))"
+}
+
+# _pin_value: UPDATE_PIN as the machine's config carries it; empty when the line is absent.
+_pin_value() {
+    dev_ssh "sed -n 's/^UPDATE_PIN=//p' '${conf}'" 2>/dev/null | head -n 1
+}
+
+# _ab_upgrade <command>: one ab-upgrade invocation on the machine. PIN_OUT is what it said
+# (stdout and stderr together), PIN_RC its exit code. The output is echoed with the same
+# `| ` prefix the two cases above use, so a red row still carries the machine's own words.
+PIN_OUT=""
+PIN_RC=0
+_ab_upgrade() {
+    PIN_OUT=$(dev_ssh "$1" 2>&1)
+    PIN_RC=$?
+    printf '  $ %s\n' "$1" >&2
+    [ -n "${PIN_OUT}" ] && printf '%s\n' "${PIN_OUT}" | sed 's/^/  | /' >&2
+    return 0
+}
+
+# _pin_field <field>: one field of the `platform=` machine line PIN_OUT carries.
+_pin_field() {
+    status_field "$(printf '%s\n' "${PIN_OUT}" | grep -E '^platform=' | head -n 1)" \
+        "${1:?_pin_field needs a field}"
+}
+
+# _pin_reason: the reason of the refusal PIN_OUT carries; empty when it is not a refusal.
+_pin_reason() {
+    printf '%s\n' "${PIN_OUT}" | sed -n 's/^ab-upgrade: refused, reason=//p' | head -n 1
+}
+
+# _pin_say: the sentence the command printed about itself.
+_pin_say() {
+    printf '%s\n' "${PIN_OUT}" | sed -n 's/^ab-upgrade: //p' | head -n 1
+}
+
+# _pin_on_machine <path>: is this file already on the machine? A read, so it says nothing
+# about the pin - the case is about what ab-upgrade refuses, not about what is lying around.
+_pin_on_machine() {
+    dev_ssh "test -f '$1'" >/dev/null 2>&1
+}
+
+# _pin_payload: the payload an operator would name while the pin is set - the `ab-upgrade
+# <file>` case, which docs/update.md says ignores the pin entirely. Three places hold one, in
+# the order this run is likelier to find it: the host's payload directory (pushed the way
+# matrix.sh pushes one), a copy an earlier matrix/scenario hop left in /tmp, and the download
+# the feed itself kept. Sets _PIN_PAYLOAD_PATH (empty when none of them is there) and
+# _PIN_PAYLOAD_WHY, which the GAP line quotes.
+_PIN_PAYLOAD_PATH=""
+_PIN_PAYLOAD_WHY=""
+_pin_payload() {
+    _pp_local="${AB_PAYLOAD_DIR}/payload-${expect}.tar"
+    _pp_name=""
+    _PIN_PAYLOAD_PATH=""
+    if [ -f "${_pp_local}" ]; then
+        _pp_remote="${AB_REMOTE_TMP}/payload-${expect}.tar"
+        if dev_push "${_pp_local}" "${_pp_remote}" >/dev/null 2>&1; then
+            _PIN_PAYLOAD_PATH=${_pp_remote}
+            return 0
+        fi
+        _PIN_PAYLOAD_WHY="the payload at ${_pp_local} could not be pushed to ${_pp_remote}"
+        return 1
+    fi
+    # The index is read only here, when there is no local payload to push: it is what names
+    # the file the feed kept on the machine, and reading it is a network round trip.
+    _pp_name=$(_index_entry "${expect}" 2>/dev/null | sed -n 's/^payload=//p')
+    for _pp_there in "${AB_REMOTE_TMP}/payload-${expect}.tar" \
+        "${AB_DEVICE_FEED_DIR}/${_pp_name:-n5105-ab-${expect}.tar}"; do
+        if _pin_on_machine "${_pp_there}"; then
+            _PIN_PAYLOAD_PATH=${_pp_there}
+            return 0
+        fi
+    done
+    _PIN_PAYLOAD_WHY="no ${_pp_local} on this host, and none of ${AB_REMOTE_TMP}/payload-${expect}.tar or ${AB_DEVICE_FEED_DIR}/${_pp_name:-n5105-ab-${expect}.tar} is on the machine"
+    return 1
+}
+
+# _pin_abandon_pending: clear a slot the payload install armed. A pending slot is a machine
+# that switches at the next boot, and leaving one behind is the half-installed state this case
+# must not produce - so the install step clears it at once, and the restore calls this again as
+# the net that catches a path which failed before that point.
+_pin_abandon_pending() {
+    _pap_status=$(dev_status 2>/dev/null) || _pap_status=""
+    _pap_pending=$(status_field "${_pap_status}" pending) || _pap_pending=""
+    if [ -z "${_pap_pending}" ] || [ "${_pap_pending}" = "none" ]; then
+        return 0
+    fi
+    _pap_out=$(dev_ssh 'ab-slot abandon' 2>&1)
+    _pap_rc=$?
+    [ -n "${_pap_out}" ] && printf '%s\n' "${_pap_out}" | sed 's/^/  | /' >&2
+    if [ "${_pap_rc}" -eq 0 ]; then
+        _ok "${_case}" "slot ${_pap_pending} abandoned: nothing switches slots on the next boot"
+    else
+        _fail "${_case}" "ab-slot abandon exited ${_pap_rc}; slot ${_pap_pending} is still pending" \
+            "ab-slot abandon; ab-slot status"
+    fi
+}
+
+# _pin_restore: put the machine back the way the case found it, on every path out of the five
+# judgements. Nothing may stay pending (see _pin_abandon_pending), and the pin goes away: the
+# case refuses to start on a machine that arrived with one, so "unpin" is the state it found.
+_pin_restore() {
+    _pin_abandon_pending
+    _ab_upgrade "ab-upgrade --unpin"
+    if [ "${PIN_RC}" -ne 0 ]; then
+        _fail "${_case}" "ab-upgrade --unpin exited ${PIN_RC} while restoring the machine (reason=$(_pin_reason))" \
+            "ab-upgrade --unpin; grep UPDATE_PIN ${conf}"
+    fi
+    _pr_pin=$(_pin_value) || _pr_pin=""
+    _assert_eq "${_case}" "UPDATE_PIN" "${_pr_pin:-none}" "none" \
+        "sed -n 's/^UPDATE_PIN=//p' ${conf}   # the case leaves no pin behind"
+    _pr_after=$(dev_status 2>/dev/null) || _pr_after=""
+    _assert_eq "${_case}" "pending_after" "$(status_field "${_pr_after}" pending)" "none" "ab-slot status"
+    _assert_eq "${_case}" "committed_after" "$(status_field "${_pr_after}" committed)" "${pin_committed}" \
+        "ab-slot status   # the pin case never moves the committed slot"
+}
+
+# _pin_steps: the five judgements of ac-3, in the order the acceptance names them. Each one
+# reads the command's own output and moves the counters, so a step that fails still lets the
+# next one be measured instead of hiding four answers behind one red line.
+_pin_steps() {
+    # 1) --pin, then --feed-check answers status=pinned and exits 0: a held machine is not
+    #    nagged (docs/update.md, "Holding a machine on one release").
+    _ab_upgrade "ab-upgrade --pin ${pin_ver}"
+    if [ "${PIN_RC}" -eq 0 ]; then
+        _ok "${_case}" "$(_pin_say) (ab-upgrade --pin ${pin_ver})"
+    else
+        _fail "${_case}" "ab-upgrade --pin ${pin_ver} exited ${PIN_RC} (reason=$(_pin_reason))" \
+            "ab-upgrade --pin ${pin_ver}; grep UPDATE_PIN ${conf}"
+    fi
+    _ab_upgrade "ab-upgrade --feed-check${pin_flags}"
+    if [ "${PIN_RC}" -ne 0 ]; then
+        _fail "${_case}" \
+            "ab-upgrade --feed-check exited ${PIN_RC} while UPDATE_PIN=${pin_ver} (reason=$(_pin_reason)); a held machine has to answer and exit 0" \
+            "ab-upgrade --feed-check; ab-upgrade --unpin"
+    else
+        _ok "${_case}" "ab-upgrade --feed-check exit=0 while UPDATE_PIN=${pin_ver}"
+        _assert_eq "${_case}" "status" "$(_pin_field status)" "pinned" \
+            "ab-upgrade --feed-check   # status=update would mean the pin did not take"
+        _assert_eq "${_case}" "pin" "$(_pin_field pin)" "${pin_ver}" \
+            "ab-upgrade --feed-check   # the line has to name the pin it obeyed"
+    fi
+
+    # 2) --feed refuses: exit 74, and feed-pinned is the reason the machine names.
+    _ab_upgrade "ab-upgrade --feed --yes${pin_flags}"
+    if [ "${PIN_RC}" -eq 74 ]; then
+        _ok "${_case}" "ab-upgrade --feed --yes exit=74 while held by the pin"
+        _assert_eq "${_case}" "reason" "$(_pin_reason)" "feed-pinned" \
+            "ab-upgrade --feed-check   # read platform_available= next to pin="
+    elif [ "${PIN_RC}" -eq 0 ]; then
+        _fail "${_case}" \
+            "ab-upgrade --feed --yes installed while UPDATE_PIN=${pin_ver} held the machine (exit=0); the pin did not stop the automatic path" \
+            "ab-slot status; ab-slot abandon   # the case clears whatever this wrote"
+    else
+        _fail "${_case}" "ab-upgrade --feed --yes exited ${PIN_RC} with the pin set (reason=$(_pin_reason))" \
+            "ab-upgrade --feed --yes; ab-slot log"
+    fi
+
+    # 3) --unpin puts the automatic path back: status=update and exit 10 again.
+    _ab_upgrade "ab-upgrade --unpin"
+    if [ "${PIN_RC}" -eq 0 ]; then
+        _ok "${_case}" "$(_pin_say) (ab-upgrade --unpin)"
+    else
+        _fail "${_case}" "ab-upgrade --unpin exited ${PIN_RC} (reason=$(_pin_reason))" "ab-upgrade --unpin"
+    fi
+    _ab_upgrade "ab-upgrade --feed-check${pin_flags}"
+    if [ "${PIN_RC}" -ne 10 ]; then
+        _fail "${_case}" \
+            "ab-upgrade --feed-check exited ${PIN_RC} after --unpin (status=$(_pin_field status), reason=$(_pin_reason)); the automatic path has to come back" \
+            "ab-upgrade --feed-check; grep UPDATE_PIN ${conf}"
+    else
+        _ok "${_case}" "ab-upgrade --feed-check exit=10 again after --unpin"
+        _assert_eq "${_case}" "status" "$(_pin_field status)" "update" \
+            "ab-upgrade --feed-check   # status=pinned would mean the pin outlived --unpin"
+    fi
+
+    # 4) The pin never reaches the explicit payload path: a named file still installs. The
+    #    pin is set again first, because that is the state this judgement is about.
+    _ab_upgrade "ab-upgrade --pin ${pin_ver}"
+    if [ "${PIN_RC}" -ne 0 ]; then
+        _fail "${_case}" \
+            "the pin could not be set again for the payload judgement (exit=${PIN_RC} reason=$(_pin_reason))" \
+            "ab-upgrade --pin ${pin_ver}"
+    fi
+    _pin_payload
+    if [ -z "${_PIN_PAYLOAD_PATH}" ]; then
+        _gap "${_case}" "no payload to name while the pin is set (${_PIN_PAYLOAD_WHY})" \
+            "AB_PAYLOAD_DIR=payloads scripts/device/feed-install.sh --case pin --expect ${expect}"
+    else
+        _ab_upgrade "ab-upgrade ${_PIN_PAYLOAD_PATH}"
+        case "${PIN_RC}" in
+            0)
+                _ok "${_case}" "ab-upgrade ${_PIN_PAYLOAD_PATH} exit=0 with UPDATE_PIN=${pin_ver} set"
+                _pin_target=$(printf '%s\n' "${PIN_OUT}" | grep -E '^ab-upgrade: installed ' | head -n 1 |
+                    sed -n 's/.*into slot \([ab]\).*/\1/p')
+                if [ -z "${_pin_target}" ]; then
+                    _fail "${_case}" "no 'installed ... into slot ...' line while pinned" \
+                        "ab-upgrade ${_PIN_PAYLOAD_PATH}; ab-slot status"
+                elif [ "${_pin_target}" = "${pin_slot}" ]; then
+                    _fail "${_case}" "the payload went into the running slot ${_pin_target}" "ab-slot status"
+                else
+                    _ok "${_case}" "installed into slot ${_pin_target}, not the running slot ${pin_slot}"
+                    _assert_eq "${_case}" "pending" "$(dev_status_field pending 2>/dev/null)" \
+                        "${_pin_target}" \
+                        "ab-slot status   # the install arms that slot; the case abandons it before it ends"
+                    # Armed for at most the length of these two commands: nothing may be left
+                    # that would boot the other slot on a power cut or an operator reboot.
+                    _pin_abandon_pending
+                fi
+                ;;
+            74)
+                _pin_why=$(_pin_reason)
+                case "${_pin_why}" in
+                    payload-*)
+                        _gap "${_case}" \
+                            "the machine refused the payload this host named (reason=${_pin_why}); the pin itself never came into it" \
+                            "AB_PAYLOAD_DIR=payloads scripts/device/feed-install.sh --case pin --expect ${expect}"
+                        ;;
+                    *)
+                        _fail "${_case}" "ab-upgrade ${_PIN_PAYLOAD_PATH} was refused (reason=${_pin_why})" \
+                            "ab-upgrade ${_PIN_PAYLOAD_PATH}; ab-slot log"
+                        ;;
+                esac
+                ;;
+            *)
+                _fail "${_case}" "ab-upgrade ${_PIN_PAYLOAD_PATH} exited ${PIN_RC} with the pin set" \
+                    "ab-upgrade ${_PIN_PAYLOAD_PATH}; ab-slot log"
+                ;;
+        esac
+    fi
+
+    # 5) A pin value that is not MAJOR.MINOR.PATCH is refused, and the refusal leaves the pin
+    #    it found alone (docs/update.md lists pin-invalid-version).
+    _ab_upgrade "ab-upgrade --pin 1.2"
+    if [ "${PIN_RC}" -eq 74 ]; then
+        _ok "${_case}" "ab-upgrade --pin 1.2 exit=74"
+        _assert_eq "${_case}" "reason" "$(_pin_reason)" "pin-invalid-version" \
+            "ab-upgrade --pin 1.2   # docs/update.md, the refusal table"
+    else
+        _fail "${_case}" "ab-upgrade --pin 1.2 exited ${PIN_RC}, expected exit 74 pin-invalid-version" \
+            "ab-upgrade --pin 1.2"
+    fi
+    _pin_held=$(_pin_value) || _pin_held=""
+    _assert_eq "${_case}" "UPDATE_PIN_after_refusal" "${_pin_held:-none}" "${pin_ver}" \
+        "sed -n 's/^UPDATE_PIN=//p' ${conf}   # a refused pin must not touch the pin it found"
+    return 0
+}
+
+run_pin() {
+    _case=ac-3
+    CASE_STATUS=""
+    pin_ver=""
+    pin_flags=""
+    pin_committed=""
+    pin_slot=""
+    pin_ver=$(_version_before "${expect}") || pin_ver=""
+
+    if [ "${DRY_RUN}" = "1" ]; then
+        printf '%s 1/5 ab-upgrade --pin %s, then ab-upgrade --feed-check: expect status=pinned pin=%s exit=0\n' \
+            "${_case}" "${pin_ver:-?}" "${pin_ver:-?}"
+        printf '%s 2/5 ab-upgrade --feed --yes: expect exit=74 reason=feed-pinned\n' "${_case}"
+        printf '%s 3/5 ab-upgrade --unpin, then ab-upgrade --feed-check: expect status=update exit=10\n' "${_case}"
+        printf '%s 4/5 ab-upgrade --pin %s, then ab-upgrade %s/payload-%s.tar: it has to install into the other slot\n' \
+            "${_case}" "${pin_ver:-?}" "${AB_PAYLOAD_DIR}" "${expect}"
+        printf '%s 5/5 ab-upgrade --pin 1.2: expect exit=74 reason=pin-invalid-version\n' "${_case}"
+        printf '%s     restore: abandon whatever the payload armed, then ab-upgrade --unpin\n' "${_case}"
+        CASE_NOTE="dry-run"
+        CASE_STATUS=PASS
+        return 0
+    fi
+
+    require_idle_machine "${_case}" || {
+        CASE_STATUS=GAP
+        return 1
+    }
+
+    if [ -z "${pin_ver}" ]; then
+        _fail "${_case}" \
+            "no release can be named below ${expect}, so nothing can hold the candidate (--expect must be MAJOR.MINOR.PATCH with a patch above 0)" \
+            "scripts/device/feed-install.sh --case pin --expect 0.0.12"
+        CASE_STATUS=FAIL
+        return 1
+    fi
+
+    # A machine that arrives pinned is not the state this case was written for: it would have
+    # to guess whether to put the pin back, and its "after --unpin" judgement would be about
+    # somebody else's pin. Say so, with the command that clears it, instead of reporting a
+    # red row against the release.
+    pin_before=$(_pin_value) || pin_before=""
+    if [ -n "${pin_before}" ]; then
+        _gap "${_case}" \
+            "this machine already carries UPDATE_PIN=${pin_before}; the case starts unpinned so its unpin judgement is its own" \
+            "ab-upgrade --unpin   # then run the case again"
+        CASE_STATUS=GAP
+        return 1
+    fi
+
+    pin_slot=$(status_field "${STATUS_LINE}" slot) || pin_slot=""
+    pin_committed=$(status_field "${STATUS_LINE}" committed) || pin_committed=""
+    [ -n "${feed_url}" ] && pin_flags="${pin_flags} --feed-url '${feed_url}'"
+    [ -n "${release_base}" ] && pin_flags="${pin_flags} --release-base '${release_base}'"
+
+    # The source has to offer something above the running release, or status=pinned cannot be
+    # told from status=current and the pin is tested against nothing at all.
+    _ab_upgrade "ab-upgrade --feed-check${pin_flags}"
+    case "${PIN_RC}" in
+        10) : ;;
+        74)
+            _classify_refusal "${_case}" "$(_pin_reason)"
+            CASE_STATUS=FAIL
+            [ "${CASE_GAPS}" -gt 0 ] && CASE_STATUS=GAP
+            return 1
+            ;;
+        *)
+            _fail "${_case}" \
+                "the feed offers nothing above what this machine runs (exit=${PIN_RC} status=$(_pin_field status)); the pin case needs a machine one release behind" \
+                "scripts/device/feed-install.sh --case pin   # before --case install, on a machine below ${expect}"
+            CASE_STATUS=FAIL
+            return 1
+            ;;
+    esac
+    _ok "${_case}" "precondition: a candidate is offered (platform_available=$(_pin_field platform_available))"
+    _assert_eq "${_case}" "platform_available" "$(_pin_field platform_available)" "${expect}" \
+        "gh release view --json tagName -q .tagName; ab-upgrade --feed-check"
+    # The index the payload fallback reads is the source the machine just reported, recorded
+    # the same way ac-12 records it.
+    FEED_URL_SEEN=$(status_field "$(printf '%s\n' "${PIN_OUT}" | grep -E '^source=' | head -n 1)" feed) || FEED_URL_SEEN=""
+
+    _pin_steps
+    _pin_restore
+
+    if [ "${CASE_FAILURES}" -gt 0 ]; then
+        CASE_STATUS=FAIL
+        return 1
+    fi
+    if [ "${CASE_GAPS}" -gt 0 ]; then
+        CASE_STATUS=GAP
+        return 1
+    fi
+    CASE_NOTE="pin ${pin_ver} held the automatic path and released it; committed ${pin_committed:-?} never moved"
+    CASE_STATUS=PASS
+    return 0
+}
+
 if [ "${DRY_RUN}" = "1" ]; then
     printf 'feed-install.sh: dry run, expect=%s conf=%s cases=%s\n' "${expect}" "${conf}" "${cases}"
     ev "feed-install dry-run expect=${expect} cases=${cases}"
@@ -574,6 +1021,7 @@ run_case() {
     case "${_case}" in
         ac-12) run_check ;;
         ac-13) run_install ;;
+        ac-3) run_pin ;;
     esac
     _rc=$?
     _status=${CASE_STATUS:-FAIL}
@@ -592,10 +1040,23 @@ run_case() {
     return "${_rc}"
 }
 
+# _skip_case <case> <why>: a case that could not run, recorded with a reason instead of a
+# verdict - the same row shape the ac-13 skip under `both` has always written, so the results
+# file still has one row per case and no PASS means "nothing was measured".
+_skip_case() {
+    printf 'note [%s] %s\n' "$1" "$2"
+    CASE_GAPS=$((CASE_GAPS + 1))
+    GAPS=$((GAPS + 1))
+    mkdir -p "$(dirname "${AB_FEED_INSTALL_RESULTS}")" 2>/dev/null || true
+    printf '%s\tGAP\t%s\t%s\n' "$1" "${AB_HOST}" "$2" >>"${AB_FEED_INSTALL_RESULTS}"
+    printf '== %s GAP %s\n' "$1" "$2"
+}
+
 _rc_all=0
 case "${cases}" in
     check) run_case ac-12 || _rc_all=1 ;;
     install) run_case ac-13 || _rc_all=1 ;;
+    pin) run_case ac-3 || _rc_all=1 ;;
     both)
         run_case ac-12 || _rc_all=1
         if [ "${CASE_STATUS}" = "GAP" ]; then
@@ -610,6 +1071,20 @@ case "${cases}" in
         else
             run_case ac-13 || _rc_all=1
         fi
+        ;;
+    all)
+        # The order is fixed by what each case needs: ac-3 pins a machine that still has a
+        # candidate, and ac-13 is the case that takes the candidate away. Both read the feed
+        # ac-12 reads, so a GAP there skips them instead of inventing two derived red rows.
+        run_case ac-12 || _rc_all=1
+        _all_feed=${CASE_STATUS:-FAIL}
+        for _all_case in ac-3 ac-13; do
+            if [ "${_all_feed}" = "GAP" ]; then
+                _skip_case "${_all_case}" "skipped, ac-12 could not read the feed"
+            else
+                run_case "${_all_case}" || _rc_all=1
+            fi
+        done
         ;;
 esac
 

@@ -853,22 +853,38 @@ ab-slot log --prev
 Every failure carries a `reason=` token in the log, which is the same token the CI
 judge lines report, so a machine and a build can be compared without guessing.
 
-## This release: 0.0.11
+## This release: 0.0.12
 
-`VERSION` reads `0.0.11`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
-it carries two fixes found by the real-device acceptance run, both in the update path.
+`VERSION` reads `0.0.12`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
+the upstream base is unchanged and no user-visible feature is added. It packages the defects
+found after `0.0.11`, and the acceptance capability that now covers them:
 
-* **A same-base update no longer needs `--force`.** The "already installed" guard used to
-  compare only the upstream base, and two releases on one base share it exactly, so
-  `0.0.10` -> `0.0.11` was refused with `74 payload-already-installed`. The guard now
-  judges the base **and** the platform version, and says `base unchanged, platform 0.0.10
-  -> 0.0.11` when it lets the install through. A payload that carries no platform version
-  is refused with `74 payload-platform-unknown` rather than installed, because a leftover
-  payload must never be able to rewrite the healthy slot. A machine still on `0.0.10`
-  carries the `0.0.10` code, so that one hop still needs `--force` once.
-* **The same-base release gate installs with `--force`.** The gate boots the *previous*
-  release's published image, whose own guard cannot know this release; without the flag the
-  gate could never pass and would have blocked publishing.
+* **An apk protection rule is judged by its premise.** `scripts/device/apk-protection-probe.sh`
+  asks `apk audit --backup` whether apk sees a protected path as unmodified, which is exactly
+  the premise a `+` rule in `/etc/apk/protected_paths.d/` depends on: a rule that cannot fire
+  is reported on the spot, instead of showing up as a shadowed adapter after an upgrade. The
+  device drivers are POSIX `sh` throughout, the dialect `scripts/ci/verify.sh` lints them in.
+* **An A/B slot switch is judged by the data it produces.** `scripts/device/lib.sh` exports
+  three field groups read from archived real-device runs — stable, identity and monitored — so
+  the matrix and scenario drivers no longer fold `committed`, `pending` and `generation` into
+  one class. `ab-slot packages snapshot` stops answering `packages=0` for a record it cannot
+  parse, and the commit path retargets the package record at the slot it committed.
+* **The daily upstream watch fails when discovery fails**, so a broken mirror or index is a red
+  job instead of a green one that watched nothing.
+* **The release page is built from the payload manifest.** The kernel version and the upstream
+  digests come from the manifest inside the payload, so a value the release itself carries is
+  no longer printed as `not recorded`.
+* **The acceptance suite is one command.** `scripts/device/full-test.sh` puts the four broken
+  configurations of S8, the real docker load D1/D2/D3, the version pin (`--case pin`), the
+  package rollback P3/P4 and the release byte checks in one order, under one verdict.
+
+The guard this page describes arrived in `0.0.11` and is unchanged: it judges the upstream base
+**and** the platform version, so `0.0.10` -> `0.0.11` stopped being refused with
+`74 payload-already-installed` and prints `base unchanged, platform 0.0.10 -> 0.0.11` when it
+lets the install through, while a payload of the same base that carries no platform version is
+refused with `74 payload-platform-unknown`. A machine still on `0.0.10` carries the `0.0.10`
+code, so that one hop needs `--force` once; the same-base release gate installs with `--force`
+for the same reason.
 
 The boot path is unchanged from `0.0.8`, and the first-boot network generation from
 `0.0.7` is unchanged. The content of those versions, still current:

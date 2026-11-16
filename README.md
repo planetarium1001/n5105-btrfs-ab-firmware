@@ -163,38 +163,30 @@ never hides another.
 Design stage. Partition geometry, boot chain, and update transaction are finalized.
 Implementation proceeds through stages S0–S6.
 
-## Versioning
+Current version: `0.0.12`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
+the upstream base is unchanged and no user-visible feature is added. It packages the defects
+found after `0.0.11` together with the acceptance capability that now covers them.
 
-Format: `MAJOR.MINOR.PATCH`.
+- **An apk protection rule is judged by its premise.** `scripts/device/apk-protection-probe.sh`
+  asks `apk audit --backup` whether apk sees a protected path as unmodified — the premise a
+  `+` rule in `/etc/apk/protected_paths.d/` depends on — so a rule that cannot fire is named
+  on the spot. The device drivers are all POSIX `sh`, the dialect `scripts/ci/verify.sh`
+  lints them in.
+- **An A/B slot switch is judged by the data it produces.** `scripts/device/lib.sh` exports
+  three field groups read from archived real-device runs — stable, identity, monitored — so
+  the matrix and scenario drivers no longer fold `committed`, `pending` and `generation` into
+  one class. `ab-slot packages snapshot` stops answering `packages=0` for a record it cannot
+  parse, and the commit path retargets the package record.
+- **The daily upstream watch fails when discovery fails**, so a broken mirror or index is a red
+  job instead of a green one that watched nothing.
+- **The release page is built from the payload manifest**, which retires the `not recorded`
+  placeholders on the kernel version and the upstream digests.
+- **The acceptance suite is one command.** `scripts/device/full-test.sh` puts the four broken
+  configurations of S8, the real docker load D1/D2/D3, the version pin (`--case pin`), the
+  package rollback P3/P4 and the release byte checks in one order, under one verdict.
 
-- `MAJOR` stays `0`: the project is experimental and breaking changes remain possible.
-- `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
-- `PATCH` marks incremental milestones that leave the goal unmet.
-
-Current version: `0.0.11`. It is a **test release**, not `0.1.0`: it carries the two P1 fixes
-`0.0.10` announced, and the platform version in `/etc/platform-release` is the only identity
-change. It exists to prove the update path on real hardware. A tag run now gates publishing on
-the cross-version upgrade - a release whose cross stage is red or skipped publishes nothing -
-and a machine on `0.0.10` can detect and install this release over the air. Because the
-upstream base is unchanged, taking it exercises the platform-only upgrade branch: the rootfs is
-reinstalled, the platform layer is replaced, and the writable layer is snapshotted. The two P1
-defects are fixed here: `apk upgrade` can no longer shadow
-`/lib/upgrade/platform.sh` (the release notes carry the recovery command), and
-`ab-slot packages snapshot` no longer writes `payload-incomplete` on a freshly flashed image
-just because the base packages were not upgraded yet.
-
-The first-boot network generation arrived in `0.0.7`, by reusing the
-upstream `board_detect` and `config_generate` and layering this project's defaults on top:
-`eth1`..`eth3` in the `br-lan` bridge and LAN `192.168.100.1/24`. The WAN side accepts
-nothing: the `22/tcp` exception lives only in the separate `-install-wan-ssh` image, which
-exists for a machine that cannot be reached from the LAN. `0.0.8` keeps the first-boot
-behaviour and changes what an update carries and how a release is produced: the payload brings
-its own GRUB and slot menu, and a new upstream base can be released without a human editing the
-pin. The health check from `0.0.6` is unchanged: a
-slot is committed only after the writable layer, the firewall ruleset and the WAN device have
-been checked, and the abandon path records the decision on the ESP before it announces it. The
-pipeline still builds a real payload, validates it with the same checker the device uses, and a
-tag publishes the image together with that payload.
+Earlier releases introduced the first-boot network generation (`0.0.7`), the payload that
+carries its own bootloader (`0.0.8`) and the health check (`0.0.6`); all three are unchanged.
 
 ## License
 

@@ -5,11 +5,15 @@
 #
 # Nothing here touches a device: a stub `ssh` on PATH answers with canned strings, so the
 # test is about the orchestrator's own judgements -- phase order, the plan, the verdict
-# arithmetic, skipping and the preflight refusal.
-#   ac-7 full-test.sh runs the phases in the order preflight .. audit
+# arithmetic, skipping, case ownership and the preflight refusal.
+#   ac-7 full-test.sh runs the phases in the order preflight .. audit, feed-install before
+#        the phases that upgrade the machine, docker in two windows around the switches
 #   ac-7 --help exits 0 and --dry-run prints the plan for every phase and touches nothing
 #   ac-7 the verdict is PASS / GAP / FAIL for the three row combinations, exit 0 only on PASS
 #   ac-7 --from skips the earlier phases instead of running them
+#   ac-7 --only picks the phase that owns a case, including D1/D2/D3, S8, P3, U1, pin, all
+#   ac-7 the audit phase is given the round's task id and is a GAP row without one
+#   ac-7 docker, docker-after and release are not destructive (they never write a slot)
 #   ac-7 a missing key file is a preflight FAIL, not a silent skip into the phases
 set -uo pipefail
 
@@ -23,10 +27,20 @@ assert_file_exists "$ft" "ac-7 the orchestrator exists"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# The acceptance order, spelled once. Both the order assertion and the verdict arithmetic
+# read it, so a phase added to the script fails here instead of silently leaving a hole in
+# the coverage of this test.
+phase_list="preflight probes feed-install docker matrix scenarios docker-after package-revert recovery power-cut release audit"
+# shellcheck disable=SC2086
+set -- ${phase_list}
+phase_count=$#
+# shellcheck disable=SC2086
+set --
+
 # --- the stub machine ------------------------------------------------------- #
 # The stub records every call, so "the plan executed nothing" is a fact and not a hope.
-# It answers only the three commands preflight asks, with the fixed strings a healthy
-# machine of this project would print.
+# It answers only the commands preflight asks, with the fixed strings a healthy machine of
+# this project would print.
 stub_bin="$tmp/bin"
 stub_calls="$tmp/stub-calls.log"
 mkdir -p "$stub_bin"
@@ -60,6 +74,11 @@ export AB_KEY="$tmp/id_test"
 : >"$AB_KEY"
 chmod 600 "$AB_KEY"
 
+# The round's task id: never hardcoded in the script, always handed over here.
+round_task="20261116-12-pre-release-acceptance-0-0-12"
+# The candidate the feed is expected to offer. The script must not know it on its own.
+round_expect="0.0.12"
+
 stub_calls_count() {
     if [ -f "$stub_calls" ]; then
         wc -l <"$stub_calls" | tr -d ' '
@@ -79,22 +98,45 @@ run_ft() {
     return 0
 }
 
+# planned_phases: every `phase <name>:` line in $out, in the order it was printed. Skipped
+# phases print too, so this is the order of the whole suite and not only of what ran.
+planned_phases() {
+    printf '%s\n' "$out" | sed -n 's/^phase \([a-z-]*\):.*/\1/p' | tr '\n' ' '
+}
+
+# plan_line <phase>: the `phase <name>: plan ...` line for one phase, empty when the phase
+# was skipped or ran.
+plan_line() {
+    printf '%s\n' "$out" | grep "^phase $1: plan " | head -n 1
+}
+
 # --- ac-7: --help ----------------------------------------------------------- #
 : >"$stub_calls"
 run_ft --help
 assert_eq "$code" 0 "ac-7 --help exits 0"
 assert_contains "$out" "usage: full-test.sh" "ac-7 --help prints the usage"
 assert_contains "$out" "verdict: PASS" "ac-7 --help states the verdict rule"
+assert_contains "$out" "docker-after release audit" "ac-7 --help lists the phase order it runs"
+assert_contains "$out" "D1 docker" "ac-7 --help names the docker case tokens"
+assert_contains "$out" "D2/D3 docker-after" "ac-7 --help says which segment D2/D3 belong to"
+assert_contains "$out" "--task ID" "ac-7 --help documents the audit's task id"
+assert_contains "$out" "--expect VERSION" "ac-7 --help documents the expected candidate"
+assert_contains "$out" "ac-12/ac-13/ac-3" "ac-7 --help names the feed cases"
+assert_contains "$out" "never write a slot" "ac-7 --help says docker/release are not destructive"
 assert_eq "$(stub_calls_count)" "0" "ac-7 --help contacts no machine"
 
-# --- ac-7: --dry-run prints the plan for all nine phases and executes nothing #
+# --- ac-7: --dry-run prints the plan for every phase, in the acceptance order #
 dry_results="$tmp/results-dry"
 : >"$stub_calls"
 run_ft --dry-run --results "$dry_results"
 assert_eq "$code" 0 "ac-7 --dry-run exits 0"
-for phase in preflight probes matrix scenarios package-revert recovery power-cut feed-install audit; do
+for phase in $phase_list; do
     assert_contains "$out" "phase $phase:" "ac-7 --dry-run plans phase $phase"
 done
+# The order itself: feed-install has to come before the phases that upgrade the machine,
+# docker splits around the slot switches, release comes after them and audit last.
+assert_eq "$(planned_phases)" "$phase_list " \
+    "ac-7 the phases run in the acceptance order: feed-install before matrix, docker split, audit last"
 assert_contains "$out" "plan: nothing was executed" "ac-7 --dry-run says nothing was executed"
 assert_eq "$(stub_calls_count)" "0" "ac-7 --dry-run reaches no machine"
 if [ -e "$dry_results" ]; then
@@ -103,18 +145,68 @@ else
     assert_eq "results dir absent" "results dir absent" "ac-7 --dry-run writes no results"
 fi
 
+# The two docker windows are one script, two case sets and ONE snapshot directory: D1 writes
+# the baseline there and docker-after has to read the same file back.
+: >"$stub_calls"
+run_ft --dry-run --results "$dry_results"
+assert_contains "$(plan_line docker)" "--case D1" "ac-7 the docker phase plans D1, the baseline"
+assert_contains "$(plan_line docker)" "--snapshot-dir $dry_results/docker-snapshots" \
+    "ac-7 the docker phase writes its baseline under <results>/docker-snapshots"
+assert_contains "$(plan_line docker-after)" "--case D2 --case D3" \
+    "ac-7 docker-after plans D2 and D3, judged after the switches"
+assert_contains "$(plan_line docker-after)" "--snapshot-dir $dry_results/docker-snapshots" \
+    "ac-7 docker-after reads the same snapshot directory D1 wrote"
+assert_contains "$(plan_line docker)" "AB_RESULTS=$dry_results/docker.tsv" \
+    "ac-7 the docker phase is pointed at its results file through AB_RESULTS"
+assert_contains "$(plan_line docker-after)" "AB_RESULTS=$dry_results/docker-after.tsv" \
+    "ac-7 docker-after has a results file of its own"
+
+# The release phase reads the published release; it is handed the assets directory only
+# when the payload directory really holds release assets, and the tag only when --expect says
+# which release this round is about.
+assert_contains "$(plan_line release)" "--work-dir $dry_results/release" \
+    "ac-7 the release phase keeps its downloaded assets beside the results"
+run_ft --dry-run --results "$dry_results" --expect "$round_expect"
+assert_contains "$(plan_line release)" "--tag v$round_expect" \
+    "ac-7 --expect names the release the release phase reads"
+mkdir -p "$tmp/assets"
+: >"$tmp/assets/index.txt"
+: >"$tmp/assets/SHA256SUMS"
+run_ft --dry-run --results "$dry_results" --payload-dir "$tmp/assets"
+assert_contains "$(plan_line release)" "--dir $tmp/assets" \
+    "ac-7 a payload directory that holds release assets is passed on as release-verify --dir"
+mkdir -p "$tmp/payloadonly"
+: >"$tmp/payloadonly/payload-$round_expect.tar"
+run_ft --dry-run --results "$dry_results" --payload-dir "$tmp/payloadonly"
+assert_contains "$(plan_line release)" "--work-dir" \
+    "ac-7 a payload-only directory is not handed to release-verify as --dir"
+planned_release=$(plan_line release)
+case "$planned_release" in
+    *"--dir $tmp/payloadonly"*)
+        assert_eq "payload dir passed as --dir" "payload dir not passed" \
+            "ac-7 a payload-only directory is not handed to release-verify as --dir"
+        ;;
+    *)
+        assert_eq "payload dir not passed" "payload dir not passed" \
+            "ac-7 a payload-only directory is not handed to release-verify as --dir"
+        ;;
+esac
+
 # --- ac-7: --from skips the earlier phases ---------------------------------- #
 : >"$stub_calls"
 run_ft --dry-run --from matrix --results "$tmp/results-from"
 assert_eq "$code" 0 "ac-7 --dry-run --from exits 0"
 assert_contains "$out" "phase preflight: skipped" "ac-7 --from skips preflight"
-assert_contains "$out" "phase probes: skipped" "ac-7 --from skips probes"
+assert_contains "$out" "phase feed-install: skipped" "ac-7 --from matrix skips feed-install"
 assert_contains "$out" "phase matrix: plan" "ac-7 --from starts at matrix"
 assert_contains "$out" "phase audit: plan" "ac-7 --from keeps the phases after matrix"
 assert_eq "$(stub_calls_count)" "0" "ac-7 --from --dry-run reaches no machine"
 
-# An unknown phase is a usage error: a typo must not silently run the whole suite.
-run_ft --from M3 --dry-run
+# The new names are phases, and only phases: --from/--stop-after take a phase, not a case.
+run_ft --dry-run --from docker-after --stop-after docker-after
+assert_eq "$code" 0 "ac-7 docker-after is a phase name --from accepts"
+assert_contains "$out" "phase docker-after: plan" "ac-7 --from docker-after plans the second window"
+run_ft --dry-run --from M3
 assert_eq "$code" 2 "ac-7 --from with a case name is refused"
 
 # --- ac-7: --only picks the phase that owns the case ------------------------ #
@@ -123,8 +215,275 @@ assert_eq "$code" 0 "ac-7 --dry-run --only exits 0"
 assert_contains "$out" "phase matrix: plan" "ac-7 --only M3 plans matrix"
 assert_contains "$out" "phase scenarios: skipped" "ac-7 --only M3 skips the other case phases"
 assert_contains "$out" "--case M3" "ac-7 --only M3 is passed to the matrix as --case"
+
+# D1 belongs to the window before the switches; D2 and D3 to the one after. Asking for one
+# must not run the other, or --only D1 would overwrite the baseline D2 compares against.
+run_ft --dry-run --only D1 --results "$tmp/results-d1"
+assert_eq "$code" 0 "ac-7 --dry-run --only D1 exits 0"
+assert_contains "$out" "phase docker: plan" "ac-7 --only D1 plans the docker phase"
+assert_contains "$out" "phase docker-after: skipped" "ac-7 --only D1 skips docker-after"
+assert_contains "$(plan_line docker)" "--case D1" "ac-7 --only D1 asks docker-probe.sh for D1 only"
+case "$(plan_line docker)" in
+    *"--case D2"*)
+        assert_eq "D2 planned by the baseline window" "D2 not planned" \
+            "ac-7 --only D1 does not ask for D2"
+        ;;
+    *)
+        assert_eq "D2 not planned" "D2 not planned" "ac-7 --only D1 does not ask for D2"
+        ;;
+esac
+run_ft --dry-run --only D2 --results "$tmp/results-d2"
+assert_eq "$code" 0 "ac-7 --dry-run --only D2 exits 0"
+assert_contains "$out" "phase docker: skipped" "ac-7 --only D2 skips the docker baseline"
+assert_contains "$out" "phase docker-after: plan" "ac-7 --only D2 plans docker-after"
+assert_contains "$(plan_line docker-after)" "--case D2" "ac-7 --only D2 asks docker-probe.sh for D2"
+run_ft --dry-run --only D3 --results "$tmp/results-d3"
+assert_contains "$out" "phase docker-after: plan" "ac-7 --only D3 plans docker-after"
+assert_contains "$(plan_line docker-after)" "--case D3" "ac-7 --only D3 asks docker-probe.sh for D3"
+
+# The new case names of the drivers that gained them.
+run_ft --dry-run --only S8 --results "$tmp/results-s8"
+assert_contains "$out" "phase scenarios: plan" "ac-7 --only S8 plans the scenarios"
+assert_contains "$(plan_line scenarios)" "--case S8" "ac-7 --only S8 is passed through as --case"
+run_ft --dry-run --only P3 --results "$tmp/results-p3"
+assert_contains "$(plan_line package-revert)" "--case P3" "ac-7 --only P3 is passed to package-revert"
+run_ft --dry-run --only P4 --results "$tmp/results-p4"
+assert_contains "$(plan_line package-revert)" "--case P4" "ac-7 --only P4 is passed to package-revert"
+run_ft --dry-run --only U1 --results "$tmp/results-u1"
+assert_contains "$out" "phase package-revert: plan" "ac-7 --only U1 plans package-revert"
+assert_contains "$(plan_line package-revert)" "--case U1" "ac-7 --only U1 is a case of its own"
+
+# feed-install.sh takes one --case value, so the acceptance names are folded into it.
+run_ft --dry-run --only ac-3 --results "$tmp/results-pin"
+assert_contains "$out" "phase feed-install: plan" "ac-7 --only ac-3 plans feed-install"
+assert_contains "$(plan_line feed-install)" "--case pin" "ac-7 --only ac-3 asks for the pin case"
+run_ft --dry-run --only pin --results "$tmp/results-pin2"
+assert_contains "$(plan_line feed-install)" "--case pin" "ac-7 --only pin is the same request"
+run_ft --dry-run --only ac-12 --only ac-13 --results "$tmp/results-both"
+assert_contains "$(plan_line feed-install)" "--case both" "ac-7 ac-12 with ac-13 is the both case"
+run_ft --dry-run --only ac-12 --only ac-3 --results "$tmp/results-mixed"
+assert_contains "$(plan_line feed-install)" "--case all" \
+    "ac-7 check with pin has no value of its own, so the whole driver order is asked for"
+run_ft --dry-run --only all --results "$tmp/results-all"
+assert_contains "$(plan_line feed-install)" "--case all" "ac-7 --only all is passed through"
+# A run that selects nothing runs all three feed cases: ac-3 is only provable while the
+# machine is below the candidate, which is exactly this phase's window.
+run_ft --dry-run --results "$tmp/results-feed-default"
+assert_contains "$(plan_line feed-install)" "--case all" "ac-7 the default feed case includes the pin"
+run_ft --dry-run --only release --results "$tmp/results-release"
+assert_contains "$out" "phase release: plan" "ac-7 --only release plans the release phase"
+assert_contains "$out" "phase docker: skipped" "ac-7 --only release skips the machine phases"
+run_ft --dry-run --only sums --results "$tmp/results-sums"
+assert_contains "$out" "phase release: plan" "ac-7 --only sums selects the release phase"
 run_ft --dry-run --only Z9
 assert_eq "$code" 2 "ac-7 --only with an unknown case is refused"
+
+# --- ac-7: the audit is told which round it audits -------------------------- #
+# Preview: the plan passes the id through, and says what is missing when there is none.
+run_ft --dry-run --only M3 --task "$round_task" --results "$tmp/results-task"
+assert_contains "$(plan_line audit)" "evidence-audit.sh --task $round_task" \
+    "ac-7 the audit phase passes --task to evidence-audit.sh"
+run_ft --dry-run --only M3 --results "$tmp/results-notask"
+assert_contains "$(plan_line audit)" "no task id" \
+    "ac-7 the plan says the audit has no task id"
+case "$(plan_line audit)" in
+    *"--task 20261115-01"*)
+        assert_eq "stale task id planned" "no stale task id planned" \
+            "ac-7 the plan never falls back to the previous round's task id"
+        ;;
+    *)
+        assert_eq "no stale task id planned" "no stale task id planned" \
+            "ac-7 the plan never falls back to the previous round's task id"
+        ;;
+esac
+# AB_TASK_ID is the same knob for a caller that assembles an environment.
+AB_TASK_ID="$round_task" run_ft --dry-run --only M3 --results "$tmp/results-taskenv"
+assert_contains "$(plan_line audit)" "--task $round_task" "ac-7 AB_TASK_ID is accepted as the task id"
+
+# Run: with no task id the audit is a GAP row and evidence-audit.sh is not executed at all.
+audit_results="$tmp/results-audit-notask"
+: >"$stub_calls"
+run_ft --from audit --results "$audit_results"
+assert_eq "$code" 1 "ac-7 an audit with no task id does not exit 0"
+assert_contains "$out" "no task id" "ac-7 the run says what is missing"
+assert_contains "$(cat "$audit_results/audit.tsv")" "GAP" "ac-7 the audit with no task id is a GAP row"
+assert_contains "$(cat "$audit_results/audit.tsv")" "no task id" "ac-7 the row names the missing task id"
+case "$out" in
+    *"evidence-audit task="*)
+        assert_eq "evidence-audit executed" "evidence-audit not executed" \
+            "ac-7 an audit with no task id does not read the previous round's record"
+        ;;
+    *)
+        assert_eq "evidence-audit not executed" "evidence-audit not executed" \
+            "ac-7 an audit with no task id does not read the previous round's record"
+        ;;
+esac
+assert_eq "$(tail -n 1 "$audit_results/summary.txt")" "verdict: GAP" \
+    "ac-7 a GAP row makes the verdict GAP, not FAIL"
+assert_eq "$(stub_calls_count)" "0" "ac-7 an audit with no task id reaches no machine"
+
+# With a task id the audit really runs. A task id nobody has a record for is a GAP and not a
+# FAIL: no PRD means the audit could not be made, and nothing about this machine was judged -
+# "the record is incomplete" and "the machine is broken" must not share a verdict. The id is
+# deliberately one that does not exist, so this assertion does not depend on the state of
+# .workflow/tasks on the machine running the test.
+no_such_task="20990101-99-no-such-task"
+audit_run_results="$tmp/results-audit-run"
+: >"$stub_calls"
+run_ft --from audit --results "$audit_run_results" --task "$no_such_task"
+# evidence-audit.sh refuses before it prints its own `task=` header when the task has no PRD,
+# so the proof that the id travelled is the message naming it plus the row's own note.
+assert_contains "$(cat "$audit_run_results/audit.log")" "$no_such_task" \
+    "ac-7 the audit runs the round it was told about, not the default one"
+assert_contains "$(cat "$audit_run_results/audit.tsv")" "$no_such_task" \
+    "ac-7 the audit row names the task id it could not audit"
+assert_contains "$(cat "$audit_run_results/audit.tsv")" "GAP" \
+    "ac-7 an audit that cannot be made is a GAP row"
+case "$(cat "$audit_run_results/audit.tsv")" in
+    *"	FAIL	"*)
+        assert_eq "audit row is FAIL" "audit row is GAP" \
+            "ac-7 an unmakeable audit is not a machine FAIL"
+        ;;
+    *)
+        assert_eq "audit row is GAP" "audit row is GAP" \
+            "ac-7 an unmakeable audit is not a machine FAIL"
+        ;;
+esac
+assert_eq "$(tail -n 1 "$audit_run_results/summary.txt")" "verdict: GAP" \
+    "ac-7 an unmakeable audit leaves the round at GAP"
+
+# --- ac-7: the two phases that write no results file ------------------------ #
+# audit and release are judged from the lines the driver printed, so the mapping from those
+# lines to a row is a piece of code of its own - and it is the piece that decides whether an
+# incomplete record or a dead mirror turns the whole round red. It is exercised here against
+# stubs in a copy of the device directory, so no real record and no network is involved:
+# evidence-audit.sh prints `result=gaps open=<n>` and release-verify.sh prints
+# `result=none`, and neither of those may become a FAIL.
+hx="$tmp/hx/scripts/device"
+mkdir -p "$hx"
+cp "$ft" "$hx/full-test.sh"
+cp "$root/scripts/device/lib.sh" "$hx/lib.sh"
+cat >"$hx/evidence-audit.sh" <<'STUB'
+#!/bin/sh
+printf 'evidence-audit task=%s acs=13\n' "${4:-stub}"
+printf 'evidence-audit summary acs=13 covered=%s missing=%s mismatch=0 unchecked=0 absent=0 unused=0\n' \
+    "${STUB_AUDIT_COVERED:-0}" "${STUB_AUDIT_MISSING:-13}"
+case "${STUB_AUDIT_RESULT:-gaps}" in
+    covered)
+        printf 'evidence-audit result=covered\n'
+        exit 0
+        ;;
+    *)
+        printf 'evidence-audit result=gaps open=%s\n' "${STUB_AUDIT_MISSING:-13}"
+        exit 1
+        ;;
+esac
+STUB
+cat >"$hx/release-verify.sh" <<'STUB'
+#!/bin/sh
+printf 'release-verify check=tag-version result=pass tag=v0.0.12 version=0.0.12 from=git\n'
+case "${STUB_RELEASE_RESULT:-pass}" in
+    pass)
+        printf 'release-verify result=pass checks=15 failed=0 skipped=0 tag=v0.0.12\n'
+        exit 0
+        ;;
+    none)
+        printf 'release-verify result=none reason=gh-not-installed tag=v0.0.12\n'
+        exit 3
+        ;;
+    *)
+        printf 'release-verify result=fail checks=1 failed=1 skipped=0 tag=v0.0.12\n'
+        exit 1
+        ;;
+esac
+STUB
+chmod +x "$hx/evidence-audit.sh" "$hx/release-verify.sh"
+
+# run_hx: the copy, with the same stub machine on PATH.
+run_hx() {
+    out=$(bash "$hx/full-test.sh" "$@" </dev/null 2>&1)
+    code=$?
+    return 0
+}
+
+# The audit's own GAP is a GAP row: the record is incomplete, and that is not the machine.
+run_hx --from audit --results "$tmp/hx-audit-gap" --task "$round_task"
+assert_contains "$(cat "$tmp/hx-audit-gap/audit.tsv")" "GAP" \
+    "ac-7 evidence-audit result=gaps is recorded as a GAP row"
+assert_contains "$(cat "$tmp/hx-audit-gap/audit.tsv")" "covered=0" \
+    "ac-7 the audit row carries the summary the driver printed"
+assert_eq "$code" 1 "ac-7 a GAP row still exits 1"
+assert_eq "$(tail -n 1 "$tmp/hx-audit-gap/summary.txt")" "verdict: GAP" \
+    "ac-7 an incomplete record is GAP, never FAIL"
+STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+    run_hx --from audit --results "$tmp/hx-audit-ok" --task "$round_task"
+assert_eq "$code" 0 "ac-7 a covered audit exits 0"
+assert_contains "$(cat "$tmp/hx-audit-ok/audit.tsv")" "PASS" \
+    "ac-7 evidence-audit result=covered is recorded as a PASS row"
+
+# The release phase reads the driver's last line: pass, none (GAP) and fail.
+run_hx --from release --stop-after release --results "$tmp/hx-rel-pass"
+assert_eq "$code" 0 "ac-7 a passing release exits 0"
+assert_contains "$(cat "$tmp/hx-rel-pass/release.tsv")" "PASS" \
+    "ac-7 release-verify result=pass is a PASS row"
+STUB_RELEASE_RESULT=none run_hx --from release --stop-after release --results "$tmp/hx-rel-none"
+assert_eq "$code" 1 "ac-7 a release that could not be read exits 1"
+assert_contains "$(cat "$tmp/hx-rel-none/release.tsv")" "GAP" \
+    "ac-7 release-verify result=none (no network, no gh) is a GAP row and not a FAIL"
+assert_eq "$(tail -n 1 "$tmp/hx-rel-none/summary.txt")" "verdict: GAP" \
+    "ac-7 an unreachable release leaves the round at GAP"
+STUB_RELEASE_RESULT=fail run_hx --from release --stop-after release --results "$tmp/hx-rel-fail"
+assert_eq "$code" 1 "ac-7 a release that does not match ac-1 exits 1"
+assert_contains "$(cat "$tmp/hx-rel-fail/release.tsv")" "FAIL" \
+    "ac-7 release-verify result=fail is a FAIL row"
+assert_eq "$(tail -n 1 "$tmp/hx-rel-fail/summary.txt")" "verdict: FAIL" \
+    "ac-7 a wrong release is FAIL, not GAP"
+
+# --- ac-7: docker, docker-after and release are not destructive -------------- #
+# The docker baseline writes /data and /docker and never a slot, so it runs without --yes.
+# With the stub machine it cannot reach a verdict (no docker output at all) and says GAP --
+# the point here is that it was allowed to ask, not that it passed.
+docker_results="$tmp/results-docker"
+: >"$stub_calls"
+run_ft --from docker --stop-after docker --results "$docker_results"
+assert_contains "$out" "docker-probe start" "ac-7 the docker phase runs without --yes"
+case "$out" in
+    *"not confirmed"*)
+        assert_eq "destructive refusal" "no destructive refusal" \
+            "ac-7 the docker phase is not asked for a typed yes"
+        ;;
+    *)
+        assert_eq "no destructive refusal" "no destructive refusal" \
+            "ac-7 the docker phase is not asked for a typed yes"
+        ;;
+esac
+assert_file_exists "$docker_results/docker.tsv" "ac-7 the docker phase writes its own rows"
+assert_contains "$(cat "$docker_results/docker.tsv")" "D1" \
+    "ac-7 the docker rows name the case and land in AB_RESULTS"
+
+# The docker-after window is not gated either: it only reads the machine.
+run_ft --from docker-after --stop-after docker-after --results "$tmp/results-docker-after"
+assert_contains "$out" "docker-probe start" "ac-7 docker-after runs without --yes"
+assert_contains "$out" "cases=D2,D3" "ac-7 docker-after asks for D2 and D3 and never for D1"
+
+# The destructive set is exactly the phases that write a slot and reboot. docker,
+# docker-after and release are not in it: D1 writes /data and @docker and no slot, D2/D3 only
+# read, and the release phase never reaches a machine.
+destructive_set=$(sed -n 's/^DESTRUCTIVE_PHASES="\(.*\)"$/\1/p' "$ft")
+assert_eq "$destructive_set" "matrix recovery power-cut" \
+    "ac-7 only matrix, recovery and power-cut are destructive"
+for not_destructive in docker docker-after release; do
+    case " $destructive_set " in
+        *" $not_destructive "*)
+            assert_eq "$not_destructive is destructive" "$not_destructive is not destructive" \
+                "ac-7 $not_destructive is not gated behind --yes"
+            ;;
+        *)
+            assert_eq "$not_destructive is not destructive" "$not_destructive is not destructive" \
+                "ac-7 $not_destructive is not gated behind --yes"
+            ;;
+    esac
+done
 
 # --- ac-7: preflight fails when the key file is missing -------------------- #
 : >"$stub_calls"
@@ -174,20 +533,22 @@ assert_contains "$(cat "$tmp/results-destructive/matrix.tsv")" "GAP" "ac-7 the r
 # is exactly what this test wants to exercise without a machine.
 agg="$tmp/results-verdict"
 mkdir -p "$agg"
-for phase in preflight probes matrix scenarios package-revert recovery power-cut feed-install audit; do
+for phase in $phase_list; do
     printf '%s-row\tPASS\t%s.log\tok\n' "$phase" "$phase" >"$agg/$phase.tsv"
 done
 : >"$stub_calls"
 run_ft --results "$agg" --from audit
-assert_eq "$code" 0 "ac-7 nine PASS rows exit 0"
+assert_eq "$code" 0 "ac-7 $phase_count PASS rows exit 0"
 assert_contains "$out" "already PASS" "ac-7 a phase that already PASSes is skipped"
 assert_eq "$(stub_calls_count)" "0" "ac-7 skipping a PASSed phase reaches no machine"
-assert_eq "$(head -n 1 "$agg/summary.txt")" "passed=9 failed=0 gap=0 skipped=9" \
+assert_eq "$(head -n 1 "$agg/summary.txt")" "passed=$phase_count failed=0 gap=0 skipped=$phase_count" \
     "ac-7 the summary counts every row and every skipped phase"
 assert_eq "$(tail -n 1 "$agg/summary.txt")" "verdict: PASS" "ac-7 no FAIL and no GAP is PASS"
-assert_eq "$(wc -l <"$agg/verdict.tsv" | tr -d ' ')" "9" "ac-7 verdict.tsv is the concatenation of the phase files"
+assert_eq "$(wc -l <"$agg/verdict.tsv" | tr -d ' ')" "$phase_count" \
+    "ac-7 verdict.tsv is the concatenation of the phase files"
 
-# One GAP: nothing failed, something was not decided.
+# One GAP: nothing failed, something was not decided. A mirror that did not answer (the
+# docker phase) is a GAP and must not turn the round into a FAIL.
 printf 'feed-gap\tGAP\tfeed-install.log\tthe feed could not be read\n' >>"$agg/feed-install.tsv"
 run_ft --results "$agg" --from audit
 assert_eq "$code" 1 "ac-7 a GAP row exits 1"

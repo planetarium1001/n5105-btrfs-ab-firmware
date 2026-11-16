@@ -33,12 +33,16 @@
 #   CI_RELEASE_DIR        output directory (default: $CI_TMP_ROOT/release)
 #   CI_RELEASE_TAG        tag or run identifier recorded in the notes
 #   CI_UPSTREAM_ROOTFS_SHA256, CI_UPSTREAM_KERNEL_SHA256
-#                         upstream digests, recorded in the notes when set
-#   CI_S5_LINE            judge line of the last verified firmware run, recorded
+#                         upstream digests; when unset they are read from the payload
+#                         manifest's rootfs.tar.gz / kernel.bin members, and disagreement
+#                         between the two statements fails the release
+#   CI_S5_LINE            judge line of the last verified firmware run; when unset the
+#                         notes say where that verdict is recorded instead of inventing one
 #   CI_KERNEL_PACKAGE     kernel package version of the build, recorded in the notes and
-#                         used as the index's `kernel` field (optional: without it the
-#                         index falls back to the payload manifest, and without either
-#                         there is no index)
+#                         used as the index's `kernel` field; when unset it is read from
+#                         the payload manifest's `kernel` field, so a caller that forgets
+#                         it no longer publishes a release whose page denies the kernel the
+#                         payload names (neither variable nor manifest: no index)
 #   CI_FEED_BASE_URL      directory index.txt will be served from; turns the index's
 #                         `payload` into an absolute `url` (optional)
 #   CI_FEED_HISTORY       space-separated directories of earlier releases to carry in the
@@ -195,12 +199,76 @@ sed 's/^/[release]   /' "${sums}"
 # --------------------------------------------------------------------------- #
 
 notes="${release_dir}/release-notes.md"
-upstream_rootfs="${CI_UPSTREAM_ROOTFS_SHA256:-not recorded}"
-upstream_kernel="${CI_UPSTREAM_KERNEL_SHA256:-not recorded}"
+
+# The payload manifest is the build's own record of what went into the release, and the
+# payload tar is the one artifact this stage is handed anyway. Reading the Inputs table out
+# of it means a value the build recorded cannot become a placeholder on the page because a
+# caller forgot to pass a variable: the v0.0.11 page printed a placeholder for a kernel that
+# its own index and payload named. An explicit variable still wins, but only when it agrees
+# with the manifest - two answers to the same question are a reason to stop, not to pick
+# the quieter one.
+payload_manifest=""
+if [ -n "${payload_in}" ] && [ -f "${payload_in}" ] && ci_have tar; then
+    case "${payload_in}" in
+        *.tar)
+            # assemble.sh writes manifest.json at the tar's root; a payload that is not a
+            # tar, or has no manifest, is a caller we still serve (image-only releases).
+            payload_manifest="$(tar -xOf "${payload_in}" manifest.json 2>/dev/null || true)"
+            ;;
+    esac
+fi
+manifest_kernel=""
+manifest_rootfs_sha=""
+manifest_kernel_sha=""
+if [ -n "${payload_manifest}" ]; then
+    manifest_kernel="$(printf '%s\n' "${payload_manifest}" |
+        sed -n 's/^[[:space:]]*"kernel"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+        head -n 1)"
+    # The member block is bounded by its own braces, so the bootloader's sha256 fields
+    # (same key, different member) cannot be mistaken for a member digest.
+    manifest_rootfs_sha="$(printf '%s\n' "${payload_manifest}" |
+        sed -n '/^[[:space:]]*"rootfs\.tar\.gz"[[:space:]]*:[[:space:]]*{/,/^[[:space:]]*}/ {
+            s/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p
+        }' |
+        head -n 1)"
+    manifest_kernel_sha="$(printf '%s\n' "${payload_manifest}" |
+        sed -n '/^[[:space:]]*"kernel\.bin"[[:space:]]*:[[:space:]]*{/,/^[[:space:]]*}/ {
+            s/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p
+        }' |
+        head -n 1)"
+fi
+if [ -n "${CI_UPSTREAM_ROOTFS_SHA256:-}" ] && [ -n "${manifest_rootfs_sha}" ] &&
+    [ "${CI_UPSTREAM_ROOTFS_SHA256}" != "${manifest_rootfs_sha}" ]; then
+    ci_die "the caller says upstream rootfs sha256 ${CI_UPSTREAM_ROOTFS_SHA256}, the payload manifest says ${manifest_rootfs_sha}"
+fi
+if [ -n "${CI_UPSTREAM_KERNEL_SHA256:-}" ] && [ -n "${manifest_kernel_sha}" ] &&
+    [ "${CI_UPSTREAM_KERNEL_SHA256}" != "${manifest_kernel_sha}" ]; then
+    ci_die "the caller says upstream kernel sha256 ${CI_UPSTREAM_KERNEL_SHA256}, the payload manifest says ${manifest_kernel_sha}"
+fi
+if [ -n "${CI_KERNEL_PACKAGE:-}" ] && [ -n "${manifest_kernel}" ] &&
+    [ "${CI_KERNEL_PACKAGE}" != "${manifest_kernel}" ]; then
+    ci_die "the caller says kernel package ${CI_KERNEL_PACKAGE}, the payload manifest says ${manifest_kernel}"
+fi
+# Why a value is absent, in one phrase the table can carry: an empty cell would read as
+# "nobody looked", and a made-up placeholder reads as a fact. Neither is true.
+if [ -n "${payload_manifest}" ]; then
+    missing_note="the payload manifest does not carry it"
+elif [ -n "${payload_in}" ]; then
+    missing_note="the payload carries no readable manifest"
+else
+    missing_note="this release carries no payload manifest"
+fi
+upstream_rootfs="${CI_UPSTREAM_ROOTFS_SHA256:-${manifest_rootfs_sha}}"
+upstream_kernel="${CI_UPSTREAM_KERNEL_SHA256:-${manifest_kernel_sha}}"
+[ -n "${upstream_rootfs}" ] || upstream_rootfs="${missing_note}"
+[ -n "${upstream_kernel}" ] || upstream_kernel="${missing_note}"
 # The kernel package version is what the index calls `kernel`. It is optional here on
 # purpose: a caller that only has an image still gets a release, it just gets no index.
-kernel_package="${CI_KERNEL_PACKAGE:-not recorded}"
-judge_line="${CI_S5_LINE:-not recorded}"
+kernel_package="${CI_KERNEL_PACKAGE:-${manifest_kernel}}"
+# The S5 verdict belongs to the run that proved the build, not to this stage's inputs:
+# the build workflow exposes no stage output to its caller, so the publish job has no
+# route to the line. The notes say where it lives instead of printing a placeholder.
+judge_line="${CI_S5_LINE:-}"
 
 {
     printf '# N5105 AB firmware %s (upstream %s)\n' "${platform_version}" "${upstream_version}"
@@ -250,10 +318,22 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf '| Upstream version | `%s` |\n' "${upstream_version}"
     printf '| Upstream rootfs sha256 | `%s` |\n' "${upstream_rootfs}"
     printf '| Upstream kernel sha256 | `%s` |\n' "${upstream_kernel}"
-    printf '| Kernel package | `%s` |\n' "${kernel_package}"
+    # No row at all when the kernel package is unknown: feed-index.sh treats a missing
+    # `Kernel package` row as "ask the payload", which is the same answer, while a row with
+    # a sentence in it would be read as a kernel version and stop the index. The omission is
+    # explained below the table so the page is still complete.
+    if [ -n "${kernel_package}" ]; then
+        printf '| Kernel package | `%s` |\n' "${kernel_package}"
+    fi
     printf '| Platform version | `%s` |\n' "${platform_version}"
     printf '| Uncompressed image sha256 | `%s` |\n' "${image_sha256}"
     printf '\n'
+    if [ -z "${kernel_package}" ]; then
+        printf 'Kernel package: %s.\n' "${missing_note}"
+        printf 'The Inputs table omits it, and this release publishes without a feed index:\n'
+        printf 'an index without a kernel would point a machine at a payload it cannot match.\n'
+        printf '\n'
+    fi
     printf '## Verification\n'
     printf '\n'
     printf 'The build is accepted when these lines appear in the corresponding runs:\n'
@@ -265,7 +345,16 @@ judge_line="${CI_S5_LINE:-not recorded}"
     printf 'S5-RESULT=ok upgrade=b\n'
     printf '```\n'
     printf '\n'
-    printf 'Last recorded S5 line: `%s`\n' "${judge_line}"
+    if [ -n "${judge_line}" ]; then
+        printf 'Last recorded S5 line: `%s`\n' "${judge_line}"
+    else
+        # A placeholder here would be read as "the upgrade was never graded". The line has
+        # a home - the S5 stage of the build that produced this release prints it and the
+        # run report shows it - so the page points there instead of pretending it is lost.
+        printf 'The S5 upgrade verdict was recorded by the build run, in its S5 stage and in\n'
+        printf 'that run'"'"'s report; the publishing workflow receives no stage output, so the\n'
+        printf 'line is not repeated here.\n'
+    fi
     printf '\n'
     printf '## Installation\n'
     printf '\n'

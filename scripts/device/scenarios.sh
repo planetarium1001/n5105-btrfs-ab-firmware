@@ -1,7 +1,8 @@
 #!/bin/sh
-# Real-user scenarios S1-S7: does what a person installed, wrote and configured
+# Real-user scenarios S1-S8: does what a person installed, wrote and configured
 # survive a version jump, is the software still usable afterwards, did the tools that
-# boot the machine travel with the update, and does the package source follow the version?
+# boot the machine travel with the update, does the package source follow the version, and
+# what does the machine do when the configuration a user wrote is simply wrong?
 #
 # The matrix (matrix.sh, M1-M7) answers "did this jump keep a bootable machine": slot
 # fields, boot breadcrumbs, the layer invariant. This driver answers the question the
@@ -12,8 +13,10 @@
 # One case is one question and one verdict:
 #
 #   S1  preinstall   install a batch of packages (LuCI apps first, one kmod), snapshot
-#                    what apk has. A package that cannot be installed is recorded as
-#                    unavailable, not as a failure; zero packages AND zero kmods is a GAP.
+#                    what apk has, and install-then-remove one small package to prove that
+#                    an uninstall leaves nothing behind. A package that cannot be installed
+#                    is recorded as unavailable, not as a failure; zero packages AND zero
+#                    kmods is a GAP.
 #   S2  userdata     write files (MiB-sized, a Chinese filename, a tar.gz, two fake
 #                    docker image tars, a directory tree) to /data, add a uci config of
 #                    our own, change hostname/timezone, add a network section and a
@@ -30,11 +33,18 @@
 #                    the members of payload-<version>.tar. Read-only, no install, no reboot.
 #   S7  releasefeeds each version installed from its own release's feeds, then a jump, then
 #                    a version and ABI snapshot diff -- and the feed list's own verdict.
+#   S8  badconfig    four broken configurations -- a network section naming a device that
+#                    does not exist, a firewall rule that cannot be translated, a truncated
+#                    docker daemon.json and a package feed that answers 404. Each one is
+#                    backed up before it is written, and each one has to end with the
+#                    machine still whole, the change refused or visibly degraded, and the
+#                    backup back in place, byte for byte.
 #
-#   scripts/device/scenarios.sh                       # S1..S7
+#   scripts/device/scenarios.sh                       # S1..S8
 #   scripts/device/scenarios.sh --case S3 --case S4    # the two jumps
 #   scripts/device/scenarios.sh --case S6              # the boot toolchain alone
 #   scripts/device/scenarios.sh --case S7              # the package source versus the version
+#   scripts/device/scenarios.sh --case S8              # four broken configurations and the way back
 #   scripts/device/scenarios.sh --resume               # skip cases that already PASS
 #   scripts/device/scenarios.sh --dry-run              # print steps and verdicts, touch nothing
 #
@@ -43,11 +53,17 @@
 #
 # Three verdicts, as in matrix.sh, plus one note prefix:
 #   PASS  every mechanical judgement held
-#   FAIL  data lost, config lost, software gone, mount or service broken, or SSH lost
-#   GAP   could not be judged (no payload, no apk, no /data, no S1/S2 state on the machine)
+#   FAIL  data lost, config lost, software gone, mount or service broken, or SSH lost; a
+#         package that left files behind after its own uninstall (S1); a hop that landed on
+#         package metadata that is not aligned (S3/S4); a broken configuration the machine
+#         did not refuse, did not survive, or did not come back from byte for byte (S8)
+#   GAP   could not be judged (no payload, no apk, no /data, no S1/S2 state on the machine,
+#         or -- in S8 -- not one of the four broken configurations could be written here)
 #   note  scenarios also produce findings that are neither: a kmod built for the previous
-#         kernel is normal apk behaviour, but the user has to be told. Those go in the
-#         fourth column prefixed FINDING: and never turn a PASS into a FAIL.
+#         kernel is normal apk behaviour, a package the image does not ship cannot be
+#         install-and-removed, and a docker daemon that ignores a file it cannot parse is not
+#         broken; but the user has to be told. Those go in the fourth column prefixed
+#         FINDING: and never turn a PASS into a FAIL.
 #
 # Red lines, enforced in code:
 #   * no committed healthy slot -> the run stops with exit 3 before anything is written
@@ -59,7 +75,10 @@
 #     host rolls back, and the machine has its own watchdog (nohup, scheduled before the
 #     reload) that restores the backup unless the host confirms within the grace period;
 #   * an install is only ever aimed at the slot the machine is not running
-#     (require_safe_target).
+#     (require_safe_target);
+#   * S8 writes a broken configuration only after that class's own backup is on /data, and
+#     every class ends with the backup back in place and compared byte for byte; a class
+#     whose backup cannot be taken writes nothing at all.
 #
 # Why S6 compares bytes instead of trusting the installer: ab-upgrade is the only writer of
 # vmlinuz-<slot>, initrd-<slot> and of the slot's @platform, and platform_copy_rootfs writes
@@ -84,6 +103,43 @@
 # so S7 takes it from the release (it is inside payload-<version>.tar's rootfs.tar.gz and is
 # read, never rebuilt -- the kmods directory in it is <kernel>-1-<hash>, a build hash no
 # version string can predict) and compares two snapshots taken on either side of the jump.
+#
+# Why S8 breaks the configuration on purpose: every other case in this file asks whether the
+# machine keeps what a user put there. This one asks the opposite question, because a person
+# with a text editor gets /etc/config/firewall wrong far more often than an upgrade does: is
+# a wrong file refused, does the machine stay reachable while it is wrong, and is there a
+# recorded way back? The four classes are the four ways a machine can be told something
+# untrue -- a network section that names a device nothing has, a firewall rule that cannot be
+# translated, a docker config that is not JSON, and a package feed that answers 404 -- and the
+# three things that make the answer worth reading: the refusal (or the visible degradation) is
+# witnessed on the machine rather than assumed from an exit status, the machine is still a
+# machine afterwards (ab-slot status, boot=ok, esp=ok, two ssh answers), and the recovery
+# record says where the backup is and who put it back.
+#
+# Why the network class reuses S2's net-apply and net-rollback instead of its own revert: the
+# rollback machinery is the one thing here that cannot be re-tested for free. If S8 grew a
+# second implementation, the watchdog would be proven by S2 and used by S8, and a bug in the
+# used path would be invisible. So the broken section goes through the same three steps --
+# backup, machine-scheduled revert, host-issued rollback -- and only the content differs.
+#
+# Why the firewall class never reloads the broken ruleset: `fw4 check` parses and translates
+# without touching the running ruleset, and a bad rule pushed to a live firewall is how a
+# test takes its own session away. The check is the refusal witness; the *restored* config is
+# then reloaded, which is what proves "the configuration is still parseable" -- and is itself
+# the second half of the judgement, because a restore that cannot be applied is not a restore.
+#
+# Why the docker class accepts "docker is unavailable" as a pass: dockerd refusing to start on
+# a file that is not JSON is the daemon protecting the system, and the machine on these images
+# is a router with a container tool, not a container host. The class therefore asserts three
+# things and no more: the daemon did not come up on the broken file, the router is unaffected,
+# and the backup brought the daemon back (or the image has no docker at all, which is a
+# FINDING and named as such).
+#
+# Why the 404 class proves the restore with a second apk update: one failed fetch says nothing
+# about whether the feed list or the network is at fault. Only a run where the bogus list fails
+# and the machine's own list succeeds tells the two apart; when both fail, the machine cannot
+# reach its feeds from here and the class records that it could not judge instead of claiming
+# the 404 was witnessed.
 #
 # Why the user-space half of that comparison is expected to show nothing: the three releases
 # publish byte-identical indexes for packages/x86_64/packages (sha256 e06121acb3131ece... for
@@ -139,7 +195,7 @@ export AB_REPO_ROOT
 # shellcheck source=scripts/device/lib.sh
 . "${DEVICE_DIR}/lib.sh"
 
-CASES_ALL="S1 S2 S3 S4 S5 S6 S7"
+CASES_ALL="S1 S2 S3 S4 S5 S6 S7 S8"
 
 PAYLOAD_DIR=${AB_PAYLOAD_DIR:-payloads}
 RESULTS=${AB_RESULTS:-results.tsv}
@@ -224,13 +280,33 @@ SCEN_S7_FEED_BASE=${AB_SCEN_S7_FEED_BASE:-https://downloads.immortalwrt.org}
 # already installed proves nothing, because apk answers rc=0 and changes nothing (measured).
 # The list is several names long because an image that already carries nano may not carry jq.
 SCEN_S7_FRESH_PKGS=${AB_SCEN_S7_FRESH_PKGS:-"nano less vim jq tmux git"}
+# S1's second half (R5): one package that is not installed, installed, run once, and removed
+# again. Several names long for the same reason as above, and never a package the machine
+# already has -- the cycle refuses to remove one (see cmd_pkgcycle), because uninstalling
+# something the user installed in order to prove a test would be a test that damages the
+# machine it measures.
+SCEN_PKGCYCLE=${AB_SCEN_PKGCYCLE:-"nano less jq"}
+# S8 writes four broken configurations. The device and the proto are chosen so that nothing
+# on the machine can ever answer to them: netifd cannot create a link that is not there, and
+# no package implements a proto called ab-scen-badproto, so the section is refused instead of
+# being half-applied. The name is deliberately not the management interface's.
+SCEN_S8_UCI=${AB_SCEN_S8_UCI:-abscenbad}
+SCEN_S8_BADNET_DEV=${AB_SCEN_S8_BADNET_DEV:-ab-scen-nosuch0}
+SCEN_S8_BADNET_PROTO=${AB_SCEN_S8_BADNET_PROTO:-ab-scen-badproto}
+# The docker config S8 truncates. It is a file the image ships once docker is enabled; when it
+# is absent there is nothing to break, and the class says so instead of inventing one.
+SCEN_S8_DOCKER=${AB_SCEN_S8_DOCKER:-/etc/docker/daemon.json}
+# The feed that answers 404: a release path that does not exist on the mirror the releases
+# come from. A closed port would be indistinguishable from a machine with no network, and
+# telling those two apart is the whole point of the second apk update in that class.
+SCEN_S8_BADFEED=${AB_SCEN_S8_BADFEED:-${SCEN_S7_FEED_BASE}/releases/0.0.0-ab-404/packages/x86_64/packages/packages.adb}
 
 usage() {
     cat <<'USAGE'
-usage: scenarios.sh [--case S1..S7]... [--payload-dir DIR] [--results FILE]
+usage: scenarios.sh [--case S1..S8]... [--payload-dir DIR] [--results FILE]
                     [--evidence-dir DIR] [--resume] [--dry-run]
 
-  --case S1..S7      case to run, repeatable; default is all seven
+  --case S1..S8      case to run, repeatable; default is all eight
   --payload-dir DIR  directory holding payload-<version>.tar (default: payloads)
   --results FILE     results.tsv to append to (default: results.tsv)
   --evidence-dir DIR evidence directory (default: <results dir>/evidence)
@@ -239,6 +315,7 @@ usage: scenarios.sh [--case S1..S7]... [--payload-dir DIR] [--results FILE]
   --render-helper F  write the remote helper to F and exit (used by the unit tests)
 
   S1 preinstall  S2 userdata  S3 up  S4 down  S5 abi  S6 boottools  S7 releasefeeds
+  S8 badconfig
 USAGE
 }
 
@@ -511,6 +588,60 @@ cmd_pkgcheck() {
     say "pkg=${_pkg} present=${_present} version=$(pkgver "${_pkg}") file=${_file} fileok=${_fileok}"
 }
 
+# cmd_pkgcycle <pkg> <listfile>: install one package the machine does not have, run it once,
+# write down the files apk says it owns, and remove it again -- then report what is left.
+# R5's "clean after uninstall" is the question, and it is three questions, so all three
+# witnesses are printed and the host compares them:
+#   * after_del / del_rc  does apk still know the package (`apk info -e` must fail);
+#   * files_left          do the files it owned still exist;
+#   * world_before/after  is /etc/apk/world back to the line count it had before.
+# A package that is already installed is not touched at all: removing something the user
+# installed in order to prove a point would be a test that damages the machine it measures,
+# so the cycle refuses and reports before=yes, and the host picks the next name.
+cmd_pkgcycle() {
+    _cy_pkg=$1
+    _cy_list=${2:-/tmp/ab-scen-pkgcycle.list}
+    _cy_before=no
+    apk info -e "${_cy_pkg}" >/dev/null 2>&1 && _cy_before=yes
+    if [ "${_cy_before}" = yes ]; then
+        say "pkgcycle pkg=${_cy_pkg} before=yes skipped=yes"
+        return 0
+    fi
+    _cy_world_before=$(wc -l </etc/apk/world 2>/dev/null | tr -d ' ')
+    [ -n "${_cy_world_before}" ] || _cy_world_before=0
+    _cy_add=$(apk add --no-cache "${_cy_pkg}" 2>&1)
+    _cy_add_rc=$?
+    _cy_mid=no
+    apk info -e "${_cy_pkg}" >/dev/null 2>&1 && _cy_mid=yes
+    : >"${_cy_list}"
+    apk info -L "${_cy_pkg}" >"${_cy_list}" 2>/dev/null
+    _cy_files=$(grep '^/' "${_cy_list}" 2>/dev/null | grep -v '/$' | wc -l | tr -d ' ')
+    # The command that proves the binary runs is the package's own first file in a bin
+    # directory: a package with no such file is reported as exec=none, which is a fact about
+    # the package, not a failure of the cycle.
+    _cy_exe=$(grep -E '^/(usr/)?s?bin/' "${_cy_list}" 2>/dev/null | grep -v '/$' | head -n 1)
+    _cy_exec=na
+    if [ -n "${_cy_exe}" ] && [ -x "${_cy_exe}" ]; then
+        "${_cy_exe}" --version >/dev/null 2>&1
+        _cy_exec=$?
+    fi
+    _cy_del=$(apk del "${_cy_pkg}" 2>&1)
+    _cy_del_rc=$?
+    _cy_after=no
+    apk info -e "${_cy_pkg}" >/dev/null 2>&1 && _cy_after=yes
+    _cy_left=0
+    for _cy_f in $(grep '^/' "${_cy_list}" 2>/dev/null | grep -v '/$'); do
+        [ -e "${_cy_f}" ] && _cy_left=$((_cy_left + 1))
+    done
+    _cy_world_after=$(wc -l </etc/apk/world 2>/dev/null | tr -d ' ')
+    [ -n "${_cy_world_after}" ] || _cy_world_after=0
+    say "pkgcycle pkg=${_cy_pkg} before=${_cy_before} add_rc=${_cy_add_rc} after_add=${_cy_mid} exec=${_cy_exe:-none} exec_rc=${_cy_exec} files=${_cy_files} del_rc=${_cy_del_rc} after_del=${_cy_after} files_left=${_cy_left} world_before=${_cy_world_before} world_after=${_cy_world_after} list=${_cy_list}"
+    if [ "${_cy_add_rc}" -ne 0 ]; then
+        say "pkgcycle_err=$(printf '%s\n' "${_cy_add}" | sed -n '1p' | tr -d '\r' | cut -c1-80)"
+    fi
+}
+
+
 # cmd_kmodcheck <kmod>: is this kernel module still built for the running kernel.
 # Two independent witnesses, because either one can be missing on a given apk build:
 #   * the /lib/modules/<ver>/ directory the package's own files land in;
@@ -683,6 +814,73 @@ cmd_cfg_fw() {
     uci commit firewall 2>/dev/null
     _rc=$?
     say "fwrule=${_name} target=$(uci -q get "firewall.@rule[-1].target" 2>/dev/null) commit_rc=${_rc}"
+}
+
+# cmd_badcfg <class> ...: write one broken configuration (S8) and report what the machine
+# records about it. Nothing is reloaded here: the network class is reloaded by net-apply (the
+# same call S2 makes, watchdog included) and the other classes are only *checked*, because a
+# broken ruleset or a broken daemon config pushed live is how a test takes its own session
+# away. Every class prints one `badcfg=` line; the host compares the values in it.
+#   network <name> <device> <proto>  an interface naming a link that does not exist
+#   firewall <name>                  a rule whose destination port is not a port
+#   docker <path>                    a daemon.json that is not JSON
+#   apk <path> <url>                 a feed list naming a release that is not there
+# The paths come from the host, not from the helper's environment: the helper is a separate
+# script run through ssh, so a variable set on the host never reaches it.
+cmd_badcfg() {
+    _bc_cls=${1:-}
+    _bc_name=${2:-}
+    case "${_bc_cls}" in
+        network)
+            _bc_dev=${3:-ab-scen-nosuch0}
+            _bc_proto=${4:-ab-scen-badproto}
+            uci set "network.${_bc_name}=interface" 2>/dev/null
+            uci set "network.${_bc_name}.device=${_bc_dev}" 2>/dev/null
+            uci set "network.${_bc_name}.proto=${_bc_proto}" 2>/dev/null
+            uci set "network.${_bc_name}.auto=1" 2>/dev/null
+            uci commit network 2>/dev/null
+            _bc_rc=$?
+            # The uci file itself has to stay readable: a rule can be wrong and the
+            # configuration still parse, and those two are different claims.
+            uci -q show network >/dev/null 2>&1
+            _bc_parse=$?
+            say "badcfg=network name=${_bc_name} device=$(uci -q get "network.${_bc_name}.device" 2>/dev/null) proto=$(uci -q get "network.${_bc_name}.proto" 2>/dev/null) commit_rc=${_bc_rc} parse=${_bc_parse}"
+            ;;
+        firewall)
+            # `uci add` prints the section name it made; the host uses it after the restore
+            # to ask whether the rule is really gone.
+            _bc_sec=$(uci add firewall rule 2>/dev/null)
+            uci set "firewall.${_bc_sec}.name=${_bc_name}" 2>/dev/null
+            uci set "firewall.${_bc_sec}.src=lan" 2>/dev/null
+            uci set "firewall.${_bc_sec}.dest_port=not-a-port" 2>/dev/null
+            uci set "firewall.${_bc_sec}.target=AB-BOGUS" 2>/dev/null
+            uci commit firewall 2>/dev/null
+            _bc_rc=$?
+            uci -q show firewall >/dev/null 2>&1
+            _bc_parse=$?
+            say "badcfg=firewall name=${_bc_name} sec=${_bc_sec:-none} dest_port=$(uci -q get "firewall.${_bc_sec}.dest_port" 2>/dev/null) target=$(uci -q get "firewall.${_bc_sec}.target" 2>/dev/null) commit_rc=${_bc_rc} parse=${_bc_parse}"
+            ;;
+        docker)
+            _bc_path=$3
+            mkdir -p "$(dirname "${_bc_path}")" 2>/dev/null
+            printf '{\n  "log-driver": "json-file",\n  "log-opts": {\n' >"${_bc_path}"
+            _bc_rc=$?
+            say "badcfg=docker file=${_bc_path} write_rc=${_bc_rc} bytes=$(wc -c <"${_bc_path}" 2>/dev/null | tr -d ' ')"
+            ;;
+        apk)
+            _bc_path=$3
+            _bc_url=$4
+            mkdir -p "$(dirname "${_bc_path}")" 2>/dev/null
+            printf '%s\n' "${_bc_url}" >"${_bc_path}"
+            _bc_rc=$?
+            say "badcfg=apk file=${_bc_path} write_rc=${_bc_rc} feeds=${_bc_url}"
+            ;;
+        *)
+            say "badcfg=${_bc_cls:-none} rc=2 err=unknown-class"
+            return 1
+            ;;
+    esac
+    return 0
 }
 
 # cmd_net_apply <bakdir> <grace>: the destructive half of S2.
@@ -909,7 +1107,7 @@ cmd_boottools() {
 }
 
 _cmd=${1:-}
-[ -n "${_cmd}" ] || { say "usage: ab-scen-helper.sh <probe|mkdirs|pkginstall|pkgsnap|pkgcheck|kmodcheck|exec|seed|hash|tartest|cfg-*|net-*|overlay-probe|svc-cycle|boottools>"; exit 2; }
+[ -n "${_cmd}" ] || { say "usage: ab-scen-helper.sh <probe|mkdirs|pkginstall|pkgsnap|pkgcheck|pkgcycle|kmodcheck|exec|seed|hash|tartest|cfg-*|badcfg|net-*|overlay-probe|svc-cycle|boottools>"; exit 2; }
 shift
 case "${_cmd}" in
     probe) cmd_probe ;;
@@ -917,6 +1115,7 @@ case "${_cmd}" in
     pkginstall) cmd_pkginstall "$@" ;;
     pkgsnap) cmd_pkgsnap "$@" ;;
     pkgcheck) cmd_pkgcheck "$@" ;;
+    pkgcycle) cmd_pkgcycle "$@" ;;
     kmodcheck) cmd_kmodcheck "$@" ;;
     exec) cmd_exec "$@" ;;
     seed) cmd_seed "$@" ;;
@@ -928,6 +1127,7 @@ case "${_cmd}" in
     cfg-net) cmd_cfg_net "$@" ;;
     cfg-fw) cmd_cfg_fw "$@" ;;
     cfg-read) cmd_cfg_read "$@" ;;
+    badcfg) cmd_badcfg "$@" ;;
     net-apply) cmd_net_apply "$@" ;;
     net-confirm) cmd_net_confirm ;;
     net-rollback) cmd_net_rollback "$@" ;;
@@ -1239,6 +1439,69 @@ run_s1() {
         ev "probe at preinstall: ${_cmd} rc=${_rc:-?}"
     done
 
+    # R5's other half: an install-then-remove has to leave nothing behind. The cycle runs on
+    # a package this machine does not have yet (cmd_pkgcycle refuses a package that is
+    # installed, because removing one the user put there would damage the machine it
+    # measures), and every witness is compared here rather than on the machine: the package
+    # record, the files apk said it owned, and the line count of /etc/apk/world.
+    _cy_pkg=""
+    _cy_line=""
+    _cy_err=""
+    for _p in ${SCEN_PKGCYCLE}; do
+        _cy_out=$(scen pkgcycle "${_p}" "${SCEN_EVIDENCE}/pkgcycle-${_p}.list" 2>/dev/null)
+        _line=$(printf '%s\n' "${_cy_out}" | grep '^pkgcycle ' | head -n 1)
+        [ -n "${_line}" ] || continue
+        _cy_err=$(printf '%s\n' "${_cy_out}" | sed -n 's/^pkgcycle_err=//p' | head -n 1)
+        if [ "$(kv "${_line}" skipped)" = "yes" ]; then
+            ev "pkgcycle ${_p}: already installed on this machine, so a cycle would not prove an uninstall; trying the next name"
+            continue
+        fi
+        if [ "$(kv "${_line}" after_add)" != "yes" ]; then
+            ev "pkgcycle ${_p}: could not be installed (rc=$(kv "${_line}" add_rc): ${_cy_err:-no error line}), so it cannot prove an uninstall"
+        fi
+        _cy_pkg=${_p}
+        _cy_line=${_line}
+        # A name the feeds do not serve is remembered and the next one is tried: the list is
+        # several names long because an image may carry a feed set that lacks one of them, and
+        # the uninstall is still measurable with another.
+        [ "$(kv "${_line}" after_add)" = "yes" ] || continue
+        break
+    done
+    if [ -z "${_cy_pkg}" ]; then
+        # Nothing to cycle with is a fact about the image, not a broken machine: the same rule
+        # the batch above follows for a package the repositories do not have.
+        _finding "no package from '${SCEN_PKGCYCLE}' could be installed and removed again (all already installed, or none available), so the uninstall half of R5 was not measured"
+        _cy_outcome="not measured"
+        printf 'pkgcycle\tnone\tnot-installed\n' >>"${probefile}"
+    elif [ "$(kv "${_cy_line}" after_add)" != "yes" ]; then
+        _finding "${_cy_pkg} could not be installed for the install-then-remove cycle (rc=$(kv "${_cy_line}" add_rc): ${_cy_err:-no error line}), so the uninstall half of R5 was not measured"
+        _cy_outcome="${_cy_pkg} unavailable"
+        printf 'pkgcycle\t%s\tunavailable\n' "${_cy_pkg}" >>"${probefile}"
+    else
+        # The install worked, so the uninstall is judged: three independent witnesses, each
+        # failing on its own. A package that apk no longer knows but whose files survive is
+        # exactly the residue R5 asks about.
+        [ "$(kv "${_cy_line}" del_rc)" = "0" ] \
+            || _fail "${_case}" "pkgcycle ${_cy_pkg}: apk del exited $(kv "${_cy_line}" del_rc)"
+        [ "$(kv "${_cy_line}" after_del)" = "no" ] \
+            || _fail "${_case}" "pkgcycle ${_cy_pkg}: apk info -e still answers after apk del, so the package is still recorded as installed"
+        [ "$(kv "${_cy_line}" files_left)" = "0" ] \
+            || _fail "${_case}" "pkgcycle ${_cy_pkg}: $(kv "${_cy_line}" files_left) of the $(kv "${_cy_line}" files) file(s) apk listed are still on disk after the uninstall"
+        [ "$(kv "${_cy_line}" world_before)" = "$(kv "${_cy_line}" world_after)" ] \
+            || _fail "${_case}" "pkgcycle ${_cy_pkg}: /etc/apk/world has $(kv "${_cy_line}" world_after) line(s) after the uninstall, it had $(kv "${_cy_line}" world_before) before"
+        case "$(kv "${_cy_line}" exec_rc)" in
+            0) ev "pkgcycle ${_cy_pkg}: installed, $(kv "${_cy_line}" exec) --version ran, $(kv "${_cy_line}" files) file(s) listed, removed cleanly (world $(kv "${_cy_line}" world_before) -> $(kv "${_cy_line}" world_after))" ;;
+            none | na)
+                _finding "pkgcycle ${_cy_pkg}: the package has no file in a bin directory, so it could not be executed once (the file and world witnesses still hold)"
+                ;;
+            *)
+                _fail "${_case}" "pkgcycle ${_cy_pkg}: $(kv "${_cy_line}" exec) --version exited $(kv "${_cy_line}" exec_rc) while it was installed"
+                ;;
+        esac
+        _cy_outcome="${_cy_pkg} removed cleanly"
+        printf 'pkgcycle\t%s\t%s\n' "${_cy_pkg}" "$(kv "${_cy_line}" after_del)" >>"${probefile}"
+    fi
+
     # The full installed set, as a file: "what did the user have" has to be answerable
     # after the jump without trusting this run's memory.
     _snap=$(scen pkgsnap "${SCEN_EVIDENCE}/apk-snapshot-${_stamp}.txt" 2>/dev/null | grep '^snap=')
@@ -1262,7 +1525,7 @@ run_s1() {
     pull "${SCEN_EVIDENCE}/packages.tsv" || { _fail "${_case}" "${SCEN_EVIDENCE}/packages.tsv is not readable after the write"; return 1; }
 
     [ "${CASE_FAILED}" -eq 0 ] || return 1
-    CASE_NOTE="installed ${_ok}/$(printf '%s' "${SCEN_PKGS}" | wc -w | tr -d ' ') (${_pkgs_ok} package(s), ${_kmod_ok} kmod), snapshot ${_snap_n:-0} rows"
+    CASE_NOTE="installed ${_ok}/$(printf '%s' "${SCEN_PKGS}" | wc -w | tr -d ' ') (${_pkgs_ok} package(s), ${_kmod_ok} kmod), snapshot ${_snap_n:-0} rows, install-then-remove ${_cy_outcome:-not measured}"
     [ "${_bad}" -eq 0 ] || CASE_NOTE="${CASE_NOTE}, unavailable: ${_unavailable}"
     return 0
 }
@@ -1779,6 +2042,15 @@ scen_hop() {
     _check assert_field slot "${_target}" "${_case}"
     _check assert_match "$(status_field "${_booted}" upper || printf '')" \
         "^@overlay-$(dev_version_re "${_version}")(-r[0-9]+)?\$" "${_case}" upper
+    # The package metadata is part of the result of a hop, not a field that merely moves with
+    # it: ac-4 asks for `packages=aligned packages_reason=none` after every jump, and a machine
+    # left `limited` needs its world file or distfeeds.list fixed before it can install
+    # anything again. lib.sh still lists the pair under MONITORED for the *before/after*
+    # comparison, which is right -- the movement is not a criterion -- but the value the hop
+    # lands in is judged here, and the failure names both fields, so `limited` comes with the
+    # reason the aligner recorded.
+    _check assert_field packages aligned "${_case}"
+    _check assert_field packages_reason none "${_case}"
     [ "${CASE_FAILED}" -eq 0 ] || return 1
     ev "hop ${_phase}: ${_version} committed on slot ${_target}, generation $((_gen + 1))"
     return 0
@@ -2721,6 +2993,536 @@ run_s7() {
 }
 
 # --------------------------------------------------------------------------- #
+# S8: bad configuration -- what the machine does when the file is simply wrong
+# --------------------------------------------------------------------------- #
+
+# s8_bak_dir <class> <stamp>: one directory per class, so "which backup" is a path a person
+# can type and the recovery record can carry.
+s8_bak_dir() {
+    printf '%s/badcfg-%s-%s\n' "${SCEN_BACKUP}" "$1" "$2"
+}
+
+# s8_backup <class> <bakdir> <file>...: this class's backup, which is its precondition and not
+# a step inside it. Returns 1 when the copies did not all land -- the class then writes
+# nothing at all, because a broken file with no way back is not a measurement.
+s8_backup() {
+    _s8b_cls=$1
+    _s8b_bak=$2
+    shift 2
+    _s8b_want=$#
+    _s8b_out=$(scen cfg-backup "${_s8b_bak}" "$@" 2>/dev/null)
+    _s8b_n=$(kv "${_s8b_out}" backups)
+    case "${_s8b_n}" in
+        '' | *[!0-9]*) _s8b_n=0 ;;
+    esac
+    ev "S8 ${_s8b_cls}: backup ${_s8b_n}/${_s8b_want} of '$*' -> ${_s8b_bak}"
+    [ "${_s8b_n}" -eq "${_s8b_want}" ] || return 1
+    return 0
+}
+
+# s8_collect <remote> <local>: the bytes as they were, taken before the class writes over them.
+# The restore is judged against this file, never against a claim that a copy "should" be back.
+s8_collect() {
+    if dev_collect "$1" "$2"; then
+        return 0
+    fi
+    rm -f "$2" 2>/dev/null
+    return 1
+}
+
+# s8_restore_ok <target> <backup on the machine> <local original>: put the backup back and
+# compare what the machine has afterwards with the bytes collected before the class started.
+# Copying is not proof; the comparison is (the same rule s7_restore follows).
+s8_restore_ok() {
+    _s8r_cp=$(scen exec cp "$2" "$1" 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_s8r_cp}" rc)" != "0" ]; then
+        ev "S8 restore: cp $2 $1 failed (${_s8r_cp:-no answer}); put it back by hand"
+        return 1
+    fi
+    if ! dev_collect "$1" "$3.after"; then
+        ev "S8 restore: $1 is not readable after the restore"
+        return 1
+    fi
+    cmp -s "$3" "$3.after"
+}
+
+# s8_record <class> <backup> <restored-by> <outcome>: one row of the recovery record.
+# "Which file, where the copy is, who put it back" is the deliverable of this case, and it is
+# a file on the machine's /data rather than a line in a log that dies with the run.
+s8_record() {
+    printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"${_tmp}/s8-classes.tsv"
+    ev "S8 $1: backup=$2 restored_by=$3 outcome=$4"
+}
+
+# s8_notjudged <class> <bakdir> <reason> [restored-by]: the class could not be judged on this
+# machine. A FINDING and a row in the record -- never a silent pass, and never a FAIL for a
+# file the image simply does not have.
+s8_notjudged() {
+    _finding "S8 $1: not judged: $3"
+    s8_record "$1" "${2:--}" "${4:-none}" "not-judged: $3"
+    _s8_skipped=$((_s8_skipped + 1))
+    _s8_skipped_names="${_s8_skipped_names}$1 "
+}
+
+# s8_intact <class>: the machine is still a machine while the configuration is broken.
+# ab-slot status readable, boot=ok and esp=ok on it, and two consecutive ssh answers
+# (ssh_alive) -- "ssh answered once" is exactly the reading that hides a half-applied change.
+# The package fields are printed as facts and not judged here: S8's question is whether the
+# machine survives a wrong file, and `packages=limited` is a degradation ab-slot records, not
+# a crash. What a jump leaves behind is a different question, asked in scen_hop.
+s8_intact() {
+    _s8i_cls=$1
+    _s8i_line=$(dev_status) || _s8i_line=""
+    if [ -z "${_s8i_line}" ]; then
+        _fail "${_case}" "${_s8i_cls}: ab-slot status is unreadable while the broken configuration is in place"
+        return 1
+    fi
+    AB_STATUS_LINE=${_s8i_line}
+    _check assert_field boot ok "${_case}"
+    _check assert_field esp ok "${_case}"
+    if ! ssh_alive; then
+        _fail "${_case}" "${_s8i_cls}: ssh stopped answering while the broken configuration was in place"
+        return 1
+    fi
+    ev "S8 ${_s8i_cls}: machine intact -- boot=$(status_field "${_s8i_line}" boot || printf '?') esp=$(status_field "${_s8i_line}" esp || printf '?') packages=$(status_field "${_s8i_line}" packages || printf '?') packages_reason=$(status_field "${_s8i_line}" packages_reason || printf '?')"
+    return 0
+}
+
+# s8_net <stamp>: the network class. A section naming a device nothing has, with a proto
+# nothing implements. It is reloaded through S2's net-apply -- backup, machine-scheduled revert,
+# reload -- so the rollback machinery under test is the one that is used, and the host-side
+# net-rollback closes it. Two outcomes are accepted (the reload refused, or applied with the
+# section never coming up); neither counts unless the session survives and the file goes back.
+s8_net() {
+    _cls=network
+    _s8_outcome="network: refused or degraded, restored"
+    _bak=$(s8_bak_dir network "$1")
+    _orig="${_tmp}/s8-network-original"
+    if ! s8_backup "${_cls}" "${_bak}" /etc/config/network /etc/config/firewall /etc/config/system; then
+        s8_notjudged "${_cls}" "${_bak}" "/etc/config/{network,firewall,system} could not be backed up, so nothing was broken"
+        return 2
+    fi
+    if ! s8_collect /etc/config/network "${_orig}"; then
+        s8_notjudged "${_cls}" "${_bak}" "/etc/config/network is not readable on this machine"
+        return 2
+    fi
+
+    _bad=$(scen badcfg network "${SCEN_S8_UCI}net" "${SCEN_S8_BADNET_DEV}" "${SCEN_S8_BADNET_PROTO}" 2>/dev/null | grep '^badcfg=' | head -n 1)
+    case "${_bad}" in
+        *commit_rc=0*) ev "S8 network: broken section written -- ${_bad}" ;;
+        *) _fail "${_case}" "network: the broken section did not commit (${_bad:-no answer})" ;;
+    esac
+    # A rule can be wrong and the file still parse; those are two different claims and only
+    # the second one is about the configuration system rather than about netifd.
+    [ "$(kv "${_bad}" parse)" = "0" ] \
+        || _fail "${_case}" "network: /etc/config/network stopped parsing after the broken section (parse=$(kv "${_bad}" parse))"
+
+    _ap=$(scen net-apply "${_bak}" "${SCEN_ROLLBACK_GRACE}" 2>/dev/null \
+        | grep -E '^(watchdog|net-reload)(=|[[:space:]])')
+    if ! printf '%s\n' "${_ap}" | grep -q '^watchdog='; then
+        _fail "${_case}" "network: the reload step reported no watchdog line, so no revert could have been scheduled"
+        if ! s8_restore_ok /etc/config/network "${_bak}/_etc_config_network.bak" "${_orig}"; then
+            _fail "${_case}" "network: /etc/config/network is not byte-identical to ${_bak}/_etc_config_network.bak after the restore"
+        fi
+        s8_record "${_cls}" "${_bak}" "host" "the reload step answered no watchdog line"
+        return 1
+    fi
+    if [ "$(kv "${_ap}" watchdog)" = "no" ]; then
+        # The helper wrote the file and did not reload it (see cmd_net_apply): the machine
+        # never saw the broken section, so this class measured nothing. The backup goes back
+        # and the skipped half is said out loud.
+        if s8_restore_ok /etc/config/network "${_bak}/_etc_config_network.bak" "${_orig}"; then
+            ev "S8 network: /etc/config/network restored from ${_bak}"
+        else
+            _fail "${_case}" "network: /etc/config/network is not byte-identical to ${_bak}/_etc_config_network.bak after the restore"
+        fi
+        s8_notjudged "${_cls}" "${_bak}" "this image has neither setsid nor start-stop-daemon, so the machine cannot schedule its own revert; the section was written and never reloaded" "host"
+        return 2
+    fi
+    _reload_rc=$(printf '%s\n' "${_ap}" | sed -n 's/^net-reload rc=\([^ ]*\).*/\1/p')
+    ev "S8 network: reload step -- $(printf '%s' "${_ap}" | tr '\n' ' ')"
+
+    # The refusal witness is not net-reload's exit status: `ubus call network reload` answers 0
+    # whatever the sections say (measured on this line of releases). What a machine that
+    # refused the section cannot have is a link that does not exist, so the device is asked
+    # for by name.
+    _lk=$(scen exec ip link show "${SCEN_S8_BADNET_DEV}" 2>/dev/null | grep '^cmd=' | head -n 1)
+    _lk_rc=$(kv "${_lk}" rc)
+    if [ -z "${_lk_rc}" ] || [ "${_lk_rc}" = "127" ]; then
+        # No answer is not a refusal, and neither is "this image has no ip": a witness that
+        # did not run proves nothing, and the ssh check below decides this class instead.
+        _finding "S8 network: the refusal could not be witnessed ('ip link show ${SCEN_S8_BADNET_DEV}' answered rc=${_lk_rc:-none}); the section's effect was not measured"
+    elif [ "${_lk_rc}" = "0" ]; then
+        _fail "${_case}" "network: ${SCEN_S8_BADNET_DEV} exists after the reload, so the machine created a link nothing has instead of refusing the section"
+        _s8_outcome="network: ${SCEN_S8_BADNET_DEV} came up, the section was adopted instead of refused"
+    else
+        ev "S8 network: refused or ignored -- ${SCEN_S8_BADNET_DEV} was never created (ip link rc=${_lk_rc}, reload rc=${_reload_rc:-?})"
+    fi
+
+    if ! ssh_alive; then
+        _fail "${_case}" "network: ssh stopped answering after the broken section was reloaded; the machine restores ${_bak} within ${SCEN_ROLLBACK_GRACE}s or the host does it now"
+        _s8_outcome="network: ssh lost after the reload, rolled back from ${_bak}"
+        _rb=$(scen net-rollback "${_bak}" 2>/dev/null | grep -E '^(restore=|rollback=)')
+        if [ -n "${_rb}" ]; then
+            ev "S8 network: host rollback -- $(printf '%s' "${_rb}" | tr '\n' ' ')"
+        else
+            ev "S8 network: host rollback could not reach the machine; the watchdog restores ${_bak} within ${SCEN_ROLLBACK_GRACE}s"
+        fi
+        if dev_wait_up_after plain; then
+            ev "the machine answers ssh again after the rollback"
+        else
+            ev "the machine did not answer within ${AB_WAIT_UP}s after the rollback"
+        fi
+        machine_unreachable_mark
+        s8_record "${_cls}" "${_bak}" "machine watchdog and host rollback" "ssh lost after the reload"
+        return 1
+    fi
+    ev "S8 network: ssh answered ${SCEN_LIVENESS_OK} times after the reload of the broken section"
+
+    # Back to the bytes that were there. net-rollback is the host-issued revert (it also
+    # confirms the machine's scheduled one away); the comparison is what makes it a restore.
+    _rb=$(scen net-rollback "${_bak}" 2>/dev/null | grep -E '^(restore=|rollback=)')
+    ev "S8 network: host rollback -- $(printf '%s' "${_rb}" | tr '\n' ' ')"
+    if s8_restore_ok /etc/config/network "${_bak}/_etc_config_network.bak" "${_orig}"; then
+        ev "S8 network: /etc/config/network is byte-identical to ${_bak}/_etc_config_network.bak again"
+        s8_record "${_cls}" "${_bak}" "host (net-rollback; the machine's scheduled revert was confirmed away)" "refused or degraded, restored byte for byte"
+    else
+        _fail "${_case}" "network: /etc/config/network is not byte-identical to ${_bak}/_etc_config_network.bak after the restore"
+        _s8_outcome="network: the restore is not byte-identical to ${_bak}"
+        s8_record "${_cls}" "${_bak}" "host (incomplete)" "restore is not byte-identical to the backup"
+    fi
+    s8_intact "${_cls}" || return 1
+    return 0
+}
+
+# s8_fw <stamp>: the firewall class. A rule whose destination port is not a port. fw4's own
+# check is the refusal witness and the broken ruleset is never pushed live -- a bad rule
+# reloaded is how a test takes its own session away. After the restore the *restored* ruleset
+# is checked and reloaded, which is what "the configuration is still parseable" has to mean.
+s8_fw() {
+    _cls=firewall
+    _s8_outcome="firewall: refused by the check, restored"
+    _bak=$(s8_bak_dir firewall "$1")
+    _orig="${_tmp}/s8-firewall-original"
+    if ! s8_backup "${_cls}" "${_bak}" /etc/config/firewall; then
+        s8_notjudged "${_cls}" "${_bak}" "/etc/config/firewall could not be backed up, so nothing was broken"
+        return 2
+    fi
+    if ! s8_collect /etc/config/firewall "${_orig}"; then
+        s8_notjudged "${_cls}" "${_bak}" "/etc/config/firewall is not readable on this machine"
+        return 2
+    fi
+
+    _bad=$(scen badcfg firewall "${SCEN_S8_UCI}fw" 2>/dev/null | grep '^badcfg=' | head -n 1)
+    case "${_bad}" in
+        *commit_rc=0*) ev "S8 firewall: broken rule written -- ${_bad}" ;;
+        *) _fail "${_case}" "firewall: the broken rule did not commit (${_bad:-no answer})" ;;
+    esac
+    [ "$(kv "${_bad}" parse)" = "0" ] \
+        || _fail "${_case}" "firewall: /etc/config/firewall stopped parsing after the broken rule (parse=$(kv "${_bad}" parse))"
+    _sec=$(kv "${_bad}" sec)
+
+    # fw4 on the 25.x line, fw3 on the older images; either answers `check`, and a tool that is
+    # not there answers 127, which is how the class knows it cannot witness the refusal here.
+    _tool=fw4
+    _chk=$(scen exec fw4 check 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_chk}" rc)" = "127" ]; then
+        _tool=fw3
+        _chk=$(scen exec fw3 check 2>/dev/null | grep '^cmd=' | head -n 1)
+    fi
+    if [ "$(kv "${_chk}" rc)" = "127" ]; then
+        if ! s8_restore_ok /etc/config/firewall "${_bak}/_etc_config_firewall.bak" "${_orig}"; then
+            _fail "${_case}" "firewall: /etc/config/firewall is not byte-identical to ${_bak}/_etc_config_firewall.bak after the restore"
+        fi
+        s8_notjudged "${_cls}" "${_bak}" "this image has neither fw4 nor fw3, so a ruleset cannot be checked without pushing it to the live firewall" "host"
+        return 2
+    fi
+    if [ "$(kv "${_chk}" rc)" = "0" ]; then
+        _fail "${_case}" "firewall: ${_tool} check accepted a rule with dest_port=not-a-port and target=AB-BOGUS"
+        _s8_outcome="firewall: ${_tool} check accepted the broken rule"
+    else
+        ev "S8 firewall: ${_tool} check refused the broken rule (rc=$(kv "${_chk}" rc): $(printf '%s' "${_chk}" | sed -n 's/.* out=//p'))"
+    fi
+
+    # The restore happens before the "is the machine still whole" verdict is returned: a
+    # class that leaves the broken file behind would be a test that damages what it measures.
+    _intact=1
+    s8_intact "${_cls}" || _intact=0
+
+    # The restore, the rule's absence, and the proof that the restored file still translates.
+    _restored=no
+    if s8_restore_ok /etc/config/firewall "${_bak}/_etc_config_firewall.bak" "${_orig}"; then
+        _restored=yes
+        ev "S8 firewall: /etc/config/firewall is byte-identical to ${_bak}/_etc_config_firewall.bak again"
+    else
+        _fail "${_case}" "firewall: /etc/config/firewall is not byte-identical to ${_bak}/_etc_config_firewall.bak after the restore"
+        _s8_outcome="firewall: the restore is not byte-identical to ${_bak}"
+    fi
+    if [ -n "${_sec}" ] && [ "${_sec}" != none ]; then
+        _gone=$(scen exec uci -q get "firewall.${_sec}.dest_port" 2>/dev/null | grep '^cmd=' | head -n 1)
+        if [ "$(kv "${_gone}" rc)" = "0" ]; then
+            _fail "${_case}" "firewall: the broken rule (${_sec}) is still in the restored configuration"
+            _s8_outcome="firewall: the broken rule survived the restore"
+        fi
+    fi
+    _chk2=$(scen exec "${_tool}" check 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_chk2}" rc)" = "0" ]; then
+        ev "S8 firewall: the restored ruleset translates again (${_tool} check rc=0)"
+    else
+        _fail "${_case}" "firewall: the restored ruleset does not translate (${_tool} check rc=$(kv "${_chk2}" rc): $(printf '%s' "${_chk2}" | sed -n 's/.* out=//p'))"
+        _s8_outcome="firewall: the restored ruleset does not translate"
+    fi
+    _rl=$(scen exec /etc/init.d/firewall reload 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_rl}" rc)" = "0" ]; then
+        ev "S8 firewall: the restored ruleset reloads (rc=0)"
+    else
+        _fail "${_case}" "firewall: the restored ruleset does not reload (rc=$(kv "${_rl}" rc))"
+        _s8_outcome="firewall: the restored ruleset does not reload"
+    fi
+    s8_record "${_cls}" "${_bak}" "host (cp from the backup, then /etc/init.d/firewall reload)" "refused by ${_tool} check, restored (${_restored})"
+    [ "${_intact}" = "1" ] || return 1
+    s8_intact "${_cls}" || return 1
+    return 0
+}
+
+# s8_docker <stamp>: the docker class. A daemon.json that is not JSON. dockerd refusing to
+# come up on it is the daemon protecting the system, and on these images the machine is a
+# router that also carries docker, so "docker is unavailable for as long as the file is
+# broken" is the expected degradation and not a failure of the machine. What is asserted:
+# the daemon did not come up on the broken file, the router is unaffected, and the backup
+# brought the daemon back.
+s8_docker() {
+    _cls=docker
+    _s8_outcome="docker: daemon unavailable on the broken file, restored and running"
+    _s8d_outcome="daemon unavailable while the file was broken, restored and running again"
+    _bak=$(s8_bak_dir docker "$1")
+    _orig="${_tmp}/s8-docker-original"
+    if ! s8_backup "${_cls}" "${_bak}" "${SCEN_S8_DOCKER}"; then
+        s8_notjudged "${_cls}" "${_bak}" "${SCEN_S8_DOCKER} is not on this machine: docker is not configured here, so there is no daemon config to break"
+        return 2
+    fi
+    _have=$(scen exec command -v dockerd 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_have}" rc)" != "0" ]; then
+        s8_notjudged "${_cls}" "${_bak}" "dockerd is not installed on this machine, so a broken daemon.json has nothing to fail"
+        return 2
+    fi
+    if ! s8_collect "${SCEN_S8_DOCKER}" "${_orig}"; then
+        s8_notjudged "${_cls}" "${_bak}" "${SCEN_S8_DOCKER} is not readable on this machine"
+        return 2
+    fi
+
+    _bad=$(scen badcfg docker "${SCEN_S8_DOCKER}" 2>/dev/null | grep '^badcfg=' | head -n 1)
+    case "${_bad}" in
+        *write_rc=0*) ev "S8 docker: truncated daemon.json written -- ${_bad}" ;;
+        *) _fail "${_case}" "docker: the truncated daemon.json could not be written (${_bad:-no answer})" ;;
+    esac
+    _rs=$(scen exec /etc/init.d/dockerd restart 2>/dev/null | grep '^cmd=' | head -n 1)
+    _cli=$(scen exec docker info 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_rs}" rc)" = "127" ]; then
+        # The binary is there but nothing can be told to restart it (no init script): the
+        # degradation cannot be produced, so the file goes back and the class says so.
+        if ! s8_restore_ok "${SCEN_S8_DOCKER}" "${_bak}/$(printf '%s' "${SCEN_S8_DOCKER}" | sed -e 's|^/|_|' -e 's|/|_|g').bak" "${_orig}"; then
+            _fail "${_case}" "docker: ${SCEN_S8_DOCKER} is not byte-identical to the backup after the restore"
+        fi
+        s8_notjudged "${_cls}" "${_bak}" "there is no /etc/init.d/dockerd on this machine, so the daemon cannot be restarted onto the broken file" "host"
+        return 2
+    fi
+    _pid=$(scen exec pidof dockerd 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_pid}" rc)" = "0" ]; then
+        # The daemon is up with a file that is not JSON: either this image's init script does
+        # not read it, or the parse error is tolerated. Nothing is broken, so nothing is red --
+        # and the fact is reported, because "the daemon ignored it" is worth knowing.
+        _finding "S8 docker: dockerd is still running with a truncated daemon.json (restart rc=$(kv "${_rs}" rc)), so the degradation this class looks for could not be witnessed"
+        _s8d_outcome="daemon tolerated the broken file (a FINDING, not a degradation)"
+    else
+        ev "S8 docker: dockerd did not come up on the truncated daemon.json (restart rc=$(kv "${_rs}" rc): $(printf '%s' "${_rs}" | sed -n 's/.* out=//p')); docker is unavailable for as long as the file is broken (docker info rc=$(kv "${_cli}" rc))"
+        _s8d_outcome="daemon unavailable while the file was broken, restored and running again"
+    fi
+
+    _intact=1
+    s8_intact "${_cls}" || _intact=0
+
+    if s8_restore_ok "${SCEN_S8_DOCKER}" "${_bak}/$(printf '%s' "${SCEN_S8_DOCKER}" | sed -e 's|^/|_|' -e 's|/|_|g').bak" "${_orig}"; then
+        ev "S8 docker: ${SCEN_S8_DOCKER} is byte-identical to the backup again"
+    else
+        _fail "${_case}" "docker: ${SCEN_S8_DOCKER} is not byte-identical to the backup after the restore"
+        _s8_outcome="docker: the restore is not byte-identical to ${_bak}"
+        _s8d_outcome="the restore is not byte-identical to ${_bak}"
+    fi
+    _rs2=$(scen exec /etc/init.d/dockerd restart 2>/dev/null | grep '^cmd=' | head -n 1)
+    _pid2=$(scen exec pidof dockerd 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_pid2}" rc)" = "0" ]; then
+        ev "S8 docker: dockerd is running again after the backup was restored"
+    else
+        _fail "${_case}" "docker: dockerd did not come back after ${SCEN_S8_DOCKER} was restored from the backup (restart rc=$(kv "${_rs2}" rc))"
+        _s8_outcome="docker: dockerd did not come back after the restore"
+        _s8d_outcome="the daemon did not come back after the restore"
+    fi
+    s8_record "${_cls}" "${_bak}" "host (cp from the backup, then /etc/init.d/dockerd restart)" "${_s8d_outcome}"
+    [ "${_intact}" = "1" ] || return 1
+    s8_intact "${_cls}" || return 1
+    return 0
+}
+
+# s8_apk <stamp>: the package-feed class. A feed list naming a release that is not on the
+# mirror, so apk's index refresh has to fail while the machine keeps running. The second apk
+# update after the restore is what tells "the 404 was witnessed" apart from "this machine
+# cannot reach any feed from here": when both fail, the class says it could not judge instead
+# of claiming the 404.
+s8_apk() {
+    _cls=apk
+    _s8_outcome="apk: 404 feed failed, the machine's own feed answers again"
+    _bak=$(s8_bak_dir apk "$1")
+    _orig="${_tmp}/s8-feeds-original"
+    if ! s8_backup "${_cls}" "${_bak}" "${SCEN_S7_FEEDS}"; then
+        s8_notjudged "${_cls}" "${_bak}" "${SCEN_S7_FEEDS} could not be backed up, so the machine keeps its own feed list"
+        return 2
+    fi
+    if ! s8_collect "${SCEN_S7_FEEDS}" "${_orig}"; then
+        s8_notjudged "${_cls}" "${_bak}" "${SCEN_S7_FEEDS} is not readable on this machine"
+        return 2
+    fi
+
+    _bad=$(scen badcfg apk "${SCEN_S7_FEEDS}" "${SCEN_S8_BADFEED}" 2>/dev/null | grep '^badcfg=' | head -n 1)
+    case "${_bad}" in
+        *write_rc=0*) ev "S8 apk: 404 feed list written -- ${_bad}" ;;
+        *) _fail "${_case}" "apk: the 404 feed list could not be written (${_bad:-no answer})" ;;
+    esac
+    _upd=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
+    _badfeed_failed=no
+    if [ "$(kv "${_upd}" rc)" = "0" ]; then
+        _finding "S8 apk: apk update answered 0 with a feed list naming a release that does not exist, so the 404 could not be witnessed (a cached index, or a mirror that answers anything)"
+    else
+        _badfeed_failed=yes
+        ev "S8 apk: apk update failed on the 404 feed (rc=$(kv "${_upd}" rc): $(printf '%s' "${_upd}" | sed -n 's/.* out=//p'))"
+    fi
+
+    # The machine keeps running, which is the other half of the question: ab-slot status stays
+    # readable, boot/esp stay ok, and whatever `packages` says is recorded as a fact.
+    _intact=1
+    s8_intact "${_cls}" || _intact=0
+
+    _restored=no
+    if s8_restore_ok "${SCEN_S7_FEEDS}" "${_bak}/$(printf '%s' "${SCEN_S7_FEEDS}" | sed -e 's|^/|_|' -e 's|/|_|g').bak" "${_orig}"; then
+        _restored=yes
+        ev "S8 apk: ${SCEN_S7_FEEDS} is byte-identical to ${_bak} again"
+    else
+        _fail "${_case}" "apk: ${SCEN_S7_FEEDS} is not byte-identical to the backup after the restore"
+        _s8_outcome="apk: the restore is not byte-identical to ${_bak}"
+    fi
+    _upd2=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
+    if [ "$(kv "${_upd2}" rc)" = "0" ]; then
+        ev "S8 apk: the machine's own feeds answer again (apk update rc=0) -- the failure was the 404, not the machine"
+        s8_record "${_cls}" "${_bak}" "host (cp from the backup)" "apk update failed on the 404 feed, index refresh works again (${_restored})"
+    else
+        s8_notjudged "${_cls}" "${_bak}" "apk update fails on the restored feed list too (rc=$(kv "${_upd2}" rc)), so a 404 and an unreachable network cannot be told apart from here" "host"
+        return 2
+    fi
+    [ "${_intact}" = "1" ] || return 1
+    if [ "${_badfeed_failed}" = no ]; then
+        return 2
+    fi
+    return 0
+}
+
+# run_s8: four broken configurations, one verdict.
+# The order is the plan's order and it is deliberate: network first (the only class that goes
+# through a real reload), then the two services the machine carries, then the package source.
+run_s8() {
+    _case=S8
+    require_healthy_committed "${_case}" || return 1
+    AB_STATUS_LINE=${STATUS_LINE}
+    push_helper || { CASE_NOTE="helper could not be pushed"; return 1; }
+    probe_machine || { CASE_NOTE="the machine did not answer the helper's probe"; return 1; }
+    if [ "$(kv "${PROBE}" data)" != "mounted" ]; then
+        CASE_NOTE="/data is not mounted: the backups these four classes roll back from have nowhere to live"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    if [ "$(kv "${PROBE}" apk)" != "yes" ]; then
+        CASE_NOTE="no apk on this image: the package-feed half of the case could not be written or refreshed"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+
+    _stamp=$(dev_stamp | tr ':' '-')
+    scen mkdirs "${SCEN_EVIDENCE}" "${SCEN_BACKUP}" >/dev/null 2>&1
+    : >"${_tmp}/s8-classes.tsv"
+    CASE_FAILED=0
+    _s8_judged=0
+    _s8_skipped=0
+    _s8_skipped_names=""
+
+    # Four classes, and every one of them runs even when an earlier one went red: the user
+    # wants the whole list of what a wrong file did, not the first item of it.
+    _s8_broke=""
+    _s8_ok_names=""
+    _s8_rest=""
+    for _s8_cls in network firewall docker apk; do
+        # The assertion counter, not CASE_FAILED: CASE_FAILED is a flag that is already 1 after
+        # the first red class, so comparing it would credit every later class with the earlier
+        # class's failure (and with a clean pass, once it is set).
+        _s8_failed_before=${AB_ASSERT_FAILURES}
+        case "${_s8_cls}" in
+            network) s8_net "${_stamp}" ;;
+            firewall) s8_fw "${_stamp}" ;;
+            docker) s8_docker "${_stamp}" ;;
+            apk) s8_apk "${_stamp}" ;;
+        esac
+        _s8_rc=$?
+        if [ "${AB_ASSERT_FAILURES}" -ne "${_s8_failed_before}" ]; then
+            # A class can return 0 having already recorded a failed judgement (a restore that
+            # did not land, say): its own outcome word is what names it in the note.
+            _s8_broke="${_s8_broke}${_s8_outcome}; "
+        elif [ "${_s8_rc}" -eq 0 ]; then
+            _s8_judged=$((_s8_judged + 1))
+            _s8_ok_names="${_s8_ok_names}${_s8_cls} "
+        fi
+        # A machine that stopped answering has to say so once. Running the other three
+        # classes against it would record "the backup could not be taken" three times, which
+        # reads as three broken backups rather than as one unreachable machine.
+        if machine_unreachable_seen; then
+            case "${_s8_cls}" in
+                network) _s8_rest="firewall docker apk" ;;
+                firewall) _s8_rest="docker apk" ;;
+                docker) _s8_rest="apk" ;;
+                *) _s8_rest="" ;;
+            esac
+            ev "S8: the machine stopped answering after the ${_s8_cls} class; not attempted: ${_s8_rest:-none}"
+            break
+        fi
+    done
+
+    # Two copies, for the same reason S2 keeps two: the machine's /data is where a person
+    # looks, next to the backups the rows name, and this directory is what survives a machine
+    # that stopped answering -- which is exactly when the record matters most.
+    cp "${_tmp}/s8-classes.tsv" "${EVIDENCE_DIR}/scen-badcfg-${_stamp}.tsv" 2>/dev/null || true
+    if dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_tmp}/s8-classes.tsv" "${SCEN_EVIDENCE}/badcfg-${_stamp}.tsv" >/dev/null; then
+        ev "S8 recovery record: ${SCEN_EVIDENCE}/badcfg-${_stamp}.tsv (host copy: ${EVIDENCE_DIR}/scen-badcfg-${_stamp}.tsv)"
+    else
+        ev "S8 recovery record could not be written to ${SCEN_EVIDENCE}/badcfg-${_stamp}.tsv; the host copy is ${EVIDENCE_DIR}/scen-badcfg-${_stamp}.tsv"
+    fi
+
+    if [ "${CASE_FAILED}" -ne 0 ]; then
+        CASE_NOTE="$(printf '%s' "${_s8_broke}" | sed 's/; $//')"
+        [ -n "${CASE_NOTE}" ] || CASE_NOTE="a broken configuration was not handled"
+        [ -z "${_s8_rest}" ] || CASE_NOTE="${CASE_NOTE}; the machine stopped answering, so ${_s8_rest} was not attempted"
+        return 1
+    fi
+    if [ "${_s8_judged}" -eq 0 ]; then
+        CASE_NOTE="none of the four broken configurations could be judged on this machine (${_s8_skipped_names:-nothing to break}); nothing was refused and nothing was restored"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    # The per-class detail is in the log and in the recovery record; the note says how many
+    # of the four were judged and where the way back is, which is what the row is for.
+    CASE_NOTE="${_s8_judged}/4 broken configuration(s) refused or degraded with the machine intact ($(printf '%s' "${_s8_ok_names}" | sed 's/ $//')), each backed up under $(s8_bak_dir '<class>' "${_stamp}") and restored byte for byte"
+    [ "${_s8_skipped}" -eq 0 ] \
+        || CASE_NOTE="${CASE_NOTE}; not judged: $(printf '%s' "${_s8_skipped_names}" | sed 's/ $//')"
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
 # Cases
 # --------------------------------------------------------------------------- #
 
@@ -2745,6 +3547,7 @@ scen_case() {
         S5) run_s5 ;;
         S6) run_s6 ;;
         S7) run_s7 ;;
+        S8) run_s8 ;;
         *) CASE_NOTE="unknown case"; return 1 ;;
     esac
 }
@@ -2758,6 +3561,7 @@ case_label() {
         S5) printf 'abi: kernel module ledger on the running kernel\n' ;;
         S6) printf 'boottools: ESP kernel/initramfs and the platform layer tool against the payload\n' ;;
         S7) printf 'releasefeeds: %s and %s each from its own release feeds, version and ABI snapshot diff\n' "${SCEN_LOW}" "${SCEN_HIGH}" ;;
+        S8) printf 'badconfig: network, firewall, docker daemon.json and a 404 package feed, each backed up, judged and restored\n' ;;
         *) return 1 ;;
     esac
 }
@@ -2783,6 +3587,10 @@ plan_case() {
             printf '%s pkg-version <every installed package> -> %s/packages.tsv expect=one row per package and per kmod\n' "${_case}" "${SCEN_EVIDENCE}"
             printf '%s probe-baseline <%s> expect=rc recorded for comparison after the jump\n' \
                 "${_case}" "$(for _p in ${SCEN_PROBES}; do _scen_probe_cmd "${_p%%:*}" || true; done | tr '\n' ',' | sed 's/,$//')" 
+            for _p in ${SCEN_PKGCYCLE}; do
+                printf '%s pkg-cycle %s expect=refused when %s is already installed (a package the user has is never removed), else add, run it once, apk info -L, apk del\n' "${_case}" "${_p}" "${_p}"
+            done
+            printf '%s pkg-cycle assert expect=after_del=no (apk info -e fails), files_left=0, /etc/apk/world line count back to before; an unavailable package is a FINDING, the residue is a FAIL\n' "${_case}"
             printf '%s assert installed>=1 package and>=1 kmod expect=PASS, else GAP with the per-package reason\n' "${_case}"
             printf '%s record\n' "${_case}"
             ;;
@@ -2834,6 +3642,7 @@ plan_case() {
             printf '%s software apk info -e <every recorded package> expect=present, and every package with files has at least one of them\n' "${_case}"
             printf '%s software exec <curl, htop> expect=the same exit status as the baseline taken in S1\n' "${_case}"
             printf '%s abi kmod vs uname -r expect=match is silent, stale/missing/unknown is a FINDING: naming what to reinstall (never FAIL)\n' "${_case}"
+            printf '%s hop-packages assert packages=aligned packages_reason=none expect=PASS; a machine left limited names the reason the aligner recorded (this is judged, not reported)\n' "${_case}"
             printf '%s platform mounts expect=boot=ok esp=ok data=ok p4=ok pending=none, overlay writable\n' "${_case}"
             printf '%s platform services %s expect=/etc/init.d/<svc> stop and start both exit 0\n' "${_case}" "${SCEN_SERVICES}"
             printf '%s record\n' "${_case}"
@@ -2921,6 +3730,32 @@ plan_case() {
             printf '%s 6/6 align the %s feeds, apk update, install %s then a package that was not installed expect=one install that really changed something, else FAIL\n' \
                 "${_case}" "${_s7_to}" "${_s7_kmod:-<kmod>}"
             printf '%s 6/6 restore %s from the backup expect=byte-identical to step 1, else FAIL\n' "${_case}" "${SCEN_S7_FEEDS}"
+            printf '%s record\n' "${_case}"
+            ;;
+        S8)
+            _s8_bak_root="${SCEN_BACKUP}/badcfg-<class>-<stamp>"
+            printf '# case S8 badconfig: four broken configurations, each with a way back\n'
+            printf '%s status expect=committed slot with boot=ok esp=ok (else the run aborts with exit 3)\n' "${_case}"
+            printf '%s helper push %s -> %s\n' "${_case}" "ab-scen-helper.sh" "${SCEN_HELPER}"
+            printf '%s probe expect=data=mounted (the backups live on it) and apk=yes (the feed class rewrites the feed list)\n' "${_case}"
+            printf '%s 1/4 network cfg-backup /etc/config/{network,firewall,system} -> %s expect=3 of 3, else nothing is written\n' "${_case}" "${_s8_bak_root}"
+            printf '%s 1/4 network badcfg %snet device=%s proto=%s expect=the section commits and the file still parses\n' \
+                "${_case}" "${SCEN_S8_UCI}" "${SCEN_S8_BADNET_DEV}" "${SCEN_S8_BADNET_PROTO}"
+            printf '%s 1/4 network net-apply expect=a revert watchdog scheduled before the reload, then the reload (the same call S2 makes)\n' "${_case}"
+            printf '%s 1/4 network refusal expect=%s was never created (ip link fails) -- ubus answers 0 whatever the sections say, so the device is the witness\n' "${_case}" "${SCEN_S8_BADNET_DEV}"
+            printf '%s 1/4 network ssh-liveness expect=ssh answers; on silence: rollback and FAIL (the machine restores itself if the host cannot reach it)\n' "${_case}"
+            printf '%s 1/4 network restore expect=/etc/config/network byte-identical to the backup after net-rollback, boot=ok esp=ok still\n' "${_case}"
+            printf '%s 2/4 firewall cfg-backup /etc/config/firewall -> %s expect=1 of 1, else nothing is written\n' "${_case}" "${_s8_bak_root}"
+            printf '%s 2/4 firewall badcfg %sfw dest_port=not-a-port target=AB-BOGUS expect=commits, fw4 check refuses it, the file still parses\n' "${_case}" "${SCEN_S8_UCI}"
+            printf '%s 2/4 firewall restore expect=byte-identical, the rule gone, and the restored ruleset passes fw4 check and reloads (that is what "still parseable" means)\n' "${_case}"
+            printf '%s 3/4 docker cfg-backup %s -> %s expect=1 of 1; absent means docker is not configured here and the class is a FINDING, not a FAIL\n' "${_case}" "${SCEN_S8_DOCKER}" "${_s8_bak_root}"
+            printf '%s 3/4 docker badcfg %s expect=a truncated file, dockerd does not come up on it, ab-slot status and ssh unaffected\n' "${_case}" "${SCEN_S8_DOCKER}"
+            printf '%s 3/4 docker restore expect=byte-identical, then dockerd running again; a daemon that ignored the file is a FINDING\n' "${_case}"
+            printf '%s 4/4 apk cfg-backup %s -> %s expect=1 of 1, else nothing is written\n' "${_case}" "${SCEN_S7_FEEDS}" "${_s8_bak_root}"
+            printf '%s 4/4 apk badcfg %s expect=a feed list naming a release that does not exist\n' "${_case}" "${SCEN_S8_BADFEED}"
+            printf '%s 4/4 apk apk update expect=non-zero on the 404 feed while ab-slot status stays readable, boot=ok esp=ok and the machine keeps running\n' "${_case}"
+            printf '%s 4/4 apk restore expect=byte-identical, then apk update rc=0 again -- that second update is what tells the 404 apart from an unreachable network\n' "${_case}"
+            printf '%s record expect=%s/badcfg-<stamp>.tsv: one row per class with the backup and who restored it\n' "${_case}" "${SCEN_EVIDENCE}"
             printf '%s record\n' "${_case}"
             ;;
         *)

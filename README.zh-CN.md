@@ -147,28 +147,24 @@ uci commit firewall
 
 设计阶段。分区几何、启动链与更新事务已定稿，实施按 S0–S6 推进。
 
-## 版本管理
+当前版本：`0.0.12`，上游 base `25.12.2`。这是**测试版**，不是 `0.1.0`：上游 base 没变，也没有新增
+任何用户可见功能。它把 `0.0.11` 之后累积的缺陷修复打包，连同覆盖这些缺陷的验收能力。
 
-格式：`MAJOR.MINOR.PATCH`。
+- **apk 保护规则按前提判定。** `scripts/device/apk-protection-probe.sh` 用
+  `apk audit --backup` 问一句：apk 是否把某个受保护路径视作未被改动 —— 这正是
+  `/etc/apk/protected_paths.d/` 里 `+` 规则成立的前提 —— 一条注定不会触发的规则会当场被点出来。
+  device 脚本统一为 POSIX `sh`，与 CI 静态检查使用的方言一致。
+- **A/B 换槽改看槽实际产出的数据。** `scripts/device/lib.sh` 从归档的真机数据里导出三组字段 ——
+  stable、identity、monitored —— matrix 与 scenarios 不再把 `committed`、`pending`、`generation`
+  混作一类。`ab-slot packages snapshot` 不再对无法解析的记录给出 `packages=0`，commit 路径会把
+  包记录指向刚提交的槽。
+- **每日 upstream watch 在 discovery 失败时让 job 失败**，坏掉的镜像源或索引不会再以绿灯通过。
+- **发布页改为从 payload manifest 取值**，kernel 版本与上游摘要上的 `not recorded` 占位随之消失。
+- **验收只需一条命令。** `scripts/device/full-test.sh` 把 S8 的四类坏配置、真实 docker 负载
+  D1/D2/D3、版本固定 `--case pin`、包回退 P3/P4 与发布字节校验排进同一个顺序，给出同一个结论。
 
-- `MAJOR` 恒为 `0`：项目处于试验阶段，仍可能出现破坏性改动。
-- `MINOR` 表示项目目标彻底达成，只有那时才升到 `0.1.0`。
-- `PATCH` 表示阶段性里程碑，目标尚未达成。
-
-当前版本：`0.0.11`。这是**测试版**，不是 `0.1.0`：它带上 `0.0.10` 预告的两个 P1 修复，
-身份变化只有 `/etc/platform-release` 里的平台版本。它用来在真机上验证更新链路：tag run 现在以
-跨版本升级为发布门（cross 红或跳过就不发布），`0.0.10` 的机器可以在线检测并安装这一版。因为上游
-base 没变，这次升级走的是 platform-only 分支：rootfs 重装、platform 层替换、可写层做快照。
-两个 P1 缺陷在这里修好：`apk upgrade` 不再可能遮蔽 `/lib/upgrade/platform.sh`（恢复命令见 release
-notes）；`ab-slot packages snapshot` 在刚刷好的镜像上不再仅因基础包未升级就写 `payload-incomplete`。
-
-首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
-`config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认
-`192.168.100.1/24`。WAN 侧什么都不放：`22/tcp` 那条例外只存在于单独的 `-install-wan-ssh` 镜像里，
-它给的是「从 LAN 够不到的机器」这条进路。`0.0.8` 保留首启行为，改的是「更新带什么」与
-「发布怎么产生」：载荷自带 GRUB 与 slot 菜单，上游新正式版不需要人改 pin 也能发布。`0.0.6` 起的健康检查不变：只有可写层、
-防火墙 ruleset 与 WAN 设备都通过才提交槽；放弃待提交槽时先把决定写进 ESP，再对外宣布。
-流水线仍产出真载荷，并用设备端同一套校验器验证；打 tag 会发布镜像与对应载荷。
+首启自动生成网络配置（`0.0.7`）、自带引导器的载荷（`0.0.8`）与健康检查（`0.0.6`）都是更早版本
+引入的，至今未变。
 
 ## 许可证
 

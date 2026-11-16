@@ -29,6 +29,14 @@
 #   ac-8  snapshots live on the writable layer only; no slot state is touched
 #   (20261116-06) ac-4 the one-line summary of a snapshot reports a count it could not read
 #         as `unreadable`, never as a zero the file does not support
+#   ac-4 / ac-5 the two reverts that must not run: a `.apk` whose bytes changed under the
+#         same name and a record from another base. Each is exit 74 with one reason, neither
+#         installs a package, and the base is judged before the payloads
+#   ac-4 a snapshot says `payloads no` either because it was asked to or because the fetch
+#         produced a gap, and the two lines that tell those apart stay self-consistent
+#   ac-3 the package upgrade: apk update/upgrade behind packages=aligned, a version that
+#         visibly moves, the record written before the transaction, and a failure reported
+#         with the status apk gave
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -140,6 +148,25 @@ case "${1:-}" in
     done
     exit 0
     ;;
+  update)
+    # The metadata refresh a real upgrade starts with. Its status is what the CLI turns into
+    # `reason=apk-<status>`; 124 is the timeout, which has its own token.
+    exit "${APK_UPDATE_FAIL_CODE:-0}"
+    ;;
+  upgrade)
+    [ "${APK_UPGRADE_FAIL_CODE:-0}" != "0" ] && exit "${APK_UPGRADE_FAIL_CODE}"
+    # APK_UPGRADE_BUMP="<name> <version>" is what a feed that moved looks like from here:
+    # the installed list now names the newer version, so a test can see that the machine
+    # really advanced and that the record taken before it did not.
+    if [ -n "${APK_UPGRADE_BUMP:-}" ]; then
+      _bump_name=${APK_UPGRADE_BUMP%% *}
+      _bump_ver=${APK_UPGRADE_BUMP#* }
+      _bump_tmp="${APK_INFO_LIST}.bump"
+      sed "s/^${_bump_name}-[0-9][^ ]*\$/$(printf '%s-%s' "${_bump_name}" "${_bump_ver}")/" \
+        "${APK_INFO_LIST}" >"${_bump_tmp}" && mv "${_bump_tmp}" "${APK_INFO_LIST}"
+    fi
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 APK
@@ -215,6 +242,8 @@ assert_eq "$(sed -n 's/^packages //p' "$snap")" "7" "ac-2 the header counts the 
 assert_eq "$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "$snap")" "4" \
   "ac-2 the header counts the world entries"
 assert_eq "$(sed -n 's/^payloads //p' "$snap")" "yes" "ac-4 the payloads are fetched by default"
+assert_eq "$(grep -c '^payload-gap ' "$snap")" "0" \
+  "ac-4 a complete payload set carries no payload-gap line"
 assert_eq "$(grep -c '^pkg ' "$snap")" "7" "ac-2 there is one pkg line per package"
 assert_eq "$(grep -c '^world    ' "$snap")" "4" "ac-2 there is one world line per entry"
 assert_eq "$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "$snap")" "$(grep -c '^world    ' "$snap")" \
@@ -268,6 +297,14 @@ sid_np=${sid_np%.txt}
 assert_eq "$([ -d "$layer/apk/snapshots/snapshot-$sid_np.d" ] && printf present || printf absent)" \
   "absent" "ac-4 --no-payloads leaves no payload directory"
 assert_eq "$(grep -c '^fetch' "$APK_CALLS")" "0" "ac-4 --no-payloads does not ask apk for anything"
+# The two header lines are read as a pair by everything downstream (the CLI's payload_gap=
+# is written from a payload-gap line and from nothing else). `payloads no` with the flag is
+# the answer the operator asked for, so a reason line here would turn a choice into an
+# unexplained failure; `payloads no` without one always has exactly one reason.
+assert_eq "$(grep -c '^payload-gap ' "$snap_np")" "0" \
+  "ac-4 --no-payloads writes no payload-gap line: the flag is the reason, not a gap"
+assert_eq "$(sed -n 's/^payload-gap //p' "$snap_np")" "" \
+  "ac-4 and there is no reason token to pair with payloads=no"
 
 # A fetch that fails is a gap in the record, not a broken snapshot: the feed can be
 # unreachable while the machine still needs a list of what it has.
@@ -277,6 +314,8 @@ assert_file_exists "$snap_gap" "ac-4 a failed fetch still leaves the manifest"
 assert_eq "$(sed -n 's/^payloads //p' "$snap_gap")" "no" "ac-4 a failed fetch is recorded as no payloads"
 assert_eq "$(sed -n 's/^payload-gap //p' "$snap_gap")" "apk-fetch-failed" \
   "ac-4 the gap names why the payloads are missing"
+assert_eq "$(grep -c '^payload-gap ' "$snap_gap")" "1" \
+  "ac-4 a gap is recorded exactly once, so payloads=no has one reason and not several"
 assert_eq "$(grep -c '^fetch -o ' "$APK_CALLS")" "1" \
   "ac-4 a dead feed stops the per-package pass at its first failure"
 assert_eq "$(grep -c '^fetch --recursive' "$APK_CALLS")" "1" \
@@ -340,6 +379,8 @@ assert_eq "$(sed -n 's/^payloads //p' "$snap_inc")" "no" \
   "ac-4 a set that does not cover every package is list-only"
 assert_eq "$(sed -n 's/^payload-gap //p' "$snap_inc")" "payload-incomplete" \
   "ac-4 the gap keeps the stable reason for a short set"
+assert_eq "$(grep -c '^payload-gap ' "$snap_inc")" "1" \
+  "ac-4 a short set carries exactly one gap line as well"
 assert_eq "$(grep -c '^apkfile ' "$snap_inc")" "0" \
   "ac-4 no digest lines are written for a set that is not complete"
 assert_eq "$(grep -c '^fetch --recursive' "$APK_CALLS")" "1" \
@@ -485,6 +526,8 @@ out="$(slot_run packages upgrade)"
 rc=$?
 assert_eq "$rc" "74" "ac-2 an unaligned layer is refused"
 assert_contains "$out" "reason=packages-not-aligned" "ac-2 the refusal names the gate"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^snapshot ')" "0" \
+  "ac-2 a refused upgrade writes no record: the gate is judged before the snapshot"
 printf 'packages=aligned reason=none slot=a\n' >"$esp/ab/packages"
 
 # --- ac-3 / ac-4: revert with the payloads ---------------------------------
@@ -578,6 +621,8 @@ assert_contains "$out" "revert result=ok" "ac-4 the summary says ok"
 snap_out="$(slot_run packages snapshot --no-payloads)"
 snap_np_id=$(printf '%s\n' "$snap_out" | sed -n 's/^snapshot \([^ ]*\) written.*/\1/p')
 assert_contains "$snap_out" "payloads=no" "ac-4 the CLI writes a manifest without payloads"
+assert_eq "$(printf '%s\n' "$snap_out" | grep -c 'payload_gap=')" "0" \
+  "ac-4 --no-payloads reports no payload_gap= in the one-line summary"
 assert_eq "$([ -d "$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_np_id.d" ] && printf present || printf absent)" \
   "absent" "ac-4 the CLI leaves no payload directory for --no-payloads"
 
@@ -654,6 +699,8 @@ assert_contains "$out" "payloads=no" \
   "ac-4 the CLI reports the list-only snapshot"
 assert_contains "$out" "payload_gap=apk-fetch-failed" \
   "ac-4 the CLI reports the stable reason the payloads are missing"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'payload_gap=')" "1" \
+  "ac-4 the CLI prints one gap reason, not one per failed fetch"
 assert_contains "$out" "packages=7" "ac-4 the list-only snapshot still counts the packages"
 
 # Files written in the same second are ordered by their -N suffix, which is the later
@@ -771,6 +818,146 @@ assert_contains "$out" "world=unreadable" \
 assert_contains "$out" "base=25.12.2" \
   "ac-4 the fields beside the counts are the ones the file carries"
 
+# --- the two refusals: a tampered payload and another base -----------------
+# A second P4 root holds these fixtures. Rewriting a record's bytes or its upstream line
+# must not disturb the snapshots the cases above still name - the newest three are kept, so
+# one extra write on that layer would reap the record `$snap_id` points at.
+p4r="$tmp/p4-refusals"
+mkdir -p "$p4r/@overlay-25.12.2/upper/etc/apk"
+printf 'kernel\nhtop\nzlib\n' >"$p4r/@overlay-25.12.2/upper/etc/apk/world"
+slot_run_r() {
+  AB_ESP="$esp" AB_P4="$p4r" AB_CMD="$cmdline" AB_PLATFORM_RELEASE="$release" \
+    AB_PACKAGES_LIB="$root/platform/lib/upgrade/packages.sh" AB_BTRFS=true \
+    PATH="$bin:$PATH" sh "$root/platform/usr/sbin/ab-slot" "$@" 2>&1
+}
+rsnap_dir="$p4r/@overlay-25.12.2/apk/snapshots"
+: >"$APK_CALLS"
+out_r="$(slot_run_r packages snapshot)"
+assert_contains "$out_r" "payloads=yes" "ac-4 the refusal fixtures start from a complete payload set"
+rsid=$(printf '%s\n' "$out_r" | sed -n 's/^snapshot \([^ ]*\) written.*/\1/p')
+rsnap="$rsnap_dir/snapshot-$rsid.txt"
+rpdir="$rsnap_dir/snapshot-$rsid.d/payloads"
+victim="$rpdir/libnghttp2-14-1.64.0-r0.apk"
+assert_file_exists "$victim" "ac-4 the archive of a pinned package is in the payload directory"
+victim_sha=$(shasum -a 256 "$victim" | cut -d' ' -f1)
+assert_contains "$(cat "$rsnap")" "apkfile  libnghttp2-14 $victim_sha" \
+  "ac-4 the record carries that archive's digest"
+cp "$victim" "$tmp/victim.pristine"
+
+# A byte-for-byte tamper under the same name and the same length: nothing a reader would
+# notice about the file (name, size) says it is not the archive the snapshot listed.
+printf 'TAMPERED-BY-THE-TEST' | dd of="$victim" bs=1 conv=notrunc 2>/dev/null
+assert_eq "$([ "$(shasum -a 256 "$victim" | cut -d' ' -f1)" != "$victim_sha" ] && printf changed || printf same)" \
+  "changed" "ac-4 the tampered archive really is different bytes"
+
+: >"$APK_CALLS"
+out_r="$(slot_run_r packages revert --to "$rsid")"
+rc=$?
+assert_eq "$rc" "74" "ac-4 a payload that does not match its digest refuses the revert with 74"
+assert_contains "$out_r" "ab-slot: refused, reason=revert-payload-mismatch" \
+  "ac-4 the refusal names the digest mismatch"
+assert_contains "$out_r" "revert result=fail reason=revert-payload-mismatch" \
+  "ac-4 the accounting repeats the same reason: one story, not two"
+assert_eq "$(printf '%s\n' "$out_r" | grep -c '^apkfile verified')" "0" \
+  "ac-4 nothing is verified into an install set"
+assert_eq "$(printf '%s\n' "$out_r" | grep -c '^revert world=')" "0" \
+  "ac-4 the refusal comes before the world reconciliation"
+assert_eq "$(grep -c '^add ' "$APK_CALLS")" "0" \
+  "ac-4 not one package is installed from a set that does not verify"
+
+# The base is judged before the payloads: the same tampered record wearing another base is
+# refused across the base, and the payload problem is not reported at all. A reader who
+# fixes the base first is not sent after a digest that was never the problem.
+python3 - "$rsnap" 26.0.0 <<'PYEDIT'
+import sys, pathlib, re
+path = pathlib.Path(sys.argv[1])
+path.write_text(re.sub(r"^upstream .*$", "upstream " + sys.argv[2], path.read_text(), flags=re.M))
+PYEDIT
+: >"$APK_CALLS"
+out_r="$(slot_run_r packages revert --to "$rsid")"
+rc=$?
+assert_eq "$rc" "74" "ac-5 a record from another base is refused with 74"
+assert_contains "$out_r" "ab-slot: refused, reason=revert-across-base" \
+  "ac-5 the base wins over the digest, so the base is the first thing to fix"
+assert_eq "$(printf '%s\n' "$out_r" | grep -c 'revert-payload-mismatch')" "0" \
+  "ac-5 an across-base refusal is not reported as a payload problem"
+assert_contains "$out_r" "Snapshot base 26.0.0, running base 25.12.2" \
+  "ac-5 the refusal shows both bases"
+assert_eq "$(printf '%s\n' "$out_r" | grep -c '^revert result=')" "0" \
+  "ac-5 nothing was replayed: the base is a boundary, not a warning"
+assert_eq "$(grep -c '^add ' "$APK_CALLS")" "0" "ac-5 nothing is installed across a base"
+
+# Back to the same base with the bytes restored: the record verifies and the replay runs.
+# Without this half the two refusals above could be about a fixture that never worked.
+python3 - "$rsnap" 25.12.2 <<'PYEDIT'
+import sys, pathlib, re
+path = pathlib.Path(sys.argv[1])
+path.write_text(re.sub(r"^upstream .*$", "upstream " + sys.argv[2], path.read_text(), flags=re.M))
+PYEDIT
+cp "$tmp/victim.pristine" "$victim"
+assert_eq "$(shasum -a 256 "$victim" | cut -d' ' -f1)" "$victim_sha" \
+  "ac-4 the archive is back at the digest the record carries"
+: >"$APK_CALLS"
+out_r="$(slot_run_r packages revert --to "$rsid")"
+rc=$?
+assert_eq "$rc" "0" "ac-4 the same record reverts once its bytes are back"
+assert_contains "$out_r" "revert result=ok changed=7 path=payloads" \
+  "ac-4 and it takes the payload path, which is the path both refusals were about"
+
+# --- ac-3: the package upgrade really moves a version ----------------------
+# `packages upgrade` is the one package command that changes the machine: apk update, then
+# apk upgrade, behind the packages=aligned gate. What it has to leave behind is the record
+# of the versions it is about to replace, or the upgrade has no way back.
+upg_dir="$p4r/@overlay-25.12.2/apk/snapshots"
+upg_list="$tmp/installed-upgrade.txt"
+cp "$pkglist" "$upg_list"
+: >"$APK_CALLS"
+out_u="$(APK_INFO_LIST="$upg_list" APK_UPGRADE_BUMP='htop 3.5.3-r1' slot_run_r packages upgrade)"
+rc=$?
+assert_eq "$rc" "0" "ac-3 an aligned slot upgrades"
+assert_contains "$out_u" "packages-upgrade result=ok" "ac-3 the result line says ok"
+assert_eq "$(grep -c '^update$' "$APK_CALLS")" "1" "ac-3 apk update runs first"
+assert_eq "$(grep -c '^upgrade$' "$APK_CALLS")" "1" "ac-3 apk upgrade follows"
+assert_contains "$(cat "$upg_list")" "htop-3.5.3-r1" "ac-3 the installed set really advanced"
+assert_eq "$(grep -c '^pkg      htop 3.3.0-r1$' "$upg_list")" "0" \
+  "ac-3 and the old version is no longer what the machine runs"
+usid=$(printf '%s\n' "$out_u" | sed -n 's/^snapshot \([^ ]*\) written.*/\1/p')
+assert_eq "$([ -n "$usid" ] && printf named || printf missing)" "named" \
+  "ac-3 the upgrade names the record it wrote before touching the machine"
+usnap="$upg_dir/snapshot-$usid.txt"
+assert_file_exists "$usnap" "ac-3 that record is on the layer"
+assert_eq "$(grep -c '^pkg      htop 3.3.0-r1$' "$usnap")" "1" \
+  "ac-3 the record holds the version the machine ran before the upgrade (the way back)"
+assert_eq "$(grep -c '^pkg      htop 3.5.3-r1$' "$usnap")" "0" \
+  "ac-3 and not a version the machine never ran"
+
+# A transaction that fails is reported with the status apk gave, not with a guess, and the
+# record written first is still on the layer: a failed upgrade is reversible.
+: >"$APK_CALLS"
+out_f="$(APK_INFO_LIST="$upg_list" APK_UPGRADE_FAIL_CODE=1 slot_run_r packages upgrade)"
+rc=$?
+assert_eq "$rc" "1" "ac-3 a failed apk upgrade exits 1"
+assert_contains "$out_f" "packages-upgrade result=fail reason=apk-1" \
+  "ac-3 the failure names the status apk returned"
+assert_eq "$(printf '%s\n' "$out_f" | grep -c 'packages-upgrade result=ok')" "0" \
+  "ac-3 a failed transaction never claims ok"
+assert_contains "$(cat "$esp/ab/log/upgrade.log")" "packages-upgrade result=fail reason=apk-1" \
+  "ac-3 the failure is logged where the evidence can find it"
+fsid=$(printf '%s\n' "$out_f" | sed -n 's/^snapshot \([^ ]*\) written.*/\1/p')
+assert_file_exists "$upg_dir/snapshot-$fsid.txt" \
+  "ac-3 the record is written before the transaction, so a failed upgrade can still be undone"
+
+# A status of 124 is a timeout and keeps its own token; a dead metadata refresh stops before
+# the transaction instead of upgrading against a stale index.
+: >"$APK_CALLS"
+out_t="$(APK_INFO_LIST="$upg_list" APK_UPDATE_FAIL_CODE=124 slot_run_r packages upgrade)"
+rc=$?
+assert_eq "$rc" "1" "ac-3 a timed-out metadata refresh fails the upgrade"
+assert_contains "$out_t" "packages-upgrade result=fail reason=timeout" \
+  "ac-3 a timeout is named timeout, not apk-124"
+assert_eq "$(grep -c '^upgrade$' "$APK_CALLS")" "0" \
+  "ac-3 a failed apk update stops before apk upgrade"
+
 # An `apk` that does not answer like apk-tools is not a version this code can drive.
 cat >"$bin/apk" <<'APK'
 #!/bin/sh
@@ -785,5 +972,59 @@ out="$(slot_run packages upgrade)"
 rc=$?
 assert_eq "$rc" "74" "an apk that is not apk-tools is refused"
 assert_contains "$out" "reason=apk-unsupported" "the refusal names the unsupported tool"
+
+# --- the device case driver plans its refusal cases without a machine ------
+# scripts/device/package-revert.sh is what runs against the real machine. Its --dry-run has
+# to name the cases it would run without reading one: anything else means the plan is being
+# made on the device instead of on paper. A stub `ssh` on PATH records any call, so "no
+# machine" is asserted instead of assumed.
+dev_sshlog="$tmp/ssh-calls.log"
+mkdir -p "$tmp/devbin"
+cat >"$tmp/devbin/ssh" <<'SSH'
+#!/bin/sh
+printf '%s\n' "$*" >>"${DEV_SSH_LOG:-/dev/null}"
+exit 0
+SSH
+chmod +x "$tmp/devbin/ssh"
+pkg_driver="$root/scripts/device/package-revert.sh"
+
+: >"$dev_sshlog"
+plan_all="$(DEV_SSH_LOG="$dev_sshlog" AB_PKG_RESULTS="$tmp/device-plan-all.tsv" \
+  PATH="$tmp/devbin:$PATH" sh "$pkg_driver" --dry-run \
+  --case P1 --case P2 --case P3 --case P4 --case U1 2>&1)"
+plan_rc=$?
+assert_eq "$plan_rc" "0" "the case driver's dry run exits 0"
+for _plancase in P1 P2 P3 P4 U1; do
+  assert_contains "$plan_all" "${_plancase} 1/" "the dry run plans case ${_plancase}"
+done
+assert_contains "$plan_all" "revert-payload-mismatch" \
+  "P3's plan names the refusal it expects, so the run cannot pass on another exit"
+assert_contains "$plan_all" "revert-across-base" "P4's plan names the refusal it expects"
+assert_contains "$plan_all" "packages-upgrade result=ok" \
+  "U1's plan names the upgrade verdict it expects"
+assert_eq "$(wc -l <"$dev_sshlog" | tr -d ' ')" "0" "the dry run reaches no machine at all"
+assert_eq "$(cut -f1 "$tmp/device-plan-all.tsv" | tr '\n' ' ')" "P1 P2 P3 P4 U1 " \
+  "every planned case lands a row"
+assert_eq "$(cut -f4 "$tmp/device-plan-all.tsv" | sort -u | tr '\n' ' ')" "dry-run " \
+  "and the row says it was a plan, not a verdict about the machine"
+
+# The default run is P1..P4: U1 installs whatever the feed carries, so it is asked for by
+# name and never happens because somebody ran the package phase.
+: >"$dev_sshlog"
+DEV_SSH_LOG="$dev_sshlog" AB_PKG_RESULTS="$tmp/device-plan-default.tsv" \
+  PATH="$tmp/devbin:$PATH" sh "$pkg_driver" --dry-run >/dev/null 2>&1
+default_rc=$?
+assert_eq "$default_rc" "0" "the default dry run exits 0"
+assert_eq "$(cut -f1 "$tmp/device-plan-default.tsv" | tr '\n' ' ')" "P1 P2 P3 P4 " \
+  "the default run is the two record cases plus the two refusals, not the upgrade"
+assert_eq "$(wc -l <"$dev_sshlog" | tr -d ' ')" "0" "the default plan reaches no machine either"
+
+# A typo is a usage error, not a FAIL row that reruns a case nobody wrote.
+DEV_SSH_LOG="$dev_sshlog" AB_PKG_RESULTS="$tmp/device-plan-bad.tsv" \
+  PATH="$tmp/devbin:$PATH" sh "$pkg_driver" --case Z9 >/dev/null 2>&1
+bad_rc=$?
+assert_eq "$bad_rc" "2" "an unknown case is a usage error"
+assert_eq "$([ -s "$tmp/device-plan-bad.tsv" ] && printf wrote || printf none)" "none" \
+  "and it writes no results row for a case that does not exist"
 
 finish
