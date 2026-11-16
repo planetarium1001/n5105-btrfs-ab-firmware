@@ -159,8 +159,19 @@ ci_render_update_conf "${platform_stage}"
 protected_list="${platform_stage}/etc/apk/protected_paths.d/ab-platform-shadow.list"
 rm -f "${protected_list}"
 rootfs_installed="${assemble_dir}/rootfs-installed.txt"
-if tar -xzOf "${upstream_dir}/rootfs.tar.gz" ./lib/apk/db/installed \
-    >"${rootfs_installed}" 2>"${assemble_dir}/rootfs-installed.err"; then
+# Which member name the archive actually uses. `tar -xO ./lib/apk/db/installed` works on
+# BSD tar and fails on GNU tar when the archive stores the path without the leading "./"
+# (the extraction then finds no member and this whole derivation silently produced an empty
+# list - three assertions caught it on the Linux runner while a macOS laptop passed).
+installed_member=""
+while IFS= read -r member; do
+    case "${member}" in
+        ./lib/apk/db/installed|lib/apk/db/installed) installed_member="${member}"; break ;;
+    esac
+done < <(tar -tzf "${upstream_dir}/rootfs.tar.gz" 2>/dev/null || true)
+if [ -n "${installed_member}" ] \
+    && tar -xzOf "${upstream_dir}/rootfs.tar.gz" "${installed_member}" \
+        >"${rootfs_installed}" 2>"${assemble_dir}/rootfs-installed.err"; then
     # Path set of the installed database: every file and directory any package owns.
     awk '
         /^F:/ { dir = substr($0, 3); next }
