@@ -15,6 +15,14 @@
 # itself still upgrades its database normally. Do not remove these rules without a device
 # check: the cleanup in platform_copy_rootfs only repairs snapshots taken after a shadow
 # already exists, this file is what stops the shadow from being created again.
+#
+# The list below is the exception, not the general rule: it names the four paths of
+# upstream's sysupgrade interface, which all belong to base-files. Every other layer file
+# that an apk package owns is covered by ab-platform-shadow.list, which the build derives
+# from the layer's own file list intersected with the root filesystem's apk database (see
+# scripts/ci/assemble.sh). Keep that derivation, not this file, as the place to add a
+# path: a hand-written entry here can only be correct until the next upstream package
+# changes which files it owns.
 +lib/upgrade/platform.sh
 +lib/upgrade/fwtool.sh
 +lib/upgrade/stage2

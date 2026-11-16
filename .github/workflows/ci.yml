@@ -25,6 +25,18 @@ on:
         required: false
         type: string
         default: ""
+      # The stage has to be declared on this trigger as well, not only under
+      # workflow_dispatch. The jobs below skip themselves when the triggering event is a
+      # workflow_dispatch and the requested stage does not match, and a caller arrives
+      # with exactly that event name; a caller that cannot pass the stage therefore gets a
+      # pipeline in which every build job is skipped. Declaring it here is also what makes
+      # the value legal: passing an input a reusable workflow does not declare fails the
+      # run at startup with no job list at all (run 43791166821).
+      stage:
+        description: "Pipeline stage to run (a caller normally wants all)"
+        required: false
+        type: string
+        default: "all"
   push:
     branches: [main]
   pull_request:

@@ -200,13 +200,50 @@ job_needs() {
   ' "$1"
 }
 
-assert_eq "$(job_needs "$release" publish)" "build cross" \
-  "ac-1 the publish gate waits for the build and the cross-version upgrade"
+# Two gates, not one, and both named by the job that publishes: cross proves an upgrade
+# across whatever base the two releases pinned, same-base proves the patch-range claim the
+# update prompt makes. `needs` is the whole enforcement here - GitHub skips a dependent job
+# when a job it needs is skipped - so every gate has to be named, and the order they are
+# written in is not part of the contract.
+publish_needs="$(job_needs "$release" publish)"
+for gate in build cross same-base; do
+  _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+  case " ${publish_needs} " in
+    *" ${gate} "*) printf 'ok %d - %s\n' "$_ASSERT_COUNT" \
+      "ac-1 the publish gate waits for ${gate}" ;;
+    *) _assert_fail "ac-1 the publish gate waits for ${gate}" \
+      "needs is '${publish_needs}': publishing without it ships an unproven release" ;;
+  esac
+done
+assert_eq "$(printf '%s\n' ${publish_needs} | LC_ALL=C sort | tr '\n' ' ' | sed 's/ *$//')" \
+  "build cross same-base" \
+  "ac-1 the publish gate waits for exactly the build and the two upgrade gates"
+
+# A skipped gate is not a passed gate. `needs` turns a skip into a skip, never into green,
+# but only if nothing re-enables the job: `if: always()` on publish would let both gates be
+# skipped and the release still go out.
+assert_eq "$(sed -n '/^  publish:/,/^    needs:/p' "$release" | grep -c 'always()')" "0" \
+  "ac-1 the publish job is not re-enabled over a skipped gate"
+assert_contains "$(cat "$release")" "a skipped gate is not a passed" \
+  "ac-1 and the file records why a skip may not publish"
+
 assert_contains "$(sed -n '/^  cross:/,/^  publish:/p' "$release")" \
   'uses: ./.github/workflows/ci-upgrade-cross.yml' \
   "ac-1 the second gate is the cross stage, not a second build"
 assert_eq "$(grep -c '^  cross:$' "$release")" "1" \
   "ac-1 the cross job still exists for the gate to wait on"
+
+# The same-base gate is the new half, and it reaches the shared gates workflow in the mode
+# that owns it: a second implementation of the same-base criteria would be a second answer
+# to the question the two gates exist to answer.
+assert_eq "$(grep -c '^  same-base:$' "$release")" "1" \
+  "ac-1 the same-base job exists for the gate to wait on"
+assert_contains "$(sed -n '/^  same-base:/,/^  publish:/p' "$release")" \
+  'uses: ./.github/workflows/ci-upgrade-gates.yml' \
+  "ac-1 the same-base gate is the shared gates workflow, not a copy"
+assert_contains "$(sed -n '/^  same-base:/,/^  publish:/p' "$release")" \
+  "mode: same-base" \
+  "ac-1 and it runs in the same-base mode"
 
 # --------------------------------------------------------------------------- #
 # ac-6 / ac-10 tail: the three floating @v4 pins in release.yml are gone

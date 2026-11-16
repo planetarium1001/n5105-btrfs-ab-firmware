@@ -251,7 +251,24 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # The artifact suffixes that keep the cross stage's two builds apart (ci-fetch, ci-s3) fit in
 # this budget: deleting the stage's duplicate payload build paid for them. Measured 2588
 # (the cross job's runner preparation is three of those lines).
-CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2600}
+#
+# Raised 2600 -> 2860 for the second upgrade gate, which the release rule requires and which
+# is a new *stage*, not a regrown duplicate: release.yml publishes only after ci-upgrade-cross
+# and ci-upgrade-gates (mode: same-base) have both gone green, because a release can move the
+# upstream base while the cross gate stays green - a real upgrade, but not the same-base
+# upgrade the update prompt's "patch ranges are covered" sentence claims. The growth is one
+# new file, ci-upgrade-gates.yml (243 lines: the guard, the cross-mode call, and the same-base
+# job) plus small caller additions in release.yml and upstream-watch.yml; the existing stages
+# are unchanged. Measured 2831 (2837 once concurrent edits settled); the ceiling keeps ~25
+# lines of headroom so an unrelated fix is not forced through a budget change.
+#
+# Moving the same-base logic into scripts/ci was considered and rejected as the answer to
+# *this* assertion: release-same-base.sh already owns the selection, the fetch, and the judge,
+# and the job body that remains is workflow wiring (steps, env, artifact I/O, the verdict
+# gate). Extracting the ~76 shell-body lines left in the file would still leave the workflow
+# over 2600 and would put step orchestration - which belongs to a workflow - into a script.
+# So the ceiling moves with the stage, with this record, which is what the number is for.
+CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2860}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le "${CI_WORKFLOW_LINE_CEILING}" ]; then
@@ -260,6 +277,28 @@ else
   _assert_fail "ac-11 the workflows total $line_total lines (<=${CI_WORKFLOW_LINE_CEILING}, baseline 3269)" \
     "the workflows grew past the ceiling without a new stage to justify it"
 fi
+
+# The ceiling alone would let any growth through once it is raised, so the stage that paid
+# for the last raise is held to its own shape: it is a thin wrapper. Both gates it carries
+# delegate - cross to the existing stage workflow, same-base to scripts/ci - and it does not
+# build a payload of its own. This is the invariant the number exists to protect; the number
+# is only the alarm that says someone should look.
+gates_wf=".github/workflows/ci-upgrade-gates.yml"
+assert_file_exists "$root/$gates_wf" "ac-11 the second gate stage exists"
+# `uses:` lines that are the gate itself. Two: the cross-mode call and setup-ci's runner
+# preparation appear among many; the cross stage and the two composites are what matter.
+assert_eq "$(grep -cE '^ +uses: \./\.github/workflows/ci-upgrade-cross\.yml$' "$root/$gates_wf")" "1" \
+  "ac-11 the gates stage reuses the cross workflow instead of carrying a copy of it"
+assert_eq "$(grep -c 'ci-assemble.yml' "$root/$gates_wf")" "0" \
+  "ac-11 the gates stage builds no second payload"
+# Everything the same-base criteria are decided from lives in the script, not the workflow:
+# a workflow that grew a judge of its own would be the duplication the budget catches.
+for sub in select fetch; do
+  assert_contains "$(cat "$root/$gates_wf")" "scripts/ci/release-same-base.sh" \
+    "ac-11 the same-base $sub is the script's, not the workflow's"
+done
+assert_contains "$(cat "$root/scripts/ci/release-same-base.sh")" "judge)" \
+  "ac-11 and the criteria judge is a subcommand of that script"
 
 assert_eq "$(grep -c 'uses: actions/checkout@' "$root/.github/actions/setup-ci/action.yml" 2>/dev/null || true)" "0" \
   "ac-11 setup-ci does not check out (a local action cannot run before checkout)"

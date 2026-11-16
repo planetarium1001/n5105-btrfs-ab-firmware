@@ -290,12 +290,27 @@ RCLOCAL
 
 orphan_layer() {
     mount_one "${loopdev}p4" p4
-    sudo btrfs subvolume create "${work}/p4/$1" >/dev/null
-    sudo mkdir -p "${work}/p4/$1/upper"
-    printf 'orphan\n' | sudo tee "${work}/p4/$1/upper/marker" >/dev/null
+    # An "unreferenced writable layer" has to be a layer no slot names, and the caller's
+    # name can collide with one the image already carries: an image built for upstream
+    # 25.12.1 ships @overlay-25.12.1 as its own live layer, and the S5 fixture asks for that
+    # exact name whatever release the run builds. The old code created it blindly and died
+    # with "Could not create subvolume: File exists" (run 43791574551), which reads as a
+    # product failure instead of a fixture collision. Reusing it would be worse than
+    # failing: a referenced layer is not what reclamation is supposed to remove, so the
+    # stage's "no unreferenced layer survived" assertion would then fail for a real reason.
+    # A name that cannot be the live layer keeps the fixture's intent under any release.
+    name="$1"
+    if sudo btrfs subvolume show "${work}/p4/${name}" >/dev/null 2>&1; then
+        ci_log "writable layer ${name} already exists; choosing a fresh orphan name"
+        name="orphan-$$-$(date -u +%Y%m%dT%H%M%SZ)"
+    fi
+    sudo btrfs subvolume create "${work}/p4/${name}" >/dev/null ||
+        ci_die "cannot create the orphan writable layer ${name}"
+    sudo mkdir -p "${work}/p4/${name}/upper"
+    printf 'orphan\n' | sudo tee "${work}/p4/${name}/upper/marker" >/dev/null
     sudo sync
     sudo umount "${work}/p4"
-    ci_log "created unreferenced writable layer $1"
+    ci_log "created unreferenced writable layer ${name}"
 }
 
 break_p4() {

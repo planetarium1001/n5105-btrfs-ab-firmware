@@ -22,8 +22,14 @@
 #   payload.sha256         `sha256sum` of kernel.bin and initramfs.cpio.gz in the payload
 #   serial.log             the guest's serial output, both boots appended in boot order
 #   skip                   present when there was no previous release to upgrade from
+#   expect.same-base       present when the run also has to prove the two releases share a
+#                          base and a kernel (same-base gate, `--expect-same-base`)
+#   facts/                 the files release-same-base.sh judge grades when it is set:
+#                          old-index.txt, old-SHA256SUMS, new-version, new-pin, new-manifest.json
 #
 # Output: `cross-upgrade=ok|fail|skipped` plus `reason=` and the fields that disagreed.
+# With --expect-same-base the verdict is additionally gated on `same-base=ok`, and the
+# per-criterion lines are printed above it.
 
 set -euo pipefail
 
@@ -38,7 +44,8 @@ usage() {
 usage: cross-upgrade.sh <subcommand>
 
   run     --image <old.img|old.img.gz> --payload <new.tar> --out <dir> [--inject unhealthy]
-  assert  --out <dir>
+          [--expect-same-base] [--facts <dir>]
+  assert  --out <dir> [--expect-same-base] [--facts <dir>]
   parse   --serial <file> --out <dir>    split the status blocks out of a saved serial log
   stage-image --src <file> --dest <file> write the image as a plain disk image (a .gz is
                                          decompressed, anything else is copied)
@@ -59,11 +66,53 @@ field() {
     sed -n "s/.*[[:space:]]$2=\([^[:space:]]*\).*/\1/p" "$1" | head -n 1
 }
 
-# grade <out>: the whole verdict, from files only.
+# same_base_check <out> [payload]: the same-base gate, on top of the cross verdict.
+#
+# `cross` answers "can this release install over the previous one". It does not say whether
+# the two share a base and a kernel, which is what the update prompt's "patch ranges are
+# covered" sentence means - grade() never reads a base or a kernel. When the caller asks for
+# the same-base gate the criteria live in one place, scripts/ci/release-same-base.sh, and
+# this function only forwards the facts and refuses to call a skip or a crash a pass.
+#
+# Returns 0 when every criterion passed, 1 otherwise; prints the per-criterion lines and one
+# `same-base=` verdict either way, so a red gate names the fact that disagreed.
+same_base_check() {
+    local _out=$1 _payload=${2:-} _facts _sb_out
+    _facts="${_out}/facts"
+    if [ ! -d "${_facts}" ]; then
+        printf 'same-base=fail reason=facts-missing\n'
+        return 1
+    fi
+    if _sb_out="$(bash "${CI_SCRIPT_DIR}/release-same-base.sh" judge --dir "${_facts}" \
+        ${_payload:+--new-payload "${_payload}"} 2>&1)"; then
+        :
+    else
+        printf '%s\n' "${_sb_out}"
+        printf 'same-base=fail reason=judge-crashed\n'
+        return 1
+    fi
+    printf '%s\n' "${_sb_out}"
+    case "${_sb_out}" in
+        *"same-base=ok"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# grade <out> [payload]: the whole verdict, from files only.
 grade() {
     _out="$1"
+    _grade_payload=${2:-}
     _fail=""
     if [ -f "${_out}/skip" ]; then
+        # A skipped stage graded as skipped is the honest answer for the cross gate, and the
+        # caller decides what to do with it. With --expect-same-base it is not: the caller
+        # asked this run to prove a same-base upgrade, and a stage that could not run proved
+        # nothing - "cannot judge" is a failure of the gate, not a third outcome.
+        if [ -f "${_out}/expect.same-base" ]; then
+            printf 'same-base=fail reason=stage-skipped\n'
+            printf 'cross-upgrade=fail reason=stage-skipped detail=%s\n' "$(cat "${_out}/skip")"
+            return 0
+        fi
         printf 'cross-upgrade=skipped reason=%s\n' "$(cat "${_out}/skip")"
         return 0
     fi
@@ -152,6 +201,17 @@ grade() {
     if [ -n "${_fail}" ]; then
         printf 'cross-upgrade=fail reason=%s\n' "${_fail}"
         return 0
+    fi
+    # The same-base criteria are graded after the cross ones, and only ever add a failure:
+    # a run whose base or kernel moved is a cross upgrade that is not a same-base one, and
+    # with --expect-same-base the caller asked for the stronger claim.
+    if [ -f "${_out}/expect.same-base" ]; then
+        if same_base_check "${_out}" "${_grade_payload}"; then
+            :
+        else
+            printf 'cross-upgrade=fail reason=same-base-criteria-failed\n'
+            return 0
+        fi
     fi
     printf 'cross-upgrade=ok slot=%s generation=%s\n' "${_pending}" "${_gen_done:-0}"
 }
@@ -379,19 +439,69 @@ payload_digests() {
     rm -rf "${_dir}"
 }
 
+# stage_skip <reason>: the one place a stage says it could not run.
+#
+# The cross gate reports a skip and lets its caller decide - `release.yml` treats it as not a
+# pass already. When the caller asked for the same-base gate the decision is made here: the
+# skip is written as the fact it is, and grade() turns it into a failure, because a gate that
+# could not judge proved nothing. The plain cross run keeps its old output and exit status.
+stage_skip() {
+    printf 'cross-upgrade: skipped reason=%s\n' "$1"
+    if [ -f "${_out}/expect.same-base" ]; then
+        printf '%s\n' "$1" >"${_out}/skip"
+        grade "${_out}" "${_payload:-}"
+    fi
+    return 0
+}
+
 run_stage() {
     _image=${1:?--image is required}
     _payload=${2:?--payload is required}
     _out=${3:?--out is required}
     _inject=${4:-}
+    _expect_same_base=${5:-}
+    _facts_src=${6:-}
     mkdir -p "${_out}"
+    if [ -n "${_expect_same_base}" ]; then
+        : >"${_out}/expect.same-base"
+    fi
+    if [ -n "${_facts_src}" ] && [ ! -d "${_facts_src}" ]; then
+        # A caller that names a facts directory which is not there asked for a gate that
+        # cannot be graded: say so as a verdict, not as a copy error under `set -e` with no
+        # line for the workflow to read.
+        printf 'same-base=fail reason=facts-missing\n'
+        printf 'cross-upgrade=fail reason=facts-missing\n'
+        return 0
+    fi
+    if [ -n "${_facts_src}" ]; then
+        # The caller stages the facts it owns (the old release's index and checksums, this
+        # release's platform version and pin); the identity of the payload is measured here,
+        # from the bytes this run installs, so a caller cannot state a digest the artifact
+        # does not have. Both halves land in <out>/facts, which is what makes
+        # `assert --out <dir>` on the same directory reach the same verdict.
+        rm -rf "${_out}/facts"
+        mkdir -p "${_out}/facts"
+        cp -R "${_facts_src}"/. "${_out}/facts"/
+    fi
+    if [ -f "${_out}/expect.same-base" ] && [ -n "${_payload}" ]; then
+        mkdir -p "${_out}/facts"
+        ci_sha256 "${_payload}" >"${_out}/facts/new-payload.sha256"
+        ci_file_size "${_payload}" >"${_out}/facts/new-payload.size"
+        # The manifest is a member of the payload, so it is read out of the artifact the
+        # stage installs rather than restated by the caller. A tar without one leaves the
+        # caller's copy in place; judge() names the missing manifest if there is none.
+        if [ ! -f "${_out}/facts/new-manifest.json" ]; then
+            tar -xOf "${_payload}" manifest.json >"${_out}/facts/new-manifest.json" 2>/dev/null ||
+                rm -f "${_out}/facts/new-manifest.json"
+        fi
+    fi
 
     if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
-        printf 'cross-upgrade: skipped reason=qemu-not-available\n'
+        stage_skip qemu-not-available
         return 0
     fi
     command -v losetup >/dev/null 2>&1 || {
-        printf 'cross-upgrade: skipped reason=loop-devices-not-available\n'
+        stage_skip loop-devices-not-available
         return 0
     }
 
@@ -483,34 +593,48 @@ run_stage() {
     if [ -n "${_inject}" ] && [ "${_inject}" != "none" ]; then
         printf '%s\n' "${_inject}" >"${_out}/inject"
     fi
-    grade "${_out}"
+    grade "${_out}" "${_payload}"
 }
 
 cmd=${1:-}
 [ "$#" -gt 0 ] && shift
 case "${cmd}" in
     run)
-        image="" payload="" out="" inject=""
+        image="" payload="" out="" inject="" expect_same_base="" facts=""
         while [ "$#" -gt 0 ]; do
             case "$1" in
                 --image) image=${2:?--image needs a value}; shift 2 ;;
                 --payload) payload=${2:?--payload needs a value}; shift 2 ;;
                 --out) out=${2:?--out needs a value}; shift 2 ;;
                 --inject) inject=${2:?--inject needs a value}; shift 2 ;;
+                --expect-same-base) expect_same_base=1; shift ;;
+                --facts) facts=${2:?--facts needs a directory}; shift 2 ;;
                 *) ci_die "unknown argument $1" ;;
             esac
         done
-        run_stage "${image}" "${payload}" "${out}" "${inject}"
+        run_stage "${image}" "${payload}" "${out}" "${inject}" "${expect_same_base}" "${facts}"
         ;;
     assert)
-        out=""
+        out="" expect_same_base="" facts=""
         while [ "$#" -gt 0 ]; do
             case "$1" in
                 --out) out=${2:?--out needs a value}; shift 2 ;;
+                --expect-same-base) expect_same_base=1; shift ;;
+                --facts) facts=${2:?--facts needs a directory}; shift 2 ;;
                 *) ci_die "unknown argument $1" ;;
             esac
         done
         [ -n "${out}" ] || ci_die "--out is required"
+        mkdir -p "${out}"
+        if [ -n "${expect_same_base}" ]; then
+            : >"${out}/expect.same-base"
+        fi
+        if [ -n "${facts}" ]; then
+            [ -d "${facts}" ] || ci_die "--facts is not a directory: ${facts}"
+            rm -rf "${out}/facts"
+            mkdir -p "${out}/facts"
+            cp -R "${facts}"/. "${out}/facts"/
+        fi
         grade "${out}"
         ;;
     parse)

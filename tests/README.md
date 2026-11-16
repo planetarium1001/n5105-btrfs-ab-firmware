@@ -51,8 +51,45 @@ Rules:
 
 ## Modules
 
+Eleven modules, one directory each under `tests/modules/`:
+
 | Module | Concern |
 |---|---|
-| `design` | design documents satisfy `scripts/check_design.py`, version field is valid |
+| `ab` | The A/B slot state machine and the commands around it: `ab-slot`, the upgrade boot hook, `ab-backup` / `ab-restore`, GRUB rendering, the payload's platform files, the degraded profiles |
+| `boot` | What the initramfs does before userspace: boot breadcrumbs, the console log ring, ESP health, interrupted-boot recovery, the `p4` grow, state parsing, the stdout contract |
+| `ci` | The CI itself: the upstream watch and its heartbeat, the cross and same-base upgrades, release preflight, naming and publishing, the text conventions, and the structure fingerprint |
+| `design` | The documents satisfy `scripts/check_design.py`; no workflow uses a GitHub context where the platform rejects it |
+| `device` | The real-machine driver in `scripts/device/`: status parsing, polling, verdicts and step order, driven by a stub `ssh` instead of a device |
+| `docs` | Documents a reader follows literally: the backup products and the restore decision tree, the two-phase `boot-overlay` grow, the rule that a device is never shrunk |
+| `image` | The S2 guest assertion script and the contracts it checks: partition geometry, GPT PARTNAMEs, filesystem labels |
+| `net` | The first-boot network seed and the defaults it renders into it |
+| `release` | The release stage: artifact names, checksums, notes, and that publishing is a tag action |
+| `runtime` | The runtime closure: the btrfs tooling in the platform layer, the lockfile that names it, and the loud failure when it is missing |
+| `upgrade` | `ab-upgrade` and the payload: feed modes and exit codes, payload validation, the bootloader member, version policy, apk alignment, package revert |
 
 New modules are added as directories under `tests/modules/` and are picked up automatically.
+
+## In CI
+
+The suite is a stage check, not an optional report. The `verify` stage
+([`ci-verify.yml`](../.github/workflows/ci-verify.yml), job `static checks`) runs
+[`scripts/ci/verify.sh`](../scripts/ci/verify.sh), and its fifth check is
+`./tests/run.sh` with no arguments - every module, default parallelism:
+
+```sh
+./tests/run.sh
+```
+
+- **Offline.** No network, no root, no device and no QEMU: the tests that would need a
+  device stub `ssh`, the tests that would need `gh` inject a stub through `CI_GH`, and the
+  upstream fixture is a local file. The same command passes on a developer laptop and on
+  the runner.
+- **Hard gate.** A failing suite fails the stage. `verify.sh` keeps the full output in
+  `logs/verify-tests.log`, prints the tails of up to five failing test logs into the step,
+  and folds `tests: fail` into the stage summary, which also fails `verify` as a whole.
+- **Channels are cleared.** `run.sh` unsets `GITHUB_OUTPUT`, `GITHUB_ENV`,
+  `GITHUB_STEP_SUMMARY`, `GITHUB_PATH` and `GITHUB_STATE` before running anything: a test
+  that inherits a step's channels writes its output into the run instead of stdout, which
+  is how three tests once failed on a runner and passed on a laptop.
+- **Budget.** The `static checks` job has 30 minutes, which covers the linters, the design
+  checks and the whole suite.

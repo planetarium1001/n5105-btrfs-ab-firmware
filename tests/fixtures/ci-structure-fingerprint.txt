@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: release publish gates on build+cross; cross reads guest serial from CI_LOG_DIR with a wan fixture; ab-fixtures waits for every loop partition
+# reason: ci.yml declares stage for workflow_call: the automatic watch passes it, and an undeclared input fails the run at startup
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -54,11 +54,15 @@ sh-flag scripts/ci/boot-member.sh --group
 sh-flag scripts/ci/boot-member.sh --numeric-owner
 sh-flag scripts/ci/boot-member.sh --owner
 sh-flag scripts/ci/cross-upgrade.sh --dest
+sh-flag scripts/ci/cross-upgrade.sh --dir
 sh-flag scripts/ci/cross-upgrade.sh --esp
+sh-flag scripts/ci/cross-upgrade.sh --expect-same-base
+sh-flag scripts/ci/cross-upgrade.sh --facts
 sh-flag scripts/ci/cross-upgrade.sh --find
 sh-flag scripts/ci/cross-upgrade.sh --help
 sh-flag scripts/ci/cross-upgrade.sh --image
 sh-flag scripts/ci/cross-upgrade.sh --inject
+sh-flag scripts/ci/cross-upgrade.sh --new-payload
 sh-flag scripts/ci/cross-upgrade.sh --out
 sh-flag scripts/ci/cross-upgrade.sh --partscan
 sh-flag scripts/ci/cross-upgrade.sh --payload
@@ -104,6 +108,7 @@ sh-flag scripts/ci/heartbeat-tag.sh --dry-run
 sh-flag scripts/ci/heartbeat-tag.sh --format
 sh-flag scripts/ci/heartbeat-tag.sh --git-dir
 sh-flag scripts/ci/heartbeat-tag.sh --help
+sh-flag scripts/ci/heartbeat-tag.sh --is-shallow-repository
 sh-flag scripts/ci/heartbeat-tag.sh --now
 sh-flag scripts/ci/heartbeat-tag.sh --quiet
 sh-flag scripts/ci/heartbeat-tag.sh --verify
@@ -165,6 +170,21 @@ sh-flag scripts/ci/release-preflight.sh --platform-version
 sh-flag scripts/ci/release-preflight.sh --tag
 sh-flag scripts/ci/release-preflight.sh --tag-policy
 sh-flag scripts/ci/release-preflight.sh --version-file
+sh-flag scripts/ci/release-same-base.sh --asset
+sh-flag scripts/ci/release-same-base.sh --dest
+sh-flag scripts/ci/release-same-base.sh --dir
+sh-flag scripts/ci/release-same-base.sh --help
+sh-flag scripts/ci/release-same-base.sh --jq
+sh-flag scripts/ci/release-same-base.sh --json
+sh-flag scripts/ci/release-same-base.sh --limit
+sh-flag scripts/ci/release-same-base.sh --new-payload
+sh-flag scripts/ci/release-same-base.sh --new-version
+sh-flag scripts/ci/release-same-base.sh --out
+sh-flag scripts/ci/release-same-base.sh --pin
+sh-flag scripts/ci/release-same-base.sh --previous-tag
+sh-flag scripts/ci/release-same-base.sh --sha256
+sh-flag scripts/ci/release-same-base.sh --tag
+sh-flag scripts/ci/release-same-base.sh --version
 sh-flag scripts/ci/release.sh --feed-check
 sh-flag scripts/ci/release.sh --out
 sh-flag scripts/ci/release.sh --release
@@ -189,8 +209,19 @@ sh-flag scripts/ci/stage-summary.sh --next-ok
 sh-flag scripts/ci/stage-summary.sh --note
 sh-flag scripts/ci/stage-summary.sh --result
 sh-flag scripts/ci/stage-summary.sh --stage
+sh-flag scripts/ci/upstream-watch.sh --cleanup-tag
+sh-flag scripts/ci/upstream-watch.sh --force-with-lease
+sh-flag scripts/ci/upstream-watch.sh --head
 sh-flag scripts/ci/upstream-watch.sh --help
+sh-flag scripts/ci/upstream-watch.sh --jq
+sh-flag scripts/ci/upstream-watch.sh --json
+sh-flag scripts/ci/upstream-watch.sh --no-edit
 sh-flag scripts/ci/upstream-watch.sh --out
+sh-flag scripts/ci/upstream-watch.sh --quiet
+sh-flag scripts/ci/upstream-watch.sh --state
+sh-flag scripts/ci/upstream-watch.sh --tags
+sh-flag scripts/ci/upstream-watch.sh --verify
+sh-flag scripts/ci/upstream-watch.sh --yes
 sh-flag scripts/ci/verify.sh --severity
 sh-flag scripts/ci/verify.sh --version
 sh-fn scripts/ci/ab-fixtures.sh break_p4
@@ -236,6 +267,8 @@ sh-fn scripts/ci/cross-upgrade.sh field
 sh-fn scripts/ci/cross-upgrade.sh grade
 sh-fn scripts/ci/cross-upgrade.sh payload_digests
 sh-fn scripts/ci/cross-upgrade.sh run_stage
+sh-fn scripts/ci/cross-upgrade.sh same_base_check
+sh-fn scripts/ci/cross-upgrade.sh stage_skip
 sh-fn scripts/ci/cross-upgrade.sh usage
 sh-fn scripts/ci/derive-variant.sh cleanup_image
 sh-fn scripts/ci/derive-variant.sh find_platform
@@ -346,6 +379,18 @@ sh-fn scripts/ci/release-preflight.sh payload_member
 sh-fn scripts/ci/release-preflight.sh record
 sh-fn scripts/ci/release-preflight.sh record_field
 sh-fn scripts/ci/release-preflight.sh usage
+sh-fn scripts/ci/release-same-base.sh blob_value
+sh-fn scripts/ci/release-same-base.sh cmd_fetch
+sh-fn scripts/ci/release-same-base.sh cmd_judge
+sh-fn scripts/ci/release-same-base.sh cmd_select
+sh-fn scripts/ci/release-same-base.sh die_usage
+sh-fn scripts/ci/release-same-base.sh first_line
+sh-fn scripts/ci/release-same-base.sh index_fields
+sh-fn scripts/ci/release-same-base.sh newest_release_below
+sh-fn scripts/ci/release-same-base.sh same_base_fail
+sh-fn scripts/ci/release-same-base.sh sums_digest
+sh-fn scripts/ci/release-same-base.sh usage
+sh-fn scripts/ci/release-same-base.sh version_lt
 sh-fn scripts/ci/release.sh on_error
 sh-fn scripts/ci/report.sh human_bytes
 sh-fn scripts/ci/report.sh report_row
@@ -366,10 +411,14 @@ sh-fn scripts/ci/stage-summary.sh verdict_word
 sh-fn scripts/ci/upstream-watch.sh detect_cmd
 sh-fn scripts/ci/upstream-watch.sh formal_releases_desc
 sh-fn scripts/ci/upstream-watch.sh issue_body_cmd
+sh-fn scripts/ci/upstream-watch.sh merge_state_cmd
+sh-fn scripts/ci/upstream-watch.sh merged_sha_of
 sh-fn scripts/ci/upstream-watch.sh parse_out_arg
 sh-fn scripts/ci/upstream-watch.sh pin_cmd
+sh-fn scripts/ci/upstream-watch.sh pin_in_base_of
 sh-fn scripts/ci/upstream-watch.sh pr_body_cmd
 sh-fn scripts/ci/upstream-watch.sh require_formal_version
+sh-fn scripts/ci/upstream-watch.sh tag_sha_of
 sh-fn scripts/ci/upstream-watch.sh usage
 sh-var scripts/ci/ab-fixtures.sh AB_CMD
 sh-var scripts/ci/ab-fixtures.sh AB_ESP
@@ -656,6 +705,12 @@ sh-var scripts/ci/qemu-smoke.sh CI_TMP_ROOT
 sh-var scripts/ci/release-preflight.sh CI_SCRIPT_DIR
 sh-var scripts/ci/release-preflight.sh CI_TMP_ROOT
 sh-var scripts/ci/release-preflight.sh CI_VERSION_RE
+sh-var scripts/ci/release-same-base.sh CI_GH
+sh-var scripts/ci/release-same-base.sh CI_SCRIPT_DIR
+sh-var scripts/ci/release-same-base.sh CI_SHA256_RE
+sh-var scripts/ci/release-same-base.sh CI_STAGE
+sh-var scripts/ci/release-same-base.sh CI_UPSTREAM_VERSION_PIN
+sh-var scripts/ci/release-same-base.sh CI_VERSION_RE
 sh-var scripts/ci/release.sh CI_FEED_BASE_URL
 sh-var scripts/ci/release.sh CI_FEED_HISTORY
 sh-var scripts/ci/release.sh CI_IMAGE
@@ -748,17 +803,29 @@ sh-var scripts/ci/s5-phase.sh CI_SCRIPT_DIR
 sh-var scripts/ci/s5-phase.sh CI_TMP_ROOT
 sh-var scripts/ci/upstream-watch.sh CI_AUTO_FAILED_STAGE
 sh-var scripts/ci/upstream-watch.sh CI_AUTO_REASON
+sh-var scripts/ci/upstream-watch.sh CI_BASE
+sh-var scripts/ci/upstream-watch.sh CI_BRANCH
 sh-var scripts/ci/upstream-watch.sh CI_CURRENT_PIN
 sh-var scripts/ci/upstream-watch.sh CI_FORCE_VERSION
 sh-var scripts/ci/upstream-watch.sh CI_LOG_ARTIFACT
 sh-var scripts/ci/upstream-watch.sh CI_MATRIX_CANDIDATES
 sh-var scripts/ci/upstream-watch.sh CI_MATRIX_GAPS
+sh-var scripts/ci/upstream-watch.sh CI_MERGED_SHA
 sh-var scripts/ci/upstream-watch.sh CI_MIN_UPSTREAM_MAJOR
+sh-var scripts/ci/upstream-watch.sh CI_MODE
 sh-var scripts/ci/upstream-watch.sh CI_OUTPUT_ENV
 sh-var scripts/ci/upstream-watch.sh CI_PINNED_VERSION
+sh-var scripts/ci/upstream-watch.sh CI_PIN_IN_BASE
+sh-var scripts/ci/upstream-watch.sh CI_PR
 sh-var scripts/ci/upstream-watch.sh CI_PREVIOUS_PIN
+sh-var scripts/ci/upstream-watch.sh CI_REMOTE_URL
+sh-var scripts/ci/upstream-watch.sh CI_REPO_ROOT
+sh-var scripts/ci/upstream-watch.sh CI_RESUME
+sh-var scripts/ci/upstream-watch.sh CI_RESUME_STAGE
 sh-var scripts/ci/upstream-watch.sh CI_RUN_URL
 sh-var scripts/ci/upstream-watch.sh CI_SCRIPT_DIR
+sh-var scripts/ci/upstream-watch.sh CI_TAG_EXISTS
+sh-var scripts/ci/upstream-watch.sh CI_TAG_SHA
 sh-var scripts/ci/upstream-watch.sh CI_TMP_ROOT
 sh-var scripts/ci/upstream-watch.sh CI_UPSTREAM_BASE
 sh-var scripts/ci/upstream-watch.sh CI_UPSTREAM_INDEX
@@ -2171,6 +2238,77 @@ yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.inputs.gaps = {desc
 yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.outputs = 
 yaml .github/workflows/ci-upgrade-cross.yml on.workflow_call.outputs.verdict = {description:<text>, value: "${{ jobs.cross.outputs.verdict }}"}
 yaml .github/workflows/ci-upgrade-cross.yml permissions = 
+yaml .github/workflows/ci-upgrade-gates.yml defaults = {run: {shell: bash}}
+yaml .github/workflows/ci-upgrade-gates.yml jobs = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.cross.if = ${{ inputs.mode == 'cross' }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.cross.permissions = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.cross.uses = ./.github/workflows/ci-upgrade-cross.yml
+yaml .github/workflows/ci-upgrade-gates.yml jobs.guard.if = ${{ inputs.mode != 'cross' && inputs.mode != 'same-base' }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.guard.runs-on = ubuntu-latest
+yaml .github/workflows/ci-upgrade-gates.yml jobs.guard.steps = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.guard.timeout-minutes = 5
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.if = ${{ inputs.mode == 'same-base' }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.outputs = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.outputs.verdict = ${{ steps.grade.outputs.verdict }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.permissions = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.runs-on = ubuntu-latest
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[0].with = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[1].with = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[1].with.apt = btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[2].env = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[2].env.PLATFORM_VERSION = ${{ inputs.platform_version }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[2].env.UPSTREAM_VERSION = ${{ inputs.upstream_version }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[2].id = read
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[3].env = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[3].env.CI_PREVIOUS_TAG = ${{ inputs.previous-tag }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[3].env.CI_VERSION = ${{ steps.read.outputs.version }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[3].id = select
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].env = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].env.ASSET = ${{ steps.select.outputs.asset }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].env.DEST = ${{ runner.temp }}/ci/same-base-image
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].env.SHA256 = ${{ steps.select.outputs.sha256 }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].env.TAG = ${{ steps.select.outputs.tag }}
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[4].id = image
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[5].uses = actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[5].with = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[5].with.name = payload-upgrade
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[5].with.path = ${{ runner.temp }}/ci/same-base-payload
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[7].id = grade
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].if = always()
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].uses = ./.github/actions/stage-evidence
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].with = 
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].with.diag-args = ${{ runner.temp }}/ci/same-base-out
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].with.name = evidence-same-base
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].with.paths = |
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.steps.[8].with.stage = same-base
+yaml .github/workflows/ci-upgrade-gates.yml jobs.same-base.timeout-minutes = 25
+yaml .github/workflows/ci-upgrade-gates.yml on = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.mode = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.mode.required = true
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.mode.type = string
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.platform_version = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.platform_version.default = ""
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.platform_version.required = false
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.platform_version.type = string
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.previous-tag = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.previous-tag.default = ""
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.previous-tag.required = false
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.previous-tag.type = string
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.upstream_version = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.upstream_version.default = ""
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.upstream_version.required = false
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.inputs.upstream_version.type = string
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.outputs = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.outputs.cross-verdict = 
+yaml .github/workflows/ci-upgrade-gates.yml on.workflow_call.outputs.same-base-verdict = 
+yaml .github/workflows/ci-upgrade-gates.yml permissions = 
 yaml .github/workflows/ci-verify.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci-verify.yml jobs = 
 yaml .github/workflows/ci-verify.yml jobs.verify.outputs = 
@@ -2351,6 +2489,10 @@ yaml .github/workflows/ci.yml jobs.versions.steps.[2].id = read
 yaml .github/workflows/ci.yml jobs.versions.timeout-minutes = 5
 yaml .github/workflows/ci.yml on = 
 yaml .github/workflows/ci.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage.default = "all"
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage.required = false
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage.type = string
 yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version = 
 yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.default = ""
 yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.required = false
@@ -2490,12 +2632,17 @@ yaml .github/workflows/release.yml jobs.build.uses = ./.github/workflows/ci.yml
 yaml .github/workflows/release.yml jobs.cross.needs = [build]
 yaml .github/workflows/release.yml jobs.cross.permissions = 
 yaml .github/workflows/release.yml jobs.cross.uses = ./.github/workflows/ci-upgrade-cross.yml
-yaml .github/workflows/release.yml jobs.publish.needs = [build, cross]
+yaml .github/workflows/release.yml jobs.publish.needs = [build, cross, same-base]
 yaml .github/workflows/release.yml jobs.publish.permissions = 
 yaml .github/workflows/release.yml jobs.publish.uses = ./.github/workflows/release-publish.yml
 yaml .github/workflows/release.yml jobs.publish.with = 
 yaml .github/workflows/release.yml jobs.publish.with.tag = ${{ github.ref_name }}
 yaml .github/workflows/release.yml jobs.publish.with.tag-policy = v
+yaml .github/workflows/release.yml jobs.same-base.needs = [build]
+yaml .github/workflows/release.yml jobs.same-base.permissions = 
+yaml .github/workflows/release.yml jobs.same-base.uses = ./.github/workflows/ci-upgrade-gates.yml
+yaml .github/workflows/release.yml jobs.same-base.with = 
+yaml .github/workflows/release.yml jobs.same-base.with.mode = same-base
 yaml .github/workflows/release.yml on = 
 yaml .github/workflows/release.yml permissions = 
 yaml .github/workflows/upstream-watch.yml defaults = {run: {shell: bash}}
@@ -2504,6 +2651,7 @@ yaml .github/workflows/upstream-watch.yml jobs.build.needs = [detect, bump]
 yaml .github/workflows/upstream-watch.yml jobs.build.permissions = 
 yaml .github/workflows/upstream-watch.yml jobs.build.uses = ./.github/workflows/ci.yml
 yaml .github/workflows/upstream-watch.yml jobs.build.with = 
+yaml .github/workflows/upstream-watch.yml jobs.build.with.stage = all
 yaml .github/workflows/upstream-watch.yml jobs.build.with.upstream_version = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.bump.if = ${{ needs.detect.outputs.changed == 'true' }}
 yaml .github/workflows/upstream-watch.yml jobs.bump.needs = detect
@@ -2541,22 +2689,33 @@ yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.changed = ${{ step
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.current_pin = ${{ steps.detect.outputs.current_pin }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.gaps = ${{ steps.matrix.outputs.gaps }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.heartbeat = ${{ steps.heartbeat.outputs.action }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.merged-sha = ${{ steps.detect.outputs.merged_sha }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.mode = ${{ steps.detect.outputs.mode }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.pin-in-base = ${{ steps.detect.outputs.pin_in_base }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.resume-stage = ${{ steps.detect.outputs.resume_stage }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.tag-exists = ${{ steps.detect.outputs.tag_exists }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.tag-sha = ${{ steps.detect.outputs.tag_sha }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.version = ${{ steps.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.permissions = 
 yaml .github/workflows/upstream-watch.yml jobs.detect.runs-on = ubuntu-latest
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps = 
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-depth = 50
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-tags = true
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.persist-credentials = false
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env.CI_BASE = ${{ inputs.base }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env.CI_FORCE_VERSION = ${{ inputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env.CI_REMOTE_URL = https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env.CI_RESUME = ${{ inputs.resume }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].id = detect
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].env = 
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].env.VERSION = ${{ steps.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].id = matrix
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].if = ${{ steps.detect.outputs.changed == 'true' }}
-yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].env = 
-yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].env.CI_MATRIX_CANDIDATES = ${{ steps.matrix.outputs.candidates }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].id = heartbeat
 yaml .github/workflows/upstream-watch.yml jobs.detect.timeout-minutes = 10
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.if = ${{ needs.detect.outputs.changed != 'true' && needs.detect.outputs.heartbeat == 'would-create' }}
@@ -2588,7 +2747,13 @@ yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env =
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUILD = ${{ needs.build.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUMP = ${{ needs.bump.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CHANGED = ${{ needs.detect.outputs.changed }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_MERGED_SHA = ${{ needs.detect.outputs.merged-sha }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_MODE = ${{ needs.detect.outputs.mode }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_PIN_IN_BASE = ${{ needs.detect.outputs.pin-in-base }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_RESUME_STAGE = ${{ needs.detect.outputs.resume-stage }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_TAG_EXISTS = ${{ needs.detect.outputs.tag-exists }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_TAG_SHA = ${{ needs.detect.outputs.tag-sha }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.LOCKS = ${{ needs.locks.result }}
@@ -2628,6 +2793,8 @@ yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_OUTPUT_ENV
 yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_ROOTFS_TAR = ${{ runner.temp }}/ci/fetch/upstream/rootfs.tar.gz
 yaml .github/workflows/upstream-watch.yml jobs.locks.steps.[5].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.locks.timeout-minutes = 45
+yaml .github/workflows/upstream-watch.yml jobs.merge.env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.env.DRY_RUN = ${{ inputs.dry-run }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.needs = [detect, bump, build, locks]
 yaml .github/workflows/upstream-watch.yml jobs.merge.outputs = 
 yaml .github/workflows/upstream-watch.yml jobs.merge.outputs.tag = ${{ needs.detect.outputs.version }}
@@ -2640,27 +2807,45 @@ yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[0].with.fetch-depth 
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[0].with.persist-credentials = false
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env = 
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.BASE = ${{ needs.bump.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.BASE = ${{ inputs.base || 'main' }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.BRANCH = auto/upstream-${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.CI_BASE = ${{ inputs.base || 'main' }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.CI_BRANCH = auto/upstream-${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.CI_PR = ${{ needs.bump.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.CI_REMOTE_URL = https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.PR = ${{ needs.bump.outputs.pr }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].env.VERSION = ${{ needs.detect.outputs.version }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].id = already
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[2].id = state
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env = 
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env.BASE = ${{ needs.bump.outputs.base }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env.BRANCH = ${{ needs.bump.outputs.branch }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].if = steps.already.outputs.skip != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[3].if = steps.state.outputs.skip_merge != 'true'
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env = 
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env.PR = ${{ needs.bump.outputs.pr }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].env.VERSION = ${{ needs.detect.outputs.version }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].if = steps.already.outputs.skip != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[4].if = steps.state.outputs.skip_merge != 'true' && env.DRY_RUN != 'true'
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env = 
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.BASE = ${{ needs.bump.outputs.base }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.BRANCH = ${{ needs.bump.outputs.branch }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.PR = ${{ needs.bump.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.SKIP_MERGE = ${{ steps.state.outputs.skip_merge }}
 yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].env.VERSION = ${{ needs.detect.outputs.version }}
-yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].if = steps.already.outputs.skip != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[5].if = steps.state.outputs.skip_merge == 'true' || env.DRY_RUN == 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env.BASE = ${{ needs.bump.outputs.base }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env.BRANCH = ${{ needs.bump.outputs.branch }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env.MERGED_SHA = ${{ steps.state.outputs.merged_sha }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env.PR = ${{ needs.bump.outputs.pr }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[6].if = steps.state.outputs.skip_tag != 'true' && env.DRY_RUN != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[7].env = 
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[7].env.MERGED_SHA = ${{ steps.state.outputs.merged_sha }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[7].env.SKIP_TAG = ${{ steps.state.outputs.skip_tag }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[7].env.TAG_SHA = ${{ steps.state.outputs.tag_sha }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[7].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.merge.steps.[7].if = steps.state.outputs.skip_tag == 'true' || env.DRY_RUN == 'true'
 yaml .github/workflows/upstream-watch.yml jobs.merge.timeout-minutes = 15
 yaml .github/workflows/upstream-watch.yml jobs.publish.needs = [detect, merge]
 yaml .github/workflows/upstream-watch.yml jobs.publish.permissions = 
@@ -2678,6 +2863,9 @@ yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.base.type 
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.dry-run = 
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.dry-run.default = false
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.dry-run.type = boolean
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.resume = 
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.resume.default = ""
+yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.resume.type = string
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.version = 
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.version.default = ""
 yaml .github/workflows/upstream-watch.yml on.workflow_dispatch.inputs.version.type = string

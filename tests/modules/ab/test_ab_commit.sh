@@ -94,11 +94,15 @@ chmod 500 "$tmp/readonly"
 AB_OVERLAY="$tmp/readonly"
 export AB_OVERLAY
 probe_overlay_writable
+probe_rc=$?
 if [ "$(id -u)" = "0" ]; then
   # root writes to a 0500 directory; the case is not observable as root.
   assert_eq "0" "0" "ac-1 skipped as root: 0500 is still writable"
 else
-  assert_eq "$?" "1" "ac-1 an unwritable overlay fails the probe"
+  # The status is captured before the `if` runs: `$?` inside a branch refers to the test
+  # that selected the branch, not to the probe, which is what SC2319 reports and what made
+  # the shellcheck gate red on the runner (shellcheck 0.11, run 43795652401).
+  assert_eq "$probe_rc" "1" "ac-1 an unwritable overlay fails the probe"
   assert_contains "$PROBE_REASON" "not-writable" "ac-1 and says it cannot write"
 fi
 chmod 700 "$tmp/readonly"

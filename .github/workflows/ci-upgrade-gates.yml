@@ -1,0 +1,249 @@
+name: upgrade gates
+
+# The two upgrade gates a release has to pass, in one reusable file so a caller does not
+# have to know which one is which.
+#
+#   mode: cross      release N over release N-1, whatever base each of them pinned
+#   mode: same-base  release N over release N-1 *with the same base and kernel*
+#
+# The cross gate is not reimplemented here: it is ci-upgrade-cross.yml, called as it is and
+# unchanged, because that file is the one gate the tagged line has always used. Reusing it
+# through this wrapper costs one line and keeps the risk of the new gate inside a new file.
+#
+# The same-base gate is the one the update prompt's "patch ranges are covered" sentence
+# rests on, and it is built from published assets instead of a second build: the previous
+# release's own `n5105-ab-<base>-install.img.gz`, downloaded from its tag and verified
+# against that tag's SHA256SUMS, upgraded with this run's payload. Two consecutive releases
+# carry an identically named image (the name is derived from the base, not from the platform
+# version), so both the tag and the digest are part of the identity -
+# scripts/ci/release-same-base.sh is what keeps them together, and its `judge` subcommand is
+# the single implementation of the same-base criteria.
+#
+# What a caller may NOT get from either mode is a skip reported as a pass. A missing previous
+# release, a missing QEMU, a missing SHA256SUMS or a `skip` file left by the stage are all
+# failures here: `release.yml` publishes only after this workflow is green, and the rule it
+# already states - a skipped gate is not a passed proof - is the reason.
+
+defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "Which gate to run: cross (over the previous release) or same-base (same base, ahead by platform)"
+        required: true
+        type: string
+      upstream_version:
+        description: "Upstream base this release is built from; empty reads .github/upstream-pin.conf"
+        required: false
+        type: string
+        default: ""
+      platform_version:
+        description: "Platform version being released; empty reads the repository VERSION file"
+        required: false
+        type: string
+        default: ""
+      previous-tag:
+        description: "Release tag to upgrade from; empty selects the newest published platform release below this one"
+        required: false
+        type: string
+        default: ""
+    # One output per gate, both always present: an output that means a different thing
+    # depending on the mode is how a caller reads the cross verdict and acts on the
+    # same-base one. A gate the mode did not run contributes an empty string, never a pass.
+    outputs:
+      cross-verdict:
+        description: "cross-upgrade=ok|fail|skipped line; empty in same-base mode"
+        value: "${{ jobs.cross.outputs.verdict }}"
+      same-base-verdict:
+        description: "same-base=ok|fail line; empty in cross mode"
+        value: "${{ jobs.same-base.outputs.verdict }}"
+
+permissions:
+  contents: read
+
+jobs:
+  # A caller that misspells the mode used to look green: both gates below are conditional on
+  # one of two exact strings, so anything else skips them both and the run proves nothing.
+  guard:
+    name: guard - the mode is unknown
+    if: ${{ inputs.mode != 'cross' && inputs.mode != 'same-base' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Stop an unknown mode
+        run: |
+          echo "::error::unknown gate mode '${{ inputs.mode }}'; expected cross or same-base"
+          exit 1
+
+  # The cross gate, re-used unchanged. The caller's needs already guarantee that the payload
+  # this run assembled exists: the stage downloads it and the previous image it builds itself.
+  cross:
+    name: cross gate
+    if: ${{ inputs.mode == 'cross' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-upgrade-cross.yml
+
+  # The same-base gate: one job, because every step after the download is cheap next to the
+  # QEMU half, and one job means one place where the verdict is decided. The 25 minute budget
+  # is the QEMU part only: the old image is not rebuilt here, which is what makes this gate
+  # affordable next to cross.
+  same-base:
+    name: same-base upgrade
+    if: ${{ inputs.mode == 'same-base' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.grade.outputs.verdict }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The same runner the cross stage gets: this gate boots an image under QEMU and mounts
+      # its partitions, and on a bare runner cross-upgrade.sh reports a skip for the missing
+      # tools, which is not a passing proof. It also creates the log directory used below.
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+        with:
+          apt: btrfs-progs dosfstools gdisk util-linux cpio kmod qemu-system-x86 ovmf grub-common
+
+      # What this release is built from: VERSION and the pin are the repository's own facts,
+      # so the caller can only shadow them, never decide them wrongly.
+      - name: Read the release identity
+        id: read
+        env:
+          PLATFORM_VERSION: ${{ inputs.platform_version }}
+          UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+        run: |
+          set -euo pipefail
+          version="${PLATFORM_VERSION:-$(tr -d '[:space:]' <VERSION)}"
+          pin="${UPSTREAM_VERSION:-$(sed -n 's/^UPSTREAM_VERSION=//p' .github/upstream-pin.conf | head -n 1)}"
+          [ -n "${version}" ] || { echo "the platform version is empty" >&2; exit 1; }
+          [ -n "${pin}" ] || { echo "the upstream pin is empty" >&2; exit 1; }
+          case "${version}" in v*) version="${version#v}" ;; esac
+          printf 'version=%s\n' "${version}" >>"${GITHUB_OUTPUT}"
+          printf 'pin=%s\n' "${pin}" >>"${GITHUB_OUTPUT}"
+          echo "this release: platform ${version}, upstream base ${pin}"
+
+      # The selector downloads the previous release's index.txt and SHA256SUMS (the evidence
+      # the criteria are graded from) and answers which tag, which asset and which digest.
+      # No previous release, an incomplete index or a missing checksum entry is a failure
+      # here, not a skip: the gate has to be able to judge, or it says so and stops.
+      - name: Select the previous platform release
+        id: select
+        env:
+          CI_VERSION: ${{ steps.read.outputs.version }}
+          CI_PREVIOUS_TAG: ${{ inputs.previous-tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          args=(select --version "${CI_VERSION}" --out "${RUNNER_TEMP}/ci/same-base-old")
+          # The tag is optional by contract: empty means "select the newest published release
+          # below this one", and passing it empty would ask the selector for a tag named "".
+          if [ -n "${CI_PREVIOUS_TAG}" ]; then
+            args+=(--previous-tag "${CI_PREVIOUS_TAG}")
+          fi
+          bash scripts/ci/release-same-base.sh "${args[@]}" 2>&1 \
+            | tee -a "${CI_LOG_DIR}/same-base-select.log"
+
+      - name: Fetch the previous image
+        id: image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.select.outputs.tag }}
+          ASSET: ${{ steps.select.outputs.asset }}
+          SHA256: ${{ steps.select.outputs.sha256 }}
+          DEST: ${{ runner.temp }}/ci/same-base-image
+        run: |
+          set -euo pipefail
+          bash scripts/ci/release-same-base.sh fetch \
+            --tag "${TAG}" --asset "${ASSET}" --sha256 "${SHA256}" --dest "${DEST}" 2>&1 \
+            | tee -a "${CI_LOG_DIR}/same-base-fetch.log"
+
+      # The payload this release's own assemble job published in this run, not a second copy
+      # built here: the caller runs this gate after the build, so the artifact is there.
+      - name: Download this release's payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: payload-upgrade
+          path: ${{ runner.temp }}/ci/same-base-payload
+
+      # The facts cross-upgrade.sh grades the same-base criteria from, in one directory: the
+      # old release's index and checksums as published, and this release's platform version
+      # and pin. The new payload's own identity is measured from the payload tar, not passed
+      # in, so a caller cannot state a digest the bytes do not have.
+      - name: Write the same-base facts
+        run: |
+          set -euo pipefail
+          facts="${RUNNER_TEMP}/ci/same-base-facts"
+          mkdir -p "${facts}"
+          cp "${RUNNER_TEMP}/ci/same-base-old/index.txt" "${facts}/old-index.txt"
+          cp "${RUNNER_TEMP}/ci/same-base-old/SHA256SUMS" "${facts}/old-SHA256SUMS"
+          printf '%s\n' "${{ steps.read.outputs.version }}" >"${facts}/new-version"
+          printf '%s\n' "${{ steps.read.outputs.pin }}" >"${facts}/new-pin"
+          ls -l "${facts}"
+
+      # The verdict is graded, never asserted by this step: cross-upgrade.sh boots the old
+      # image three times, installs this release's payload, and reads the facts back. With
+      # --expect-same-base it also grades the base/kernel/payload/order criteria through
+      # release-same-base.sh judge, and it refuses to call a skip a pass.
+      - name: Install this release over the previous one
+        id: grade
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/ci/same-base-out"
+          log="${CI_LOG_DIR}/same-base.log"
+          image="$(find "${RUNNER_TEMP}/ci/same-base-image" -name '*.img.gz' -print -quit)"
+          payload="$(find "${RUNNER_TEMP}/ci/same-base-payload" -name '*.tar' -print -quit)"
+          [ -n "${image}" ] || { echo "no previous image to boot" >&2; exit 1; }
+          [ -n "${payload}" ] || { echo "no payload to install" >&2; exit 1; }
+          # The verdict is captured, so the script's own output has to reach the run log as
+          # well: with only $( ) a failure says "exit code 1" and nothing else.
+          bash scripts/ci/cross-upgrade.sh run \
+            --image "${image}" --payload "${payload}" --out "${out}" \
+            --expect-same-base --facts "${RUNNER_TEMP}/ci/same-base-facts" 2>&1 \
+            | tee -a "${log}" || true
+          verdict="$(sed -n 's/^cross-upgrade=/cross-upgrade=/p' "${log}" | tail -n 1)"
+          [ -n "${verdict}" ] || {
+            echo "::error::cross-upgrade.sh produced no verdict line; its output is above"
+            exit 1
+          }
+          printf '%s\n' "${verdict}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          printf 'verdict=%s\n' "${verdict}" >>"${GITHUB_OUTPUT}"
+          # A skip is a fact about the runner, not a proof about the release. It is the one
+          # outcome that must never reach the caller as green.
+          if [ -f "${out}/skip" ]; then
+            echo "::error::the same-base stage skipped: $(cat "${out}/skip") - a skipped gate is not a passed gate"
+            exit 1
+          fi
+          # The criteria are one line each, so the run page shows which of them the gate used
+          # instead of a single word. A run that produced none of them did not judge a
+          # same-base upgrade at all, whatever its cross verdict said.
+          grep '^same-base-check' "${log}" | tee -a "${GITHUB_STEP_SUMMARY}" || true
+          grep -q '^same-base=ok' "${log}" || {
+            echo "::error::the same-base criteria were not graded; this run proves the cross gate only"
+            exit 1
+          }
+          case "${verdict}" in
+            cross-upgrade=ok*) : ;;
+            *) echo "::error::the same-base upgrade did not pass: ${verdict}"; exit 1 ;;
+          esac
+
+      # The facts the verdict was graded from, kept whether the run passed or failed: a
+      # red same-base gate is investigated from these files, not from the log.
+      - name: Collect the stage evidence
+        if: always()
+        uses: ./.github/actions/stage-evidence
+        with:
+          stage: same-base
+          name: evidence-same-base
+          diag-args: ${{ runner.temp }}/ci/same-base-out
+          paths: |
+            ${{ runner.temp }}/ci/same-base-out
+            ${{ runner.temp }}/ci/same-base-old
+            ${{ runner.temp }}/ci/same-base-facts
+            ${{ runner.temp }}/ci/logs

@@ -372,4 +372,146 @@ assert_eq "$(grep -n '^CROSS-STATUS-\(BEFORE\|PENDING\|COMMITTED\)$' "$run_out/s
 assert_contains "$(cat "$run_out/boot1.stdout.log" 2>/dev/null)" "stage progress for cross-boot1" \
   "ac-1 the wrapper's stdout is kept as a diagnostic file"
 
+# --- ac-5: the same-base gate on top of the cross verdict ------------------
+# cross answers "can this release install over the previous one". It never reads a base or a
+# kernel, so on its own it would pass a release that moved the upstream base. `--expect-same-base`
+# adds the criteria from scripts/ci/release-same-base.sh judge, and the assertions below pin
+# each of the four facts separately: a gate that grades three of them would let one of the
+# claims this exists to protect through.
+same_base_call() { bash "$script" assert --out "$1" --expect-same-base 2>&1; }
+
+# same_base_dir <dir>: a directory that passes the cross rules AND the same-base criteria.
+same_base_dir() {
+  local dir=$1
+  write_case "$dir" aaaa aaaa cccc cccc
+  mkdir -p "$dir/facts"
+  {
+    printf 'AB-FEED 1\nchannel   stable\nentry\n'
+    printf '  %-8s 0.0.10\n' platform
+    printf '  %-8s 25.12.2\n' base
+    printf '  %-8s 6.12.103\n' kernel
+    printf '  %-8s n5105-ab-25.12.2-upgrade.tar\n' payload
+    printf '  %-8s 23603200\n' size
+    printf '  %-8s %s\n' sha256 "b5cab55c9c7f85cf777727e9ff56f18d492a6bbd61e295ea3c0b5848e8715c91"
+    printf 'end\n'
+  } >"$dir/facts/old-index.txt"
+  printf '%s  n5105-ab-25.12.2-upgrade.tar\n' \
+    "b5cab55c9c7f85cf777727e9ff56f18d492a6bbd61e295ea3c0b5848e8715c91" \
+    >"$dir/facts/old-SHA256SUMS"
+  printf '{"format":"ab-payload/1","rootfs":"25.12.2","kernel":"6.12.103~deadbeef-r1","platform":"0.0.11"}\n' \
+    >"$dir/facts/new-manifest.json"
+  printf '1111111111111111111111111111111111111111111111111111111111111111\n' \
+    >"$dir/facts/new-payload.sha256"
+  printf '23800000\n' >"$dir/facts/new-payload.size"
+  printf '0.0.11\n' >"$dir/facts/new-version"
+  printf '25.12.2\n' >"$dir/facts/new-pin"
+}
+
+sb_good="$tmp/sb-good"
+same_base_dir "$sb_good"
+sb_good_text="$(same_base_call "$sb_good")"
+assert_contains "${sb_good_text}" "cross-upgrade=ok slot=b" \
+  "ac-5 a same-base upgrade over a healthy slot is still a good cross upgrade"
+assert_contains "${sb_good_text}" "same-base=ok" \
+  "ac-5 and the same-base criteria are graded, not assumed"
+
+# The plain cross run is unchanged: no --expect-same-base means no extra output and no extra
+# requirement - the assertions above are the proof, and this one is the door. Measured on a
+# fresh directory: `assert --expect-same-base` leaves its marker in the run directory on
+# purpose (a verdict has to be reproducible from the directory alone), so re-asserting the
+# same directory without the flag is not "a run without the flag".
+plain_dir="$tmp/sb-plain"
+write_case "$plain_dir" aaaa aaaa cccc cccc
+mkdir -p "$plain_dir/facts"
+assert_eq "$(bash "$script" assert --out "$plain_dir" 2>&1 | grep -c 'same-base')" "0" \
+  "ac-5 a run without the flag prints no same-base line at all"
+
+# 1. base moved
+base_dir="$tmp/sb-base"
+same_base_dir "$base_dir"
+sed -i.bak 's/25\.12\.2$/25.12.1/' "$base_dir/facts/old-index.txt" && rm -f "$base_dir/facts/old-index.txt.bak"
+base_text="$(same_base_call "$base_dir")"
+assert_contains "${base_text}" "same-base=fail reason=base-is-not-the-pin" \
+  "ac-5 an old release on another base fails the same-base gate"
+assert_contains "${base_text}" "cross-upgrade=fail reason=same-base-criteria-failed" \
+  "ac-5 and the cross verdict is gated on it, not printed beside it"
+
+# 2. kernel moved
+kernel_dir="$tmp/sb-kernel"
+same_base_dir "$kernel_dir"
+printf '{"format":"ab-payload/1","rootfs":"25.12.2","kernel":"6.12.104~deadbeef-r1","platform":"0.0.11"}\n' \
+  >"$kernel_dir/facts/new-manifest.json"
+assert_contains "$(same_base_call "$kernel_dir")" "same-base=fail reason=kernel-is-not-the-payload-kernel" \
+  "ac-5 a payload built for another kernel fails the same-base gate"
+
+# 3. the payload did not change
+payload_dir="$tmp/sb-payload"
+same_base_dir "$payload_dir"
+printf 'b5cab55c9c7f85cf777727e9ff56f18d492a6bbd61e295ea3c0b5848e8715c91\n' \
+  >"$payload_dir/facts/new-payload.sha256"
+assert_contains "$(same_base_call "$payload_dir")" "same-base=fail reason=payload-digest-did-not-change" \
+  "ac-5 a payload identical to the previous release's fails the same-base gate"
+
+# 4. platform did not move forward
+order_dir="$tmp/sb-order"
+same_base_dir "$order_dir"
+printf '0.0.10\n' >"$order_dir/facts/new-version"
+assert_contains "$(same_base_call "$order_dir")" "same-base=fail reason=platform-did-not-advance" \
+  "ac-5 a platform version that does not advance fails the same-base gate"
+
+# The cross facts still have to pass: a same-base gate whose slot never committed is red for
+# the cross reason, not silently upgraded to a criteria failure.
+failed_slot="$tmp/sb-failed-slot"
+same_base_dir "$failed_slot"
+printf 'stage=upgrade result=ok\n' >"$failed_slot/serial.log"
+failed_text="$(same_base_call "$failed_slot")"
+assert_contains "${failed_text}" "cross-upgrade=fail reason=commit-not-recorded-in-serial" \
+  "ac-5 a slot that never committed is still a cross failure"
+assert_eq "$(printf '%s\n' "${failed_text}" | grep -c '^same-base=')" "0" \
+  "ac-5 and the same-base criteria are not graded on a run that did not commit"
+
+# A stage that could not run at all is the one outcome that must never look like a pass:
+# cross reports a skip, and with the flag that skip becomes a failure with a reason.
+# Without the flag a skip is the plain cross skip it always was; with it, the same facts are
+# a failed gate. Two directories, because the flag's marker persists in the run directory.
+skipped_plain="$tmp/sb-skipped-plain"
+mkdir -p "$skipped_plain"
+printf 'qemu-not-available\n' >"$skipped_plain/skip"
+assert_contains "$(bash "$script" assert --out "$skipped_plain" 2>&1)" "cross-upgrade=skipped" \
+  "ac-5 the plain cross gate still reports a skip as a skip"
+
+skipped_dir="$tmp/sb-skipped"
+mkdir -p "$skipped_dir/facts"
+printf 'qemu-not-available\n' >"$skipped_dir/skip"
+printf '0.0.11\n' >"$skipped_dir/facts/new-version"
+skipped_text="$(bash "$script" assert --out "$skipped_dir" --expect-same-base 2>&1)"
+assert_contains "${skipped_text}" "same-base=fail reason=stage-skipped" \
+  "ac-5 a skipped stage is a failed same-base gate, never a skipped pass"
+assert_contains "${skipped_text}" "cross-upgrade=fail reason=stage-skipped" \
+  "ac-5 and the cross verdict is a failure too, so a caller cannot read the skip as green"
+
+# A run that asked for the same-base gate but has no facts directory cannot grade it, and
+# says so: an absent directory is not "no criteria".
+nofacts_dir="$tmp/sb-nofacts"
+write_case "$nofacts_dir" aaaa aaaa cccc cccc
+assert_contains "$(bash "$script" assert --out "$nofacts_dir" --expect-same-base 2>&1)" \
+  "same-base=fail reason=facts-missing" \
+  "ac-5 a same-base run without its facts fails instead of grading nothing"
+
+# A run that names a facts directory which does not exist has asked for a gate that cannot
+# be graded. It says so as a verdict: under `set -e` a copy failure would end the stage with
+# no line for the workflow to read, which the cross stage has already paid for once.
+assert_contains "$(CI_TMP_ROOT="$tmp/no-facts-ci" bash "$script" run \
+  --image "$tmp/run-old.img" --payload "$tmp/run-payload.tar" --out "$tmp/no-facts-out" \
+  --expect-same-base --facts "$tmp/facts-that-do-not-exist" 2>&1)" \
+  "cross-upgrade=fail reason=facts-missing" \
+  "ac-5 a facts directory that is not there is a verdict, not a crash"
+
+# The stage's own documentation carries the flag, so the CI file that uses it and the script
+# that implements it cannot drift apart without a test failing.
+assert_contains "$(bash "$script" --help 2>&1)" "--expect-same-base" \
+  "ac-5 the documented interface names the same-base flag"
+assert_contains "$(cat "$script")" "release-same-base.sh" \
+  "ac-5 the criteria have one implementation, and the stage calls it"
+
 finish
