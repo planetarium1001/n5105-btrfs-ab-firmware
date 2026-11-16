@@ -174,6 +174,11 @@ ab-upgrade --feed
 `next=<slot>`，然后重启。用 `apk` 装的包**不会**被这条路更新。让它们对齐到新的 base 是
 另一套操作、另一组命令，因为一个解析不了的包不该把一次已经通过检查的系统更新回滚掉。
 
+**重启之前 `pending` 是目标槽，不是 `none`** —— `pending=none` 是重启后 boot 把切换提交了才有的
+读数。把「重启前 `pending=none`」写进简报，描述的是重启之后的状态；照它判读验收的人会把一次正确的
+安装判成失败。这也正是比较两条稳定状态行时 `pending` 属于「换槽不该移动的字段」的原因
+（见 `scripts/device/lib.sh` 的 `AB_STATUS_FIELDS_STABLE`）：空闲机器在切换前后都答 `none`。
+
 ## 更新提示说了什么
 
 提示是三行身份加三行判定。除 `Proceed?` 那个问题本身走 stderr（这样 stdout 被重定向到
@@ -390,6 +395,11 @@ ab-slot packages revert          # 按最新一份快照回放版本
 `ERROR: Not continuing due to stale/unavailable repositories` 停下；跑过 `apk update` 之后同一条
 命令给出 `OK: ... in 282 packages`，而 `apk version -l '<'` 是一张空表。**两种情形都是空表**，
 所以要看警告与退出码，不要看表。一台已经跑在最新版上的机器确实零候选 —— 那不是 feed 坏了。
+
+一条快照会报 `packages=`、`world=`、`payloads=` 与可选的 `payload-gap=`。`payloads=no` 表示这次
+快照没有带包归档（`--no-payloads`）——**它本身就是答案**，不是缺失，所以不为它另设 `reason=` 字段：
+`reason=none` 说的是「没有任何受限项」，而不带载荷的快照用 `payloads=no` 说明自己。真正数不出来时
+`packages=` 与 `world=` 会报 `unreadable` 而不是 `0`，这样损坏的快照与空快照不会打印成同一行。
 
 快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本，
 以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。

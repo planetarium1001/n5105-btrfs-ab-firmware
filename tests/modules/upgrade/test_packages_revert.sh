@@ -27,6 +27,8 @@
 #         that does not match installs nothing at all
 #   ac-7  listing shows the snapshots newest first and says when there are none
 #   ac-8  snapshots live on the writable layer only; no slot state is touched
+#   (20261116-06) ac-4 the one-line summary of a snapshot reports a count it could not read
+#         as `unreadable`, never as a zero the file does not support
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -442,6 +444,27 @@ out="$(slot_run packages list)"
 assert_contains "$out" "snapshots kept" "ac-7 the CLI lists snapshots"
 assert_contains "$out" "7 packages" "ac-2 the listing counts the packages"
 
+# The listing is the other reader of the same counts, and it folded the same two answers
+# into one: a path it cannot read and a record written before the counts existed both
+# printed `0`. It has to say `unreadable` there, exactly like the one-line summary.
+list_layer="$tmp/overlay-list"
+mkdir -p "$list_layer/apk/snapshots"
+printf 'AB-APK-SNAPSHOT 1\nupstream 25.12.2\nplatform 0.0.8\npackages 0\nworld 0\npayloads no\nend\n' \
+  >"$list_layer/apk/snapshots/snapshot-20260101T000000Z.txt"
+# A path under the snapshots directory whose contents cannot be read as a snapshot.
+mkdir -p "$list_layer/apk/snapshots/snapshot-20260101T000001Z.txt"
+# A record written before the header carried the counts: the packages can be counted, the
+# world cannot.
+printf 'AB-APK-SNAPSHOT 1\nupstream 25.12.2\nplatform 0.0.8\npkg      htop 3.3.0-r1\nend\n' \
+  >"$list_layer/apk/snapshots/snapshot-20260101T000002Z.txt"
+out="$(ab_packages_list "$list_layer")"
+assert_eq "$(printf '%s\n' "$out" | grep -c '0 packages  world 0')" "1" \
+  "ac-4 the listing still counts a genuinely empty snapshot as 0"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'unreadable packages  world unreadable')" "1" \
+  "ac-4 a snapshot the listing cannot read is unreadable, not empty"
+assert_eq "$(printf '%s\n' "$out" | grep -c '1 packages  world unreadable')" "1" \
+  "ac-4 a record without the world count is counted where it can be and unreadable where it cannot"
+
 # ac-2: the numbers the record carries and the numbers a reader counts are the same.
 cli_snap="$p4/@overlay-25.12.2/apk/snapshots/snapshot-$snap_id.txt"
 assert_eq "$(sed -n 's/^packages //p' "$cli_snap")" "$(grep -c '^pkg ' "$cli_snap")" \
@@ -644,6 +667,109 @@ done
 ordered="$(_packages_snapshot_files "$order_layer" | tr '\n' ' ')"
 assert_eq "$ordered" "snapshot-20260101T000000Z.txt snapshot-20260101T000000Z-2.txt snapshot-20260101T000001Z.txt " \
   "the -N suffix of a same-second snapshot sorts after the bare name"
+
+# --- (20261116-06) ac-4: a snapshot the line could not read is never "0 packages" ---
+# `packages snapshot` summarises the file the library has just written with one grep-able
+# line. The counts were read with `${_np:-0}`, so "could not read it" and "nothing in it"
+# printed the same thing: an empty snapshot, a half-written one and an unreadable one were
+# indistinguishable to every reader, and a later revert would trust a number nothing
+# counted. `0` has to be earned by reading the file; a count that is not there is
+# `unreadable`. The files below are fixtures handed over through the library's documented
+# interface (write the snapshot, print its path), because the line has to describe whatever
+# the library hands it, not only what a healthy apk produces.
+d1_dir="$tmp/ac-4-snapshots"
+mkdir -p "$d1_dir"
+d1_lib="$tmp/ac-4-packages-lib.sh"
+cat >"$d1_lib" <<'STUB'
+ab_packages_snapshot() {
+  printf '%s\n' "${STUB_SNAPSHOT}"
+}
+_packages_snapshot_field() {
+  sed -n "s/^$2  *//p" "$1" 2>/dev/null | head -n 1
+}
+STUB
+slot_run_snapshot() { # <snapshot path> [packages snapshot args...]
+  _snap_fixture=$1
+  shift
+  STUB_SNAPSHOT="$_snap_fixture" AB_ESP="$esp" AB_P4="$p4" AB_CMD="$cmdline" \
+    AB_PLATFORM_RELEASE="$release" AB_PACKAGES_LIB="$d1_lib" AB_BTRFS=true \
+    PATH="$bin:$PATH" sh "$root/platform/usr/sbin/ab-slot" packages snapshot "$@" 2>&1
+}
+
+# An empty snapshot is a legitimate answer, and zero is what it means.
+d1_empty="$d1_dir/snapshot-20260101T000000Z.txt"
+cat >"$d1_empty" <<'SNAP'
+AB-APK-SNAPSHOT 1
+upstream 25.12.2
+platform 0.0.8
+packages 0
+world 0
+payloads no
+end
+SNAP
+out="$(slot_run_snapshot "$d1_empty")"
+assert_contains "$out" "packages=0" "ac-4 an empty snapshot still reports 0 packages"
+assert_contains "$out" "world=0" "ac-4 an empty snapshot still reports 0 world entries"
+
+# The file the library names cannot be read at all: nothing was counted, so nothing is a
+# zero. This is the case the silent zero hid, and it keeps every other field.
+out="$(slot_run_snapshot "$d1_dir/snapshot-20260101T000001Z.txt")"
+assert_contains "$out" "packages=unreadable" \
+  "ac-4 an unreadable snapshot reports packages=unreadable"
+assert_contains "$out" "world=unreadable" "ac-4 and its world count is unreadable too"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'packages=0')" "0" \
+  "ac-4 nothing claims the unreadable snapshot holds no packages"
+assert_contains "$out" "snapshot 20260101T000001Z written" \
+  "ac-4 the line still names the snapshot it describes"
+# The shape is unchanged: one line, the same five fields in the same order, so a reader
+# that greps `packages=` keeps working. `base=` is empty here for the same honest reason -
+# nothing in an unreadable file was read.
+assert_matches "$out" \
+  '^snapshot 20260101T000001Z written packages=unreadable world=unreadable payloads=no base=$' \
+  "ac-4 the unreadable case keeps the line's fields and their order"
+
+# A directory wearing a snapshot's name is the case that made the readable-file check
+# necessary: measured on the device 2026-11-16, busybox `grep -c` prints `0` for a directory
+# and exits 1, so a counter that only looked at the output would call a corrupt snapshot an
+# empty one. The guard is `[ -f ] && [ -r ]`, and this is what proves it is there.
+d1_isdir="$d1_dir/snapshot-20260101T000002Z.txt"
+mkdir -p "$d1_isdir"
+out="$(slot_run_snapshot "$d1_isdir")"
+assert_contains "$out" "packages=unreadable" \
+  "ac-4 a directory named like a snapshot is unreadable, not empty"
+assert_contains "$out" "world=unreadable" "ac-4 and its world count is unreadable too"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'packages=0')" "0" \
+  "ac-4 nothing claims a directory-named snapshot holds no packages"
+rmdir "$d1_isdir"
+
+# A symlink to nothing is the other shape busybox cannot read; it must not read as empty
+# either.
+d1_dangling="$d1_dir/snapshot-20260101T000003Z.txt"
+ln -s "$d1_dir/no-such-target" "$d1_dangling"
+out="$(slot_run_snapshot "$d1_dangling")"
+assert_contains "$out" "packages=unreadable" \
+  "ac-4 a dangling symlink is unreadable, not empty"
+rm -f "$d1_dangling"
+
+# A record written before the counts existed carries pkg lines and no `world N` header. The
+# packages can be counted; the world cannot, and a zero there would be invented.
+d1_old="$d1_dir/snapshot-20260101T000002Z.txt"
+cat >"$d1_old" <<'SNAP'
+AB-APK-SNAPSHOT 1
+upstream 25.12.2
+platform 0.0.8
+payloads no
+pkg      htop 3.3.0-r1
+pkg      zlib 1.3.1-r1
+end
+SNAP
+out="$(slot_run_snapshot "$d1_old")"
+assert_contains "$out" "packages=2" \
+  "ac-4 a record without a world header still counts its packages"
+assert_contains "$out" "world=unreadable" \
+  "ac-4 a missing world count is unreadable, not zero"
+assert_contains "$out" "base=25.12.2" \
+  "ac-4 the fields beside the counts are the ones the file carries"
 
 # An `apk` that does not answer like apk-tools is not a version this code can drive.
 cat >"$bin/apk" <<'APK'

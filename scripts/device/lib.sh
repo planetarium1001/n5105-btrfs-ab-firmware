@@ -242,6 +242,106 @@ status_field() {
     printf '%s\n' "${_value}"
 }
 
+# --------------------------------------------------------------------------- #
+# What a slot switch is allowed to change
+#
+# A harness that compares two `ab-slot status` lines around a switch has to know which
+# fields must move and which must not. Left to each harness, that judgement gets written
+# two different ways: one round of device acceptance asserted "everything equal" and failed
+# every time a slot actually switched, while another asserted nothing at all.
+#
+# The groups below are read off the archived device runs of 20261116-01
+# (evidence/results/s34/), not off reasoning - the first version of this block was reasoned
+# and would have reported five false failures on a correct switch:
+#
+#   00-guard-h1  slot=b gen=5 committed=b pending=none   next=b packages=unknown/other-slot
+#   07-pre-h1    slot=b gen=6 committed=b pending=a      next=a packages=unknown/other-slot
+#   09-post-h1   slot=a gen=6 committed=a pending=none   next=a packages=aligned/none
+#
+# Two facts from those lines decide the whole split: `generation` advances when the payload
+# is laid down, not when it is committed (6 before the reboot, 6 after), and a real upgrade
+# realigns packages (unknown/other-slot -> aligned/none). Neither is a property of "a
+# switch", so neither may be required to move or to stay.
+#
+# STABLE      - must not move, in every switch observed. This is what the acceptance proves.
+# IDENTITY    - names which slot the machine is committed to; a switch that leaves these
+#               unchanged did not land.
+# MONITORED   - reported, never judged: their movement depends on *which* pair of lines is
+#               compared (generation/pending/next) or on whether the upgrade realigned
+#               packages (packages/packages_reason). Demanding either behaviour is the
+#               defect this file exists to prevent.
+# --------------------------------------------------------------------------- #
+
+AB_STATUS_FIELDS_STABLE="disk method p4 data docker swap boot esp"
+AB_STATUS_FIELDS_IDENTITY="slot upper committed"
+AB_STATUS_FIELDS_MONITORED="generation pending next packages packages_reason"
+
+# ab_status_fields: every field of `ab-slot status`, sorted. The groups have to cover
+# exactly this set; a field added to the status line and not to a group would otherwise be
+# judged by nobody.
+ab_status_fields() {
+    printf '%s\n' ${AB_STATUS_FIELDS_STABLE} ${AB_STATUS_FIELDS_IDENTITY} ${AB_STATUS_FIELDS_MONITORED} |
+        LC_ALL=C sort
+}
+
+# ab_status_switch_check <before-line> <after-line> [case]
+# Compares two captured status lines and reports the two ways a switch can go wrong:
+#   changed_stable:      a field that must not move did -> FAIL
+#   unchanged_on_switch: a field that identifies the slot did not move -> FAIL
+# The monitored fields are printed as `monitored` lines and never affect the status.
+#
+# The variables are deliberately not named `_case`/`_f`: the callers are POSIX shell
+# scripts that reuse those names across a step, so a helper that assigns them silently
+# rewrites the caller's next printf. The first version did exactly that and every plan line
+# after the assertion grew an extra hop label.
+ab_status_switch_check() {
+    _sw_before=${1:-}
+    _sw_after=${2:-}
+    _sw_case=${3:-?}
+    [ -n "${_sw_before}" ] && [ -n "${_sw_after}" ] || {
+        _dev_assert_fail "${_sw_case}" "switch check: a status line is empty"
+        return 1
+    }
+    _sw_bad=0
+    for _sw_f in ${AB_STATUS_FIELDS_STABLE}; do
+        _sw_b=$(status_field "${_sw_before}" "${_sw_f}") || _sw_b=missing
+        _sw_a=$(status_field "${_sw_after}" "${_sw_f}") || _sw_a=missing
+        [ "${_sw_a}" = "${_sw_b}" ] && continue
+        _dev_assert_fail "${_sw_case}" "changed_stable ${_sw_f}: before=${_sw_b} after=${_sw_a}"
+        _sw_bad=1
+    done
+    for _sw_f in ${AB_STATUS_FIELDS_IDENTITY}; do
+        _sw_b=$(status_field "${_sw_before}" "${_sw_f}") || _sw_b=missing
+        _sw_a=$(status_field "${_sw_after}" "${_sw_f}") || _sw_a=missing
+        [ "${_sw_a}" != "${_sw_b}" ] && continue
+        _dev_assert_fail "${_sw_case}" "unchanged_on_switch ${_sw_f}: still ${_sw_a} (the switch did not land)"
+        _sw_bad=1
+    done
+    for _sw_f in ${AB_STATUS_FIELDS_MONITORED}; do
+        _sw_b=$(status_field "${_sw_before}" "${_sw_f}") || _sw_b=missing
+        _sw_a=$(status_field "${_sw_after}" "${_sw_f}") || _sw_a=missing
+        [ "${_sw_a}" = "${_sw_b}" ] || ev "${_sw_case} monitored ${_sw_f}: ${_sw_b} -> ${_sw_a}"
+    done
+    return ${_sw_bad}
+}
+
+# ab_status_switch_expect <case> <target-slot> [upper-prefix] [hop]
+# The plan line a dry run prints for a switch. It states exactly what the check above
+# enforces - no more: a plan line that promised the monitored fields would be lying, and the
+# monitored fields are exactly the ones an earlier plan got wrong.
+ab_status_switch_expect() {
+    _se_case=${1:?ab_status_switch_expect needs a case}
+    _se_target=${2:?ab_status_switch_expect needs the target slot}
+    _se_prefix=${3:-}
+    _se_hop=${4:-}
+    printf '%s' "${_se_case}"
+    [ -n "${_se_hop}" ] && printf ' %s' "${_se_hop}"
+    printf ' assert boot=ok esp=ok committed=%s generation>=+1 pending=none' "${_se_target}"
+    [ -n "${_se_prefix}" ] && printf ' upper=@overlay-%s(-rN)?' "${_se_prefix}"
+    printf ' and these stay equal: %s (reported, not judged: %s)\n' \
+        "${AB_STATUS_FIELDS_STABLE}" "${AB_STATUS_FIELDS_MONITORED}"
+}
+
 # dev_status: the machine readable line of ab-slot status.
 # The human summary there goes to stderr on purpose; only the first line counts.
 dev_status() {

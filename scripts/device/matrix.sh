@@ -352,6 +352,11 @@ hop_install() {
         || ev "previous boot log not collected: ${AB_BOOT_LOG_PREV} (normal on a machine that booted once)"
 
     HOP_FAILED=0
+    # The plan line promises this comparison, so the run has to make it: the stable fields
+    # against the line captured before the payload was pushed, and the slot-identity fields
+    # against the same line. The monitored fields are printed into the evidence and never
+    # judged - they move for reasons that have nothing to do with the switch (see lib.sh).
+    _check ab_status_switch_check "${_before}" "${_booted}" "${_case}"
     assert_boot_health "${_case}" "$((_gen_before + 1))"
     _check assert_field slot "${_target}" "${_case}"
     _check assert_field committed "${_target}" "${_case}"
@@ -641,8 +646,9 @@ plan_case() {
         printf '%s %s/%s status\n' "${_case}" "${_idx}" "${_total}"
         printf '%s %s/%s collect %s %s (a missing file is not an error)\n' "${_case}" "${_idx}" "${_total}" \
             "${AB_BOOT_LOG}" "${AB_BOOT_LOG_PREV}"
-        printf '%s %s/%s assert boot=ok esp=ok committed=%s pending=none generation>=+1 upper=@overlay-%s(-rN)?\n' \
-            "${_case}" "${_idx}" "${_total}" "<other>" "${_version}"
+        # Rendered from the switch criterion in lib.sh, so the plan and the check that
+        # judges the run cannot describe different fields.
+        ab_status_switch_expect "${_case}" "<other>" "${_version}" "${_idx}/${_total}"
         printf '%s %s/%s assert boot-log healthcheck-done-result-ok commit-action-commit in boot-0.log, else boot-1.log, else `%s`\n' \
             "${_case}" "${_idx}" "${_total}" "${AB_PREV_LOG_CMD}"
         printf '%s %s/%s assert markers data+config replaced-nothing\n' "${_case}" "${_idx}" "${_total}"

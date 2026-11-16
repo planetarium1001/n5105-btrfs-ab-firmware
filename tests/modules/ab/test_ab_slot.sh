@@ -16,6 +16,8 @@
 #   ac-8 `next` reads the file back and `--write` heals it from the state file
 #   ac-9 status appends the initramfs' ESP verdict as `esp=`, read from this boot's ring log
 #        (boot= and esp= are the two fields a machine cannot claim without evidence)
+#   (20261116-06) ac-5 a boot-path commit re-judges the package record it publishes for the
+#        slot it commits, so `status` never answers `reason=other-slot` for ever after
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -263,6 +265,67 @@ assert_contains "$(cat "$esp/ab/packages")" "packages=unknown reason=no-record s
   "ac-16 the record is rewritten for the target slot"
 assert_eq "$(grep -c 'other-slot' "$esp/ab/packages" || true)" "0" \
   "ac-16 nothing in the record says other-slot"
+
+# --- (20261116-06) ac-5: the packages verdict after a boot-path commit -------
+# `ab-commit` commits the slot it just booted. The record is written for the slot an upgrade
+# was aiming at, so a commit that lands on a slot the record does not name - the candidate's
+# own first boot, an upgrade that was abandoned, a record published before the swap - leaves
+# the record describing the slot this machine has just left behind. `status` then answers
+# `packages=unknown reason=other-slot`, and nothing ever re-judges it: the same defect the
+# rollback path had before `cmd_rollback` started calling `packages_record_retarget`.
+write_state a b 1
+printf 'console=ttyS0 ab.slot=b\n' >"$cmdline"
+printf 'packages=aligned reason=none version=25.12.3 kernel=kernel=6.12.103~abc-r1 slot=a\n' \
+  >"$esp/ab/packages"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_reason_field "$status")" "none" \
+  "ac-5 before the commit the record still describes the committed slot"
+out="$(slot_cmd commit 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ac-5 committing the booted candidate succeeds"
+assert_contains "$out" "packages unknown for slot b" \
+  "ac-5 the commit re-judges the record for the slot it lands on"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "unknown" \
+  "ac-5 the old slot's verdict is not reported as the new slot's state"
+assert_eq "$(pkg_reason_field "$status")" "no-record" \
+  "ac-5 and the reason is a provable no-record, never other-slot"
+assert_contains "$(cat "$esp/ab/packages")" "slot=b" \
+  "ac-5 the record names the slot the commit landed on"
+assert_eq "$(grep -c 'other-slot' "$esp/ab/packages" || true)" "0" \
+  "ac-5 nothing in the record says other-slot"
+
+# A commit that lands while another slot is still pending must not destroy that candidate's
+# verdict. The record may be describing the candidate (the aligner wrote it while laying the
+# candidate down), and the aligner does not run again on boot: rewriting the record here would
+# trade one permanent `unknown` for another. The candidate's `other-slot` answer is correct -
+# the record does not describe this boot - and stays readable for the boot that follows.
+write_state a b 1
+printf 'console=ttyS0 ab.slot=a\n' >"$cmdline"
+printf 'packages=aligned reason=none version=25.12.3 kernel=kernel=6.12.103~abc-r1 slot=b\n' \
+  >"$esp/ab/packages"
+out="$(slot_cmd commit 2>&1)"
+assert_eq "$?" "0" "ac-5 a commit with a candidate still pending succeeds"
+assert_contains "$(cat "$esp/ab/packages")" "slot=b" \
+  "ac-5 the pending candidate's verdict is left where it is"
+assert_contains "$(cat "$esp/ab/packages")" "packages=aligned" \
+  "ac-5 and it is not downgraded to no-record"
+
+# A record that already names the target is the aligner's own verdict for exactly that
+# layer, so the commit keeps it as it stands: the call re-judges, it does not reset.
+write_state a none 1
+printf 'console=ttyS0 ab.slot=a\n' >"$cmdline"
+printf 'packages=limited reason=kernel-unknown version=25.12.3 kernel=unknown slot=a\n' \
+  >"$esp/ab/packages"
+record_before="$(cat "$esp/ab/packages")"
+slot_cmd commit >/dev/null 2>&1
+assert_eq "$(cat "$esp/ab/packages")" "$record_before" \
+  "ac-5 a record that already describes the committed slot is left as it stands"
+status="$(slot_cmd status 2>/dev/null)"
+assert_eq "$(pkg_field "$status")" "limited" \
+  "ac-5 the verdict for the committed slot is still what is reported"
+assert_eq "$(pkg_reason_field "$status")" "kernel-unknown" \
+  "ac-5 with the reason the aligner published"
 
 # --- ac-10 the binary can name its own version ------------------------------
 # The identity lives in /etc/platform-release (AB_RELEASE_FILE points the test at a copy),

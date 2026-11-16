@@ -1768,6 +1768,10 @@ scen_hop() {
     fi
     AB_STATUS_LINE=${_booted}
     CASE_FAILED=0
+    # Same promise the plan line makes, and the same comparison matrix.sh runs: the stable
+    # fields against the line captured before the payload was pushed (see lib.sh for why the
+    # monitored fields are printed but not judged).
+    _check ab_status_switch_check "${_before}" "${_booted}" "${_case}"
     _check assert_field boot ok "${_case}"
     _check assert_field esp ok "${_case}"
     _check assert_field pending none "${_case}"
@@ -2823,7 +2827,7 @@ plan_case() {
             printf '%s 1/1 wait_up %s (first boot of a new rootfs; hard cap %s)\n' "${_case}" "${AB_WAIT_UP_FIRST}" "${AB_WAIT_UP_HARD}"
             printf '%s 1/1 settle until boot=ok pending=none (%s s left of the cap)\n' "${_case}" "${AB_WAIT_SETTLE}"
             printf '%s 1/1 status\n' "${_case}"
-            printf '%s 1/1 assert boot=ok esp=ok committed=<other> pending=none generation>=+1 upper=@overlay-%s(-rN)?\n' "${_case}" "${_to}"
+            ab_status_switch_expect "${_case}" "<other>" "${_to}" "1/1"
             printf '%s data sha256 %s expect=0 changed/missing/untracked/entries lines against the pre-jump manifest (each offender is named)\n' "${_case}" "${SCEN_SEED_DIR}"
             printf '%s data tars %s expect=tar -tf exits 0 with members>0\n' "${_case}" "${SCEN_DOCKER_TARS}"
             printf '%s config uci %s + hostname + timezone + net section + firewall rule expect=the values S2 recorded\n' "${_case}" "${SCEN_UCI}"

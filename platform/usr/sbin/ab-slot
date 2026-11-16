@@ -58,7 +58,8 @@
 #                          (boot= and esp= are the two facts a machine cannot claim without
 #                          evidence: how this boot started, and what the initramfs thought
 #                          of the ESP it started from)
-#   commit [slot]          set committed, clear pending (default: the running slot)
+#   commit [slot]          set committed, clear pending (default: the running slot), and
+#                          re-judge the package record for the slot it commits
 #   pending <slot>         set pending, after checking the slot payload exists
 #   abandon                clear pending, leave committed alone
 #   rollback               commit the other slot
@@ -570,14 +571,14 @@ packages_reason() {
 }
 
 # packages_record_retarget <slot>: make the published verdict speak for the slot a
-# rollback has just committed.
+# rollback, or a boot-path commit, has just committed.
 #
 # A record that already names the target is the aligner's own verdict for exactly that
 # layer, so it stands: it is rewritten as-is, atomically, which is also what proves the
 # file survived the rollback. Anything else - including a record that only ever described
 # the slot we rolled away from - becomes an explicit `unknown reason=no-record` for the
 # new committed slot. Leaving the old line behind is what made `ab-slot status` answer
-# `packages=unknown reason=other-slot` for ever after a rollback.
+# `packages=unknown reason=other-slot` for ever after a rollback or a commit.
 packages_record_retarget() {
     _slot=$1
     _file="${AB_PACKAGES_FILE}"
@@ -690,6 +691,27 @@ cmd_commit() {
         say "ab-slot: committed slot ${_slot}, pending cleared"
     else
         say "ab-slot: committed slot ${_slot}, pending ${_keep_pending} kept"
+    fi
+    # The package verdict describes a slot, and the commit has just made that slot the one
+    # this machine is committed to: the record is re-judged for it here, exactly as a
+    # rollback does for its target. Without this, a commit that lands on a slot the record
+    # does not name - a candidate's own first boot - leaves `status` answering
+    # `packages=unknown reason=other-slot` for ever, because nothing else rewrites the line.
+    #
+    # One exception, and it is the case `_keep_pending` above names: when a candidate slot is
+    # still pending, the record may be describing *that* candidate - the aligner wrote it
+    # while laying the candidate down - and rewriting it here would throw away the only
+    # verdict the candidate will ever have (the aligner does not run again on boot). Its
+    # `other-slot` answer is correct, not stuck: `packages_record_applies` stops applying the
+    # record to this boot, and `status` says so. The stuck case this fixes is the one where
+    # the record names a slot that is neither running nor committed nor pending.
+    if [ "${_keep_pending}" = "none" ]; then
+        # The verdict is reported but does not fail the commit: the slot state is already
+        # written, and a record that cannot be rewritten is a stale verdict, not a lost slot.
+        # The reason still reaches the boot log, because a silent retry every boot is how this
+        # stayed invisible for a whole release.
+        packages_record_retarget "${_slot}" \
+            || say "ab-slot: package record not re-judged for slot ${_slot}; it still names another slot"
     fi
     sync_or_die
 }
@@ -940,16 +962,43 @@ version_identity() {
 # packages_snapshot_line <snapshot>: the one line `snapshot` prints. It carries the same
 # counts the record's header carries, so a reader can compare what was said with what was
 # written without opening the file.
+#
+# `packages=` is a number only when the file was read and its `^pkg ` lines were counted;
+# `world=` only when the header carries the `world N` line the writer puts there. Anything
+# else - a file that cannot be read, a `grep` that fails, a record written before the
+# counts existed - prints `unreadable`, because "nothing to count" and "could not count"
+# are different answers and folding them into `0` made a corrupt snapshot and an empty one
+# the same line. So the value sets are `packages=` in {0,1,2,...,unreadable} and `world=`
+# in {0,1,2,...,unreadable}; the field names, their order and the one line per snapshot do
+# not change, and `0` is still what a genuinely empty record reports.
 packages_snapshot_line() {
     _snap=$1
     _id=${_snap##*/snapshot-}
     _id=${_id%.txt}
-    _np=$(grep -c '^pkg ' "${_snap}" 2>/dev/null || true)
-    _nw=$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "${_snap}" 2>/dev/null | head -n 1)
+    # `grep -c` prints a count and exits 0 (found) or 1 (nothing found), and prints nothing
+    # when it cannot read the file at all; the empty answer is the one that must not become
+    # a zero. `${_np:-0}` used to do exactly that.
+    # A readable regular file is the precondition for any count at all: busybox `grep -c`
+    # answers `0` for a directory (and `sed` prints nothing), so a corrupted snapshot that
+    # happens to be a directory would otherwise report an empty one. Measured on the device,
+    # 2026-11-16.
+    if [ -f "${_snap}" ] && [ -r "${_snap}" ]; then
+        _np=$(grep -c '^pkg ' "${_snap}" 2>/dev/null) || :
+        _nw=$(sed -n 's/^world \([0-9][0-9]*\)$/\1/p' "${_snap}" 2>/dev/null | head -n 1) || :
+    else
+        _np=""
+        _nw=""
+    fi
+    case "${_np}" in
+        '' | *[!0-9]*) _np=unreadable ;;
+    esac
+    case "${_nw}" in
+        '' | *[!0-9]*) _nw=unreadable ;;
+    esac
     _pl=$(_packages_snapshot_field "${_snap}" payloads)
     _gap=$(_packages_snapshot_field "${_snap}" payload-gap)
     printf 'snapshot %s written packages=%s world=%s payloads=%s base=%s%s\n' \
-        "${_id}" "${_np:-0}" "${_nw:-0}" "${_pl:-no}" \
+        "${_id}" "${_np}" "${_nw}" "${_pl:-no}" \
         "$(_packages_snapshot_field "${_snap}" upstream)" \
         "${_gap:+ payload_gap=${_gap}}"
 }

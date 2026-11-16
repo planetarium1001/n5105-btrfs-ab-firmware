@@ -189,7 +189,13 @@ way [install.md](install.md) shows, with the command piped through `tee` into
 machine whose only output is a serial line still says why it stopped.
 
 After a successful install the machine has not changed yet: run `ab-slot status` to see the
-other slot as `pending` and `next=<slot>`, then reboot. Packages installed with `apk` are
+other slot as `pending` and `next=<slot>`, then reboot. **Before that reboot `pending` is the
+target slot, not `none`** - `pending=none` is what the rebooted machine reports once the boot
+has committed the switch. A brief that promises `pending=none` before the reboot describes the
+state after it, and the acceptance reader who trusts it will call a correct install a failure.
+`pending` is also why it belongs with the fields a switch does *not* move when two settled
+status lines are compared (see `AB_STATUS_FIELDS_STABLE` in `scripts/device/lib.sh`): an idle
+machine answers `none` on both sides of the switch. Packages installed with `apk` are
 **not** updated by this path. Aligning them with a new base is a separate operation with
 its own commands, because a package that fails to resolve must not roll back a system
 update that already passed its checks.
@@ -434,6 +440,14 @@ repositories`; after `apk update` the same command answers `OK: ... in 282 packa
 `apk version -l '<'` is an empty table. Both shapes print an empty table, so read the
 warnings and the exit status, not the table. A machine on the newest release genuinely has
 zero candidates - that is not a broken feed.
+
+The counts a snapshot reports are `packages=`, `world=`, `payloads=` and the optional
+`payload-gap=`. `payloads=no` means the snapshot was taken without the package archives (`--no-payloads`)
+- it is the answer, not a missing one, and there is no second `reason=` field for it: a
+`reason=` of `none` says "nothing was limited", and a snapshot that simply has no payloads
+says so with `payloads=no`. `packages=` and `world=` say `unreadable` rather than `0` when the
+record cannot be counted at all, so a corrupt snapshot and an empty one do not print the
+same line.
 
 A snapshot is text in `<layer>/apk/snapshots/` - the base and platform versions, every
 world entry, every installed package with its version, and the counts that make the record

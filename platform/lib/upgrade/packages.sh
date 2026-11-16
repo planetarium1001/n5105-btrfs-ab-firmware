@@ -750,10 +750,29 @@ ab_packages_list() {
         _id=${_id%.txt}
         _base=$(_packages_snapshot_field "${_path}" upstream)
         _platform=$(_packages_snapshot_field "${_path}" platform)
-        _pkgs=$(grep -c '^pkg ' "${_path}" 2>/dev/null || true)
-        _world=$(_packages_snapshot_count "${_path}" world)
+        # A count that is not there is not a zero. A file this listing cannot read, or one
+        # written before the header carried the counts, says nothing about how many packages
+        # or world entries it holds; `${_pkgs:-0}` printed `0` for both, which is the one
+        # answer a reader must never be given by accident. `0` is only what a readable
+        # record with no such entry reports.
+        # A readable regular file is the precondition for any count: busybox `grep -c`
+        # answers 0 for a directory, so a corrupted record that happens to be one would read
+        # as an empty snapshot. Measured on the device, 2026-11-16.
+        if [ -f "${_path}" ] && [ -r "${_path}" ]; then
+            _pkgs=$(grep -c '^pkg ' "${_path}" 2>/dev/null || true)
+            _world=$(_packages_snapshot_count "${_path}" world)
+        else
+            _pkgs=""
+            _world=""
+        fi
+        case "${_pkgs}" in
+            '' | *[!0-9]*) _pkgs=unreadable ;;
+        esac
+        case "${_world}" in
+            '' | *[!0-9]*) _world=unreadable ;;
+        esac
         _payloads=$(_packages_snapshot_field "${_path}" payloads)
         printf 'snapshot %s  base %s  platform %s  %s packages  world %s  payloads %s\n' \
-            "${_id}" "${_base}" "${_platform}" "${_pkgs:-0}" "${_world:-0}" "${_payloads:-no}"
+            "${_id}" "${_base}" "${_platform}" "${_pkgs}" "${_world}" "${_payloads:-no}"
     done
 }
