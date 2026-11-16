@@ -167,7 +167,14 @@ jobs:
           initramfs: ${{ steps.initramfs.outputs.initramfs_path }}
           image: ${{ steps.disk.outputs.image_path }}
           judge-prefix: ""
-          stop-pattern: '^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)'
+          # ab-commit (S99) runs after the fixture's rc.local, writes the FAT ESP and
+          # prints its decision last; S5-UPGRADE-DONE only means ab-upgrade returned.
+          # Stopping there killed QEMU mid-write and the next boot reported
+          # "committed-is-a" (run 43918219525). Every alternative below is a console_say
+          # line ab-commit or ab-boot really writes - their plain `echo` lines go to
+          # syslog, not the serial - so the success line ends the boot and the failure
+          # lines stop a broken run early; the step's `timeout` is the backstop.
+          stop-pattern: '^(ab-commit: committed slot=|ab-commit: abandoned slot=|ab-commit: stage=commit .*result=fail|ab-commit: stage=preflight .*result=fail|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)'
           timeout: "1200"
 
       - name: Phase 2 - verify the upgrade recorded the new layer
@@ -202,7 +209,7 @@ jobs:
         id: phase3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: bash scripts/ci/s5-phase.sh --phase commit --slot b 2>&1 | tee -a "${CI_LOG_DIR}/phase3.log"
+        run: bash scripts/ci/s5-phase.sh --phase commit --slot b --serial "${{ steps.boot3.outputs.serial_log }}" 2>&1 | tee -a "${CI_LOG_DIR}/phase3.log"
 
       - name: Verify the commit left the next boot on slot b
         id: verify_commit

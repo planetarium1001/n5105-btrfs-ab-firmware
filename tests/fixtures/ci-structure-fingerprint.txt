@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: the daily watch fails on an undiscoverable index and carries the reason into the issue, merge lookups sort by merge time, fetch-depth is the full history, the rehearsal replaces its own untagged draft, cron is anchored at UTC midnight
+# reason: ci-s5 boot 2 waits for ab-commit's own console decision and the commit phase names esp-corrupt and esp-read-only
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -402,7 +402,9 @@ sh-fn scripts/ci/report.sh report_row
 sh-fn scripts/ci/report.sh result_cell
 sh-fn scripts/ci/resolve.sh resolve_latest_version
 sh-fn scripts/ci/s5-phase.sh cleanup
+sh-fn scripts/ci/s5-phase.sh esp_write_probe
 sh-fn scripts/ci/s5-phase.sh fail_phase
+sh-fn scripts/ci/s5-phase.sh fat_damage_evidence
 sh-fn scripts/ci/s5-phase.sh mount_esp
 sh-fn scripts/ci/stage-summary.sh judge_from_log
 sh-fn scripts/ci/stage-summary.sh run_url
@@ -805,6 +807,7 @@ sh-var scripts/ci/resolve.sh CI_UPSTREAM_VERSION_PIN
 sh-var scripts/ci/resolve.sh CI_VERSION_RE
 sh-var scripts/ci/resolve.sh CI_WORK_DIR
 sh-var scripts/ci/s5-phase.sh CI_IMAGE
+sh-var scripts/ci/s5-phase.sh CI_S5_PART_WAIT_ATTEMPTS
 sh-var scripts/ci/s5-phase.sh CI_SCRIPT_DIR
 sh-var scripts/ci/s5-phase.sh CI_TMP_ROOT
 sh-var scripts/ci/upstream-watch.sh CI_AUTO_FAILED_STAGE
@@ -2018,7 +2021,7 @@ yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.image = ${{ steps.disk.
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.initramfs = ${{ steps.initramfs.outputs.initramfs_path }}
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.judge-prefix = ""
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.mode = uefi-disk
-yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.stop-pattern = '^(S5-UPGRADE-DONE|ab-boot: stage=boot result=fail|ab-commit: stage=healthcheck-done .*result=fail)'
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.stop-pattern = '^(ab-commit: committed slot=|ab-commit: abandoned slot=|ab-commit: stage=commit .*result=fail|ab-commit: stage=preflight .*result=fail|ab-commit: stage=healthcheck-done .*result=fail|ab-boot: stage=boot result=fail)'
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[13].with.timeout = "1200"
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[14].env = 
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[14].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}

@@ -34,11 +34,11 @@
 #   S7  releasefeeds each version installed from its own release's feeds, then a jump, then
 #                    a version and ABI snapshot diff -- and the feed list's own verdict.
 #   S8  badconfig    four broken configurations -- a network section naming a device that
-#                    does not exist, a firewall rule that cannot be translated, a truncated
-#                    docker daemon.json and a package feed that answers 404. Each one is
-#                    backed up before it is written, and each one has to end with the
-#                    machine still whole, the change refused or visibly degraded, and the
-#                    backup back in place, byte for byte.
+#                    does not exist, a firewall rule with invalid options (which fw4 warns
+#                    about and skips), a truncated docker daemon.json and a package feed that
+#                    answers 404. Each one is backed up before it is written, and each one has
+#                    to end with the machine still whole, the change refused or visibly
+#                    degraded, and the backup back in place, byte for byte.
 #
 #   scripts/device/scenarios.sh                       # S1..S8
 #   scripts/device/scenarios.sh --case S3 --case S4    # the two jumps
@@ -109,12 +109,15 @@
 # with a text editor gets /etc/config/firewall wrong far more often than an upgrade does: is
 # a wrong file refused, does the machine stay reachable while it is wrong, and is there a
 # recorded way back? The four classes are the four ways a machine can be told something
-# untrue -- a network section that names a device nothing has, a firewall rule that cannot be
-# translated, a docker config that is not JSON, and a package feed that answers 404 -- and the
+# untrue -- a network section that names a device nothing has, a firewall rule with invalid
+# options, a docker config that is not JSON, and a package feed that answers 404 -- and the
 # three things that make the answer worth reading: the refusal (or the visible degradation) is
 # witnessed on the machine rather than assumed from an exit status, the machine is still a
-# machine afterwards (ab-slot status, boot=ok, esp=ok, two ssh answers), and the recovery
-# record says where the backup is and who put it back.
+# machine afterwards (ab-slot status, boot=ok, esp=ok, data=ok, two ssh answers), and the
+# recovery record says where the backup is and who put it back. "Refused" is read per class:
+# netifd cannot create a link that is not there, fw4 drops the section it cannot read and the
+# rendered ruleset is where that is visible, dockerd stops answering, and apk cannot refresh
+# an index that is not there -- the exit status of the tool is never the whole answer.
 #
 # Why the network class reuses S2's net-apply and net-rollback instead of its own revert: the
 # rollback machinery is the one thing here that cannot be re-tested for free. If S8 grew a
@@ -124,9 +127,23 @@
 #
 # Why the firewall class never reloads the broken ruleset: `fw4 check` parses and translates
 # without touching the running ruleset, and a bad rule pushed to a live firewall is how a
-# test takes its own session away. The check is the refusal witness; the *restored* config is
-# then reloaded, which is what proves "the configuration is still parseable" -- and is itself
-# the second half of the judgement, because a restore that cannot be applied is not a restore.
+# test takes its own session away. fw4's fail-safe semantics are the reason the exit status
+# is not the witness: on the 25.x line `fw4 check` warns ("option 'dest_port' specifies
+# invalid value 'not-a-port'", "skipped due to invalid options") and still exits 0, because
+# the tool drops the section instead of rejecting the whole file -- measured for
+# dest_port=not-a-port, for target=AB-BOGUS, and for both together; all three answer
+# "Ruleset passes nftables check." That is fail-safe, not fail-open: the machine is not
+# locked out by a wrong rule. So the witnesses are the two facts that separate "adopted"
+# from "refused": the broken rule does *not* appear in the ruleset the file renders to
+# (`fw4 print`), and the check output carries the warning that explains the skip -- while
+# the check's own rc is recorded as the fact it is (0), never dressed up as a refusal. The
+# *restored* config is then reloaded, which is what proves "the configuration is still
+# parseable" -- and is itself the second half of the judgement, because a restore that
+# cannot be applied is not a restore. A rendered ruleset that contains the rule is a FAIL
+# (the tool adopted what it should have dropped); a machine that stops answering is a FAIL;
+# a rule that is skipped with a warning is a PASS. An older image may carry fw3 instead,
+# which has no `check` subcommand at all: there the rendered ruleset is the only witness and
+# the class says so, rather than reading a usage message as a verdict.
 #
 # Why the docker class accepts "docker is unavailable" as a pass: dockerd refusing to start on
 # a file that is not JSON is the daemon protecting the system, and the machine on these images
@@ -134,6 +151,21 @@
 # things and no more: the daemon did not come up on the broken file, the router is unaffected,
 # and the backup brought the daemon back (or the image has no docker at all, which is a
 # FINDING and named as such).
+#
+# Why `pidof dockerd` is not the docker class's witness, and `docker info` is: procd re-spawns
+# a dockerd that died, so `pidof` keeps answering while the daemon is unusable -- measured on
+# a truncated daemon.json: restart_rc=0, pidof still returns a pid, and `docker info` answers
+# rc=1 with "unable to configure the Docker daemon with file /tmp/dockerd/daemon.json:
+# unexpected end of JSON input" in logread. The process existing says nothing; the API
+# answering does. The witness therefore has a *timing*: dockerd takes three to four seconds
+# after a restart before `docker info` succeeds, and a single call made immediately after the
+# restart reads a healthy daemon as broken. `docker info` is asked several times, about a
+# second apart (SCEN_S8_DOCKER_TRIES/PAUSE, retried inside the helper so one ssh call is one
+# observation), and only a run where every attempt fails counts as the degradation. The
+# class then passes if (a) the daemon stays unusable while the file is broken but the machine
+# is otherwise whole, or (b) the daemon tolerated the file -- recorded as a FINDING -- and
+# re-answering after the restore with the same image count is what "it came back" means; a
+# daemon that is still unusable after the restore is a FAIL.
 #
 # Why the 404 class proves the restore with a second apk update: one failed fetch says nothing
 # about whether the feed list or the network is at fault. Only a run where the bogus list fails
@@ -296,6 +328,13 @@ SCEN_S8_BADNET_PROTO=${AB_SCEN_S8_BADNET_PROTO:-ab-scen-badproto}
 # The docker config S8 truncates. It is a file the image ships once docker is enabled; when it
 # is absent there is nothing to break, and the class says so instead of inventing one.
 SCEN_S8_DOCKER=${AB_SCEN_S8_DOCKER:-/etc/docker/daemon.json}
+# How often, and how far apart, the docker class asks `docker info`. dockerd needs three to
+# four seconds after a restart before its API answers, so a single call reads a healthy
+# daemon as a broken one (measured: restart_rc=0 and pidof answering while docker info is
+# still rc=1). Four tries a second apart covers that window without hiding a daemon that is
+# really gone.
+SCEN_S8_DOCKER_TRIES=${AB_SCEN_S8_DOCKER_TRIES:-4}
+SCEN_S8_DOCKER_PAUSE=${AB_SCEN_S8_DOCKER_PAUSE:-1}
 # The feed that answers 404: a release path that does not exist on the mirror the releases
 # come from. A closed port would be indistinguishable from a machine with no network, and
 # telling those two apart is the whole point of the second apk update in that class.
@@ -717,6 +756,17 @@ cmd_hash() {
       done )
 }
 
+# cmd_hash_file <path>...: one digest per path, in the order asked, with the tool named.
+# The restore comparison asks for the backup and the file it was copied back to: two digests
+# from the same tool on the same machine are what "byte-identical" means there, and they cost
+# one ssh call rather than a whole file travelling back over the connection.
+cmd_hash_file() {
+    _hf_tool=$(hash_tool)
+    for _hf_f in "$@"; do
+        say "hash-file tool=${_hf_tool} file=${_hf_f} sum=$(hash_of "${_hf_f}")"
+    done
+}
+
 # cmd_tartest <file>...: a tar a user keeps must still be readable as a tar.
 cmd_tartest() {
     for _f in "$@"; do
@@ -816,24 +866,54 @@ cmd_cfg_fw() {
     say "fwrule=${_name} target=$(uci -q get "firewall.@rule[-1].target" 2>/dev/null) commit_rc=${_rc}"
 }
 
+# badcfg_need <count> <usage> <argument>...: the arguments after the class name are
+# mandatory, and a missing one is a usage error -- never a default value. The helper runs
+# under `set -u`, so a branch that reads $3 when only $2 was passed aborts the whole script
+# with "3: parameter not set": stdout ends up empty and the host can only read that as "the
+# helper is unavailable", which is how a caller bug in this very function was once filed as
+# a device defect. The class name is already consumed by the dispatcher, so the first
+# class-specific argument is $1 here.
+badcfg_need() {
+    _bn_want=$1
+    _bn_usage=$2
+    shift 2
+    [ "$#" -ge "${_bn_want}" ] || {
+        say "badcfg=${_bc_cls} rc=2 err=usage want=${_bn_usage} got=$#"
+        return 2
+    }
+    for _bn_arg in "$@"; do
+        [ -n "${_bn_arg}" ] || {
+            say "badcfg=${_bc_cls} rc=2 err=usage empty-argument want=${_bn_usage}"
+            return 2
+        }
+    done
+    return 0
+}
+
 # cmd_badcfg <class> ...: write one broken configuration (S8) and report what the machine
 # records about it. Nothing is reloaded here: the network class is reloaded by net-apply (the
-# same call S2 makes, watchdog included) and the other classes are only *checked*, because a
+# same call S2 makes, watchdog included) and the other classes are only *read*, because a
 # broken ruleset or a broken daemon config pushed live is how a test takes its own session
 # away. Every class prints one `badcfg=` line; the host compares the values in it.
 #   network <name> <device> <proto>  an interface naming a link that does not exist
-#   firewall <name>                  a rule whose destination port is not a port
+#   firewall <name>                  a rule whose destination port and target are wrong
 #   docker <path>                    a daemon.json that is not JSON
 #   apk <path> <url>                 a feed list naming a release that is not there
+# The class name is shifted off by the dispatcher before this function is called, so each
+# branch indexes from $1 and checks its own arity: `badcfg docker <path>` must never be read
+# as if the path were the third argument.
 # The paths come from the host, not from the helper's environment: the helper is a separate
 # script run through ssh, so a variable set on the host never reaches it.
 cmd_badcfg() {
     _bc_cls=${1:-}
-    _bc_name=${2:-}
+    [ -n "${_bc_cls}" ] || { say "badcfg=none rc=2 err=usage class-required"; return 2; }
+    shift
     case "${_bc_cls}" in
         network)
-            _bc_dev=${3:-ab-scen-nosuch0}
-            _bc_proto=${4:-ab-scen-badproto}
+            badcfg_need 3 "network <name> <device> <proto>" "$@" || return 2
+            _bc_name=$1
+            _bc_dev=$2
+            _bc_proto=$3
             uci set "network.${_bc_name}=interface" 2>/dev/null
             uci set "network.${_bc_name}.device=${_bc_dev}" 2>/dev/null
             uci set "network.${_bc_name}.proto=${_bc_proto}" 2>/dev/null
@@ -847,6 +927,8 @@ cmd_badcfg() {
             say "badcfg=network name=${_bc_name} device=$(uci -q get "network.${_bc_name}.device" 2>/dev/null) proto=$(uci -q get "network.${_bc_name}.proto" 2>/dev/null) commit_rc=${_bc_rc} parse=${_bc_parse}"
             ;;
         firewall)
+            badcfg_need 1 "firewall <name>" "$@" || return 2
+            _bc_name=$1
             # `uci add` prints the section name it made; the host uses it after the restore
             # to ask whether the rule is really gone.
             _bc_sec=$(uci add firewall rule 2>/dev/null)
@@ -861,15 +943,17 @@ cmd_badcfg() {
             say "badcfg=firewall name=${_bc_name} sec=${_bc_sec:-none} dest_port=$(uci -q get "firewall.${_bc_sec}.dest_port" 2>/dev/null) target=$(uci -q get "firewall.${_bc_sec}.target" 2>/dev/null) commit_rc=${_bc_rc} parse=${_bc_parse}"
             ;;
         docker)
-            _bc_path=$3
+            badcfg_need 1 "docker <path>" "$@" || return 2
+            _bc_path=$1
             mkdir -p "$(dirname "${_bc_path}")" 2>/dev/null
             printf '{\n  "log-driver": "json-file",\n  "log-opts": {\n' >"${_bc_path}"
             _bc_rc=$?
             say "badcfg=docker file=${_bc_path} write_rc=${_bc_rc} bytes=$(wc -c <"${_bc_path}" 2>/dev/null | tr -d ' ')"
             ;;
         apk)
-            _bc_path=$3
-            _bc_url=$4
+            badcfg_need 2 "apk <path> <url>" "$@" || return 2
+            _bc_path=$1
+            _bc_url=$2
             mkdir -p "$(dirname "${_bc_path}")" 2>/dev/null
             printf '%s\n' "${_bc_url}" >"${_bc_path}"
             _bc_rc=$?
@@ -881,6 +965,77 @@ cmd_badcfg() {
             ;;
     esac
     return 0
+}
+
+# cmd_fw_witness <tool> <marker>...: what the firewall tool says about the file, without
+# pushing it live. Three facts, and the last one is the one that decides adoption:
+#   fw-check tool=<tool> rc=<rc> lines=<n>   and one fw-check-out= line per output line
+#   fw-print tool=<tool> rc=<rc> lines=<n>   the ruleset the configuration renders to
+#   fw-print-marker marker=<m> hits=<n>      whether <m> appears in that ruleset
+# fw4 on the 25.x line warns about an invalid uci option and *skips the section*: the check
+# still exits 0 and the rendered ruleset simply does not contain the rule (measured for
+# dest_port=not-a-port, for target=AB-BOGUS, and for both together). The exit status
+# therefore says nothing about whether a rule was adopted, and the print is the witness.
+cmd_fw_witness() {
+    _fw_tool=${1:-}
+    [ -n "${_fw_tool}" ] || { say "fw-witness rc=2 err=usage tool-required"; return 2; }
+    shift
+    _fw_chk_file=/tmp/ab-scen-fw-check.out
+    _fw_pr_file=/tmp/ab-scen-fw-print.out
+    _fw_pr_err=/tmp/ab-scen-fw-print.err
+    "${_fw_tool}" check >"${_fw_chk_file}" 2>&1
+    _fw_chk_rc=$?
+    say "fw-check tool=${_fw_tool} rc=${_fw_chk_rc} lines=$(wc -l <"${_fw_chk_file}" 2>/dev/null | tr -d ' ')"
+    # The warning is the evidence, so the output travels with it; the cap keeps a tool
+    # that prints a whole translation table from filling the ssh answer.
+    sed -n '1,20p' "${_fw_chk_file}" 2>/dev/null | sed -e 's/^/fw-check-out=/'
+    # stdout is the rendered ruleset and stderr is the warnings: they are kept apart, because
+    # a warning that happens to name the broken value must not be mistaken for the rule being
+    # present in the ruleset.
+    "${_fw_tool}" print >"${_fw_pr_file}" 2>"${_fw_pr_err}"
+    _fw_pr_rc=$?
+    say "fw-print tool=${_fw_tool} rc=${_fw_pr_rc} lines=$(wc -l <"${_fw_pr_file}" 2>/dev/null | tr -d ' ') warned=$(wc -l <"${_fw_pr_err}" 2>/dev/null | tr -d ' ')"
+    for _fw_m in "$@"; do
+        _fw_hits=$(grep -c -F -- "${_fw_m}" "${_fw_pr_file}" 2>/dev/null)
+        [ -n "${_fw_hits}" ] || _fw_hits=0
+        say "fw-print-marker marker=${_fw_m} hits=${_fw_hits}"
+    done
+    return 0
+}
+
+# cmd_dockerinfo <tries> <pause>: ask the daemon whether it is really serving, more than
+# once. dockerd needs three to four seconds after a restart before its API answers, so a
+# single `docker info` right after the restart reads a healthy daemon as broken (measured on
+# the 25.x line: restart_rc=0, pidof still answers, docker info rc=1 for a few seconds and
+# then rc=0; the log says "unexpected end of JSON input" in between). The retries live here
+# so the host makes one ssh call per observation instead of four.
+# One line per attempt, then one summary line the host judges:
+#   docker-info attempts=<n> up=yes|no rc=<last rc> images=<count|na>
+cmd_dockerinfo() {
+    _di_tries=${1:-4}
+    _di_pause=${2:-1}
+    _di_n=0
+    _di_rc=1
+    _di_out=/tmp/ab-scen-dockerinfo.out
+    while [ "${_di_n}" -lt "${_di_tries}" ]; do
+        _di_n=$((_di_n + 1))
+        docker info >"${_di_out}" 2>&1
+        _di_rc=$?
+        say "docker-info attempt=${_di_n} rc=${_di_rc} out=$(sed -n '1p' "${_di_out}" 2>/dev/null | cut -c1-100)"
+        [ "${_di_rc}" -eq 0 ] && break
+        [ "${_di_n}" -lt "${_di_tries}" ] && sleep "${_di_pause}"
+    done
+    _di_up=no
+    [ "${_di_rc}" -eq 0 ] && _di_up=yes
+    # The image count is what "the daemon came back" means beyond "it answers": a daemon
+    # that starts empty is a daemon the class did not restore. Counted only while it is up;
+    # `docker images -q` against a dead daemon prints nothing and would read as "zero".
+    _di_imgs=na
+    if [ "${_di_up}" = yes ]; then
+        _di_imgs=$(docker images -q 2>/dev/null | wc -l | tr -d ' ')
+        [ -n "${_di_imgs}" ] || _di_imgs=na
+    fi
+    say "docker-info attempts=${_di_n} up=${_di_up} rc=${_di_rc} images=${_di_imgs}"
 }
 
 # cmd_net_apply <bakdir> <grace>: the destructive half of S2.
@@ -1107,7 +1262,7 @@ cmd_boottools() {
 }
 
 _cmd=${1:-}
-[ -n "${_cmd}" ] || { say "usage: ab-scen-helper.sh <probe|mkdirs|pkginstall|pkgsnap|pkgcheck|pkgcycle|kmodcheck|exec|seed|hash|tartest|cfg-*|badcfg|net-*|overlay-probe|svc-cycle|boottools>"; exit 2; }
+[ -n "${_cmd}" ] || { say "usage: ab-scen-helper.sh <probe|mkdirs|pkginstall|pkgsnap|pkgcheck|pkgcycle|kmodcheck|exec|seed|hash|hash-file|tartest|cfg-*|badcfg|fw-witness|docker-info|net-*|overlay-probe|svc-cycle|boottools>"; exit 2; }
 shift
 case "${_cmd}" in
     probe) cmd_probe ;;
@@ -1120,6 +1275,7 @@ case "${_cmd}" in
     exec) cmd_exec "$@" ;;
     seed) cmd_seed "$@" ;;
     hash) cmd_hash "$@" ;;
+    hash-file) cmd_hash_file "$@" ;;
     tartest) cmd_tartest "$@" ;;
     cfg-backup) cmd_cfg_backup "$@" ;;
     cfg-write) cmd_cfg_write "$@" ;;
@@ -1128,6 +1284,8 @@ case "${_cmd}" in
     cfg-fw) cmd_cfg_fw "$@" ;;
     cfg-read) cmd_cfg_read "$@" ;;
     badcfg) cmd_badcfg "$@" ;;
+    fw-witness) cmd_fw_witness "$@" ;;
+    docker-info) cmd_dockerinfo "$@" ;;
     net-apply) cmd_net_apply "$@" ;;
     net-confirm) cmd_net_confirm ;;
     net-rollback) cmd_net_rollback "$@" ;;
@@ -3039,6 +3197,26 @@ s8_restore_ok() {
         ev "S8 restore: cp $2 $1 failed (${_s8r_cp:-no answer}); put it back by hand"
         return 1
     fi
+    # Two independent comparisons, because "the backup came back" and "the bytes that were
+    # there came back" are not the same claim: the machine hashes the backup against the file
+    # it was copied to (same tool, same machine, one ssh call), and the host compares the
+    # collected file with the bytes collected before the class started changing anything.
+    _s8r_h=$(scen hash-file "$2" "$1" 2>/dev/null)
+    _s8r_sum_bak=$(printf '%s\n' "${_s8r_h}" | sed -n 's/.* sum=\([^ ]*\).*/\1/p' | sed -n '1p')
+    _s8r_sum_file=$(printf '%s\n' "${_s8r_h}" | sed -n 's/.* sum=\([^ ]*\).*/\1/p' | sed -n '2p')
+    _s8r_tool=$(kv "$(printf '%s\n' "${_s8r_h}" | head -n 1)" tool)
+    if [ -n "${_s8r_sum_bak}" ] && [ -n "${_s8r_sum_file}" ] \
+        && [ "${_s8r_sum_bak}" != "none" ] && [ "${_s8r_sum_file}" != "none" ]; then
+        if [ "${_s8r_sum_bak}" != "${_s8r_sum_file}" ]; then
+            ev "S8 restore: $1 does not match the backup by ${_s8r_tool} (${_s8r_sum_file} vs ${_s8r_sum_bak})"
+            return 1
+        fi
+        ev "S8 restore: $1 matches ${2} by ${_s8r_tool} (${_s8r_sum_file})"
+    else
+        # No digest tool on the machine: the host-side comparison below is the reduction,
+        # and the fact that the machine could not hash is said out loud.
+        ev "S8 restore: no digest tool on the machine (hash=${_s8r_tool:-none}), so the comparison is host-side only"
+    fi
     if ! dev_collect "$1" "$3.after"; then
         ev "S8 restore: $1 is not readable after the restore"
         return 1
@@ -3065,11 +3243,12 @@ s8_notjudged() {
 }
 
 # s8_intact <class>: the machine is still a machine while the configuration is broken.
-# ab-slot status readable, boot=ok and esp=ok on it, and two consecutive ssh answers
-# (ssh_alive) -- "ssh answered once" is exactly the reading that hides a half-applied change.
-# The package fields are printed as facts and not judged here: S8's question is whether the
-# machine survives a wrong file, and `packages=limited` is a degradation ab-slot records, not
-# a crash. What a jump leaves behind is a different question, asked in scen_hop.
+# ab-slot status readable, boot=ok, esp=ok and data=ok on it (the user's data is still
+# mounted), and two consecutive ssh answers (ssh_alive) -- "ssh answered once" is exactly the
+# reading that hides a half-applied change. The package fields are printed as facts and not
+# judged here: S8's question is whether the machine survives a wrong file, and
+# `packages=limited` is a degradation ab-slot records, not a crash. What a jump leaves behind
+# is a different question, asked in scen_hop.
 s8_intact() {
     _s8i_cls=$1
     _s8i_line=$(dev_status) || _s8i_line=""
@@ -3080,11 +3259,12 @@ s8_intact() {
     AB_STATUS_LINE=${_s8i_line}
     _check assert_field boot ok "${_case}"
     _check assert_field esp ok "${_case}"
+    _check assert_field data ok "${_case}"
     if ! ssh_alive; then
         _fail "${_case}" "${_s8i_cls}: ssh stopped answering while the broken configuration was in place"
         return 1
     fi
-    ev "S8 ${_s8i_cls}: machine intact -- boot=$(status_field "${_s8i_line}" boot || printf '?') esp=$(status_field "${_s8i_line}" esp || printf '?') packages=$(status_field "${_s8i_line}" packages || printf '?') packages_reason=$(status_field "${_s8i_line}" packages_reason || printf '?')"
+    ev "S8 ${_s8i_cls}: machine intact -- boot=$(status_field "${_s8i_line}" boot || printf '?') esp=$(status_field "${_s8i_line}" esp || printf '?') data=$(status_field "${_s8i_line}" data || printf '?') packages=$(status_field "${_s8i_line}" packages || printf '?') packages_reason=$(status_field "${_s8i_line}" packages_reason || printf '?')"
     return 0
 }
 
@@ -3195,13 +3375,20 @@ s8_net() {
     return 0
 }
 
-# s8_fw <stamp>: the firewall class. A rule whose destination port is not a port. fw4's own
-# check is the refusal witness and the broken ruleset is never pushed live -- a bad rule
-# reloaded is how a test takes its own session away. After the restore the *restored* ruleset
-# is checked and reloaded, which is what "the configuration is still parseable" has to mean.
+# s8_fw <stamp>: the firewall class. A rule whose destination port is not a port and whose
+# target is not a target. The broken ruleset is never reloaded -- a bad rule pushed to a live
+# firewall is how a test takes its own session away -- so the class asks the tool what the
+# file renders to, and judges adoption rather than the tool's exit status:
+#   * the rule must NOT appear in the rendered ruleset (`fw4 print`): it was skipped;
+#   * the check's output must carry the warning that explains the skip;
+#   * the check's rc is recorded as the fact it is (0 on this line), never as a refusal;
+#   * the restore must be byte-identical, the restored ruleset must check clean and reload,
+#     and the machine must still answer ssh twice.
+# A rule that was adopted, or a machine that stopped answering, is a FAIL. The semantics that
+# make this the right witness are in the file header (fw4 fails safe: it warns and skips).
 s8_fw() {
     _cls=firewall
-    _s8_outcome="firewall: refused by the check, restored"
+    _s8_outcome="firewall: skipped by the tool (not adopted), restored"
     _bak=$(s8_bak_dir firewall "$1")
     _orig="${_tmp}/s8-firewall-original"
     if ! s8_backup "${_cls}" "${_bak}" /etc/config/firewall; then
@@ -3222,26 +3409,75 @@ s8_fw() {
         || _fail "${_case}" "firewall: /etc/config/firewall stopped parsing after the broken rule (parse=$(kv "${_bad}" parse))"
     _sec=$(kv "${_bad}" sec)
 
-    # fw4 on the 25.x line, fw3 on the older images; either answers `check`, and a tool that is
-    # not there answers 127, which is how the class knows it cannot witness the refusal here.
+    # The two markers the rendered ruleset would carry if the rule had been adopted: the
+    # bogus target, and the name of the section we added (fw4 prints section names as
+    # comments on the rules it builds). Neither may appear.
+    _markers="AB-BOGUS ${SCEN_S8_UCI}fw"
     _tool=fw4
-    _chk=$(scen exec fw4 check 2>/dev/null | grep '^cmd=' | head -n 1)
-    if [ "$(kv "${_chk}" rc)" = "127" ]; then
+    _wit=$(scen fw-witness "${_tool}" ${_markers} 2>/dev/null)
+    _chk_rc=$(kv "$(printf '%s\n' "${_wit}" | grep '^fw-check ' | head -n 1)" rc)
+    # fw3 is what the older images carry; a tool that is not there answers 127, which is how
+    # the class knows it cannot witness anything on this machine.
+    if [ "${_chk_rc}" = "127" ]; then
         _tool=fw3
-        _chk=$(scen exec fw3 check 2>/dev/null | grep '^cmd=' | head -n 1)
+        _wit=$(scen fw-witness "${_tool}" ${_markers} 2>/dev/null)
+        _chk_rc=$(kv "$(printf '%s\n' "${_wit}" | grep '^fw-check ' | head -n 1)" rc)
     fi
-    if [ "$(kv "${_chk}" rc)" = "127" ]; then
+    if [ "${_chk_rc}" = "127" ]; then
         if ! s8_restore_ok /etc/config/firewall "${_bak}/_etc_config_firewall.bak" "${_orig}"; then
             _fail "${_case}" "firewall: /etc/config/firewall is not byte-identical to ${_bak}/_etc_config_firewall.bak after the restore"
         fi
         s8_notjudged "${_cls}" "${_bak}" "this image has neither fw4 nor fw3, so a ruleset cannot be checked without pushing it to the live firewall" "host"
         return 2
     fi
-    if [ "$(kv "${_chk}" rc)" = "0" ]; then
-        _fail "${_case}" "firewall: ${_tool} check accepted a rule with dest_port=not-a-port and target=AB-BOGUS"
-        _s8_outcome="firewall: ${_tool} check accepted the broken rule"
+
+    # The tool's own words. fw4 exits 0 here, so the status is recorded as it is and the
+    # warning is what carries the explanation.
+    _chk_text=$(printf '%s\n' "${_wit}" | sed -n 's/^fw-check-out=//p' | tr '\n' '|')
+    _warn=no
+    case "${_chk_text}" in
+        *'skipped due to invalid options'* | *'invalid value'* | *'invalid option'*) _warn=yes ;;
+    esac
+    # fw4 answers `check`; the older fw3 does not (its usage is `{start|stop|flush|restart|
+    # print}`), so on such an image there is no warning witness -- only the rendered ruleset.
+    _has_check=yes
+    [ "${_tool}" = "fw3" ] && _has_check=no
+    case "${_chk_text}" in
+        *Usage:* | *usage:*) _has_check=no ;;
+    esac
+    ev "S8 firewall: ${_tool} check rc=${_chk_rc:-none} with the broken rule in the file -- output: ${_chk_text:-none}"
+
+    # Adoption is the rendered ruleset, not the check: `fw4 print` on this line omits a
+    # section it skipped and would carry an adopted rule (and its name) if it took one.
+    _pr_rc=$(kv "$(printf '%s\n' "${_wit}" | grep '^fw-print ' | head -n 1)" rc)
+    _pr_lines=$(kv "$(printf '%s\n' "${_wit}" | grep '^fw-print ' | head -n 1)" lines)
+    case "${_pr_lines}" in '' | *[!0-9]*) _pr_lines=0 ;; esac
+    _hits=$(printf '%s\n' "${_wit}" | awk -F'hits=' '/^fw-print-marker / { s += $2 } END { print s + 0 }')
+    if [ "${_pr_lines}" -eq 0 ] || [ "${_pr_rc}" != "0" ]; then
+        # No rendering means adoption could not be witnessed, and a class that cannot see
+        # the rule is not allowed to claim it was refused. `fw4 print` exits 0 while it
+        # renders (the skipped section only produces a warning), so a non-zero status here
+        # is a tool that could not render, not a tool that rejected the file.
+        if s8_restore_ok /etc/config/firewall "${_bak}/_etc_config_firewall.bak" "${_orig}"; then
+            ev "S8 firewall: /etc/config/firewall restored from ${_bak}"
+        else
+            _fail "${_case}" "firewall: /etc/config/firewall is not byte-identical to ${_bak}/_etc_config_firewall.bak after the restore"
+        fi
+        s8_notjudged "${_cls}" "${_bak}" "${_tool} print rendered nothing (rc=${_pr_rc:-none}), so whether the broken rule was adopted could not be witnessed" "host"
+        return 2
+    fi
+    if [ "${_hits}" -gt 0 ]; then
+        _fail "${_case}" "firewall: the broken rule is in the rendered ruleset (${_tool} print names ${_markers}), so the tool adopted a rule it should have skipped"
+        _s8_outcome="firewall: the broken rule was adopted into the rendered ruleset"
     else
-        ev "S8 firewall: ${_tool} check refused the broken rule (rc=$(kv "${_chk}" rc): $(printf '%s' "${_chk}" | sed -n 's/.* out=//p'))"
+        ev "S8 firewall: the broken rule was not adopted -- ${_tool} print (${_pr_lines} lines) names neither AB-BOGUS nor ${SCEN_S8_UCI}fw"
+    fi
+    if [ "${_warn}" = yes ]; then
+        ev "S8 firewall: ${_tool} warns and skips the rule instead of rejecting the file (check rc=${_chk_rc}; the exit status is not the witness)"
+    elif [ "${_has_check}" = yes ]; then
+        _finding "S8 firewall: ${_tool} check answered rc=${_chk_rc:-none} without a 'skipped due to invalid options' line, so the rule was dropped without saying why"
+    else
+        ev "S8 firewall: ${_tool} has no check subcommand, so this image has no warning witness; the rendered ruleset is still what decides adoption"
     fi
 
     # The restore happens before the "is the machine still whole" verdict is returned: a
@@ -3265,12 +3501,22 @@ s8_fw() {
             _s8_outcome="firewall: the broken rule survived the restore"
         fi
     fi
-    _chk2=$(scen exec "${_tool}" check 2>/dev/null | grep '^cmd=' | head -n 1)
-    if [ "$(kv "${_chk2}" rc)" = "0" ]; then
-        ev "S8 firewall: the restored ruleset translates again (${_tool} check rc=0)"
+    if [ "${_has_check}" = yes ]; then
+        _chk2=$(scen exec "${_tool}" check 2>/dev/null | grep '^cmd=' | head -n 1)
+        if [ "$(kv "${_chk2}" rc)" = "0" ]; then
+            ev "S8 firewall: the restored ruleset translates again (${_tool} check rc=0)"
+        else
+            _fail "${_case}" "firewall: the restored ruleset does not translate (${_tool} check rc=$(kv "${_chk2}" rc): $(printf '%s' "${_chk2}" | sed -n 's/.* out=//p'))"
+            _s8_outcome="firewall: the restored ruleset does not translate"
+        fi
     else
-        _fail "${_case}" "firewall: the restored ruleset does not translate (${_tool} check rc=$(kv "${_chk2}" rc): $(printf '%s' "${_chk2}" | sed -n 's/.* out=//p'))"
-        _s8_outcome="firewall: the restored ruleset does not translate"
+        _chk2=$(scen exec "${_tool}" print 2>/dev/null | grep '^cmd=' | head -n 1)
+        if [ "$(kv "${_chk2}" rc)" = "0" ]; then
+            ev "S8 firewall: the restored ruleset renders again (${_tool} print rc=0; this image has no check subcommand)"
+        else
+            _fail "${_case}" "firewall: the restored ruleset does not render (${_tool} print rc=$(kv "${_chk2}" rc))"
+            _s8_outcome="firewall: the restored ruleset does not render"
+        fi
     fi
     _rl=$(scen exec /etc/init.d/firewall reload 2>/dev/null | grep '^cmd=' | head -n 1)
     if [ "$(kv "${_rl}" rc)" = "0" ]; then
@@ -3279,24 +3525,29 @@ s8_fw() {
         _fail "${_case}" "firewall: the restored ruleset does not reload (rc=$(kv "${_rl}" rc))"
         _s8_outcome="firewall: the restored ruleset does not reload"
     fi
-    s8_record "${_cls}" "${_bak}" "host (cp from the backup, then /etc/init.d/firewall reload)" "refused by ${_tool} check, restored (${_restored})"
+    s8_record "${_cls}" "${_bak}" "host (cp from the backup, then /etc/init.d/firewall reload)" \
+        "not adopted (${_tool} check rc=${_chk_rc:-none} with a warning, the rule absent from ${_tool} print), restored (${_restored})"
     [ "${_intact}" = "1" ] || return 1
     s8_intact "${_cls}" || return 1
     return 0
 }
 
-# s8_docker <stamp>: the docker class. A daemon.json that is not JSON. dockerd refusing to
-# come up on it is the daemon protecting the system, and on these images the machine is a
-# router that also carries docker, so "docker is unavailable for as long as the file is
-# broken" is the expected degradation and not a failure of the machine. What is asserted:
-# the daemon did not come up on the broken file, the router is unaffected, and the backup
-# brought the daemon back.
+# s8_docker <stamp>: the docker class. A daemon.json that is not JSON. The witness is
+# `docker info`, never `pidof dockerd`: procd re-spawns a dead dockerd, so the pid survives a
+# daemon that cannot serve a single request (measured on a truncated daemon.json: restart
+# rc=0, pidof answers, docker info rc=1, logread says "unexpected end of JSON input"). The
+# other half of that timing: dockerd needs three to four seconds before the API answers, so
+# `docker info` is retried (SCEN_S8_DOCKER_TRIES, a second apart) -- one call right after the
+# restart would read a healthy daemon as broken. What is asserted: the daemon keeps failing
+# while the file is broken (or tolerated it, which is a FINDING), the router is unaffected,
+# and the backup brings the daemon back with the same image count.
 s8_docker() {
     _cls=docker
     _s8_outcome="docker: daemon unavailable on the broken file, restored and running"
     _s8d_outcome="daemon unavailable while the file was broken, restored and running again"
     _bak=$(s8_bak_dir docker "$1")
     _orig="${_tmp}/s8-docker-original"
+    _bakfile="${_bak}/$(printf '%s' "${SCEN_S8_DOCKER}" | sed -e 's|^/|_|' -e 's|/|_|g').bak"
     if ! s8_backup "${_cls}" "${_bak}" "${SCEN_S8_DOCKER}"; then
         s8_notjudged "${_cls}" "${_bak}" "${SCEN_S8_DOCKER} is not on this machine: docker is not configured here, so there is no daemon config to break"
         return 2
@@ -3311,52 +3562,78 @@ s8_docker() {
         return 2
     fi
 
+    # Whether the daemon answers *before* anything is broken. One call, no retries: this is
+    # the machine's state, not the few seconds after a restart. A daemon that is already
+    # unusable cannot witness this class, and blaming the truncated file for it would be a
+    # false arrest.
+    _base_raw=$(scen docker-info 1 0 2>/dev/null)
+    _base=$(printf '%s\n' "${_base_raw}" | grep '^docker-info attempts=' | head -n 1)
+    if [ "$(kv "${_base}" up)" != "yes" ]; then
+        s8_notjudged "${_cls}" "${_bak}" "docker does not answer 'docker info' before ${SCEN_S8_DOCKER} is touched (${_base:-no answer}), so a failure after the change could not be attributed to it"
+        return 2
+    fi
+    _imgs=$(kv "${_base}" images)
+    ev "S8 docker: daemon healthy before the broken file -- ${_base}"
+
     _bad=$(scen badcfg docker "${SCEN_S8_DOCKER}" 2>/dev/null | grep '^badcfg=' | head -n 1)
     case "${_bad}" in
         *write_rc=0*) ev "S8 docker: truncated daemon.json written -- ${_bad}" ;;
         *) _fail "${_case}" "docker: the truncated daemon.json could not be written (${_bad:-no answer})" ;;
     esac
     _rs=$(scen exec /etc/init.d/dockerd restart 2>/dev/null | grep '^cmd=' | head -n 1)
-    _cli=$(scen exec docker info 2>/dev/null | grep '^cmd=' | head -n 1)
     if [ "$(kv "${_rs}" rc)" = "127" ]; then
         # The binary is there but nothing can be told to restart it (no init script): the
         # degradation cannot be produced, so the file goes back and the class says so.
-        if ! s8_restore_ok "${SCEN_S8_DOCKER}" "${_bak}/$(printf '%s' "${SCEN_S8_DOCKER}" | sed -e 's|^/|_|' -e 's|/|_|g').bak" "${_orig}"; then
+        if ! s8_restore_ok "${SCEN_S8_DOCKER}" "${_bakfile}" "${_orig}"; then
             _fail "${_case}" "docker: ${SCEN_S8_DOCKER} is not byte-identical to the backup after the restore"
         fi
         s8_notjudged "${_cls}" "${_bak}" "there is no /etc/init.d/dockerd on this machine, so the daemon cannot be restarted onto the broken file" "host"
         return 2
     fi
-    _pid=$(scen exec pidof dockerd 2>/dev/null | grep '^cmd=' | head -n 1)
-    if [ "$(kv "${_pid}" rc)" = "0" ]; then
-        # The daemon is up with a file that is not JSON: either this image's init script does
-        # not read it, or the parse error is tolerated. Nothing is broken, so nothing is red --
-        # and the fact is reported, because "the daemon ignored it" is worth knowing.
-        _finding "S8 docker: dockerd is still running with a truncated daemon.json (restart rc=$(kv "${_rs}" rc)), so the degradation this class looks for could not be witnessed"
+
+    # The witness. Every attempt has to fail for the daemon to count as unusable; the retries
+    # are what keeps a daemon that needs a few seconds to answer from being read as broken.
+    _brk_raw=$(scen docker-info "${SCEN_S8_DOCKER_TRIES}" "${SCEN_S8_DOCKER_PAUSE}" 2>/dev/null)
+    _brk=$(printf '%s\n' "${_brk_raw}" | grep '^docker-info attempts=' | head -n 1)
+    if [ "$(kv "${_brk}" up)" = "yes" ]; then
+        # The daemon is answering with a file that is not JSON: either this image's init
+        # script does not read it, or the parse error is tolerated. Nothing is broken, so
+        # nothing is red -- and the fact is reported, because "the daemon ignored it" is
+        # worth knowing.
+        _finding "S8 docker: the daemon answered 'docker info' with a truncated daemon.json (restart rc=$(kv "${_rs}" rc); attempts=$(kv "${_brk}" attempts), images=$(kv "${_brk}" images)), so the degradation this class looks for could not be witnessed"
         _s8d_outcome="daemon tolerated the broken file (a FINDING, not a degradation)"
     else
-        ev "S8 docker: dockerd did not come up on the truncated daemon.json (restart rc=$(kv "${_rs}" rc): $(printf '%s' "${_rs}" | sed -n 's/.* out=//p')); docker is unavailable for as long as the file is broken (docker info rc=$(kv "${_cli}" rc))"
+        ev "S8 docker: docker info kept failing on the truncated daemon.json (restart rc=$(kv "${_rs}" rc); $(printf '%s' "${_brk_raw}" | tr '\n' ' ')) -- docker is unavailable for as long as the file is broken, the machine is not"
         _s8d_outcome="daemon unavailable while the file was broken, restored and running again"
     fi
 
     _intact=1
     s8_intact "${_cls}" || _intact=0
 
-    if s8_restore_ok "${SCEN_S8_DOCKER}" "${_bak}/$(printf '%s' "${SCEN_S8_DOCKER}" | sed -e 's|^/|_|' -e 's|/|_|g').bak" "${_orig}"; then
+    if s8_restore_ok "${SCEN_S8_DOCKER}" "${_bakfile}" "${_orig}"; then
         ev "S8 docker: ${SCEN_S8_DOCKER} is byte-identical to the backup again"
     else
         _fail "${_case}" "docker: ${SCEN_S8_DOCKER} is not byte-identical to the backup after the restore"
         _s8_outcome="docker: the restore is not byte-identical to ${_bak}"
         _s8d_outcome="the restore is not byte-identical to ${_bak}"
     fi
+
+    # "It came back" means the API answers again *and* the images are still there: a daemon
+    # that starts empty answered, but it is not the daemon the machine had. The same retry
+    # window applies, because this restart has the same three-to-four-second start-up.
     _rs2=$(scen exec /etc/init.d/dockerd restart 2>/dev/null | grep '^cmd=' | head -n 1)
-    _pid2=$(scen exec pidof dockerd 2>/dev/null | grep '^cmd=' | head -n 1)
-    if [ "$(kv "${_pid2}" rc)" = "0" ]; then
-        ev "S8 docker: dockerd is running again after the backup was restored"
-    else
-        _fail "${_case}" "docker: dockerd did not come back after ${SCEN_S8_DOCKER} was restored from the backup (restart rc=$(kv "${_rs2}" rc))"
-        _s8_outcome="docker: dockerd did not come back after the restore"
+    _aft_raw=$(scen docker-info "${SCEN_S8_DOCKER_TRIES}" "${SCEN_S8_DOCKER_PAUSE}" 2>/dev/null)
+    _aft=$(printf '%s\n' "${_aft_raw}" | grep '^docker-info attempts=' | head -n 1)
+    if [ "$(kv "${_aft}" up)" != "yes" ]; then
+        _fail "${_case}" "docker: docker info still fails after ${SCEN_S8_DOCKER} was restored from the backup (restart rc=$(kv "${_rs2}" rc); ${_aft:-no answer})"
+        _s8_outcome="docker: the daemon did not come back after the restore"
         _s8d_outcome="the daemon did not come back after the restore"
+    elif [ -n "${_imgs}" ] && [ "${_imgs}" != "na" ] && [ "$(kv "${_aft}" images)" != "${_imgs}" ]; then
+        _fail "${_case}" "docker: the image count changed across the class (before=${_imgs} after=$(kv "${_aft}" images)), so the daemon did not come back to what it was"
+        _s8_outcome="docker: the daemon came back with a different image set"
+        _s8d_outcome="the daemon came back with a different image set"
+    else
+        ev "S8 docker: docker info answers again after the backup was restored ($(printf '%s' "${_aft}" | tr '\n' ' '))"
     fi
     s8_record "${_cls}" "${_bak}" "host (cp from the backup, then /etc/init.d/dockerd restart)" "${_s8d_outcome}"
     [ "${_intact}" = "1" ] || return 1
@@ -3746,11 +4023,12 @@ plan_case() {
             printf '%s 1/4 network ssh-liveness expect=ssh answers; on silence: rollback and FAIL (the machine restores itself if the host cannot reach it)\n' "${_case}"
             printf '%s 1/4 network restore expect=/etc/config/network byte-identical to the backup after net-rollback, boot=ok esp=ok still\n' "${_case}"
             printf '%s 2/4 firewall cfg-backup /etc/config/firewall -> %s expect=1 of 1, else nothing is written\n' "${_case}" "${_s8_bak_root}"
-            printf '%s 2/4 firewall badcfg %sfw dest_port=not-a-port target=AB-BOGUS expect=commits, fw4 check refuses it, the file still parses\n' "${_case}" "${SCEN_S8_UCI}"
+            printf '%s 2/4 firewall badcfg %sfw dest_port=not-a-port target=AB-BOGUS expect=commits, the file still parses\n' "${_case}" "${SCEN_S8_UCI}"
+            printf '%s 2/4 firewall refusal expect=fw4 check warns ("skipped due to invalid options") and exits 0 -- that rc is recorded as-is, not as a refusal; the rule must be absent from fw4 print (not adopted); a rule that does appear there is a FAIL\n' "${_case}"
             printf '%s 2/4 firewall restore expect=byte-identical, the rule gone, and the restored ruleset passes fw4 check and reloads (that is what "still parseable" means)\n' "${_case}"
             printf '%s 3/4 docker cfg-backup %s -> %s expect=1 of 1; absent means docker is not configured here and the class is a FINDING, not a FAIL\n' "${_case}" "${SCEN_S8_DOCKER}" "${_s8_bak_root}"
-            printf '%s 3/4 docker badcfg %s expect=a truncated file, dockerd does not come up on it, ab-slot status and ssh unaffected\n' "${_case}" "${SCEN_S8_DOCKER}"
-            printf '%s 3/4 docker restore expect=byte-identical, then dockerd running again; a daemon that ignored the file is a FINDING\n' "${_case}"
+            printf '%s 3/4 docker badcfg %s expect=a truncated file; docker info (not pidof) is the witness, retried %s times %ss apart because dockerd needs seconds to answer, and ab-slot status and ssh stay unaffected\n' "${_case}" "${SCEN_S8_DOCKER}" "${SCEN_S8_DOCKER_TRIES}" "${SCEN_S8_DOCKER_PAUSE}"
+            printf '%s 3/4 docker restore expect=byte-identical, then docker info rc=0 again with the same image count; a daemon that answered all along is a FINDING\n' "${_case}"
             printf '%s 4/4 apk cfg-backup %s -> %s expect=1 of 1, else nothing is written\n' "${_case}" "${SCEN_S7_FEEDS}" "${_s8_bak_root}"
             printf '%s 4/4 apk badcfg %s expect=a feed list naming a release that does not exist\n' "${_case}" "${SCEN_S8_BADFEED}"
             printf '%s 4/4 apk apk update expect=non-zero on the 404 feed while ab-slot status stays readable, boot=ok esp=ok and the machine keeps running\n' "${_case}"

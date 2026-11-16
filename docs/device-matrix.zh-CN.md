@@ -59,7 +59,7 @@ scripts/device/full-test.sh --yes --task <id> --expect 0.0.12 --payload-dir <dir
 | S5 账本 | 最终内核 | 哪些包仍有效、哪个 kmod 需重装、平台层自报什么 |
 | S6 引导工具 | 不造，只读 | ESP 上 `vmlinuz-<slot>`/`initrd-<slot>` 与 payload 的 `kernel.bin`/`initramfs.cpio.gz` 逐字节一致；平台层工具与 `platform.tar` 一致 |
 | S7 releasefeeds | 每个版本从它自己 release 的 feed 列表装一个包，然后跳变 | 每个版本确实从自己的 feed 装、diff 表点出动了什么，以及「feed 供不上某个包」被记为 feed 问题（GAP）而不是机器坏了 |
-| S8 坏配置 | 故意写四类坏配置：指定不存在设备的 network 段、翻译不出来的防火墙规则、被截断的 `docker` `daemon.json`、返回 404 的 apk feed | 每一类要么被拒绝、要么机器可见降级后恢复；写之前该类的备份已落在 `/data`、事后逐字节还原；第二次 `apk update` 仍能区分「feed 关了」和「机器没网」 |
+| S8 坏配置 | 故意写四类坏配置：指定不存在设备的 network 段、`fw4` 翻译不出来的防火墙规则、被截断的 `docker` `daemon.json`、返回 404 的 apk feed | 每一类要么被拒绝、要么机器可见降级后**恢复**；写之前该类的备份已落在 `/data`、事后逐字节还原；第二次 `apk update` 仍能区分「feed 关了」和「机器没网」。每类的证人是**坏东西没被采纳**，而不是退出码：`fw4 check` 对非法 section 是警告并跳过、仍然退 0（fail-safe，实测），`procd` 会在坏 `daemon.json` 之后重拉 `dockerd`，所以活着 pid 不能当证人——那里的证人是带重试的 `docker info` |
 
 两条让这些用例可信的规则：
 

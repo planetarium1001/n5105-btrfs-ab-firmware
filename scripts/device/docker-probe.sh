@@ -121,6 +121,22 @@
 # keeps running on the next boot" (scenarios.sh), and "the store did not grow without bound"
 # (a human reading `docker system df` in the evidence block). A machine that does not answer
 # ssh is a GAP here, not a FAIL, for the same reason a dead mirror is.
+#
+# Where `docker cp` puts the bytes, measured rather than assumed
+# -------------------------------------------------------------
+# The first version of this script read the artifacts out of <dest>/artifact/ only. On the
+# reference machine (docker 29.6.1, 2026-11-17) `docker cp <container>:/artifact <dest>/`
+# exits 0 and puts the files at <dest>/marker.txt: with SRC a directory and DEST a path ending
+# in a slash that does not exist, the CONTENTS of SRC are copied into DEST. Four assertions
+# went red on a perfectly healthy machine, and the failure note said only "docker cp failed",
+# so the run had to be repeated on the device to find out why. Both landing layouts are
+# correct docker behaviour, so `copy_out` below reads the layout off the filesystem (nested,
+# then flat) and reports it on a `volatile_` line - which the comparator drops, because how
+# the bytes were read is not a property of the machine a hop can change. When neither layout
+# has files, a `cp_error=` line carries the rc, the layout found and the daemon's first line
+# of stderr, and that line is NOT volatile: it exists only on failure, so it can never make
+# two healthy captures differ. tests/modules/device/test_docker_probe.sh runs the real capture
+# script against a stub docker in all three modes (flat, nested, nowhere).
 
 set -u
 
@@ -550,6 +566,13 @@ _snap_value() {
     _snap_body "$1" "$2" | sed -n "s/^$3=//p" | head -n 1
 }
 
+# _snap_block_text <section> <block>: the block's lines as one `;`-joined line, for a message.
+# `state=`, `cp_error=` and `create_error=` live together, so quoting them all is what makes a
+# failure note self-explanatory.
+_snap_block_text() {
+    _snap_body "$1" "$2" | tr '\n' ';' | sed 's/;*$//'
+}
+
 # --------------------------------------------------------------------------- #
 # The comparator
 #
@@ -910,6 +933,54 @@ sha() {
 }
 bytes() { wc -c <"\$1" 2>/dev/null | tr -d ' '; }
 
+# copy_out <container>:<src> <dest>: copy a directory out of a container and hash its files.
+#
+# Where the files land is NOT something this script may assume. Measured on docker 29.6.1
+# (2026-11-17, the 0.0.12 acceptance run): with SRC a directory and DEST a path that ends in
+# a slash and does not exist, docker cp copies the CONTENTS of SRC into DEST, so the files
+# are DEST/marker.txt - there is no DEST/artifact/. If DEST is pre-created instead, SRC itself
+# is copied in and the files are DEST/artifact/marker.txt. Both are correct docker behaviour,
+# so the landing is read off the filesystem: nested first, then flat, and only neither is a
+# failure. Assuming the layout is what cost this case a whole device round.
+#
+# The volatile_ lines carry the mechanics (rc, which layout was found). The comparator drops
+# volatile_ lines on purpose: how the bytes were read is not a property of the machine that a
+# hop can change. On failure a cp_error= line is printed, and that one is NOT volatile - it
+# exists only when something went wrong, so two healthy captures can never differ by it and
+# the failure note can quote the real reason instead of "cp failed".
+copy_out() {
+    co_src=\$1
+    co_dest=\$2
+    co_log=/tmp/docker-probe-cp.log
+    rm -rf "\$co_dest"
+    \$D cp "\$co_src" "\$co_dest/" >"\$co_log" 2>&1
+    co_rc=\$?
+    co_err=\$(sed -n '1p' "\$co_log" 2>/dev/null | tr -d '\r' | tr -s ' ')
+    co_dir=
+    co_layout=none
+    if [ -d "\$co_dest/artifact" ]; then
+        co_dir=\$co_dest/artifact
+        co_layout=nested
+    elif [ -d "\$co_dest" ]; then
+        co_first=\$(ls -A "\$co_dest" 2>/dev/null | head -n 1)
+        if [ -n "\$co_first" ]; then
+            co_dir=\$co_dest
+            co_layout=flat
+        fi
+    fi
+    printf 'volatile_cp_rc=%s\n' "\$co_rc"
+    printf 'volatile_cp_layout=%s\n' "\$co_layout"
+    if [ -n "\$co_dir" ]; then
+        for f in "\$co_dir"/*; do
+            [ -f "\$f" ] || continue
+            printf 'artifact=%s sha256=%s bytes=%s\n' "\$(basename "\$f")" "\$(sha "\$f")" "\$(bytes "\$f")"
+        done
+        return 0
+    fi
+    printf 'cp_error=rc=%s layout=%s err=%s\n' "\$co_rc" "\$co_layout" "\${co_err:-none}"
+    return 1
+}
+
 printf '## info_capture\n'
 printf 'captured_utc=%s\n' "\$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
 printf 'mirror=%s\n' "${MIRROR}"
@@ -955,16 +1026,7 @@ printf '## subset_images\n'
 printf '## assert_container_artifact\n'
 ast=ok
 if \$D container inspect "\$C" >/dev/null 2>&1; then
-    rm -rf /tmp/docker-probe-cp
-    \$D cp "\$C:/artifact" /tmp/docker-probe-cp/ >/dev/null 2>&1
-    if [ -d /tmp/docker-probe-cp/artifact ]; then
-        for f in /tmp/docker-probe-cp/artifact/*; do
-            [ -f "\$f" ] || continue
-            printf 'artifact=%s sha256=%s bytes=%s\n' "\$(basename "\$f")" "\$(sha "\$f")" "\$(bytes "\$f")"
-        done
-    else
-        ast=cp-failed
-    fi
+    copy_out "\$C:/artifact" /tmp/docker-probe-cp || ast=cp-failed
     rm -rf /tmp/docker-probe-cp
 else
     ast=container-missing
@@ -977,22 +1039,23 @@ printf 'state=%s\n' "\$ast"
 printf '## assert_commit_artifact\n'
 cst=ok
 if \$D image inspect "\$I" >/dev/null 2>&1; then
-    \$D container rm dp-readback >/dev/null 2>&1
-    if \$D create --name dp-readback "\$I" >/dev/null 2>&1; then
-        rm -rf /tmp/docker-probe-img
-        \$D cp dp-readback:/artifact /tmp/docker-probe-img/ >/dev/null 2>&1
-        if [ -d /tmp/docker-probe-img/artifact ]; then
-            for f in /tmp/docker-probe-img/artifact/*; do
-                [ -f "\$f" ] || continue
-                printf 'artifact=%s sha256=%s bytes=%s\n' "\$(basename "\$f")" "\$(sha "\$f")" "\$(bytes "\$f")"
-            done
-        else
-            cst=cp-failed
-        fi
+    # A readback container left behind by an interrupted earlier run is removed first, and
+    # whether there WAS one is recorded: a create that fails afterwards is then readable as
+    # "a leftover blocked the name" rather than an unexplained create-failed.
+    rb_residue=no
+    if \$D container inspect dp-readback >/dev/null 2>&1; then
+        rb_residue=yes
+        \$D container rm -f dp-readback >/dev/null 2>&1
+    fi
+    printf 'volatile_readback_residue=%s\n' "\$rb_residue"
+    if \$D create --name dp-readback "\$I" >/tmp/docker-probe-create.log 2>&1; then
+        copy_out dp-readback:/artifact /tmp/docker-probe-img || cst=cp-failed
         rm -rf /tmp/docker-probe-img
         \$D container rm -f dp-readback >/dev/null 2>&1
     else
         cst=create-failed
+        rb_err=\$(sed -n '1p' /tmp/docker-probe-create.log 2>/dev/null | tr -d '\r' | tr -s ' ')
+        printf 'create_error=residue=%s err=%s\n' "\$rb_residue" "\${rb_err:-none}"
     fi
 else
     cst=image-missing
@@ -1063,15 +1126,14 @@ _grade_artifact() {
     _ga_state=$(_snap_value "${_ga_sec}" "${_ga_block}" state)
     case "${_ga_state}" in
         ok) : ;;
-        "")
-            _fail "${_ga_case}" "${_ga_block}" \
-                "the block is empty or missing, so ${_ga_file} was never read and nothing was compared" \
-                "${_ga_next}"
-            return 1
-            ;;
         *)
+            # Quote the block's own diagnosis: `cp_error=rc=0 layout=none err=...` and
+            # `create_error=residue=yes err=...` say WHICH step failed and why. A reader with
+            # only "docker cp failed" cannot tell a missing container from a wrong landing
+            # directory, and that ambiguity is what cost the 0.0.12 run a device round.
+            _ga_detail=$(_snap_block_text "${_ga_sec}" "${_ga_block}")
             _fail "${_ga_case}" "${_ga_block}" \
-                "state=${_ga_state}, so ${_ga_file} was not read (docker cp / volume / image failed)" \
+                "state=${_ga_state:-none}, so ${_ga_file} was not read; the block carries: ${_ga_detail:-<nothing>}" \
                 "${_ga_next}"
             return 1
             ;;

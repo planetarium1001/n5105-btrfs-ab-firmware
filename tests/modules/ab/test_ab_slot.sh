@@ -18,6 +18,9 @@
 #        (boot= and esp= are the two fields a machine cannot claim without evidence)
 #   (20261116-06) ac-5 a boot-path commit re-judges the package record it publishes for the
 #        slot it commits, so `status` never answers `reason=other-slot` for ever after
+#   (20261117) ac-9 the lock path tells "another writer holds it" apart from "the ESP cannot
+#        create the lock at all", and waits briefly for a live holder instead of refusing
+#        on sight
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -99,6 +102,8 @@ slot_cmd() {
     AB_PARTITIONS_LIB="$partitions_lib" \
     AB_DISK_IDENTITY_LIB="$stub_di" \
     AB_BOOT_ID_FILE="$boot_id_file" \
+    AB_LOCK_WAIT_SECS="${AB_LOCK_WAIT_SECS:-1}" \
+    AB_LOCK_WAIT_STEP="${AB_LOCK_WAIT_STEP:-0.1}" \
     sh "$ab_slot" "$@"
 }
 
@@ -110,6 +115,8 @@ slot_cmd_full() {
     AB_PARTITIONS_LIB="$partitions_lib" \
     AB_DISK_IDENTITY_LIB="$stub_di" \
     AB_BOOT_ID_FILE="$boot_id_file" \
+    AB_LOCK_WAIT_SECS="${AB_LOCK_WAIT_SECS:-1}" \
+    AB_LOCK_WAIT_STEP="${AB_LOCK_WAIT_STEP:-0.1}" \
     sh "$ab_slot" "$@"
 }
 
@@ -654,5 +661,171 @@ for hook in platform/etc/init.d/ab-boot platform/etc/init.d/ab-commit; do
 done
 assert_contains "$(cat "$root/platform/etc/init.d/ab-commit")" "stage=lock action=stale-lock-taken" \
   "ac-9 the sweep is recorded"
+
+# --------------------------------------------------------------------------- #
+# (20261117) ac-9 the lock path: a live holder is waited for, and a volume that
+# cannot create the lock is not mistaken for one
+# --------------------------------------------------------------------------- #
+#
+# CI run 43918219525, QEMU S5 on base 25.12.1: the harness SIGTERMed the machine one second
+# after S5-UPGRADE-DONE, cutting `ab-commit`'s write to the FAT ESP and corrupting its
+# cluster chain. The next boot mounted the ESP read-only; mkdir failed with EROFS, and the
+# old lock path reported "state is locked by another process" for a holder that did not
+# exist. These cases pin the three behaviours that fix it: waiting for a live holder,
+# switching that wait off, and naming the real cause when no directory entry can be made.
+
+now_ms() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(int(time.time() * 1000))'
+  else
+    perl -MTime::HiRes=time -e 'printf "%.0f\n", time * 1000'
+  fi
+}
+
+# The bounds below judge the lock wait, not the ESP flush. Several `sync` calls live on the
+# commit path, and on a host whose global sync is slow (measured on macOS: ~400ms for one
+# commit) they would fail a test whose subject is sleeping. The measured calls run with a
+# no-op sync in front of PATH; the lock protocol itself is unchanged.
+#
+# The "did not wait" bounds are the wait budget, not a tight 200ms, and that is deliberate.
+# One `slot_cmd` spawns a dozen subprocesses; measured on macOS an uncontended commit costs
+# 225-290ms of that alone, so a 200ms bound failed on a host that was merely slow to start
+# processes (three assertions flaked this way while the behaviour was correct). Waiting for
+# the default budget costs >= 1000ms, so "under 900ms" distinguishes the two facts without
+# mistaking host speed for a defect.
+sync_stub_dir="$tmp/sync-stub"
+mkdir -p "$sync_stub_dir"
+printf '#!/bin/sh\nexit 0\n' >"$sync_stub_dir/sync"
+chmod +x "$sync_stub_dir/sync"
+slot_cmd_nosync() {
+  PATH="$sync_stub_dir:$PATH" slot_cmd "$@"
+}
+
+# 1. a live holder that lets go inside the wait budget: the write succeeds, and the wait
+#    is not a stale takeover. The holder's pid is the background subshell, which is alive
+#    while it sleeps, so the owner line describes a real writer.
+write_state a none 20
+(
+  sleep 0.2
+  rm -rf "$esp/ab/.lock"
+) &
+holder_pid=$!
+lock_owner "$(cat "$boot_id_file")" "$holder_pid"
+started="$(now_ms)"
+out="$(slot_cmd_nosync commit 2>&1)"
+rc=$?
+elapsed=$(( $(now_ms) - started ))
+wait "$holder_pid" 2>/dev/null || :
+assert_eq "$rc" "0" "ac-9 a live holder that releases inside the wait budget does not fail the write"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'action=stale-lock-taken' || true)" "0" \
+  "ac-9 waiting for a live holder is not reported as a stale takeover"
+assert_eq "$(( elapsed >= 100 ))" "1" \
+  "ac-9 the write actually waited for the holder (${elapsed}ms)"
+
+# 2. a live holder that never lets go: bounded wait, then the original refusal. The test's
+#    own pid is alive for the whole case, so no stale branch can apply.
+write_state a none 21
+lock_owner "$(cat "$boot_id_file")" "$$"
+started="$(now_ms)"
+out="$(AB_LOCK_WAIT_SECS=0.3 slot_cmd pending b 2>&1)"
+rc=$?
+elapsed=$(( $(now_ms) - started ))
+assert_eq "$rc" "1" "ac-9 a live holder that never releases still refuses the write"
+assert_contains "$out" "state is locked by another process" "ac-9 the refusal keeps its wording"
+assert_eq "$(pending_of_state)" "none" "ac-9 nothing is written while the holder stays"
+assert_eq "$([ -d "$esp/ab/.lock" ] && echo kept || echo gone)" "kept" \
+  "ac-9 the live holder's lock is left alone"
+assert_eq "$(( elapsed >= 200 ))" "1" \
+  "ac-9 the refusal comes after the wait budget (${elapsed}ms)"
+
+# 3. the escape hatch: AB_LOCK_WAIT_SECS=0 is the old refuse-at-once behaviour, for a caller
+#    that would rather fail than wait.
+write_state a none 22
+lock_owner "$(cat "$boot_id_file")" "$$"
+started="$(now_ms)"
+out="$(AB_LOCK_WAIT_SECS=0 slot_cmd pending b 2>&1)"
+rc=$?
+elapsed=$(( $(now_ms) - started ))
+assert_eq "$rc" "1" "ac-9 AB_LOCK_WAIT_SECS=0 still refuses"
+assert_contains "$out" "state is locked by another process" "ac-9 and keeps the original message"
+assert_eq "$(pending_of_state)" "none" "ac-9 and writes nothing"
+assert_eq "$([ -d "$esp/ab/.lock" ] && echo kept || echo gone)" "kept" \
+  "ac-9 and leaves the holder's lock alone"
+assert_eq "$(( elapsed < 900 ))" "1" \
+  "ac-9 AB_LOCK_WAIT_SECS=0 does not wait (${elapsed}ms, budget is 1000ms)"
+
+# 4. stale locks are taken over without spending the wait budget: a lock from another boot,
+#    and one from this boot whose pid is gone.
+write_state a none 23
+lock_owner "boot-0000-dead-0000" "999999"
+started="$(now_ms)"
+out="$(slot_cmd_nosync pending b 2>&1)"
+rc=$?
+elapsed=$(( $(now_ms) - started ))
+assert_eq "$rc" "0" "ac-9 a lock from another boot is taken over"
+assert_contains "$out" "action=stale-lock-taken" "ac-9 and reported as a takeover"
+assert_eq "$(( elapsed < 900 ))" "1" \
+  "ac-9 a stale lock is not waited for (${elapsed}ms, budget is 1000ms)"
+assert_eq "$(pending_of_state)" "b" "ac-9 the stale takeover writes the state"
+
+write_state a none 24
+lock_owner "$(cat "$boot_id_file")" "4000000"
+started="$(now_ms)"
+out="$(slot_cmd_nosync pending b 2>&1)"
+rc=$?
+elapsed=$(( $(now_ms) - started ))
+assert_eq "$rc" "0" "ac-9 a lock of this boot whose pid is gone is taken over"
+assert_contains "$out" "action=stale-lock-taken" "ac-9 and reported here too"
+assert_eq "$(( elapsed < 900 ))" "1" \
+  "ac-9 a dead pid does not make the writer wait (${elapsed}ms, budget is 1000ms)"
+
+# 5. source-level: the takeover counter only advances in the stale branch, so contention
+#    cannot use up the five attempts that are there for a lock that will not clear.
+assert_eq "$(grep -c -F '_lock_try=$((_lock_try + 1))' "$ab_slot")" "1" \
+  "ac-9 _lock_try is incremented in exactly one place"
+assert_contains "$(grep -A1 'if lock_is_stale; then' "$ab_slot")" '_lock_try=$((_lock_try + 1))' \
+  "ac-9 and that place is inside the stale branch"
+assert_contains "$(cat "$ab_slot")" '[ "${_lock_try}" -lt 5 ]' \
+  "ac-9 the stale-takeover cap is still five attempts"
+
+# 6. no contention: the happy path must not acquire a sleep. A regression that waits before
+#    the first mkdir would make every commit on a machine pay the lock budget.
+write_state a none 25
+rm -rf "$esp/ab/.lock"
+started="$(now_ms)"
+out="$(slot_cmd_nosync commit 2>&1)"
+rc=$?
+elapsed=$(( $(now_ms) - started ))
+assert_eq "$rc" "0" "ac-9 a commit with no contention succeeds"
+assert_eq "$(( elapsed < 900 ))" "1" \
+  "ac-9 the uncontended path does not sleep (${elapsed}ms, budget is 1000ms)"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'action=stale-lock-taken' || true)" "0" \
+  "ac-9 and no takeover is reported"
+
+# 7. a volume that cannot create the lock directory at all: the ESP mounted read-only, or
+#    full. This is the CI accident's next boot. It must not claim another writer exists.
+write_state a none 26
+rm -rf "$esp/ab/.lock"
+state_before="$(cat "$esp/ab/state.json")"
+chmod 0555 "$esp/ab"
+# The test may run as root, where a read-only mode bit is not a read-only volume; skip the
+# case there rather than assert something the environment cannot express.
+if mkdir "$esp/ab/.probe" 2>/dev/null; then
+  rmdir "$esp/ab/.probe" 2>/dev/null || :
+  chmod 0755 "$esp/ab"
+  assert_eq "skipped" "skipped" \
+    "ac-9 a read-only ESP cannot be simulated as root, the case is skipped"
+else
+  out="$(AB_LOCK_WAIT_SECS=0.2 slot_cmd commit 2>&1)"
+  rc=$?
+  chmod 0755 "$esp/ab"
+  assert_eq "$rc" "1" "ac-9 an ESP that cannot create the lock fails the write"
+  assert_contains "$out" "cannot create ${esp}/ab/.lock" \
+    "ac-9 and names the directory it could not create"
+  assert_eq "$(printf '%s\n' "$out" | grep -c 'state is locked by another process' || true)" "0" \
+    "ac-9 and does not invent a holder"
+  assert_eq "$(cat "$esp/ab/state.json")" "$state_before" \
+    "ac-9 the state file is untouched"
+fi
 
 finish

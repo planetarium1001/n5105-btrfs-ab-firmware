@@ -58,6 +58,25 @@ AB_DEVICE_FEED_DIR=${AB_DEVICE_FEED_DIR:-/tmp/ab-feed}
 # "the pin never reaches the explicit payload path" judgement is made against the real CLI.
 AB_PAYLOAD_DIR=${AB_PAYLOAD_DIR:-payloads}
 DRY_RUN=${AB_DRY_RUN:-0}
+# A feed the machine cannot fetch over https is not something this driver invents its way
+# around: `ab-upgrade` refuses a non-https feed on purpose (feed-conf-url), because an index
+# that can be swapped in transit cannot protect the payload its digest names. A LAN mirror
+# under test therefore needs the product's own escape hatch, UPDATE_FETCH_CMD, which replaces
+# the transport while every judgement above it stays the real one. It is passed to the
+# machine explicitly through AB_DEVICE_FETCH_CMD so the shim never lives in a file on the
+# device and cannot outlive the run.
+AB_DEVICE_FETCH_CMD=${AB_DEVICE_FETCH_CMD:-}
+
+# _ab_remote <command>: dev_ssh, with the fetch shim exported for this one command when the
+# caller supplied one. Everything the driver asserts is unchanged by this prefix; only the
+# transport under `ab-upgrade` is.
+_ab_remote() {
+    if [ -n "${AB_DEVICE_FETCH_CMD}" ]; then
+        dev_ssh "UPDATE_FETCH_CMD='${AB_DEVICE_FETCH_CMD}' $1"
+    else
+        dev_ssh "$1"
+    fi
+}
 
 expect=${AB_EXPECT:-0.0.10}
 conf=/etc/ab/update.conf
@@ -321,7 +340,15 @@ run_check() {
     # red that says nothing about the release.
     if [ "${DRY_RUN}" = "1" ]; then
         printf '%s 1/4 ab-upgrade --feed-check on the machine (conf %s)\n' "${_case}" "${conf}"
-        printf '%s 2/4 expect exit=10, source=release, status=update, platform_available=%s\n' "${_case}" "${expect}"
+        # The source the plan names is the one the flags will produce: --feed-url makes
+        # `ab-upgrade` read the mirror (source=feed), and only the shipped update.conf
+        # reaches the release (source=release). A hard-coded "release" was a line that
+        # described the wrong run for the mirror case, which is the case a local
+        # acceptance uses.
+        _plan_source=release
+        [ -n "${feed_url}" ] && _plan_source=feed
+        printf '%s 2/4 expect exit=10, source=%s, status=update, platform_available=%s\n' \
+            "${_case}" "${_plan_source}" "${expect}"
         printf '%s 3/4 a refusal of feed-unreachable is a GAP, everything else is a FAIL\n' "${_case}"
         printf '%s 4/4 the installed platform is printed last, so a run on an upgraded machine is visible\n' \
             "${_case}"
@@ -338,7 +365,7 @@ run_check() {
     check_cmd="ab-upgrade --feed-check"
     [ -n "${feed_url}" ] && check_cmd="${check_cmd} --feed-url '${feed_url}'"
     [ -n "${release_base}" ] && check_cmd="${check_cmd} --release-base '${release_base}'"
-    out=$(dev_ssh "${check_cmd}" 2>&1)
+    out=$(_ab_remote "${check_cmd}" 2>&1)
     rc=$?
     printf '%s\n' "${out}" | sed 's/^/  | /' >&2
 
@@ -394,6 +421,7 @@ run_check() {
         CASE_STATUS=FAIL
         return 1
     fi
+    CASE_NOTE="feed-check saw ${available} (source=${source}); exit=10"
     CASE_STATUS=PASS
     return 0
 }
@@ -443,7 +471,7 @@ run_install() {
     install_cmd="ab-upgrade --feed --yes"
     [ -n "${feed_url}" ] && install_cmd="${install_cmd} --feed-url '${feed_url}'"
     [ -n "${release_base}" ] && install_cmd="${install_cmd} --release-base '${release_base}'"
-    out=$(dev_ssh "${install_cmd}" 2>&1)
+    out=$(_ab_remote "${install_cmd}" 2>&1)
     rc=$?
     printf '%s\n' "${out}" | sed 's/^/  | /' >&2
 
@@ -560,8 +588,10 @@ run_install() {
         return 1
     fi
 
-    _assert_eq "${_case}" "slot" "$(status_field "${settled}" slot)" "${target:-?}" "ab-slot status"
-    _assert_eq "${_case}" "committed" "$(status_field "${settled}" committed)" "${target:-?}" "ab-slot status"
+    after_slot=$(status_field "${settled}" slot) || after_slot=""
+    after_committed=$(status_field "${settled}" committed) || after_committed=""
+    _assert_eq "${_case}" "slot" "${after_slot}" "${target:-?}" "ab-slot status"
+    _assert_eq "${_case}" "committed" "${after_committed}" "${target:-?}" "ab-slot status"
     _assert_eq "${_case}" "pending" "$(status_field "${settled}" pending)" "none" "ab-slot status"
     _assert_eq "${_case}" "boot" "$(status_field "${settled}" boot)" "ok" "ab-slot log"
     # boot= and esp= are the two facts a machine cannot claim without evidence (lib.sh, the
@@ -625,6 +655,10 @@ run_install() {
         CASE_STATUS=FAIL
         return 1
     fi
+    # The row's sentence is this case's own: what moved, and at the cost of how many
+    # reboots. `run_install` used to leave these unset, so the row carried the previous
+    # case's note - ac-3's "committed ... never moved" on the very case that moves it.
+    CASE_NOTE="upgrade ${before_version:-?} -> ${version_after:-?}; slot ${before_slot:-?} -> ${after_slot:-?}; committed ${before_committed:-?} -> ${after_committed:-?}; reboots=1"
     CASE_STATUS=PASS
     return 0
 }
@@ -676,7 +710,7 @@ _pin_value() {
 PIN_OUT=""
 PIN_RC=0
 _ab_upgrade() {
-    PIN_OUT=$(dev_ssh "$1" 2>&1)
+    PIN_OUT=$(_ab_remote "$1" 2>&1)
     PIN_RC=$?
     printf '  $ %s\n' "$1" >&2
     [ -n "${PIN_OUT}" ] && printf '%s\n' "${PIN_OUT}" | sed 's/^/  | /' >&2
@@ -1018,6 +1052,11 @@ run_case() {
     CASE_FAILURES=0
     CASE_GAPS=0
     CASE_STATUS=""
+    # The note is per case, like the counters above: a case that does not write its own
+    # leaves "none", not the previous case's sentence. Before this reset, `--case all`
+    # wrote ac-3's "committed ... never moved" into the ac-13 row, and ac-13 is precisely
+    # the case that moves the committed slot - a false statement in the evidence.
+    CASE_NOTE=""
     case "${_case}" in
         ac-12) run_check ;;
         ac-13) run_install ;;

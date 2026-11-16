@@ -194,13 +194,21 @@ _emit() {
         gap) PROBE_GAP=$((PROBE_GAP + 1)) ;;
         skip) PROBE_SKIP=$((PROBE_SKIP + 1)) ;;
     esac
-    ev "${_em_line}"
-    if [ -n "${AB_PROBE_RESULTS}" ]; then
-        case "${_em_status}" in
-            pass) record "${_em_probe}" PASS - "${_em_ac}" ;;
-            fail) record "${_em_probe}" FAIL - "${_em_ac}" ;;
-            *) record "${_em_probe}" GAP - "${_em_ac}" ;;
-        esac
+    # A dry run is a plan, not a measurement: it writes neither a results row nor an
+    # evidence line. record() would otherwise append one GAP row per probe *and* create
+    # the results directory (lib.sh mkdirs it), which is the "touch nothing" promise in
+    # the header broken in the one way an operator notices - the real run's rows land
+    # among a plan's eight GAPs and the file has to be archived and deleted by hand.
+    # The counters above still move, so the summary says skip=8 result=dry-run.
+    if [ "${DRY_RUN}" != "1" ]; then
+        ev "${_em_line}"
+        if [ -n "${AB_PROBE_RESULTS}" ]; then
+            case "${_em_status}" in
+                pass) record "${_em_probe}" PASS - "${_em_ac}" ;;
+                fail) record "${_em_probe}" FAIL - "${_em_ac}" ;;
+                *) record "${_em_probe}" GAP - "${_em_ac}" ;;
+            esac
+        fi
     fi
 }
 

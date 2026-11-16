@@ -297,20 +297,6 @@ case "${last}" in
                             printf 'cmd=%s rc=0 out=\n' "$*"
                         fi
                         ;;
-                    pidof)
-                        if [ "$(cat "$dev/dockerd" 2>/dev/null || printf running)" = "running" ]; then
-                            printf 'cmd=%s rc=0 out=1234\n' "$*"
-                        else
-                            printf 'cmd=%s rc=1 out=\n' "$*"
-                        fi
-                        ;;
-                    docker)
-                        if [ "$(cat "$dev/dockerd" 2>/dev/null || printf running)" = "running" ]; then
-                            printf 'cmd=%s rc=0 out=Server Version: 27.0\n' "$*"
-                        else
-                            printf 'cmd=%s rc=1 out=Cannot connect to the Docker daemon\n' "$*"
-                        fi
-                        ;;
                     command)
                         printf 'cmd=%s rc=%s out=%s\n' "$*" "${FAKE_DOCKERD_INSTALLED_RC:-0}" \
                             "${FAKE_DOCKERD_BIN:-/usr/bin/dockerd}"
@@ -356,6 +342,25 @@ case "${last}" in
                 ;;
             hash)
                 cat "$dev/hash-now" 2>/dev/null || { printf 'tool=sha256sum\nfiles=0\ndirs=0\n' ; }
+                ;;
+            hash-file)
+                # The machine hashes the backup and the file it was copied to: equal digests
+                # are what "byte-identical" means there. Two switches let a test break the
+                # witness itself (a mismatch, and a machine with no digest tool).
+                set -- $args
+                hf_n=0
+                for f in "$@"; do
+                    hf_n=$((hf_n + 1))
+                    if [ "${FAKE_HASH_NONE:-0}" = "1" ]; then
+                        printf 'hash-file tool=none file=%s sum=none\n' "$f"
+                    elif [ "${FAKE_HASH_MISMATCH:-0}" = "1" ]; then
+                        printf 'hash-file tool=sha256sum file=%s sum=mismatch%s\n' "$f" "$hf_n"
+                    else
+                        hf_sum=$(cksum "$dev/$(basename "$f")" 2>/dev/null | awk '{print $1}')
+                        [ -n "$hf_sum" ] || hf_sum=none
+                        printf 'hash-file tool=cksum file=%s sum=%s\n' "$f" "$hf_sum"
+                    fi
+                done
                 ;;
             tartest)
                 for f in "$@"; do printf 'tar=%s rc=%s members=2\n' "$f" "${FAKE_TAR_RC:-0}"; done
@@ -461,6 +466,106 @@ case "${last}" in
                         "$pkc" "$pkc" "${FAKE_PKG_EXEC_RC:-0}" "${FAKE_PKG_FILES:-3}" \
                         "${FAKE_PKG_DEL_RC:-0}" "${FAKE_PKG_AFTER_DEL:-no}" "${FAKE_PKG_FILES_LEFT:-0}" \
                         "${FAKE_PKG_WORLD_BEFORE:-12}" "${FAKE_PKG_WORLD_AFTER:-12}" "$2"
+                fi
+                ;;
+            fw-witness)
+                # What fw4 does with a rule whose uci options are invalid on this line: it
+                # warns and skips the section, and `fw4 check` still exits 0, so the exit
+                # status must never be read as a refusal. The ruleset the file renders to
+                # (`fw4 print`) is the adoption witness: it must not name the rule.
+                set -- $args
+                tool=${1:-fw4}
+                shift
+                if [ "${FAKE_FW_TOOL_MISSING:-0}" = "1" ]; then
+                    printf 'fw-check tool=%s rc=127 lines=1\n' "$tool"
+                    printf 'sh: %s: not found\n' "$tool" | sed -e 's/^/fw-check-out=/'
+                    printf 'fw-print tool=%s rc=127 lines=1\n' "$tool"
+                    printf 'sh: %s: not found\n' "$tool" | sed -e 's/^/fw-print-out=/'
+                    for m in "$@"; do
+                        printf 'fw-print-marker marker=%s hits=0\n' "$m"
+                    done
+                elif grep -q 'not-a-port' "$dev/firewall" 2>/dev/null; then
+                    printf 'fw-check tool=%s rc=%s lines=3\n' "$tool" "${FAKE_FW_CHECK_RC:-0}"
+                    if [ "${FAKE_FW_WARN:-yes}" = "yes" ]; then
+                        printf "fw-check-out=[!] option 'dest_port' specifies invalid value 'not-a-port'\n"
+                        printf 'fw-check-out=[!] skipped due to invalid options\n'
+                    fi
+                    printf 'fw-check-out=Ruleset passes nftables check.\n'
+                    if [ "${FAKE_FW_PRINT_UNSUPPORTED:-0}" = "1" ]; then
+                        printf 'fw-print tool=%s rc=1 lines=1\n' "$tool"
+                        printf 'fw-print-out=Usage: %s {start|stop|reload|restart|check}\n' "$tool"
+                        for m in "$@"; do
+                            printf 'fw-print-marker marker=%s hits=0\n' "$m"
+                        done
+                    elif [ "${FAKE_FW_ADOPT:-0}" = "1" ]; then
+                        # A tool that took the rule despite the warning: the rendered
+                        # ruleset carries the section name and the bogus target.
+                        printf 'fw-print tool=%s rc=0 lines=8\n' "$tool"
+                        printf 'fw-print-out=chain forward {\n'
+                        printf 'fw-print-out=  counter drop comment "abscenbadfw" # AB-BOGUS\n'
+                        for m in "$@"; do
+                            if [ "$m" = "AB-BOGUS" ]; then
+                                printf 'fw-print-marker marker=%s hits=1\n' "$m"
+                            else
+                                printf 'fw-print-marker marker=%s hits=0\n' "$m"
+                            fi
+                        done
+                    else
+                        printf 'fw-print tool=%s rc=0 lines=8\n' "$tool"
+                        printf 'fw-print-out=chain forward {\n'
+                        printf 'fw-print-out=  counter accept\n'
+                        for m in "$@"; do
+                            printf 'fw-print-marker marker=%s hits=0\n' "$m"
+                        done
+                    fi
+                else
+                    printf 'fw-check tool=%s rc=0 lines=1\n' "$tool"
+                    printf 'fw-check-out=Ruleset passes nftables check.\n'
+                    printf 'fw-print tool=%s rc=0 lines=8\n' "$tool"
+                    printf 'fw-print-out=chain forward {\n'
+                    printf 'fw-print-out=  counter accept\n'
+                    for m in "$@"; do
+                        printf 'fw-print-marker marker=%s hits=0\n' "$m"
+                    done
+                fi
+                ;;
+            docker-info)
+                # `docker info` with retries is the docker class's witness: procd re-spawns a
+                # dead dockerd, so a pid says nothing, and dockerd needs a few seconds after a
+                # restart before the API answers. FAKE_DOCKERINFO_FAILS models the start-up
+                # window on every call after the first (the first is the healthy baseline).
+                set -- $args
+                di_tries=${1:-4}
+                di_n=$(cat "$dev/dockerinfo-calls" 2>/dev/null || echo 0)
+                di_n=$((di_n + 1))
+                printf '%s' "$di_n" >"$dev/dockerinfo-calls"
+                di_fail=0
+                if [ "$di_n" -gt 1 ]; then di_fail=${FAKE_DOCKERINFO_FAILS:-0}; fi
+                if [ "$(cat "$dev/dockerd" 2>/dev/null || printf running)" = "running" ]; then
+                    di_i=0
+                    di_rc=1
+                    while [ "$di_i" -lt "$di_tries" ]; do
+                        di_i=$((di_i + 1))
+                        if [ "$di_i" -gt "$di_fail" ]; then di_rc=0; fi
+                        if [ "$di_rc" = "0" ]; then
+                            printf 'docker-info attempt=%s rc=0 out=Server Version: 27.0\n' "$di_i"
+                            break
+                        fi
+                        printf 'docker-info attempt=%s rc=1 out=Cannot connect to the Docker daemon\n' "$di_i"
+                    done
+                    di_imgs=${FAKE_DOCKER_IMAGES:-2}
+                    if [ -n "${FAKE_DOCKER_IMAGES_AFTER:-}" ] && [ "$di_n" -gt 1 ]; then
+                        di_imgs=$FAKE_DOCKER_IMAGES_AFTER
+                    fi
+                    printf 'docker-info attempts=%s up=yes rc=0 images=%s\n' "$di_i" "$di_imgs"
+                else
+                    di_i=0
+                    while [ "$di_i" -lt "$di_tries" ]; do
+                        di_i=$((di_i + 1))
+                        printf 'docker-info attempt=%s rc=1 out=unable to configure the Docker daemon: unexpected end of JSON input\n' \
+                            "$di_i"
+                    done
+                    printf 'docker-info attempts=%s up=no rc=1 images=na\n' "$di_i"
                 fi
                 ;;
             badcfg)
@@ -1422,14 +1527,25 @@ assert_contains "$(cat "$STUB_CALLS")" "net-apply /data/scen/backup/badcfg-netwo
 assert_contains "$s8log" "refused or ignored -- ab-scen-nosuch0 was never created" \
     "the refusal is witnessed by the device not existing, not by net-reload's exit status"
 assert_contains "$s8log" "S8 network: ssh answered" "the session survived the broken section"
+assert_contains "$s8log" "machine intact -- boot=ok esp=ok data=ok" \
+    "the machine is judged whole with the user's data still mounted, not just with ssh up"
 assert_contains "$s8log" "/etc/config/network is byte-identical to /data/scen/backup/badcfg-network-" \
     "the network file is compared with the backup, not just copied over it"
 assert_eq "$(grep -c 'ab-scen-nosuch0' "$FAKE_DEV/network")" "0" \
     "the broken section is gone from the machine's network file"
 
-# 2/4 firewall: fw4's own check is the refusal witness, and the restored ruleset has to
-# translate and reload again -- a restore that cannot be applied is not a restore.
-assert_contains "$s8log" "fw4 check refused the broken rule" "the broken ruleset is refused by the firewall's own check"
+# 2/4 firewall: fw4's exit status is not the witness. On this line it warns and skips an
+# invalid section and still exits 0, so what has to be shown is that the rule was NOT ADOPTED
+# (it is absent from the ruleset `fw4 print` renders) and that the warning says why -- then
+# that the restored ruleset translates and reloads again.
+assert_contains "$s8log" "fw4 check rc=0 with the broken rule in the file" \
+    "the check's rc is recorded as the fact it is (0), not dressed up as a refusal"
+assert_contains "$s8log" "skipped due to invalid options" \
+    "the warning that explains the skip is kept in the evidence"
+assert_contains "$s8log" "the broken rule was not adopted -- fw4 print" \
+    "the adoption witness is the rendered ruleset, not the check's exit status"
+assert_contains "$s8log" "warns and skips the rule instead of rejecting the file" \
+    "the fail-safe behaviour is named, so nobody reads the row as 'the file was rejected'"
 assert_contains "$s8log" "the restored ruleset translates again" \
     "the restored configuration is proven parseable, which is the second half of the claim"
 assert_contains "$s8log" "the restored ruleset reloads" "and it is reloadable"
@@ -1437,12 +1553,19 @@ assert_eq "$(grep -c 'not-a-port' "$FAKE_DEV/firewall")" "0" "the broken rule is
 assert_eq "$(grep -c '/etc/init.d/firewall reload' "$STUB_CALLS")" "1" \
     "the live firewall is only ever given the restored ruleset, never the broken one"
 
-# 3/4 docker: the daemon does not come up on a file that is not JSON, the router is
-# unaffected, and the backup brings the daemon back.
-assert_contains "$s8log" "dockerd did not come up on the truncated daemon.json" \
+# 3/4 docker: `pidof dockerd` is not the witness -- procd re-spawns the daemon, so the pid
+# survives a daemon that cannot serve a request. `docker info` is, and it is asked several
+# times because dockerd needs a few seconds after a restart before it answers.
+assert_contains "$s8log" "docker info kept failing on the truncated daemon.json" \
     "docker being unavailable is the degradation this class witnesses"
-assert_contains "$s8log" "dockerd is running again after the backup was restored" \
+assert_contains "$s8log" "attempts=4 up=no" \
+    "the class retried before calling the daemon unavailable"
+assert_contains "$s8log" "docker info answers again after the backup was restored" \
     "the backup is what brings the daemon back, and that is asserted"
+assert_contains "$s8log" "images=2" \
+    "the daemon came back with the same image set it had"
+assert_eq "$(grep -c 'pidof' "$STUB_CALLS" || true)" "0" \
+    "the class never asks whether a process exists instead of asking whether the daemon answers"
 assert_contains "$(cat "$FAKE_DEV/daemon.json")" '"max-size": "1m"' \
     "the machine's own daemon.json is back, byte for byte"
 
@@ -1467,10 +1590,120 @@ assert_eq "$(printf '%s\n' "$record" | grep -c '^apk' || true)" "1" \
     "the recovery record has a row for the apk class"
 assert_contains "$record" "badcfg-network-" "every row names the backup directory it came from"
 assert_contains "$record" "host (net-rollback" "the network row names who restored the file"
+assert_contains "$record" "not adopted (fw4 check rc=0" \
+    "the firewall row says the rule was skipped, not that the check refused it"
+rc=0
+printf '%s' "$record" | grep -q 'refused by fw4 check' && rc=1
+assert_eq "$rc" "0" "the firewall row does not contradict its own rc=0 by claiming a refusal"
 assert_file_exists "$(ls "$tmp"/r-s8/evidence/scen-badcfg-*.tsv 2>/dev/null | head -n 1)" \
     "the record is also kept host-side, where a machine that stopped answering cannot take it"
 assert_contains "$s8log" "S8 recovery record: /data/scen/evidence/badcfg-" \
     "the record is on the machine, next to the backups it names"
+
+# Every restore is compared twice: the machine hashes the backup against the file it was
+# copied to, and the host compares the collected bytes with what was there before the class
+# started. The first comparison is what makes "byte-identical to the backup" a measurement
+# rather than a claim about a cp that returned 0.
+assert_contains "$s8log" "S8 restore: /etc/config/network matches /data/scen/backup/badcfg-network-" \
+    "the machine compares the restored file with its own backup"
+assert_contains "$s8log" "by cksum" \
+    "the digest tool that made the comparison is named"
+
+# A digest mismatch on the machine is a FAIL even when the cp answered 0: a restore that
+# landed different bytes is not a restore, and neither witness may be skipped.
+setup_fake_world 25.12.2
+export FAKE_HASH_MISMATCH=1
+out=$(run_scen "$tmp/r-s8-hashmiss" --case S8)
+rc=$?
+unset FAKE_HASH_MISMATCH
+assert_eq "$rc" "1" "a restore whose digest does not match the backup makes the run non-zero"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s8-hashmiss" s8)")" "does not match the backup by sha256sum" \
+    "the failure names the digest comparison that failed"
+assert_contains "$(note_of "$tmp/r-s8-hashmiss")" "network: the restore is not byte-identical" \
+    "the class that failed the comparison is named"
+
+# A machine with no digest tool cannot make that comparison: the host-side comparison still
+# decides, and the fact that the machine could not hash is recorded instead of assumed.
+setup_fake_world 25.12.2
+export FAKE_HASH_NONE=1
+out=$(run_scen "$tmp/r-s8-hashnone" --case S8)
+rc=$?
+unset FAKE_HASH_NONE
+assert_eq "$rc" "0" "a machine with no digest tool still restores, judged host-side"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s8-hashnone" s8)")" "no digest tool on the machine" \
+    "the missing digest tool is recorded, not silently treated as agreement"
+
+# The firewall witness has to be able to go red: a tool that takes the rule despite the
+# warning is a FAIL, because the machine would then run what it was told not to run.
+setup_fake_world 25.12.2
+export FAKE_FW_ADOPT=1
+out=$(run_scen "$tmp/r-s8-fwadopt" --case S8)
+rc=$?
+unset FAKE_FW_ADOPT
+assert_eq "$rc" "1" "a firewall tool that adopts the broken rule makes the run non-zero"
+assert_eq "$(verdict_of "$tmp/r-s8-fwadopt")" "FAIL" "an adopted broken rule is a FAIL"
+assert_contains "$(note_of "$tmp/r-s8-fwadopt")" "the broken rule was adopted into the rendered ruleset" \
+    "the note names what was adopted instead of reporting that ssh happened to survive"
+
+# A tool that cannot render the ruleset cannot witness adoption: the class says it could not
+# judge, and the file still goes back.
+setup_fake_world 25.12.2
+export FAKE_FW_PRINT_UNSUPPORTED=1
+out=$(run_scen "$tmp/r-s8-fwnoprint" --case S8)
+rc=$?
+unset FAKE_FW_PRINT_UNSUPPORTED
+assert_eq "$rc" "0" "a tool that cannot render the ruleset does not fail S8"
+assert_contains "$(note_of "$tmp/r-s8-fwnoprint")" "not judged: firewall" \
+    "a class whose witness cannot be rendered says so instead of claiming a refusal"
+assert_eq "$(grep -c 'not-a-port' "$FAKE_DEV/firewall")" "0" \
+    "the file goes back even when the class could not judge it"
+
+# A rule that is dropped without a word: the machine is just as safe, so the row stays PASS,
+# but the silent drop is a FINDING -- the user is told the tool said nothing.
+setup_fake_world 25.12.2
+export FAKE_FW_WARN=no
+out=$(run_scen "$tmp/r-s8-fwnowarn" --case S8)
+rc=$?
+unset FAKE_FW_WARN
+assert_eq "$rc" "0" "a silent skip is not a failure -- the rule was still not adopted"
+assert_contains "$(note_of "$tmp/r-s8-fwnowarn")" "without a 'skipped due to invalid options' line" \
+    "a skip without a warning is reported as a finding"
+
+# The docker witness's timing: a daemon that needs a few seconds after the restart before it
+# answers must not be read as broken. The first call would say rc=1; the retries say yes.
+setup_fake_world 25.12.2
+export FAKE_DOCKERD_RESTART_RC=0 FAKE_DOCKERINFO_FAILS=2
+out=$(run_scen "$tmp/r-s8-dockerslow" --case S8)
+rc=$?
+unset FAKE_DOCKERD_RESTART_RC FAKE_DOCKERINFO_FAILS
+assert_eq "$rc" "0" "a daemon that needs a few seconds to answer is not misjudged"
+assert_contains "$(note_of "$tmp/r-s8-dockerslow")" "the daemon answered 'docker info' with a truncated daemon.json" \
+    "the retried witness is what decides, not the first call"
+assert_contains "$(note_of "$tmp/r-s8-dockerslow")" "attempts=3" \
+    "the retries are recorded: the daemon needed three attempts before it answered"
+
+# A daemon that comes back answering but empty answered, and is still not the daemon the
+# machine had: the image count is the second half of "it came back".
+setup_fake_world 25.12.2
+export FAKE_DOCKER_IMAGES_AFTER=1
+out=$(run_scen "$tmp/r-s8-dockerimages" --case S8)
+rc=$?
+unset FAKE_DOCKER_IMAGES_AFTER
+assert_eq "$rc" "1" "a daemon that comes back with a different image set makes the run non-zero"
+assert_contains "$(note_of "$tmp/r-s8-dockerimages")" "docker: the daemon came back with a different image set" \
+    "the failure names the image set, not just the daemon's state"
+
+# A daemon that was already unusable before the file was touched cannot witness this class:
+# blaming the truncated file for it would be a false arrest, so the class says it could not
+# judge and leaves the file alone.
+setup_fake_world 25.12.2
+printf 'stopped' >"$FAKE_DEV/dockerd"
+out=$(run_scen "$tmp/r-s8-dockerdown" --case S8)
+assert_eq "$?" "0" "a daemon that was already unusable does not fail S8"
+assert_contains "$(note_of "$tmp/r-s8-dockerdown")" "docker does not answer 'docker info' before" \
+    "the class refuses to blame the file for a daemon that was already down"
+assert_contains "$(cat "$FAKE_DEV/daemon.json")" '"max-size": "1m"' \
+    "nothing was written over a daemon.json whose daemon could not have witnessed the change"
 
 # A broken section that took the session away is a FAIL, and both paths back are recorded.
 # Recording "we copied something" while the machine is unreachable would be the one thing S8
@@ -1517,7 +1750,7 @@ out=$(run_scen "$tmp/r-s8-dockertol" --case S8)
 rc=$?
 unset FAKE_DOCKERD_RESTART_RC
 assert_eq "$rc" "0" "a daemon that tolerated the broken file does not fail S8"
-assert_contains "$(note_of "$tmp/r-s8-dockertol")" "dockerd is still running with a truncated daemon.json" \
+assert_contains "$(note_of "$tmp/r-s8-dockertol")" "the daemon answered 'docker info' with a truncated daemon.json" \
     "the tolerated file is reported as a FINDING, not silently passed"
 
 # A restore that does not land is a FAIL, and the note names the class it happened in: "we
@@ -1531,7 +1764,7 @@ assert_eq "$rc" "1" "a backup that cannot be copied back makes the run non-zero"
 assert_eq "$(verdict_of "$tmp/r-s8-norestore")" "FAIL" "a restore that did not land is a FAIL"
 assert_contains "$(note_of "$tmp/r-s8-norestore")" "network: the restore is not byte-identical" \
     "the failure names the class and what was compared"
-assert_contains "$(note_of "$tmp/r-s8-norestore")" "docker: dockerd did not come back after the restore" \
+assert_contains "$(note_of "$tmp/r-s8-norestore")" "docker: the daemon did not come back after the restore" \
     "every class that went red is named, not just the first one"
 assert_contains "$(cat "$tmp"/r-s8-norestore/evidence/scen-badcfg-*.tsv)" "host (incomplete)" \
     "the recovery record does not claim a restore that did not happen"
@@ -1646,14 +1879,20 @@ calls_before=$(wc -l <"$STUB_CALLS" | tr -d ' ')
 out=$(run_scen "$tmp/dry-s8" --dry-run --case S8)
 assert_eq "$?" "0" "scenarios.sh --dry-run --case S8 exits zero"
 assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S8" && $2 ~ /^[1-4]\/4$/ {print $2}' | tr '\n' ' ')" \
-    "1/4 1/4 1/4 1/4 1/4 1/4 2/4 2/4 2/4 3/4 3/4 3/4 4/4 4/4 4/4 4/4 " \
+    "1/4 1/4 1/4 1/4 1/4 1/4 2/4 2/4 2/4 2/4 3/4 3/4 3/4 4/4 4/4 4/4 4/4 " \
     "the four classes are planned in order, each with its own steps"
 assert_contains "$out" "S8 1/4 network refusal expect=ab-scen-nosuch0 was never created" \
     "the plan names the network class's refusal witness"
 assert_contains "$out" "S8 2/4 firewall restore expect=byte-identical, the rule gone, and the restored ruleset passes fw4 check" \
     "the plan says a restore has to translate again to count"
-assert_contains "$out" "S8 3/4 docker restore expect=byte-identical, then dockerd running again" \
-    "the plan says the daemon has to come back"
+assert_contains "$out" "S8 2/4 firewall refusal expect=fw4 check warns" \
+    "the plan says the check's exit status is recorded, and that adoption is witnessed by an absent rule"
+assert_contains "$out" "S8 3/4 docker badcfg" \
+    "the plan names the docker witness"
+assert_contains "$out" "docker info (not pidof) is the witness" \
+    "the plan says the process check is not the witness"
+assert_contains "$out" "S8 3/4 docker restore expect=byte-identical, then docker info rc=0 again with the same image count" \
+    "the plan says the daemon has to come back with its images"
 assert_contains "$out" "S8 4/4 apk apk update expect=non-zero on the 404 feed" \
     "the plan says the 404 has to be witnessed failing"
 assert_eq "$(wc -l <"$STUB_CALLS" | tr -d ' ')" "$calls_before" "planning S8 reaches no machine"
@@ -1700,6 +1939,88 @@ assert_contains "$helper" "nohup" "the helper schedules the network revert itsel
 rc=0
 printf '%s' "$helper" | grep -qE '\b(PASS|FAIL|GAP)\b' || rc=1
 assert_eq "$rc" "1" "the helper prints facts, never a verdict"
+
+# --- the S8 writers' argument positions ------------------------------------ #
+# The dispatcher shifts the subcommand name off before calling cmd_badcfg, so each writer
+# indexes from its own $1: `badcfg docker <path>` reads $1, not $3. Reading past the end
+# aborts the helper under `set -u`, and the host can only read the empty answer as "the
+# helper is unavailable" -- which is exactly how the first real-device run filed the docker
+# and apk classes as driver errors instead of measuring them. The helper is run here, not
+# stubbed, so the branches are exercised the way the machine runs them.
+helper_bin="$tmp/helperbin"
+mkdir -p "$helper_bin" "$tmp/helperstate"
+cat >"$helper_bin/uci" <<'UCI'
+#!/bin/sh
+# Enough uci for the helper's writers: set/get/add/commit/show, with the values kept in a
+# file so the branch's own read-back is a real read-back.
+[ "${1:-}" = "-q" ] && shift
+case "${1:-}" in
+    set)
+        key=${2%%=*}
+        val=${2#*=}
+        printf '%s=%s\n' "$key" "$val" >>"${UCI_STATE:?}"
+        ;;
+    get)
+        sed -n "s/^${2}=//p" "${UCI_STATE:?}" 2>/dev/null | tail -n 1
+        ;;
+    add)
+        printf 'cfg0bad\n'
+        ;;
+    commit|show)
+        :
+        ;;
+esac
+exit 0
+UCI
+chmod +x "$helper_bin/uci"
+
+run_helper() { # helper args...
+    UCI_STATE="$tmp/helperstate/uci" PATH="$helper_bin:$PATH" sh "$tmp/helper.sh" "$@" 2>&1
+}
+
+: >"$tmp/helperstate/uci"
+out=$(run_helper badcfg network abscenbadnet ab-scen-nosuch0 ab-scen-badproto)
+assert_eq "$?" "0" "badcfg network answers instead of aborting under set -u"
+assert_contains "$out" "badcfg=network name=abscenbadnet device=ab-scen-nosuch0 proto=ab-scen-badproto" \
+    "badcfg network reads the name, the device and the proto from its own three arguments"
+
+out=$(run_helper badcfg firewall abscenbadfw)
+assert_eq "$?" "0" "badcfg firewall answers instead of aborting under set -u"
+assert_contains "$out" "badcfg=firewall name=abscenbadfw sec=cfg0bad dest_port=not-a-port target=AB-BOGUS" \
+    "badcfg firewall reads the rule name from its own argument and reports the section it made"
+
+rm -f "$tmp/helperstate/dockerfile"
+out=$(run_helper badcfg docker "$tmp/helperstate/dockerfile")
+assert_eq "$?" "0" "badcfg docker answers instead of aborting under set -u"
+assert_contains "$out" "badcfg=docker file=$tmp/helperstate/dockerfile write_rc=0" \
+    "badcfg docker reads the path from the first class argument, not the third"
+assert_file_exists "$tmp/helperstate/dockerfile"
+assert_contains "$(cat "$tmp/helperstate/dockerfile")" '"log-opts": {' \
+    "the file written is the daemon.json the host named"
+
+out=$(run_helper badcfg apk "$tmp/helperstate/distfeeds.list" "https://mirror.lan/ab-404/packages.adb")
+assert_eq "$?" "0" "badcfg apk answers instead of aborting under set -u"
+assert_contains "$out" "badcfg=apk file=$tmp/helperstate/distfeeds.list write_rc=0 feeds=https://mirror.lan/ab-404/packages.adb" \
+    "badcfg apk reads the path and the url from its own two arguments"
+assert_contains "$(cat "$tmp/helperstate/distfeeds.list")" "ab-404" \
+    "the feed list written is the one the host asked for"
+
+# A missing argument is a usage error, never a default: the caller is told, and the helper
+# does not run on with a path it invented.
+out=$(run_helper badcfg docker)
+rc=$?
+assert_eq "$rc" "2" "badcfg docker with no path exits with the usage status"
+assert_contains "$out" "err=usage" "the missing path is named as a usage error"
+rc=0
+printf '%s' "$out" | grep -q 'parameter not set' && rc=1
+assert_eq "$rc" "0" "the helper does not abort on an unset positional parameter"
+
+out=$(run_helper badcfg apk "$tmp/helperstate/only-path.list")
+rc=$?
+assert_eq "$rc" "2" "badcfg apk without a url exits with the usage status"
+assert_contains "$out" "err=usage" "the missing url is named as a usage error"
+assert_eq "$(test -e "$tmp/helperstate/only-path.list" && echo yes || echo no)" "no" \
+    "nothing is written when an argument is missing"
 
 
 # --- ac-19 only the 25.x/apk line is accepted ------------------------------ #

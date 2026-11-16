@@ -674,7 +674,7 @@ ab-slot log --prev
 | `next=` 不是预期的槽 | 引导提示没写成功，或被更早的启动留旧了 | `ab-slot next --write` 按 `ab/state.json` 重写它；日志里 `stage=slot-cfg` 记着写入了哪个值 |
 | 升级后总回到已提交槽 | 候选槽在进入用户态前就失败了 | 日志里有 `action=fail-safe-abandon` 与 `reason=`；此时已没有 pending，修好原因后重新安装载荷 |
 | `ab-slot status` 显示 `disk=unknown` | 引导盘无法被识别 | 日志里 `stage=device` 会写明；对照实际写入的盘检查 GPT 名称与 `ab/device.json` |
-| 出现 `state is locked by another process` | 有写入者在持锁时死掉 | 只要写下这把锁的那次启动（或它的进程）已不存在，锁会被自动接管，环形日志里出现 `stage=lock action=stale-lock-taken`；同一次启动内仍然活着的写入者属于真的并发，照旧拒绝 |
+| 出现 `state is locked by another process` | 有写入者在持锁时死掉；或 ESP 根本写不进去（挂成只读，或已写满）；或活着的写入者一时没放锁 | 只要写下这把锁的那次启动（或它的进程）已不存在，锁会被自动接管，环形日志里出现 `stage=lock action=stale-lock-taken`。活着的持锁者会先被等待 `AB_LOCK_WAIT_SECS`（默认 1 秒，`AB_LOCK_WAIT_STEP` 默认 0.1 秒）再拒绝；慢速存储可调大预算，设为 0 则立刻拒绝。带此修复的镜像会把"建不出锁目录"单独报成 `cannot create /boot/ab/.lock`，不再冤枉成有写入者：那不是丢了标志文件，而是 ESP 已只读（`dmesg` 里有 `FAT-fs ... Filesystem has been set read-only`，`mount` 显示 `ro`）或写满（`df -h /boot`）。先把环形日志取出，再从另一台机器或救援启动里对 ESP 跑 `fsck.fat -a`——绝不要在运行中的镜像里做，它不带 FAT 修复工具——修好后重新以读写挂载再试 |
 | 出现 `stage=resize result=fail:btrfs-resize` | 文件系统没扩成功（initramfs 里或运行期再次失败） | `ab/log/resize.log` 里有 btrfs 自己的报错；分区保持原尺寸，下一次启动重试 |
 | 日志里没有 `btrfs=ok` | 平台层丢了工具 | 重新刷镜像，工具随平台层发布 |
 | `stage=net-seed result=lan-only` | 机器只有一个以太网口 | 预期行为：没有第二个网络可路由，盒子就是一台 LAN-only 客户端 |

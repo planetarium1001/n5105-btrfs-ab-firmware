@@ -318,6 +318,7 @@ committed=$(read_state committed a)
 slot=$(read_state slot a)
 platform=$(read_state platform 0.0.11)
 upstream=$(read_state upstream 25.12.2)
+pin=$(read_state pin "")
 case "$last" in
     *"/etc/platform-release"*)
         printf 'PLATFORM_VERSION=%s\nUPSTREAM_VERSION=%s\n' "$platform" "$upstream"
@@ -326,7 +327,63 @@ case "$last" in
         printf '%s\n%s  %s\n' "${STUB_PAYLOAD_SIZE:-100}" "${STUB_PAYLOAD_SHA:-deadbeef}" \
             "${AB_FEED_DIR:-/tmp/ab-feed}/payload.tar"
         ;;
+    # The pin case (ac-3), replayed by the same machine: a pinned machine still answers
+    # --feed-check (status=pinned, exit 0) and refuses the automatic install (74).
+    *"ab-upgrade --pin 1.2"*)
+        printf 'ab-upgrade: refused, reason=pin-invalid-version\n'
+        exit 74
+        ;;
+    *"ab-upgrade --unpin"*)
+        rm -f "$state/pin"
+        printf 'ab-upgrade: pin removed\n'
+        exit 0
+        ;;
+    *"ab-upgrade --pin "*)
+        v=""
+        prev=""
+        for a in $last; do
+            [ "$prev" = "--pin" ] && v=$a
+            prev=$a
+        done
+        printf '%s\n' "$v" >"$state/pin"
+        printf 'ab-upgrade: pinned to %s\n' "$v"
+        exit 0
+        ;;
+    *"ab-upgrade --feed-check"*)
+        # No --feed-url on this run, so the shipped config reaches the release.
+        printf 'source=release feed=https://release.invalid/v1\n'
+        if [ -n "$pin" ]; then
+            printf 'platform=%s platform_available=0.0.12 base=25.12.2 base_available=25.12.2 kernel=6.12.103 kernel_available=6.12.103 span=none level=Z1 pin=%s status=pinned\n' \
+                "$platform" "$pin"
+            exit 0
+        fi
+        printf 'platform=%s platform_available=0.0.12 base=25.12.2 base_available=25.12.2 kernel=6.12.103 kernel_available=6.12.103 span=none level=Z1 status=update\n' \
+            "$platform"
+        exit 10
+        ;;
+    # The explicit payload path: installs while the pin is set, arms the other slot with
+    # the same generation bump a real install makes.
+    *"ab-upgrade /tmp/payload-"*)
+        printf 'ab-upgrade: installed 25.12.2 into slot b (@overlay-25.12.2-r2), 0 conflict(s), reclaimed 0\n'
+        printf 'b\n' >"$state/pending"
+        printf '%s\n' "$((gen + 1))" >"$state/generation"
+        ;;
+    *"ab-slot abandon"*)
+        rm -f "$state/pending"
+        ;;
+    *"sed -n"*)
+        [ -n "$pin" ] && printf '%s\n' "$pin"
+        ;;
+    *"cat > "*)
+        # dev_push pipes the payload through cat.
+        cat >/dev/null
+        ;;
     *"ab-upgrade --feed --yes"*)
+        if [ -n "$pin" ]; then
+            printf '%s is available, but UPDATE_PIN=%s holds this machine\n' 0.0.12 "$pin"
+            printf 'ab-upgrade: refused, reason=feed-pinned\n'
+            exit 74
+        fi
         printf 'platform=%s platform_available=0.0.12 base=25.12.2 base_available=25.12.2 kernel=6.12.103 kernel_available=6.12.103 span=none level=Z1 status=update\n' \
             "$platform"
         printf 'ab-upgrade: verified, installing\n'
@@ -416,5 +473,62 @@ out="$(run_ac13 env STUB_UPSTREAM_AFTER=25.12.3)"
 assert_eq "$?" "1" "ac-13 a payload that moved the base is a FAIL"
 assert_contains "$out" "FAIL [ac-13] UPSTREAM_VERSION=25.12.3, expected 25.12.2" \
   "ac-13 the base under the platform release is judged"
+
+# --- ac-12: the plan names the source the flags will actually produce ------
+# The static "source=release" was wrong for every --feed-url run, which is the run a
+# local acceptance uses: the real assertion next to it expects source=feed there.
+out="$(AB_DRY_RUN=1 sh "$install" --case check)"
+assert_contains "$out" "ac-12 2/4 expect exit=10, source=release" \
+  "ac-12 without --feed-url the plan expects source=release"
+out="$(AB_DRY_RUN=1 sh "$install" --case check --feed-url https://mirror.invalid/v1)"
+assert_contains "$out" "ac-12 2/4 expect exit=10, source=feed" \
+  "ac-12 with --feed-url the plan expects source=feed"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'source=release' || true)" "0" \
+  "ac-12 the plan does not promise the release source when a mirror was named"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'source=feed' || true)" "1" \
+  "ac-12 the plan names exactly one source, the mirror's"
+
+# --------------------------------------------------------------------------- #
+# ac-13's row is its own sentence, not the previous case's
+#
+# The defect this locks (measured on the lab machine 2026-11-17): run_install never wrote
+# CASE_NOTE and run_case never reset it, so under `--case all` - how the acceptance runs
+# it - the ac-13 row carried ac-3's "committed b never moved" on the one case that moves
+# the committed slot from b to a. The row is evidence, and that sentence was false. The
+# stub now walks check, pin and install in one process, which is the shape that produced
+# it; a case run alone could never show the contamination.
+# --------------------------------------------------------------------------- #
+mkdir -p "$tmp/all-payloads"
+: >"$tmp/all-payloads/payload-0.0.12.tar"
+run_all() {
+  PATH="$ac13_bin:$PATH" STUB_CALLS="$ac13_calls" STUB_STATE="$ac13_state" \
+    AB_KEY="$tmp/key" AB_HOST=root@stub AB_FEED_INSTALL_RESULTS="$tmp/all-results.tsv" \
+    AB_PAYLOAD_DIR="$tmp/all-payloads" \
+    AB_POLL_INTERVAL=1 AB_WAIT_UP=1 AB_WAIT_UP_FIRST=1 AB_WAIT_UP_HARD=2 \
+    "$@" sh "$install" --case all --expect 0.0.12 --index-file "$tmp/index.txt" 2>&1
+}
+note_of() { awk -F'\t' -v c="$1" '$1 == c { print $4 }' "$tmp/all-results.tsv"; }
+
+reset_ac13_state
+rm -f "$tmp/all-results.tsv"
+out="$(run_all)"
+assert_eq "$?" "0" "ac-3/ac-13 --case all walks check, pin and install on one machine"
+ac3_note=$(note_of ac-3)
+ac12_note=$(note_of ac-12)
+ac13_note=$(note_of ac-13)
+assert_contains "$ac12_note" "feed-check saw 0.0.12 (source=release); exit=10" \
+  "ac-12 the check row carries the candidate and the source it read"
+assert_contains "$ac3_note" "held the automatic path" \
+  "ac-3 the pin row keeps the sentence the pin case writes"
+assert_eq "$(printf '%s' "$ac13_note" | grep -c 'held the automatic path' || true)" "0" \
+  "ac-13 the install row does not reuse ac-3's sentence"
+assert_eq "$(printf '%s' "$ac13_note" | grep -c 'never moved' || true)" "0" \
+  "ac-13 the install row does not claim the committed slot never moved"
+assert_contains "$ac13_note" "slot a -> b" \
+  "ac-13 the row names the slot the upgrade landed in"
+assert_contains "$ac13_note" "committed a -> b" \
+  "ac-13 the row names where the committed slot moved"
+assert_contains "$ac13_note" "reboots=1" "ac-13 the row says how many reboots it cost"
+assert_contains "$ac13_note" "0.0.11 -> 0.0.12" "ac-13 the row names the version it moved"
 
 finish

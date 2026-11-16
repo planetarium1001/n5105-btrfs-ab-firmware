@@ -33,10 +33,14 @@
 #   * an owner from another boot_id (the writer died with that boot) -> stale
 #   * an owner from this boot whose pid is gone (killed while writing) -> stale
 #   * an owner from this boot whose pid is alive                      -> a real writer,
-#                                                                       refused as before
+#                                                                       waited for briefly
+#                                                                       (AB_LOCK_WAIT_SECS),
+#                                                                       then refused
 #
 # Taking over is logged, and releasing is idempotent, so the state is never left locked
-# by a machine that is not running.
+# by a machine that is not running. A volume that cannot create the directory at all - a
+# read-only or full ESP - is reported as "cannot create <lock>", never as another writer,
+# because blaming a process that does not exist hides the real fault.
 #
 # GRUB does not read this file. It reads /boot/grub/ab-slot.cfg, a two-line GRUB
 # script (`set default=<n>`, `set fallback=<m>`) that grub.cfg sources after its menu
@@ -91,6 +95,10 @@
 #   AB_PACKAGES_LIB  package snapshot/replay library (default /lib/upgrade/packages.sh)
 #   AB_VERSION_LIB   version comparison and identity (default /lib/ab-version.sh)
 #   AB_RELEASE_FILE  the identity file itself (default /etc/platform-release)
+#   AB_LOCK_WAIT_SECS  how long a writer waits for a live lock holder before refusing
+#                    (default 1; 0 refuses at once, the old behaviour)
+#   AB_LOCK_WAIT_STEP  how often it looks again while waiting (default 0.1s; where the
+#                    shell cannot sleep a fraction of a second, one second)
 
 set -u
 # Keep whatever PATH we were given in front: the running system already supplies
@@ -121,6 +129,11 @@ LOCK_OWNER="${LOCKDIR}/owner"
 # Where the kernel publishes the id of this boot. Overridable so tests can describe a
 # machine that has restarted.
 AB_BOOT_ID_FILE="${AB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
+# A live holder is waited for, not refused on sight: an upgrade and a boot-path commit can
+# meet on the same ESP, and one second is enough for the loser to succeed instead of
+# failing an upgrade over a scheduling accident. 0 restores the immediate refusal.
+AB_LOCK_WAIT_SECS="${AB_LOCK_WAIT_SECS:-1}"
+AB_LOCK_WAIT_STEP="${AB_LOCK_WAIT_STEP:-0.1}"
 # Mount points the running system provides next to the overlay root.
 DATA_MOUNT=/data
 DOCKER_MOUNT=/opt/docker
@@ -280,9 +293,71 @@ release_lock() {
     return 0
 }
 
+# lock_tenths <seconds> <fallback>: a decimal number of seconds as whole tenths, so the
+# wait deadline is plain ash arithmetic - no floats, no bc. Anything that is not a
+# non-negative decimal becomes the fallback.
+lock_tenths() {
+    _lt_value="$1"
+    case "${_lt_value}" in
+        '' | *[!0-9.]* | .* | *. | *.*.*) _lt_value="$2" ;;
+    esac
+    _lt_int="${_lt_value%%.*}"
+    _lt_frac=""
+    case "${_lt_value}" in
+        *.*) _lt_frac="${_lt_value#*.}" ;;
+    esac
+    # A leading zero makes the shell read the number as octal (`010`), and `08` is then
+    # not a number at all; strip it before the arithmetic.
+    while [ "${#_lt_int}" -gt 1 ]; do
+        case "${_lt_int}" in
+            0*) _lt_int="${_lt_int#0}" ;;
+            *) break ;;
+        esac
+    done
+    [ -n "${_lt_int}" ] || _lt_int=0
+    # Only the first decimal matters, and a step below one tenth is still one tenth.
+    _lt_frac="${_lt_frac}0"
+    _lt_frac="${_lt_frac%"${_lt_frac#?}"}"
+    printf '%s' "$((_lt_int * 10 + _lt_frac))"
+}
+
+# lock_wait_sleep <step in tenths>: sleep one wait step and print the tenths it consumed.
+# A busybox built without FANCY_SLEEP rejects a fractional argument, so the first such
+# rejection degrades the step to one whole second: the wait still happens, it is only
+# coarser, and the budget is charged for the time actually spent.
+lock_wait_sleep() {
+    if [ -z "${_LOCK_SLEEP_FRACTIONAL:-}" ]; then
+        if sleep "${_lock_step}" 2>/dev/null; then
+            _LOCK_SLEEP_FRACTIONAL=1
+            printf '%s' "$1"
+            return 0
+        fi
+        _LOCK_SLEEP_FRACTIONAL=0
+    fi
+    if [ "${_LOCK_SLEEP_FRACTIONAL}" = "1" ]; then
+        sleep "${_lock_step}" 2>/dev/null || :
+        printf '%s' "$1"
+        return 0
+    fi
+    sleep 1 2>/dev/null || :
+    printf '10'
+}
+
 lock_state() {
     mkdir -p "${AB_ESP}/ab" || die "cannot create ${AB_ESP}/ab"
     _lock_try=0
+    # Normalize both tunables once. The deadlines are counted in tenths of a second, and a
+    # zero step would only spin, so it is never allowed.
+    _lock_step="${AB_LOCK_WAIT_STEP:-0.1}"
+    case "${_lock_step}" in
+        '' | *[!0-9.]* | .* | *. | *.*.* | 0) _lock_step=0.1 ;;
+    esac
+    _lock_step_tenths="$(lock_tenths "${_lock_step}" 0.1)"
+    if [ "${_lock_step_tenths}" -le 0 ]; then
+        _lock_step=0.1
+        _lock_step_tenths=1
+    fi
+    _lock_wait_tenths="$(lock_tenths "${AB_LOCK_WAIT_SECS:-1}" 1)"
     while :; do
         if mkdir "${LOCKDIR}" 2>/dev/null; then
             printf '%s %s %s\n' "$(boot_id)" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -293,13 +368,27 @@ lock_state() {
             trap 'release_lock' EXIT INT TERM
             return 0
         fi
-        _lock_try=$((_lock_try + 1))
+        # A missing directory after a failed mkdir is not contention: the entry could not
+        # be created at all (the ESP is mounted read-only or is full). It is still retried
+        # inside the wait budget, because a holder may have released between the two
+        # checks; the final verdict then names the real cause.
+        _lock_cannot_create=0
+        [ -d "${LOCKDIR}" ] || _lock_cannot_create=1
         if lock_is_stale; then
+            _lock_try=$((_lock_try + 1))
             say "ab-slot: taking over a stale lock (action=stale-lock-taken)"
             release_lock
             [ "${_lock_try}" -lt 5 ] || die "cannot take over the stale lock at ${LOCKDIR}"
             continue
         fi
+        # A live holder: wait for it, but only within the budget. The budget is separate
+        # from _lock_try on purpose - contention must not consume stale-takeover attempts.
+        if [ "${_lock_wait_tenths}" -gt 0 ]; then
+            _lock_consumed="$(lock_wait_sleep "${_lock_step_tenths}")"
+            _lock_wait_tenths=$((_lock_wait_tenths - _lock_consumed))
+            continue
+        fi
+        [ "${_lock_cannot_create}" = "0" ] || die "cannot create ${LOCKDIR}"
         die "state is locked by another process"
     done
 }

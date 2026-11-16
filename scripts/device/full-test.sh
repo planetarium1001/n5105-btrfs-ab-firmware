@@ -131,6 +131,7 @@ TASK_ID=${AB_TASK_ID:-}
 # the driver's own default" - this script does not know which release is under acceptance,
 # and a version hardcoded here would keep claiming it long after the release moved on.
 EXPECT=${AB_EXPECT:-}
+FEED_URL=${AB_FEED_URL:-}
 # Both docker phases read and write this one directory: D1 leaves before.snapshot, D2/D3
 # read it back and write after.snapshot. Overridable, but it must be the SAME value for both
 # phases - two directories would leave D2 comparing against nothing.
@@ -399,6 +400,14 @@ _phase_args() {
             printf '%s %s ' "--case" "${_pa_fc}"
             if [ -n "${EXPECT}" ]; then
                 printf '%s %s ' "--expect" "${EXPECT}"
+            fi
+            # A feed the caller hosts itself (a mirror under construction, or the release
+            # candidate before it is published) is named with AB_FEED_URL. Without it the
+            # driver asks the machine's own configured source, which is what a released
+            # round should use: the question "does the published feed carry this release"
+            # only has one honest answer once the release exists.
+            if [ -n "${FEED_URL}" ]; then
+                printf '%s %s ' "--feed-url" "${FEED_URL}"
             fi
             ;;
         release)

@@ -8,10 +8,14 @@
 #       the upgrade recorded the new layer and version and marked the slot pending
 #       -> S5-EVIDENCE=ok phase=upgrade slot=<slot>
 #
-#   --phase commit --slot b
+#   --phase commit --slot b --serial <file>
 #       the candidate boot committed, reclamation left only referenced layers, and the
 #       conflict report is on the ESP
 #       -> S5-RESULT=ok upgrade=<slot> conflicts=<n> reclaimed=<n>
+#       The input is asserted before the output: a FAT chain the driver already declared
+#       broken (reason=esp-corrupt) or an ESP that refuses a write probe
+#       (reason=esp-read-only) is named as the machine fault it is, never as the product
+#       failing to commit.
 #
 #   --phase toolchain --serial <file>
 #       the guest proved the btrfs tool runs and can list subvolumes
@@ -22,6 +26,9 @@
 #       -> S5-EVIDENCE=ok phase=degraded target=p4
 #
 # Inputs (environment): CI_IMAGE
+#   CI_S5_PART_WAIT_ATTEMPTS  quarter-second polls for the p4 node after losetup
+#                             --partscan (default 40; tests set 0 because they drive the
+#                             grader from a directory fixture with no loop device)
 
 set -euo pipefail
 
@@ -63,6 +70,59 @@ fail_phase() {
     exit 1
 }
 
+# fat_damage_evidence: the FAT driver says a chain is broken before any state assertion
+# can mean anything. "FAT-fs ... invalid cluster chain" and "Filesystem has been set
+# read-only" are the two lines the kernel prints on the image that produced the false
+# "committed-is-a" red: the harness cut QEMU off mid-write, the next boot found the
+# damage, and the commit could never be recorded. The evidence is printed once and the
+# phase fails as esp-corrupt, so a damaged machine is not reported as the product.
+fat_damage_evidence() {
+    _fat_re='FAT-fs .*invalid cluster chain|Filesystem has been set read-only'
+    _files=("${boot_log}")
+    if [ -n "${serial}" ]; then
+        _files=("${serial}" "${boot_log}")
+    fi
+    for _file in "${_files[@]}"; do
+        [ -f "${_file}" ] || continue
+        _hits="$(sudo grep -E "${_fat_re}" "${_file}" 2>/dev/null || true)"
+        if [ -n "${_hits}" ]; then
+            printf '%s\n' "${_hits}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# esp_write_probe: the commit phase asserts its input, not only its output. A read-only
+# ESP cannot record a commit, so the phase must not read that as "the product did not
+# commit". The ESP is remounted read-write in place rather than mounted a second time: the
+# kernel shares one superblock per block device and refuses to change its read-only state
+# through a second mount, so a second `-o rw` mount would report every ESP as read-only.
+# A tiny file is written at the ESP root and removed; it does not depend on the ab/ tree a
+# half-initialised ESP may not have. The mount stays read-write for the rest of the phase,
+# which only reads.
+ESP_WRITE_REASON=""
+esp_write_probe() {
+    if ! sudo umount "${esp}"; then
+        ESP_WRITE_REASON="unmount-failed"
+        return 1
+    fi
+    if ! sudo mount -t vfat -o rw "${loopdev}p1" "${esp}"; then
+        ESP_WRITE_REASON="rw-mount-failed"
+        return 1
+    fi
+    _probe="${esp}/.s5-write-probe.$$"
+    if ! printf 's5-phase write probe\n' | sudo tee "${_probe}" >/dev/null 2>&1; then
+        ESP_WRITE_REASON="write-failed:${_probe}"
+        return 1
+    fi
+    if ! sudo rm -f "${_probe}" 2>/dev/null; then
+        ESP_WRITE_REASON="remove-failed:${_probe}"
+        return 1
+    fi
+    return 0
+}
+
 loopdev=""
 mounted=()
 cleanup() {
@@ -77,7 +137,15 @@ trap cleanup EXIT
 
 loopdev="$(sudo losetup --find --show --partscan "${image}")"
 attempt=0
-until [ -b "${loopdev}p4" ] || [ "${attempt}" -ge 40 ]; do
+# losetup --partscan returns before the kernel names the nodes. Forty quarter-second
+# attempts is the budget a real image needs; the tests drive the grader from a directory
+# fixture with no loop device behind it, so they set this to 0 instead of burning ten
+# seconds per case.
+part_attempts="${CI_S5_PART_WAIT_ATTEMPTS:-40}"
+case "${part_attempts}" in
+    '' | *[!0-9]*) part_attempts=40 ;;
+esac
+until [ -b "${loopdev}p4" ] || [ "${attempt}" -ge "${part_attempts}" ]; do
     attempt=$((attempt + 1))
     sleep 0.25
 done
@@ -133,6 +201,28 @@ fi
 
 mount_esp
 state="${esp}/ab/state.json"
+boot_log="${esp}/ab/log/boot-0.log"
+
+# The commit phase is the one graded on state the product wrote, so its *input* has to be
+# proven before the state is read: an ESP the kernel already declared broken must not be
+# recorded as the product failing to commit. The corruption scan comes first because it is
+# the more specific evidence; the write probe then catches a read-only ESP that left no
+# FAT line behind.
+if [ "${phase}" = "commit" ]; then
+    [ -n "${serial}" ] && [ -f "${serial}" ] || ci_die "commit phase needs --serial"
+    if fat_hits="$(fat_damage_evidence)"; then
+        ci_log "the FAT ESP was already damaged before this phase ran, so no commit could have been recorded:"
+        printf '%s\n' "${fat_hits}" | sed 's/^/[s5-phase]   /'
+        fail_phase esp-corrupt
+    fi
+    if ! esp_write_probe; then
+        ci_log "the ESP refuses writes (${ESP_WRITE_REASON}); the commit could not have been recorded"
+        ci_log "reason=esp-read-only names a harness/machine fault, not a product verdict"
+        fail_phase esp-read-only
+    fi
+    ci_log "the ESP accepts writes: the write probe was removed again"
+fi
+
 [ -f "${state}" ] || fail_phase state-missing
 committed="$(sudo sed -n 's/.*"committed": *"\([ab]\)".*/\1/p' "${state}" | head -n 1)"
 if sudo grep -q '"pending": *null' "${state}"; then pending="none"; else
@@ -165,9 +255,17 @@ fi
 [ "${committed}" = "${slot}" ] || fail_phase "committed-is-${committed}"
 [ "${pending}" = "none" ] || fail_phase "pending-is-${pending}"
 
-boot_log="${esp}/ab/log/boot-0.log"
-sudo grep -q "stage=commit slot=${slot}" "${boot_log}" 2>/dev/null ||
+# The record has to be the one line that says the commit succeeded. `grep -q "stage=commit
+# slot=b"` also matched the failure record "stage=commit slot=b result=fail
+# reason=commit-failed", so a boot whose commit failed could be graded ok - the exact line
+# this image prints when the FAT ESP is cut off mid-write. Both fields are required on the
+# same line now.
+if ! sudo grep -Eq "stage=commit slot=${slot}( |\$).*result=ok( |\$)" "${boot_log}" 2>/dev/null; then
+    ci_warn "the boot log has no successful commit record for slot ${slot}"
+    sudo grep -E "stage=commit slot=${slot}( |\$)" "${boot_log}" 2>/dev/null |
+        sed 's/^/[s5-phase]   /' || true
     fail_phase "no-commit-record"
+fi
 ci_log "boot log records the commit of slot ${slot}"
 
 # Conflicts: the report exists, its baseline was readable, and the fixture's conflict

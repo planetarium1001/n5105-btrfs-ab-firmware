@@ -71,6 +71,17 @@ after_part() {
 # before_part <file>: the first capture, label included.
 before_part() { awk '/^## snapshot after/{exit} {print}' "$1"; }
 
+# block_of <file> <block>: one `## <block>` section of a capture's output.
+# Counting `state=ok` in the whole output is ambiguous (the volume block has one too), so
+# these assertions look inside the block they are about.
+block_of() {
+  awk -v want="## $2" '
+    $0 == want { inside = 1; next }
+    inside && /^## / { inside = 0 }
+    inside { print }
+  ' "$1"
+}
+
 # extract_plan <file> <case> <step>: the remote script --dry-run printed, unindented.
 # A plan block is indented by four spaces; a 2-space `  assert:`/`  local:` note is not part
 # of it, which is why the stop condition is "a line that is not indented by four".
@@ -183,7 +194,8 @@ run() { PATH="$tmp/emptybin:$PATH" "$@"; }
 # ac-9: the comparator has to be awake before any verdict counts
 # --------------------------------------------------------------------------- #
 out=$(run sh "$probe" --selfcheck 2>&1)
-assert_eq "$?" "0" "ac-9 the comparator self-check passes"
+rc=$?
+assert_eq "$rc" "0" "ac-9 the comparator self-check passes"
 assert_contains "$out" "selfcheck unchanged" "ac-9 a pristine pair is green"
 assert_contains "$out" "selfcheck grew-image       want=green got=green" "ac-9 an added image is green (subset rule)"
 assert_contains "$out" "selfcheck lost-image       want=red" "ac-9 a dropped image is red"
@@ -258,6 +270,226 @@ assert_contains "$pull_text" "## info_workload" \
   "ac-9 the workload step prints the info_workload block the pull grader reads"
 assert_contains "$pull_text" "pull=%s rc=%s url=%s http=%s why=%s attempts=%s digest=%s" \
   "ac-9 the pull line carries URL, HTTP status, retry count and digest"
+# --------------------------------------------------------------------------- #
+# ac-9: the copy-out landing (the 0.0.12 device regression)
+#
+# On the real machine (docker 29.6.1) `docker cp <c>:/artifact <dest>/` with a DEST that does
+# not exist put the files at DEST/marker.txt - the CONTENTS of the source directory, not the
+# directory. The first version of this script looked for DEST/artifact/ only, so four
+# assertions went red on a healthy machine. These tests run the real capture script against a
+# stub docker that copies out both ways and asserts both are read; a third mode copies nothing
+# and must stay red. That is the regression lock: the layout is read from the filesystem, not
+# assumed.
+# --------------------------------------------------------------------------- #
+mkdir -p "$tmp/devbin"
+cat >"$tmp/devbin/docker" <<'STUB'
+#!/bin/sh
+# A stand-in for docker(1). Only what the capture script calls.
+sub=${1:-}
+shift || true
+case "$sub" in
+  info)
+    case "${1:-}" in
+      --format)
+        case "${2:-}" in
+          *ServerVersion*) printf '29.6.1\n' ;;
+          *Images*) printf '8\n' ;;
+          *ContainersRunning*) printf '0\n' ;;
+          *Containers*) printf '1\n' ;;
+          *Driver*) printf 'overlay2\n' ;;
+          *DockerRootDir*) printf '/opt/docker\n' ;;
+          *) printf 'unknown\n' ;;
+        esac
+        ;;
+    esac
+    exit 0 ;;
+  image) exit 0 ;;
+  container)
+    case "${1:-}" in
+      inspect)
+        case "${2:-}" in
+          dp-readback) exit "${DP_RB_RESIDUE_EXIT:-1}" ;;
+          *) exit 0 ;;
+        esac ;;
+      rm) exit 0 ;;
+    esac
+    exit 0 ;;
+  create)
+    if [ "${DP_CREATE_OK:-1}" = "1" ]; then exit 0; fi
+    printf 'Error response from daemon: Conflict. The container name "/dp-readback" is already in use\n' >&2
+    exit 1 ;;
+  run) exit 0 ;;
+  images)
+    # The machine the capture runs on has the two pulled images AND the committed one.
+    printf 'acpt/docker-probe|baseline|sha256:af9a|sha256:af9a\n'
+    printf 'docker.m.daocloud.io/library/nginx|alpine|sha256:fed7|sha256:fed7\n'
+    printf 'docker.m.daocloud.io/library/redis|7-alpine|sha256:7f7d|sha256:7f7d\n'
+    exit 0 ;;
+  volume)
+    case "${1:-}" in
+      inspect) printf '%s\n' "$DP_VOLUME_DIR" ;;
+      ls) printf 'acpt-docker-probe-vol\n' ;;
+    esac
+    exit 0 ;;
+  ps) exit 0 ;;
+  cp)
+    dest=$2
+    # DP_CP_LAYOUT is what the real docker does with a non-existent trailing-slash DEST.
+    case "${DP_CP_LAYOUT:-flat}" in
+      flat)
+        mkdir -p "$dest"
+        printf '%s\n' "$DP_TEXT_MARKER" >"$dest/marker.txt"
+        printf '%s\n' "$DP_TEXT_PAYLOAD" >"$dest/payload.txt" ;;
+      nested)
+        mkdir -p "$dest/artifact"
+        printf '%s\n' "$DP_TEXT_MARKER" >"$dest/artifact/marker.txt"
+        printf '%s\n' "$DP_TEXT_PAYLOAD" >"$dest/artifact/payload.txt" ;;
+      nothing)
+        mkdir -p "$dest" ;;
+    esac
+    exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$tmp/devbin/docker"
+cat >"$tmp/devbin/ab-slot" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${DP_STATUS:?}"
+STUB
+chmod +x "$tmp/devbin/ab-slot"
+cat >"$tmp/devbin/btrfs" <<'STUB'
+#!/bin/sh
+case "${1:-}" in
+  subvolume)
+    printf '\tName: \t\t\t%s\n' "${3##*/}"
+    printf '\tUUID: \t\t\t%s\n' "${DP_SUBVOL_UUID:?}"
+    printf '\tSubvolume ID: \t\t%s\n' "${DP_SUBVOL_ID:?}" ;;
+  property) printf 'ro=false\n' ;;
+esac
+STUB
+chmod +x "$tmp/devbin/btrfs"
+
+# The capture script is generated with the stub as AB_DOCKER_BIN, so the `$D` it calls during
+# this test is the stub and not /usr/bin/docker (which the device has and a laptop does not).
+AB_DOCKER_BIN="$tmp/devbin/docker" sh "$probe" --dry-run 2>/dev/null \
+  | awk '/^plan D1 step=capture$/{f=1;next} f&&substr($0,1,4)=="    "{sub(/^    /,"");print;next} f{f=0}' \
+  >"$tmp/capture-stub.sh"
+assert_eq "$(head -1 "$tmp/capture-stub.sh")" "D=$tmp/devbin/docker" \
+  "ac-9 (fixture guard) the capture script under test calls the stub docker"
+
+# capture_once <layout> [extra env=...]: run the real capture script against the stub device.
+capture_once() {
+  local layout=$1
+  shift
+  local vol="$tmp/vol-$layout" st="$tmp/status-$layout"
+  rm -rf "$vol"
+  mkdir -p "$vol"
+  printf '%s\n' "$V_MARKER_TEXT" >"$vol/volume-marker.txt"
+  printf '%s\n' "$V_UTF8_TEXT" >"$vol/volume-utf8.txt"
+  printf 'slot=b upper=@overlay-25.12.2-r2 generation=5 committed=b pending=none p4=ok data=ok docker=ok swap=ok esp=ok boot=ok packages=aligned packages_reason=none\n' >"$st"
+  env PATH="$tmp/devbin:$PATH" \
+    DP_CP_LAYOUT="$layout" DP_VOLUME_DIR="$vol" DP_STATUS="$(cat "$st")" \
+    DP_SUBVOL_UUID=7fcfefc7-afb0-b645-92ca-72c03e8dbc28 DP_SUBVOL_ID=257 \
+    DP_TEXT_MARKER="$MARKER_TEXT" DP_TEXT_PAYLOAD="$PAYLOAD_TEXT" \
+    "$@" sh "$tmp/capture-stub.sh" 2>"$tmp/capture-$layout.err"
+}
+
+# --- the layout the real machine produced (files land directly in DEST) -----
+capture_once flat >"$tmp/out-flat.txt"
+assert_eq "$(grep -c '^volatile_cp_layout=flat$' "$tmp/out-flat.txt")" "2" \
+  "ac-9 a flat copy-out (files directly in DEST) is recognised for both copies"
+assert_eq "$(block_of "$tmp/out-flat.txt" assert_container_artifact | grep -c '^state=ok$')" "1" \
+  "ac-9 a flat copy-out leaves the container block ok"
+assert_eq "$(block_of "$tmp/out-flat.txt" assert_commit_artifact | grep -c '^state=ok$')" "1" \
+  "ac-9 a flat copy-out leaves the image-layer block ok"
+assert_contains "$(block_of "$tmp/out-flat.txt" assert_container_artifact)" \
+  "artifact=marker.txt sha256=$M_SHA bytes=$M_BYTES" \
+  "ac-9 the flat layout yields the container artifact"
+assert_contains "$(block_of "$tmp/out-flat.txt" assert_commit_artifact)" \
+  "artifact=marker.txt sha256=$M_SHA bytes=$M_BYTES" \
+  "ac-9 the flat layout yields the same bytes out of the committed image"
+assert_contains "$(block_of "$tmp/out-flat.txt" assert_container_artifact)" \
+  "artifact=payload.txt sha256=$P_SHA" "ac-9 the flat layout yields the payload too"
+assert_eq "$(grep -c '^cp_error=' "$tmp/out-flat.txt")" "0" \
+  "ac-9 a healthy flat copy-out prints no cp_error line"
+assert_eq "$(cat "$tmp/capture-flat.err")" "" "ac-9 the capture script is silent on stderr"
+
+# --- the layout the first version assumed (DEST/artifact/...) --------------
+capture_once nested >"$tmp/out-nested.txt"
+assert_eq "$(grep -c '^volatile_cp_layout=nested$' "$tmp/out-nested.txt")" "2" \
+  "ac-9 a nested copy-out (DEST/artifact/) is recognised too"
+assert_eq "$(block_of "$tmp/out-nested.txt" assert_container_artifact | grep -c '^state=ok$')" "1" \
+  "ac-9 a nested copy-out leaves the container block ok"
+assert_contains "$(block_of "$tmp/out-nested.txt" assert_commit_artifact)" \
+  "artifact=marker.txt sha256=$M_SHA bytes=$M_BYTES" \
+  "ac-9 the nested layout yields the same artifacts as the flat one"
+
+# --- neither layout: red, and the note says why ----------------------------
+capture_once nothing >"$tmp/out-nothing.txt"
+assert_eq "$(block_of "$tmp/out-nothing.txt" assert_container_artifact | grep -c '^state=cp-failed$')" "1" \
+  "ac-9 a copy that lands nowhere is cp-failed in the container block"
+assert_eq "$(block_of "$tmp/out-nothing.txt" assert_commit_artifact | grep -c '^state=cp-failed$')" "1" \
+  "ac-9 a copy that lands nowhere is cp-failed in the image-layer block"
+assert_eq "$(block_of "$tmp/out-nothing.txt" assert_container_artifact | grep -c '^cp_error=rc=0 layout=none ')" "1" \
+  "ac-9 the cp_error line carries the real rc and the layout found"
+assert_eq "$(grep -c '^artifact=' "$tmp/out-nothing.txt")" "2" \
+  "ac-9 nothing is invented for the copy: the only artifact lines left are the volume's"
+
+# --- a leftover readback container is removed first and recorded -----------
+out=$(capture_once flat DP_RB_RESIDUE_EXIT=0)
+assert_contains "$out" "volatile_readback_residue=yes" \
+  "ac-9 a leftover dp-readback container is recorded, not silently reused"
+assert_contains "$out" "state=ok" "ac-9 the leftover does not break the image-layer read"
+
+# --- a create that fails names the residue and the daemon's first line -----
+out=$(capture_once flat DP_CREATE_OK=0)
+assert_contains "$out" "state=create-failed" "ac-9 a failed readback create is named create-failed"
+assert_contains "$out" "create_error=residue=no err=Error response from daemon: Conflict." \
+  "ac-9 the create failure quotes the daemon, not a generic 'create failed'"
+
+# --- end to end: the capture output is a snapshot the grader accepts -------
+# Two captures with the slot moved, plus the workload facts D1 collects separately: the
+# stored pair must compare PASS. With the copy landing nowhere the same pair must be red,
+# which is what the 0.0.12 run saw.
+workload_block() {
+  printf '## info_workload\n'
+  printf 'mirror=docker.m.daocloud.io\n'
+  printf 'pull=library/redis:7-alpine rc=0 url=https://docker.m.daocloud.io/library/redis:7-alpine http=none why=none attempts=1 digest=sha256:7f7d\n'
+  printf 'pull=library/nginx:alpine rc=0 url=https://docker.m.daocloud.io/library/nginx:alpine http=none why=none attempts=1 digest=sha256:fed7\n'
+  printf 'run_rc=0\nvolume_create_rc=0\nvolume_write_rc=0\ncommit_rc=0\n'
+}
+snapshot_pair() { # <out> <layout> <after-status>
+  local out_f=$1 layout=$2 after_status=$3
+  {
+    printf '## snapshot before\n'
+    workload_block
+    capture_once "$layout" DP_STATUS='slot=b upper=@overlay-25.12.2-r2 generation=5 committed=b pending=none p4=ok data=ok docker=ok swap=ok esp=ok boot=ok packages=aligned packages_reason=none'
+    printf '## snapshot after\n'
+    workload_block
+    capture_once "$layout" DP_STATUS="$after_status"
+  } >"$out_f"
+}
+snapshot_pair "$tmp/e2e.txt" flat 'slot=a upper=@overlay-25.12.2-r3 generation=6 committed=a pending=none p4=ok data=ok docker=ok swap=ok esp=ok boot=ok packages=aligned packages_reason=none'
+rm -rf "$tmp/s-e2e"
+out=$(run sh "$probe" --case D1 --case D2 --input "$tmp/e2e.txt" \
+  --results "$tmp/e2e.tsv" --snapshot-dir "$tmp/s-e2e" 2>&1)
+rc=$?
+# `rc` and not `$?`: anything between the capture and the assertion (a debug print, say)
+# would otherwise be what gets asserted, and a red run would be reported green.
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | sed 's/^/    e2e| /' >&2
+assert_eq "$rc" "0" "ac-9 a capture on the real copy-out layout grades PASS end to end"
+assert_contains "$out" "== D1 PASS" "ac-9 the real-layout baseline PASSes"
+assert_contains "$out" "== D2 PASS" "ac-9 the real-layout hop PASSes"
+
+snapshot_pair "$tmp/e2e-bad.txt" nothing 'slot=a upper=@overlay-25.12.2-r3 generation=6 committed=a pending=none p4=ok data=ok docker=ok swap=ok esp=ok boot=ok packages=aligned packages_reason=none'
+rm -rf "$tmp/s-e2e-bad"
+out=$(run sh "$probe" --case D1 --input "$tmp/e2e-bad.txt" \
+  --results "$tmp/e2e-bad.tsv" --snapshot-dir "$tmp/s-e2e-bad" 2>&1)
+rc=$?
+assert_eq "$rc" "1" "ac-9 a baseline whose copy landed nowhere is a FAIL, not a skip"
+assert_contains "$out" "cp_error=rc=0 layout=none" \
+  "ac-9 the FAIL note carries the reason the bytes could not be read"
+
 assert_contains "$pull_text" 'run --name "$C"' "ac-9 the workload really starts a container"
 assert_contains "$pull_text" 'commit --change' "ac-9 the workload really commits an image"
 assert_contains "$pull_text" 'volume create "$V"' "ac-9 the workload really creates a named volume"
@@ -272,7 +504,8 @@ write_clean
 rm -rf "$tmp/s-clean"
 out=$(run sh "$probe" --input "$tmp/clean.txt" --results "$tmp/clean.tsv" \
   --snapshot-dir "$tmp/s-clean" 2>&1)
-assert_eq "$?" "0" "ac-9 a healthy recorded hop exits 0"
+rc=$?
+assert_eq "$rc" "0" "ac-9 a healthy recorded hop exits 0"
 assert_contains "$out" "ok   [D1] pull library/redis:7-alpine rc=0" "ac-9 D1 reports the real pull with its digest"
 assert_contains "$out" "ok   [D1] pull library/nginx:alpine rc=0" "ac-9 D1 reports the second mirror pull"
 assert_contains "$out" "matches-declared-content=yes" "ac-9 the artifact matches the content this run declares"
@@ -317,7 +550,8 @@ awk '
 rm -rf "$tmp/s-lost"
 out=$(run sh "$probe" --case D2 --input "$tmp/lost.txt" --results "$tmp/lost.tsv" \
   --snapshot-dir "$tmp/s-lost" 2>&1)
-assert_eq "$?" "1" "ac-9 a lost image is a FAIL exit"
+rc=$?
+assert_eq "$rc" "1" "ac-9 a lost image is a FAIL exit"
 assert_contains "$out" "FAIL [D2] subset_images drift=subset-lost" \
   "ac-9 a missing image is named subset-lost, not 'content changed'"
 assert_contains "$out" "== D2 FAIL" "ac-9 the case row is FAIL"
@@ -339,7 +573,8 @@ assert_contains "$out" "== D2 FAIL" "ac-9 the case row is FAIL"
 rm -rf "$tmp/s-renamed"
 out=$(run sh "$probe" --case D2 --input "$tmp/renamed.txt" --results "$tmp/renamed.tsv" \
   --snapshot-dir "$tmp/s-renamed" 2>&1)
-assert_eq "$?" "1" "ac-9 a decoy image that shares tag and digest fragments is a FAIL exit"
+rc=$?
+assert_eq "$rc" "1" "ac-9 a decoy image that shares tag and digest fragments is a FAIL exit"
 assert_contains "$out" "FAIL [D2] images library/nginx:alpine is not in docker images --digests" \
   "ac-9 the image is matched by its whole repo:tag, not by a substring of the row"
 
@@ -354,7 +589,8 @@ assert_contains "$out" "FAIL [D2] images library/nginx:alpine is not in docker i
 rm -rf "$tmp/s-tampered"
 out=$(run sh "$probe" --case D2 --input "$tmp/tampered.txt" --results "$tmp/tampered.tsv" \
   --snapshot-dir "$tmp/s-tampered" 2>&1)
-assert_eq "$?" "1" "ac-9 a rewritten artifact is a FAIL exit"
+rc=$?
+assert_eq "$rc" "1" "ac-9 a rewritten artifact is a FAIL exit"
 assert_contains "$out" "FAIL [D2] assert_container_artifact marker.txt sha256=deadbeef" \
   "ac-9 the artifact is compared with the declared content, not just with the baseline"
 assert_contains "$out" "drift=content" "ac-9 a changed value is named content"
@@ -368,7 +604,8 @@ assert_contains "$out" "drift=content" "ac-9 a changed value is named content"
 rm -rf "$tmp/s-nojump"
 out=$(run sh "$probe" --case D2 --case D3 --input "$tmp/nojump.txt" \
   --results "$tmp/nojump.tsv" --snapshot-dir "$tmp/s-nojump" 2>&1)
-assert_eq "$?" "3" "ac-9 an unmoved machine exits 3 (no verdict), not 0"
+rc=$?
+assert_eq "$rc" "3" "ac-9 an unmoved machine exits 3 (no verdict), not 0"
 assert_contains "$out" "GAP  [D2] jump generation=5->5 slot=b->b" \
   "ac-9 D2 says nothing moved instead of claiming equality"
 assert_contains "$out" "GAP  [D3] jump" "ac-9 D3 says the same"
@@ -386,7 +623,8 @@ sed 's|^pull=library/redis:7-alpine rc=0 .*|pull=library/redis:7-alpine rc=1 url
 rm -rf "$tmp/s-mirror"
 out=$(run sh "$probe" --case D1 --input "$tmp/mirror.txt" --results "$tmp/mirror.tsv" \
   --snapshot-dir "$tmp/s-mirror" 2>&1)
-assert_eq "$?" "3" "ac-9 a dead mirror is exit 3, not a FAIL"
+rc=$?
+assert_eq "$rc" "3" "ac-9 a dead mirror is exit 3, not a FAIL"
 assert_contains "$out" "GAP  [D1] pull library/redis:7-alpine rc=1" "ac-9 the pull failure is a GAP"
 assert_contains "$out" "url=https://docker.m.daocloud.io/library/redis:7-alpine" \
   "ac-9 the GAP names the URL it tried"
@@ -410,7 +648,8 @@ esac
 rm -rf "$tmp/s-nobase"
 out=$(run sh "$probe" --case D2 --input "$tmp/nobase.txt" --results "$tmp/nobase.tsv" \
   --snapshot-dir "$tmp/s-nobase" 2>&1)
-assert_eq "$?" "3" "ac-9 D2 without a baseline is exit 3"
+rc=$?
+assert_eq "$rc" "3" "ac-9 D2 without a baseline is exit 3"
 assert_contains "$out" "GAP  [D2] baseline no baseline snapshot to compare against" \
   "ac-9 D2 refuses to invent a baseline"
 
@@ -431,7 +670,8 @@ awk '{ print } /^## snapshot after$/ { }' "$tmp/clean.txt" \
 rm -rf "$tmp/s-glued"
 out=$(run sh "$probe" --case D2 --input "$tmp/glued.txt" --results "$tmp/glued.tsv" \
   --snapshot-dir "$tmp/s-glued" 2>&1)
-assert_eq "$?" "1" "ac-9 a broken snapshot is a FAIL exit"
+rc=$?
+assert_eq "$rc" "1" "ac-9 a broken snapshot is a FAIL exit"
 assert_contains "$out" "drift=glued-header" "ac-9 a glued header is reported as structure drift"
 
 # --------------------------------------------------------------------------- #
@@ -444,7 +684,8 @@ assert_contains "$out" "drift=glued-header" "ac-9 a glued header is reported as 
 rm -rf "$tmp/s-subvol"
 out=$(run sh "$probe" --case D3 --input "$tmp/subvol.txt" --results "$tmp/subvol.tsv" \
   --snapshot-dir "$tmp/s-subvol" 2>&1)
-assert_eq "$?" "1" "ac-9 a recreated @docker subvolume is a FAIL exit"
+rc=$?
+assert_eq "$rc" "1" "ac-9 a recreated @docker subvolume is a FAIL exit"
 assert_contains "$out" "FAIL [D3] subvol-identity drift=content" \
   "ac-9 D3 notices the store was recreated instead of reused"
 
@@ -532,7 +773,8 @@ rm -rf "$tmp/s-live"
 out=$(PATH="$tmp/livebin:$PATH" DP_CAPTURE_BODY="$tmp/capture.body" \
   DP_WORKLOAD_BODY="$tmp/workload.body" AB_HOST=root@192.0.2.9 AB_KEY="$tmp/key" \
   sh "$probe" --case D1 --results "$tmp/live.tsv" --snapshot-dir "$tmp/s-live" 2>&1)
-assert_eq "$?" "0" "ac-9 D1 on a live device that answers with real-shaped blocks passes"
+rc=$?
+assert_eq "$rc" "0" "ac-9 D1 on a live device that answers with real-shaped blocks passes"
 assert_contains "$out" "ok   [D1] pull-count pulled=2 of 2" "ac-9 D1 counts the two real pulls"
 assert_contains "$out" "== D1 PASS" "ac-9 the live baseline PASSes"
 assert_file_exists "$tmp/s-live/before.snapshot" "ac-9 the live baseline is stored where a reader can open it"
@@ -545,7 +787,8 @@ assert_contains "$(cat "$tmp/s-live/before.snapshot" 2>/dev/null)" "## info_work
 rm -rf "$tmp/s-live2"
 out=$(run sh "$probe" --case D2 --input "$tmp/s-live/before.snapshot" \
   --results "$tmp/live2.tsv" --snapshot-dir "$tmp/s-live2" 2>&1)
-assert_eq "$?" "3" "ac-9 a stored baseline replays, and D2 then reports the missing after capture"
+rc=$?
+assert_eq "$rc" "3" "ac-9 a stored baseline replays, and D2 then reports the missing after capture"
 
 # An unreachable device is a GAP, not a FAIL: the machine is somebody else's problem.
 cat >"$tmp/livebin/ssh" <<'STUB'
@@ -556,7 +799,8 @@ chmod +x "$tmp/livebin/ssh"
 rm -rf "$tmp/s-dead"
 out=$(PATH="$tmp/livebin:$PATH" AB_HOST=root@192.0.2.10 AB_KEY="$tmp/key" \
   sh "$probe" --case D1 --results "$tmp/dead.tsv" --snapshot-dir "$tmp/s-dead" 2>&1)
-assert_eq "$?" "3" "ac-9 an unreachable machine is exit 3"
+rc=$?
+assert_eq "$rc" "3" "ac-9 an unreachable machine is exit 3"
 assert_contains "$out" "GAP  [D1] device the machine did not answer ssh" \
   "ac-9 an unreachable machine is a GAP, never a product FAIL"
 
@@ -566,7 +810,8 @@ assert_contains "$out" "GAP  [D1] device the machine did not answer ssh" \
 rm -rf "$tmp/s-env"
 out=$(AB_DOCKER_INPUT="$tmp/clean.txt" run sh "$probe" --case D1 --results "$tmp/env.tsv" \
   --snapshot-dir "$tmp/s-env" 2>&1)
-assert_eq "$?" "0" "ac-9 AB_DOCKER_INPUT replays without a device"
+rc=$?
+assert_eq "$rc" "0" "ac-9 AB_DOCKER_INPUT replays without a device"
 assert_contains "$out" "replay=$tmp/clean.txt" "ac-9 the run says where the facts came from"
 case "$out" in
   *"dry-run: ssh"*) assert_eq "ssh" "no ssh" "ac-9 a replay must not ssh" ;;
@@ -579,7 +824,8 @@ esac
 rm -rf "$tmp/s-json"
 out=$(run sh "$probe" --input "$tmp/clean.txt" --json --results "$tmp/json.tsv" \
   --snapshot-dir "$tmp/s-json" 2>&1)
-assert_eq "$?" "0" "ac-9 --json exits 0 on a healthy hop"
+rc=$?
+assert_eq "$rc" "0" "ac-9 --json exits 0 on a healthy hop"
 assert_contains "$out" '{"case":"D1","verdict":"PASS"' "ac-9 the D1 verdict is a JSON object"
 assert_contains "$out" '{"kind":"summary","result":"pass"' "ac-9 the summary is a JSON object"
 assert_eq "$(printf '%s\n' "$out" | grep -c '^{' )" \

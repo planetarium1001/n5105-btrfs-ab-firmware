@@ -66,6 +66,12 @@ given_disk="${CI_QEMU_DISK:-}"
 init_path="${CI_QEMU_INIT:-}"
 judge_prefix="${CI_JUDGE_PREFIX-S1-RESULT}"
 stop_pattern="${CI_QEMU_STOP_PATTERN:-}"
+# The stop pattern is a contract with the guest, not just "the step is done": the machine is
+# killed, never shut down (-monitor none, no ACPI powerdown, no umount), so the line has to
+# be one the guest prints after its last write. S5 stopped on the fixture's
+# S5-UPGRADE-DONE while ab-commit was still writing the FAT ESP; the next boot found an
+# invalid cluster chain and the commit could not be recorded (run 43918219525). A guest
+# that records a decision prints it after the state write and its own sync.
 if [ -z "${stop_pattern}" ] && [ -n "${judge_prefix}" ]; then
     stop_pattern="^${judge_prefix}="
 fi
