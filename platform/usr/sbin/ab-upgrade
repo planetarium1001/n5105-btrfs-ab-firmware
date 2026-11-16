@@ -657,6 +657,16 @@ case "${rootfs_version}" in
     .* | *[!A-Za-z0-9._~+-]*) refuse "manifest-rootfs-invalid-${rootfs_version}" ;;
 esac
 
+# The platform layer's own version, optional in the format: payloads built before the field
+# existed carry none, and those still have to install. It is read here, in the same parse of
+# the same manifest, because the "already installed" guard needs it next to the base version
+# and re-reading the file would let the two answers come from different bytes.
+platform_version="$(printf '%s' "${squeezed}" | sed -n 's/.*"platform":"\([^"]*\)".*/\1/p')"
+case "${platform_version}" in
+    "") : ;;
+    .* | *[!A-Za-z0-9._~+-]*) refuse "manifest-platform-invalid-${platform_version}" ;;
+esac
+
 # --------------------------------------------------------------------------- #
 # 2. Members and digests
 # --------------------------------------------------------------------------- #
@@ -927,14 +937,40 @@ case "${running}" in
     *) refuse "no-running-slot" ;;
 esac
 installed="$(ab-slot rootfs "${running}" 2>/dev/null)"
+# "Already installed" is an identity of two versions, not one. The base says which upstream
+# tree this is; the platform says which release of this project was laid on top of it. Two
+# releases on the same base (0.0.10 -> 0.0.11) share the base exactly, so comparing it alone
+# called an ordinary platform-only update a reinstall and refused it with 74 - measured on a
+# real N5105, where the only way through was --force, which the message did not name.
+# The comparison only runs when the base matches: a payload for a different base is never
+# "already installed", and its platform field has no bearing on that.
 if [ "${installed}" = "${rootfs_version}" ]; then
-    # Reinstalling the same version is how a damaged slot is repaired, but doing it by
-    # accident rewrites the healthy slot from the slot being tested, so it needs a flag.
-    if [ "${force_mode}" = "1" ]; then
-        say "ab-upgrade: forcing reinstall of ${rootfs_version} into slot ${other} (slot ${running} already runs it)"
+    running_platform="$(platform_release_value PLATFORM_VERSION)" || running_platform=""
+    install_platform="${platform_version:-}"
+    if [ -z "${install_platform}" ] || [ -z "${running_platform}" ]; then
+        # Cannot tell "the same release" from "a different release on the same base", and
+        # guessing "different" would let a leftover payload rewrite the healthy slot from the
+        # slot under test - the failure this guard exists for. Refuse, and name the side that
+        # is missing so the operator is not sent looking for a corrupt machine.
+        say "ab-upgrade: slot ${running} runs ${installed}, but the platform version is unknown"
+        [ -n "${running_platform}" ] ||
+            say "ab-upgrade: this machine's release file names no PLATFORM_VERSION"
+        [ -n "${install_platform}" ] ||
+            say "ab-upgrade: the payload's manifest names no platform"
+        refuse "payload-platform-unknown"
+    fi
+    if [ "${install_platform}" = "${running_platform}" ]; then
+        # Reinstalling the same version is how a damaged slot is repaired, but doing it by
+        # accident rewrites the healthy slot from the slot being tested, so it needs a flag.
+        if [ "${force_mode}" = "1" ]; then
+            say "ab-upgrade: forcing reinstall of ${install_platform} into slot ${other} (slot ${running} already runs it)"
+        else
+            say "ab-upgrade: slot ${running} already runs ${installed} (platform ${running_platform})"
+            say "Next: ab-upgrade --force to reinstall the version this slot already runs"
+            refuse "payload-already-installed"
+        fi
     else
-        say "ab-upgrade: slot ${running} already runs ${rootfs_version}"
-        refuse "payload-already-installed"
+        say "ab-upgrade: base unchanged, platform ${running_platform} -> ${install_platform}"
     fi
 fi
 say "ab-upgrade: running slot ${running} on ${installed}, installing ${rootfs_version} into slot ${other}"
