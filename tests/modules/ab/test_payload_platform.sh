@@ -503,7 +503,20 @@ PATH="$tmp/apk-bin:$PATH" \
   bash "$assemble" >"$tmp/apk-assemble.log" 2>&1
 apk_member="$apk_ci/assemble/payload/platform.tar"
 assert_file_exists "$apk_member" "ac-9 the stage publishes a platform.tar before the boot stage"
-apk_list="$(tar -xzOf "$apk_member" ./etc/apk/protected_paths.d/ab-platform-shadow.list 2>/dev/null)"
+# The member name is taken from the archive rather than written with a leading "./": BSD
+# tar accepts either spelling, GNU tar matches only the one the archive actually stores, and
+# reading the list returned empty on the Linux runner while a macOS laptop passed (run
+# 43792778425, three assertions).
+apk_list_member=""
+while IFS= read -r member; do
+  case "$member" in
+    ./etc/apk/protected_paths.d/ab-platform-shadow.list | etc/apk/protected_paths.d/ab-platform-shadow.list)
+      apk_list_member="$member"; break ;;
+  esac
+done < <(tar -tzf "$apk_member" 2>/dev/null || true)
+apk_list=""
+[ -n "$apk_list_member" ] &&
+  apk_list="$(tar -xzOf "$apk_member" "$apk_list_member" 2>/dev/null)"
 assert_eq "$([ -n "$apk_list" ] && echo present)" "present" \
   "ac-9 the derived protected-path list is inside the platform layer"
 assert_contains "$(cat "$tmp/apk-assemble.log")" "protected paths: 2 of" \
