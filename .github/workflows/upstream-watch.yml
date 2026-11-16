@@ -29,12 +29,11 @@ name: Firmware CI - upstream watch
 defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   schedule:
-    # 16:00 UTC = 00:00 in Beijing. GitHub's `schedule` trigger is best-effort: measured on
-    # this repository, runs queued for a 20:00 UTC cron actually started at 23:30-00:48 UTC
-    # (+3.5~+4.8h). The nominal time is therefore set four hours early, so the delay lands
-    # the build around 04:00 Beijing instead of mid-morning. The 04:00 target is an
-    # expectation, not a guarantee: a late queue can still start it later.
-    - cron: "0 16 * * *"
+    # Anchored at UTC midnight: the schedule states the intent - one run per UTC day, at
+    # 00:00 - and does not shift the nominal time to compensate for GitHub's queue. The
+    # `schedule` trigger is best-effort, not a guarantee: a queued run can start hours after
+    # the nominal time, so nothing downstream may depend on the exact hour it starts.
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       version:
@@ -87,6 +86,9 @@ jobs:
       heartbeat: ${{ steps.heartbeat.outputs.action }}
       mode: ${{ steps.detect.outputs.mode }}
       resume-stage: ${{ steps.detect.outputs.resume_stage }}
+      # The reason a discovery failed, when it did. The issue body is the only thing a
+      # reader sees, and "see the run log" is not a reason.
+      detect-error: ${{ steps.detect.outputs.detect_error }}
       pin-in-base: ${{ steps.detect.outputs.pin_in_base }}
       merged-sha: ${{ steps.detect.outputs.merged_sha }}
       tag-exists: ${{ steps.detect.outputs.tag_exists }}
@@ -97,10 +99,14 @@ jobs:
       # actions/checkout's default depth-1, tag-less clone. A shallow checkout makes the
       # pin's commit its own root, so `days_since` is always 0 and the heartbeat is never
       # due - that is why this checkout carries the same tags and depth as `heartbeat`.
+      # The depth is 0, not a number: any fixed depth is an estimate of how many commits
+      # separate the pin bump from HEAD, correct only for the commit density it was measured
+      # at. This repository's whole history is a few megabytes, so "all of it" costs less
+      # than re-measuring the estimate and is right at every density.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-tags: true
-          fetch-depth: 50
+          fetch-depth: 0
           persist-credentials: false
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
@@ -147,11 +153,13 @@ jobs:
       # The tags have to be here: the script decides from the tag history whether a
       # heartbeat is due, and actions/checkout is a shallow, tag-less clone by default.
       # Without `fetch-tags` a month that already has its heartbeat is tagged again and the
-      # push fails on the remote.
+      # push fails on the remote. The depth is the full history for the same reason as in
+      # `detect`: the commit that last touched the pin has to have a real date, not the
+      # boundary of whatever depth was guessed.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-tags: true
-          fetch-depth: 50
+          fetch-depth: 0
           persist-credentials: false
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
@@ -639,6 +647,9 @@ jobs:
           # branch, the merge commit and the tag already say. A failure after the merge must
           # not be reported as "nothing was touched", so the body is chosen from these.
           CI_MODE: ${{ needs.detect.outputs.mode }}
+          # Empty on every other failure: the renderer only changes its opening sentence and
+          # its reason row when discovery itself is what failed.
+          CI_DETECT_ERROR: ${{ needs.detect.outputs.detect-error }}
           CI_RESUME_STAGE: ${{ needs.detect.outputs.resume-stage }}
           CI_PIN_IN_BASE: ${{ needs.detect.outputs.pin-in-base }}
           CI_MERGED_SHA: ${{ needs.detect.outputs.merged-sha }}
@@ -656,7 +667,14 @@ jobs:
           failed="${failed# }"
           [ -n "${failed}" ] || failed="detect"
           title="[auto-release] ${VERSION:-unknown}"
-          CI_AUTO_FAILED_STAGE="${failed}" CI_AUTO_REASON="${failed} failed; see the run page and the log" \
+          # The detect failure carries its own reason; every other stage only has its name,
+          # so it points at the run page.
+          if [ -n "${CI_DETECT_ERROR:-}" ]; then
+            auto_reason="${CI_DETECT_ERROR}"
+          else
+            auto_reason="${failed} failed; see the run page and the log"
+          fi
+          CI_AUTO_FAILED_STAGE="${failed}" CI_AUTO_REASON="${auto_reason}" \
             bash scripts/ci/upstream-watch.sh issue-body --out "${RUNNER_TEMP}/issue.md" 2>&1 \
             | tee -a "${CI_LOG_DIR}/issue.log"
           {

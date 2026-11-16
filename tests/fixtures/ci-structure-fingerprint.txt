@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: same-base gate installs with --force: adds cross_fixture_install_cmd/cross_fixture_rc_local and the --same-base fixture flag
+# reason: the daily watch fails on an undiscoverable index and carries the reason into the issue, merge lookups sort by merge time, fetch-depth is the full history, the rehearsal replaces its own untagged draft, cron is anchored at UTC midnight
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -217,6 +217,7 @@ sh-flag scripts/ci/upstream-watch.sh --head
 sh-flag scripts/ci/upstream-watch.sh --help
 sh-flag scripts/ci/upstream-watch.sh --jq
 sh-flag scripts/ci/upstream-watch.sh --json
+sh-flag scripts/ci/upstream-watch.sh --limit
 sh-flag scripts/ci/upstream-watch.sh --no-edit
 sh-flag scripts/ci/upstream-watch.sh --out
 sh-flag scripts/ci/upstream-watch.sh --quiet
@@ -413,6 +414,7 @@ sh-fn scripts/ci/stage-summary.sh take_value
 sh-fn scripts/ci/stage-summary.sh usage
 sh-fn scripts/ci/stage-summary.sh verdict_word
 sh-fn scripts/ci/upstream-watch.sh detect_cmd
+sh-fn scripts/ci/upstream-watch.sh die_undiscovered
 sh-fn scripts/ci/upstream-watch.sh formal_releases_desc
 sh-fn scripts/ci/upstream-watch.sh issue_body_cmd
 sh-fn scripts/ci/upstream-watch.sh merge_state_cmd
@@ -810,6 +812,7 @@ sh-var scripts/ci/upstream-watch.sh CI_AUTO_REASON
 sh-var scripts/ci/upstream-watch.sh CI_BASE
 sh-var scripts/ci/upstream-watch.sh CI_BRANCH
 sh-var scripts/ci/upstream-watch.sh CI_CURRENT_PIN
+sh-var scripts/ci/upstream-watch.sh CI_DETECT_ERROR
 sh-var scripts/ci/upstream-watch.sh CI_FORCE_VERSION
 sh-var scripts/ci/upstream-watch.sh CI_LOG_ARTIFACT
 sh-var scripts/ci/upstream-watch.sh CI_MATRIX_CANDIDATES
@@ -2691,6 +2694,7 @@ yaml .github/workflows/upstream-watch.yml jobs.detect.outputs =
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.candidates = ${{ steps.matrix.outputs.candidates }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.changed = ${{ steps.detect.outputs.changed }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.current_pin = ${{ steps.detect.outputs.current_pin }}
+yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.detect-error = ${{ steps.detect.outputs.detect_error }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.gaps = ${{ steps.matrix.outputs.gaps }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.heartbeat = ${{ steps.heartbeat.outputs.action }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.merged-sha = ${{ steps.detect.outputs.merged_sha }}
@@ -2705,7 +2709,7 @@ yaml .github/workflows/upstream-watch.yml jobs.detect.runs-on = ubuntu-latest
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps = 
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with = 
-yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-depth = 50
+yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-depth = 0
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-tags = true
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.persist-credentials = false
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[1].uses = ./.github/actions/setup-ci
@@ -2729,7 +2733,7 @@ yaml .github/workflows/upstream-watch.yml jobs.heartbeat.runs-on = ubuntu-latest
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps = 
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with = 
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-depth = 50
+yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-depth = 0
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-tags = true
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.persist-credentials = false
 yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[1].uses = ./.github/actions/setup-ci
@@ -2751,6 +2755,7 @@ yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env =
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUILD = ${{ needs.build.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUMP = ${{ needs.bump.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CHANGED = ${{ needs.detect.outputs.changed }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_DETECT_ERROR = ${{ needs.detect.outputs.detect-error }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_MERGED_SHA = ${{ needs.detect.outputs.merged-sha }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_MODE = ${{ needs.detect.outputs.mode }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_PIN_IN_BASE = ${{ needs.detect.outputs.pin-in-base }}

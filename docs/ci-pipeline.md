@@ -29,7 +29,7 @@ how to run a stage on your own machine. The stage scripts are documented in
 | `ci-debug.yml` | `workflow_dispatch` only (`stage`, `boot_timeout`) | no | `debug-session`, `debug-<stage>-logs` | an interactive upterm session on a runner, when a stage needs eyes |
 | `release.yml` | push of a `v*` tag | yes, through `release-publish.yml` | the three release assets | releasing our own version: push a `v*` tag ([the tagged line](ci-release-lines.md)) |
 | `release-publish.yml` | `workflow_call` only (`tag`, `tag-policy`, `title`, `dry-run`, ...) | yes, as a draft with `dry-run: true` | `n5105-ab-<upstream>-install.img.gz`, `n5105-ab-<upstream>-upgrade.tar`, `SHA256SUMS` | never by hand: `release.yml` and `upstream-watch.yml` call it |
-| `upstream-watch.yml` | `schedule` (`0 16 * * *`) and `workflow_dispatch` (`version`, `dry-run`, `base`, `resume`) | yes, with a bare-version tag | a release named `<upstream version>`, or one `[auto-release]` issue | the daily upstream release, or a rehearsal of it ([runbook](daily-upstream-watch.md)) |
+| `upstream-watch.yml` | `schedule` (`0 0 * * *`, UTC midnight) and `workflow_dispatch` (`version`, `dry-run`, `base`, `resume`) | yes, with a bare-version tag | a release named `<upstream version>`, or one `[auto-release]` issue | the daily upstream release, or a rehearsal of it ([runbook](daily-upstream-watch.md)) |
 
 - **Reusable and entry point.** Twelve files declare `workflow_call` and nothing else, so
   they cannot start a run, and they declare no `concurrency` at all: a called workflow runs

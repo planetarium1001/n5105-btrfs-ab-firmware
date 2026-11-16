@@ -28,7 +28,7 @@
 | `ci-debug.yml` | 仅 `workflow_dispatch`（`stage`、`boot_timeout`） | 否 | `debug-session`、`debug-<stage>-logs` | 需要一双眼睛盯着某个阶段时，在 runner 上开 upterm 会话 |
 | `release.yml` | push `v*` tag | 是，经由 `release-publish.yml` | 三个发布资产 | 发我们自己的版本：推一个 `v*` tag（[代码线](ci-release-lines.zh-CN.md)） |
 | `release-publish.yml` | 仅 `workflow_call`（`tag`、`tag-policy`、`title`、`dry-run` 等） | 是；`dry-run: true` 只建成 draft | `n5105-ab-<upstream>-install.img.gz`、`n5105-ab-<upstream>-upgrade.tar`、`SHA256SUMS` | 不要手跑：`release.yml` 与 `upstream-watch.yml` 调用它 |
-| `upstream-watch.yml` | `schedule`（`0 16 * * *`）与 `workflow_dispatch`（`version`、`dry-run`、`base`、`resume`） | 是，打裸版本号 tag | 一个以 `<upstream version>` 命名的 release，或者一个 `[auto-release]` Issue | 每日上游发布，或对它做彩排（[运行手册](daily-upstream-watch.zh-CN.md)） |
+| `upstream-watch.yml` | `schedule`（`0 0 * * *`，UTC 零点）与 `workflow_dispatch`（`version`、`dry-run`、`base`、`resume`） | 是，打裸版本号 tag | 一个以 `<upstream version>` 命名的 release，或者一个 `[auto-release]` Issue | 每日上游发布，或对它做彩排（[运行手册](daily-upstream-watch.zh-CN.md)） |
 
 - **reusable 与入口。** 十二个文件只声明 `workflow_call`，因此起不了 run，也完全不声明
   `concurrency`：被调用的 workflow 跑在调用者的 run 里，而嵌套的 `concurrency` 组会让这次调用

@@ -19,6 +19,9 @@ source "$root/tests/lib/assert.sh"
 
 cd "$root" || exit 1
 
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
 publish=".github/workflows/release-publish.yml"
 release=".github/workflows/release.yml"
 
@@ -268,6 +271,302 @@ assert_eq "$(grep -c 'cancel-in-progress:' "$publish")" "0" \
   "ac-6 the reusable workflow never cancels its caller"
 assert_eq "$(grep -c 'timeout-minutes:' "$publish" | awk '{print ($1 > 0) ? "yes" : "no"}')" "yes" \
   "ac-6 the reusable workflow declares a timeout budget"
+
+# --------------------------------------------------------------------------- #
+# ac-6: a rehearsal replaces its own untagged draft instead of piling one up per run
+#
+# `gh release create --draft "${TAG}"` in a rehearsal runs before the tag is pushed, and
+# GitHub answers with an *untagged* draft (releases/tag/untagged-...). The repeatability
+# guard looked the release up by "${TAG}", so it never found the draft it had made one run
+# earlier: every rehearsal left another one behind and the branch that was supposed to
+# replace it was dead code. No text assertion can catch that - the text was all there and
+# the guard still did nothing - so the step's own run block is extracted and executed
+# against a `gh` stub, and the assertions are on the calls the stub recorded.
+# --------------------------------------------------------------------------- #
+
+# step_extract <block|run> <workflow> <step>: the step's own YAML lines, or the body of its
+# `run: |` block dedented. Read as text, like tests/modules/ci/test_ci_hooks_flag.sh reads
+# the same shape: no YAML parser is assumed, and a step that stops being found has to be a
+# failure rather than an empty string that makes every assertion below pass.
+step_extract() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import re
+import sys
+
+mode, path, name = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = open(path, encoding="utf-8").read().splitlines()
+
+start = indent = None
+for number, line in enumerate(lines):
+    match = re.match(r"^(\s*)- name:\s*" + re.escape(name) + r"\s*$", line)
+    if match:
+        start, indent = number, len(match.group(1))
+        break
+if start is None:
+    sys.exit(3)  # step not found
+
+block = [lines[start]]
+run_indent = None
+body = []
+for line in lines[start + 1:]:
+    stripped = line.strip()
+    here_indent = len(line) - len(line.lstrip(" "))
+    if stripped.startswith("- ") and here_indent <= indent:
+        break  # the next step
+    block.append(line)
+    if run_indent is None:
+        match = re.match(r"^(\s*)run:\s*\|\s*$", line)
+        if match:
+            run_indent = len(match.group(1))
+        continue
+    if stripped and here_indent <= run_indent:
+        run_indent = None  # the body ended before the step did
+        continue
+    body.append(line)
+
+if mode == "block":
+    sys.stdout.write("\n".join(block) + "\n")
+    sys.exit(0)
+
+if not body:
+    sys.exit(4)  # step without a run block
+while body and not body[-1].strip():
+    body.pop()
+common = min(
+    (len(line) - len(line.lstrip(" ")) for line in body if line.strip()),
+    default=0,
+)
+sys.stdout.write("\n".join(line[common:] if line.strip() else "" for line in body) + "\n")
+PY
+}
+
+publish_script="$tmp/publish-run.sh"
+if step_extract run "$publish" "Publish the GitHub Release" >"$publish_script" \
+  2>"$tmp/extract.err"; then
+  printf 'ok %d - %s\n' "$((_ASSERT_COUNT = _ASSERT_COUNT + 1))" \
+    "ac-6 the publish step body can be extracted and run"
+else
+  _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+  _assert_fail "ac-6 the publish step body can be extracted and run" \
+    "$(cat "$tmp/extract.err")"
+fi
+
+# An extraction that came back empty (or a step name that stopped matching) would make
+# every assertion below pass against nothing, so the body is pinned before it is used.
+assert_eq "$([ -s "$publish_script" ] && echo non-empty || echo empty)" "non-empty" \
+  "ac-6 the extracted body is not an empty file"
+assert_contains "$(cat "$publish_script")" 'gh release create "${TAG}"' \
+  "ac-6 the extracted body is the publish script"
+assert_contains "$(cat "$publish_script")" 'set -euo pipefail' \
+  "ac-6 the extracted body keeps the step's shell options"
+assert_matches "$(cat "$publish_script")" 'DRY_RUN' \
+  "ac-6 the extracted body still branches on dry-run"
+
+# The `gh` the step runs against: records every call and models the one behaviour the
+# guard exists for - `release create --draft` on a tag that was never pushed comes back as
+# an untagged draft, and deleting that tagName removes it.
+stub_bin="$tmp/bin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+: "${GH_STUB_LOG:?}" "${GH_STUB_STATE:?}"
+state="${GH_STUB_STATE}"
+printf 'gh %s\n' "$*" >>"${GH_STUB_LOG}"
+
+[ "${1:-}" = "release" ] || { echo "stub gh: unsupported command: ${1:-}" >&2; exit 64; }
+shift
+sub="${1:-}"
+shift || true
+
+case "${sub}" in
+  view)
+    exec python3 - "${state}" "${1:?tag}" "$*" <<'PY'
+import json, sys
+state, tag, args = sys.argv[1], sys.argv[2], sys.argv[3]
+match = [r for r in json.load(open(state + "/releases.json")) if r["tagName"] == tag]
+if not match:
+    sys.exit(1)
+release = match[0]
+if "--jq" in args:
+    field = args.split("--jq", 1)[1].split()[0].lstrip(".")
+    value = release.get(field, "")
+    print("true" if value is True else "false" if value is False else value)
+else:
+    print(json.dumps(release))
+PY
+    ;;
+  list)
+    cat "${state}/releases.json"
+    ;;
+  delete)
+    python3 - "${state}" "${1:?tagName}" <<'PY'
+import json, sys
+state, tag_name = sys.argv[1], sys.argv[2]
+path = state + "/releases.json"
+releases = json.load(open(path))
+kept = [r for r in releases if r["tagName"] != tag_name]
+if len(kept) == len(releases):
+    print("stub gh: no release " + tag_name, file=sys.stderr)
+    sys.exit(1)
+json.dump(kept, open(path, "w"))
+PY
+    ;;
+  create)
+    tag="${1:?tag}"
+    shift
+    title=""
+    draft=false
+    while [ $# -gt 0 ]; do
+      case "${1}" in
+        --title) title="${2:-}"; shift 2 ;;
+        --draft) draft=true; shift ;;
+        --notes-file) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    python3 - "${state}" "${tag}" "${title}" "${draft}" <<'PY'
+import json, sys
+state, tag, title, draft = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "true"
+path = state + "/releases.json"
+releases = json.load(open(path))
+try:
+    pushed = {line.strip() for line in open(state + "/pushed-tags") if line.strip()}
+except FileNotFoundError:
+    pushed = set()
+if tag in pushed:
+    tag_name = tag
+else:
+    untagged = [r for r in releases if r["tagName"].startswith("untagged-")]
+    tag_name = "untagged-%04d" % (len(untagged) + 1)
+releases.append({
+    "isDraft": draft,
+    "name": title,
+    "tagName": tag_name,
+    "url": "https://github.com/stub/releases/tag/" + tag_name,
+})
+json.dump(releases, open(path, "w"))
+PY
+    ;;
+  *)
+    echo "stub gh: unsupported release subcommand: ${sub}" >&2
+    exit 64
+    ;;
+esac
+STUB
+chmod +x "$stub_bin/gh"
+
+# The release assets the step globs over and the inputs it reads from its env, prepared
+# the way the job would have left them.
+release_tag="25.12.1"
+release_title="ImmortalWrt N5105 A/B firmware 25.12.1"
+release_dir="$tmp/release"
+mkdir -p "$release_dir"
+printf 'payload\n' >"$release_dir/payload.tar"
+printf '%s  %s\n' "0123456789abcdef0123456789abcdef" "payload.tar" >"$release_dir/SHA256SUMS"
+
+# state_init <dir> <releases-json> [pushed tag ...]: one stub-side repository state. A tag
+# is "pushed" only when it is listed, which is exactly the difference between a rehearsal
+# and a published release.
+state_init() {
+  local dir=$1 releases=$2
+  shift 2
+  mkdir -p "$dir"
+  : >"$dir/calls.log"
+  printf '%s\n' "$releases" >"$dir/releases.json"
+  : >"$dir/pushed-tags"
+  if [ $# -gt 0 ]; then
+    printf '%s\n' "$@" >>"$dir/pushed-tags"
+  fi
+}
+
+# rehearsal <state-dir> <output-env-file>: run the extracted step body with DRY_RUN=true,
+# which is the branch under test. `rehearsal_status` is the step's own exit status.
+rehearsal() {
+  local state=$1 out=$2
+  GH_STUB_LOG="$state/calls.log" GH_STUB_STATE="$state" \
+    PATH="$stub_bin:$PATH" \
+    TAG="$release_tag" TITLE="$release_title" DRY_RUN="true" \
+    RELEASE_DIR="$release_dir" \
+    RUN_URL="https://github.com/stub/actions/runs/1" \
+    GITHUB_OUTPUT="$out" \
+    bash "$publish_script" >"$state/stdout.log" 2>"$state/stderr.log"
+  rehearsal_status=$?
+}
+
+# calls <state-dir> <command...>: how many recorded calls start with this command.
+calls() {
+  local state=$1
+  shift
+  local count
+  count=$(grep -c "^gh $*" "$state/calls.log" 2>/dev/null) || count=0
+  printf '%s\n' "$count"
+}
+
+# drafts <state-dir> <title>: how many draft releases carry this title on the remote.
+drafts() {
+  jq --arg title "$2" '[.[] | select(.isDraft and .name == $title)] | length' \
+    "$1/releases.json"
+}
+
+# (a) two rehearsals of the same version, the tag never pushed.
+state="$tmp/state-first"
+state_init "$state" '[]'
+rehearsal "$state" "$tmp/out-first.env"
+assert_eq "$rehearsal_status" "0" "ac-6 the first rehearsal goes green (it publishes nothing)"
+assert_eq "$(calls "$state" release create)" "1" \
+  "ac-6 the first rehearsal creates exactly one draft"
+assert_eq "$(calls "$state" release delete)" "0" \
+  "ac-6 the first rehearsal has nothing to replace"
+first_draft="$(jq -r '[.[] | select(.isDraft)] | .[0].tagName' "$state/releases.json")"
+assert_matches "$first_draft" '^untagged-' \
+  "ac-6 the rehearsal draft is untagged, so a lookup by tag cannot find it"
+
+rehearsal "$state" "$tmp/out-second.env"
+assert_eq "$rehearsal_status" "0" "ac-6 the second rehearsal goes green too"
+assert_eq "$(calls "$state" release delete)" "1" \
+  "ac-6 the second rehearsal deletes the draft the first one left"
+assert_eq "$(grep '^gh release delete' "$state/calls.log" | awk '{print $4}')" "$first_draft" \
+  "ac-6 the deleted tagName is the rehearsal's own untagged draft"
+assert_contains "$(cat "$state/stdout.log")" "$first_draft" \
+  "ac-6 the rehearsal says which draft it replaced"
+assert_eq "$(calls "$state" release create)" "2" \
+  "ac-6 each rehearsal still creates its own draft"
+assert_eq "$(drafts "$state" "$release_title")" "1" \
+  "ac-6 after two rehearsals exactly one draft of this title remains, not two"
+
+# (b) the tag already has a published release: the rehearsal refuses, and touches nothing.
+state="$tmp/state-published"
+state_init "$state" \
+  '[{"isDraft":false,"name":"ImmortalWrt N5105 A/B firmware 25.12.1","tagName":"25.12.1","url":"https://github.com/stub/releases/tag/25.12.1"}]' \
+  "$release_tag"
+rehearsal "$state" "$tmp/out-published.env"
+assert_eq "$rehearsal_status" "1" \
+  "ac-6 a rehearsal refuses to overwrite the published release"
+assert_contains "$(cat "$state/stderr.log")" \
+  "refusing to rehearse over the published release ${release_tag}" \
+  "ac-6 the refusal names the release it will not touch"
+assert_eq "$(calls "$state" release delete)" "0" "ac-6 a refusal deletes nothing"
+assert_eq "$(calls "$state" release create)" "0" "ac-6 a refusal creates nothing"
+assert_eq "$(drafts "$state" "$release_title")" "0" \
+  "ac-6 a refusal leaves no draft behind"
+
+# (c) a draft already sits under the real tag (the tag was pushed): unchanged behaviour,
+# it is replaced, and the release list is never consulted on this path.
+state="$tmp/state-tagged-draft"
+state_init "$state" \
+  '[{"isDraft":true,"name":"ImmortalWrt N5105 A/B firmware 25.12.1","tagName":"25.12.1","url":"https://github.com/stub/releases/tag/25.12.1"}]' \
+  "$release_tag"
+rehearsal "$state" "$tmp/out-tagged.env"
+assert_eq "$rehearsal_status" "0" "ac-6 a draft under the real tag is replaced, as before"
+assert_eq "$(calls "$state" release delete)" "1" \
+  "ac-6 the tagged draft is deleted exactly once"
+assert_eq "$(grep '^gh release delete' "$state/calls.log" | awk '{print $4}')" "$release_tag" \
+  "ac-6 and the tag, not an untagged name, is what gets deleted"
+assert_eq "$(calls "$state" release list)" "0" \
+  "ac-6 the tagged branch does not consult the release list"
+assert_eq "$(drafts "$state" "$release_title")" "1" \
+  "ac-6 a replaced tagged draft leaves one draft behind"
 
 # --------------------------------------------------------------------------- #
 # ac-6: the files still parse as workflows

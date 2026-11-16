@@ -25,7 +25,7 @@ gates its publish on the merge instead; it runs neither gate.
 
 | | Tagged line | Upstream line |
 |---|---|---|
-| Trigger | push of a `v*` tag (`release.yml`) | `schedule` (`0 16 * * *`), or `workflow_dispatch` of `upstream-watch.yml` |
+| Trigger | push of a `v*` tag (`release.yml`) | `schedule` (`0 0 * * *`, UTC midnight), or `workflow_dispatch` of `upstream-watch.yml` |
 | Tag shape | `v<X.Y.Z>`, for example `v0.0.8` | bare `<X.Y.Z>`, for example `25.13.0` |
 | `VERSION` | the tag must equal it: the tag without its `v` is the platform version being released | not edited by the release; it must still carry the platform version the image records |
 | Which upstream is built | the pin in `.github/upstream-pin.conf`; no version input is passed | the release `detect` just found, passed to `ci.yml` as `upstream_version` |
@@ -143,13 +143,20 @@ on it instead of opening a second one, and it ends with a non-zero exit so the j
 The body carries the job results and the run URL.
 
 **The heartbeat tag.** A scheduled workflow in a public repository is disabled after 60 days
-without activity, which would turn the automatic release line off silently. `heartbeat-tag.sh`
-creates `heartbeat-YYYYMM` only when nothing has happened for `CI_HEARTBEAT_INTERVAL_DAYS`
-(50 by default), counting the newest of: the last heartbeat tag, the last bare release tag, and
-the last commit that touched the pin. The name is asserted against `^heartbeat-[0-9]{6}$` and
+without activity, which would turn the automatic release line off silently. Note that "activity"
+is not defined by GitHub, that the commonly reported reading is "commits and pushes count" rather
+than tags, and that this repository has never produced a `heartbeat-*` tag - so the mitigation is
+**unproven**. It is recorded as a known gap rather than treated as a solved problem: a disabled
+watch produces no run, so this workflow cannot report that it was switched off; check it from
+outside with `gh api repos/:owner/:repo/actions/workflows/<id> --jq .state`.
+`heartbeat-tag.sh` creates `heartbeat-YYYYMM` only when nothing has happened for `CI_HEARTBEAT_INTERVAL_DAYS`
+(50 by default), counting the newest of: the last heartbeat tag, the last release tag (`v*` or
+bare), and the last commit that touched the pin. The name is asserted against `^heartbeat-[0-9]{6}$` and
 the workflow refuses to push anything matching `v*`, because a `v*` tag would start the tagged
 line and publish a firmware release built from nothing. The existence check reads tag history,
-so that job checks out with `fetch-tags: true` and `fetch-depth: 50`.
+so that job checks out with `fetch-tags: true` and `fetch-depth: 0` (the full history: any fixed
+depth is an estimate of how far the pin bump is from HEAD, correct only at the density it was
+measured at).
 
 **The merge.** The automatic change is a branch and a pull request, and everything is
 re-checked before it lands:
@@ -223,10 +230,10 @@ The tag push is what starts the build; there is nothing to dispatch. A tag that 
 `VERSION` is refused by the preflight, and the release never appears.
 
 **The upstream line** is for a new ImmortalWrt base, and normally you do nothing: the `schedule`
-names 16:00 UTC and ends successfully when there is nothing new. GitHub starts a scheduled run
-late - measured at 3.5 to 4.8 hours on this repository - so it usually lands around 04:00 Beijing;
-[daily-upstream-watch.md](daily-upstream-watch.md) is the runbook for the time, the reading of a
-run and the recovery of a failure.
+is anchored at UTC midnight and ends successfully when there is nothing new. GitHub starts a
+scheduled run late - measured at 3.5 to 4.8 hours on this repository - which is why the anchor is
+the UTC day boundary and not a local-time target; [daily-upstream-watch.md](daily-upstream-watch.md)
+is the runbook for the time, the reading of a run and the recovery of a failure.
 
 ```sh
 gh workflow run upstream-watch.yml --ref main

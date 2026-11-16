@@ -15,12 +15,11 @@
 ```yaml
 on:
   schedule:
-    - cron: "0 16 * * *"
+    - cron: "0 0 * * *"
 ```
 
-`0 16 * * *` 是 UTC 16:00，也就是北京时间的零点。这是**名义**时间，不是实际启动时间：GitHub 的
-`schedule` 是 best-effort，队列忙的时候就晚。在本仓库实测，这个 workflow 之前声明的 20:00 UTC
-cron，实际启动时间是：
+`0 0 * * *` 是 UTC 零点：每个 UTC 日跑一次，落在 schedule 所指那一天的边界上。这是**名义**时间，
+不是实际启动时间 —— GitHub 的 `schedule` 是 best-effort，而且延迟并不小。在本仓库实测（锚定之前）：
 
 | 排给 20:00 UTC 的日期 | 实际启动（UTC） | 延迟 |
 |---|---|---|
@@ -29,9 +28,9 @@ cron，实际启动时间是：
 | 2026-11-13 | 2026-11-14T00:34 | +4.6 h |
 | 2026-11-14 | 2026-11-14T23:30 | +3.5 h |
 
-延迟在 3.5 到 4.8 小时之间，这正是 cron 现在写 16:00 UTC 而不是 20:00 UTC 的原因：同样的延迟下，
-构建会落在北京时间 04:00 附近，而不是上午。04:00 是预期，不是保证 —— 队列更堵时会更晚，队列空闲时
-会更早。workflow 自己的注释记下了这次实测和目标时间。
+延迟 3.5 到 4.8 小时，这正是**不再**去追某个本地时间点的原因：在这个抖动下，名义时间只能是一个
+预期值，而「让它落在北京时间 04:00 附近」这种写法会在队列繁忙的一天悄悄变成 08:00。所以 cron 只
+声明它真正想表达的东西 —— UTC 零点 —— 下游也不依赖 job 实际几点启动。
 
 关于触发还有两件小事：
 
@@ -47,6 +46,17 @@ cron，实际启动时间是：
 | 有新版本 | `detect` -> `bump` -> `build` -> `locks` -> `merge` -> `publish` | run 绿，`bump/build/locks/merge/publish` 都跑了，之后多出一个裸 `<X.Y.Z>` tag 与一个 release |
 | 没有新版本 | 只有 `detect` | run 绿，其余 job 全是 `skipped`，没有建分支、没有 tag、没有 release |
 | 失败 | 任一 job 失败或被取消 | run 红，并且有一个标题为 `[auto-release] <version>`、label 为 `auto-release` 的 issue |
+
+「安静的一天」绿 run **只有一种**：索引里有正式版，而 pin 已经是它。另外两种状态过去看起来也是它，
+现在不再是，因为在那两种状态下绿 run 与健康的 watch 无法区分：
+
+| 状态 | 现在 |
+|---|---|
+| 索引里**解析不到任何**正式版（页面坏、镜像被裁剪或滞后） | `detect` 失败：这绝不等同于「上游没发版」 |
+| pin 比索引里最新正式版**还新**（镜像滞后，或 pin 被推过头） | `detect` 失败：pin 与镜像互相矛盾，且仍然不降级 pin |
+
+彩排（`-f version=<X.Y.Z>`）例外：它自己点名了要跑哪个版本，所以镜像故障只作为 warning 报告，
+不决定这次 dispatch 能不能跑。
 
 第一种形状里各个 job 按顺序做这些事：
 
@@ -89,11 +99,16 @@ gh run view <run-id> --log-failed
 ```
 
 安静的一天还顺带回答「watch 还活着吗」：50 天没有任何活动时，`heartbeat` job 会推一个
-`heartbeat-YYYYMM` tag，对 GitHub 而言这是活动，而它不是 `v*` tag。它出现在 tag 列表里：
+`heartbeat-YYYYMM` tag，它不是 `v*` tag，所以启动不了发布线。它出现在 tag 列表里：
 
 ```sh
 git ls-remote --tags origin 'heartbeat-*'
 ```
+
+**这里有一个必须说清的保留项。** 打这个 tag 的前提是「推 tag 算作 GitHub 所说的 repository
+activity」。GitHub 文档只写 "no repository activity"，从不定义它包含什么；其他项目的观测结论是
+提交与 push 算、tag 是否算并未确立。而本仓库**从未产生过** `heartbeat-*` tag（数量 0），所以这个
+机制**没有任何证实样本**。把这个 tag 读成「watch 试过了」，不要读成「调度器已被重置」。
 
 ## 彩排一次运行
 
@@ -136,14 +151,16 @@ rehearse」拒绝，并指向用 `resume` 恢复已经合并过的 release。彩
 |---|---|
 | `auto/upstream-<version>` 与一个开着的 pull request | `gh pr list --head auto/upstream-25.12.1`，然后 `gh pr close <number> --delete-branch` |
 | 彩排自建的临时 base 分支 | `git push origin --delete rehearsal/upstream-watch` |
-| 一个 draft release | `gh release delete 25.12.1 --yes` |
+| 一个 draft release | `gh release list --json isDraft,name,tagName`，再 `gh release delete <tagName> --yes` |
 
-draft release 不会创建 tag，所以 `--yes` 就够清掉它；`--cleanup-tag` 只在 release 的 tag 已存在时才需要。
-绝不要为了让彩排干净去删 `v*` tag：`v*` 属于另一条发布线，它的 release 不是彩排残留。
+彩排在 tag 推送之前运行，所以它的 draft 是**没有 tag** 的（`releases/tag/untagged-...`）：
+`gh release view <version>` 找不到它，版本号也不是它的身份。它的身份是渲染出来的 release 标题，
+publish 那一步匹配的就是标题。绝不要为了让彩排干净去删 `v*` tag：`v*` 属于另一条发布线，
+它的 release 不是彩排残留。
 
 彩排可以重复：同样的 dispatch 会替换上次建的分支，lockfile 步骤在文件已经描述该 release 时变成空操作，
-`publish` 会删掉再重建 draft 而不是拒绝（它只在同名版本已经是**正式** release 时才拒绝，而彩排不可能产生
-那种状态）。
+`publish` 会先删掉自己那个 untagged draft 再新建（它只在同名版本已经是**正式** release 时才拒绝，
+而彩排不可能产生那种状态）。
 
 ## 失败后怎么恢复
 
@@ -206,9 +223,11 @@ watch 不用任何 secret；下面每一条都是仓库或组织配置，只有�
 
 - **仓库是公开的（PUBLIC）。** 公开仓里长期没有活动的 scheduled workflow 会在 60 天后被停用，那等于
   把自动发布线悄悄关掉。`heartbeat` job 存在的唯一理由就是这个：`CI_HEARTBEAT_INTERVAL_DAYS`（默认
-  50）天内既没有 heartbeat tag、也没有 release tag、也没有碰过 pin 的提交时，它推一个
+  50）天内既没有 heartbeat tag、也没有 release tag（`v*` 或裸版本号）、也没有碰过 pin 的提交时，它推一个
   `heartbeat-YYYYMM`。名字按 `^heartbeat-[0-9]{6}$` 断言，workflow 拒绝推任何匹配 `v*` 的东西，所以
-  心跳永远不会启动一次发布。
+  心跳永远不会启动一次发布。**这个前提本身未被证实**（见第 2 节的保留项）；而且被停用的 watch 不产生
+  任何 run，所以这个 workflow 内部没有任何东西能报告「它被关掉了」，必须从外部查
+  `gh api repos/:owner/:repo/actions/workflows/<id> --jq .state`。
 - **默认 `GITHUB_TOKEN` 有 write 权限。** Settings -> Actions -> General -> Workflow permissions 必须是
   可读可写。每个 job 只把自己要写的那部分收窄（`contents: write`、`pull-requests: write`、
   `issues: write`），而仓库或组织的默认值是只读时，`bump` 会在推分支或开 PR 时失败。

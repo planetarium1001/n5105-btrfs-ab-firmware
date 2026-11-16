@@ -151,10 +151,30 @@ require_formal_version() {
     fi
 }
 
+# die_undiscovered <pin> <message>: fail the discovery path *after* publishing the
+# outputs the failure report is built from. The `issue` job titles itself
+# `[auto-release] <version>` and its body is the only thing a reader sees, so it needs both
+# the release being talked about and the reason: a detect that dies before emitting
+# anything leaves the issue saying "unknown" and "see the run log", which is exactly the
+# unreadable failure this task exists to remove. `changed` is deliberately never emitted
+# here: it would let every downstream job skip and the run end green.
+die_undiscovered() {
+    local pin="$1" message="$2"
+    ci_emit_output "version" "${pin}"
+    ci_emit_output "current_pin" "${pin}"
+    ci_emit_output "mode" "discover"
+    # One line, because it becomes a GITHUB_OUTPUT value and an issue table row.
+    ci_emit_output "detect_error" "${message//$'\n'/ }"
+    ci_die "${message}"
+}
+
 detect_cmd() {
     local work index_path formal_list current_pin latest_formal version changed
     local formal_versions line resume resume_version base pin_in_base merged_sha
     local tag_exists tag_sha
+    # Assigned, not merely declared: `set -u` treats a declared-but-unassigned local as
+    # unset, and the "no anomaly" case is exactly the empty value.
+    local undiscovered=""
     work="${CI_WORK_DIR:-${CI_TMP_ROOT}/upstream-watch}"
     mkdir -p "${work}"
     formal_list="${work}/formal-descending.txt"
@@ -206,24 +226,39 @@ detect_cmd() {
         ci_log "pin ${current_pin}, newest formal release ${latest_formal:-none}"
 
         if [ -z "${latest_formal}" ]; then
-            ci_warn "the upstream index lists no formal release at ${CI_MIN_UPSTREAM_MAJOR}.x or newer; nothing to release"
-            changed="false"
-            version="${current_pin}"
+            # An index that parses to no formal release is a broken page or a pruned/lagging
+            # mirror, never "there is no update". The two used to be the same green run with
+            # nothing to show for it: the workflow's only failure exit is the `issue` job,
+            # and it fires on a failed job, so a warning here means the outage is invisible.
+            undiscovered="the upstream index lists no formal release at ${CI_MIN_UPSTREAM_MAJOR}.x or newer: the index or its mirror is broken or lagging, so this is not \"no update\""
         elif [ "${latest_formal}" = "${current_pin}" ]; then
             ci_log "pin already names the newest formal release; no update"
             changed="false"
             version="${current_pin}"
         elif [ "$(printf '%s\n%s\n' "${latest_formal}" "${current_pin}" | LC_ALL=C sort -V | tail -n 1)" != "${latest_formal}" ]; then
             # The pin is newer than anything the index offers: a pruned or lagging mirror, or a
-            # pin bumped ahead of the mirror. Adopting it would downgrade the release, so it is
-            # reported and nothing happens.
-            ci_warn "the pin ${current_pin} is newer than the newest formal release ${latest_formal}; not downgrading"
-            changed="false"
-            version="${current_pin}"
+            # pin bumped ahead of the mirror. Downgrading the pin is not an option, but neither
+            # is reporting "no update": the daily run would skip everything and stay green while
+            # the mirror and the pin disagree, which is a failure nobody would ever see.
+            undiscovered="the pin ${current_pin} is newer than the newest formal release ${latest_formal}: the pin is ahead of its mirror, so this is not \"no update\"; not downgrading the pin"
         else
             ci_log "new formal release ${latest_formal} (pin ${current_pin})"
             changed="true"
             version="${latest_formal}"
+        fi
+
+        # A rehearsal names the release it wants to exercise, so a broken mirror may be
+        # reported but may not decide whether a human's dispatch runs: the named version goes
+        # through the same formal-release gate below and needs no index. The scheduled path
+        # has no such name, which is exactly why it must not continue.
+        if [ -n "${undiscovered}" ]; then
+            if [ -n "${CI_FORCE_VERSION:-}" ]; then
+                ci_warn "${undiscovered}; continuing with the rehearsal version ${CI_FORCE_VERSION}"
+                changed="false"
+                version="${current_pin}"
+            else
+                die_undiscovered "${current_pin}" "${undiscovered}; refusing to report a green run"
+            fi
         fi
 
         # A rehearsal names the release it wants to exercise. The value goes through the same
@@ -311,8 +346,14 @@ merged_sha_of() {
         sha="$(gh pr view "${pr}" --json mergeCommit --jq '.mergeCommit.oid // ""' 2>/dev/null || true)"
     fi
     if [ -z "${sha}" ]; then
-        sha="$(gh pr list --head "${branch}" --state all --json mergeCommit \
-            --jq '[.[] | .mergeCommit.oid // empty][0] // ""' 2>/dev/null || true)"
+        # The list is not ordered by merge time and it carries closed pull requests whose
+        # merge commit is null, so "the first entry that has one" answers with the oldest
+        # merge the branch ever had. That commit is what a tag would be pushed at, and a tag
+        # is immutable: answering with it either publishes a tree without the fixes on the
+        # base branch or makes every later run die comparing the real tag against it.
+        sha="$(gh pr list --head "${branch}" --state merged --limit 100 \
+            --json mergeCommit,mergedAt \
+            --jq 'sort_by(.mergedAt) | last | .mergeCommit.oid // ""' 2>/dev/null || true)"
     fi
     [ "${sha}" != "null" ] || sha=""
     printf '%s' "${sha}"
@@ -500,7 +541,11 @@ issue_body_cmd() {
         version="$(ci_upstream_pin_read)"
     fi
     stage="${CI_AUTO_FAILED_STAGE:-unknown}"
-    reason="${CI_AUTO_REASON:-see the run log}"
+    # A discovery failure has no "detected version": the run never compared the pin with
+    # anything. Saying "detected upstream 25.12.2 (pin 25.12.2)" there would describe a
+    # comparison that never happened and point the reader at the wrong recovery script.
+    detect_error="${CI_DETECT_ERROR:-}"
+    reason="${CI_AUTO_REASON:-${detect_error:-see the run log}}"
     run_url="${CI_RUN_URL:-not recorded}"
     artifact="${CI_LOG_ARTIFACT:-ci-logs}"
     pin="$(ci_upstream_pin_read)"
@@ -523,8 +568,15 @@ issue_body_cmd() {
     # No heading: the issue title is `[auto-release] <version>` and is also the key that
     # keeps one issue per version, so repeating the version here would say it twice.
     {
-        printf 'The daily run detected upstream `%s` (pin `%s`) and could not finish.\n' \
-            "${version}" "${pin}"
+        if [ -n "${detect_error}" ]; then
+            printf 'The daily run **could not discover a new upstream release**, so nothing was\n'
+            printf 'released. The failure is not "upstream released nothing":\n'
+            printf '\n'
+            printf '> %s\n' "${detect_error}"
+        else
+            printf 'The daily run detected upstream `%s` (pin `%s`) and could not finish.\n' \
+                "${version}" "${pin}"
+        fi
         if [ "${post_merge}" = "true" ]; then
             printf 'The merge has already happened: it is **not** safe to assume nothing was touched.\n'
         else
@@ -580,17 +632,29 @@ issue_body_cmd() {
         else
             printf '## Recovery: nothing was merged yet\n'
             printf '\n'
-            printf 'The base branch still pins `%s` (it has not moved to `%s`), so the run can be\n' \
-                "${pin}" "${version}"
-            printf 'repeated from the start. A recovery dispatch does not rediscover the release\n'
-            printf 'and does not refuse because the version was already the pin.\n'
-            printf '\n'
-            printf '```\ngh workflow run upstream-watch.yml -f version=%s -f resume=merge\n```\n' \
-                "${version}"
-            printf '\n'
-            printf 'Idempotency: the branch push uses `--force-with-lease`, the lockfiles steps are\n'
-            printf 'no-ops when they already describe the release, and the merge stops when the base\n'
-            printf 'branch already carries the pin.\n'
+            if [ -n "${detect_error}" ]; then
+                # There is no version to repeat: the discovery never finished, so the fix is
+                # the index (or the mirror), and then a plain dispatch. `resume=merge` would
+                # skip discovery and rebuild whatever the pin already names.
+                printf 'The base branch still pins `%s` and the release was never identified, so\n' \
+                    "${pin}"
+                printf 'there is nothing to resume. Fix the upstream index or its mirror, then let\n'
+                printf 'the next scheduled run discover the release again.\n'
+            else
+                printf 'The base branch still pins `%s` (it has not moved to `%s`), so the run can be\n' \
+                    "${pin}" "${version}"
+                printf 'repeated from the start. A recovery dispatch does not rediscover the release\n'
+                printf 'and does not refuse because the version was already the pin.\n'
+                printf '\n'
+                printf '```\ngh workflow run upstream-watch.yml -f version=%s -f resume=merge\n```\n' \
+                    "${version}"
+            fi
+            if [ -z "${detect_error}" ]; then
+                printf '\n'
+                printf 'Idempotency: the branch push uses `--force-with-lease`, the lockfiles steps are\n'
+                printf 'no-ops when they already describe the release, and the merge stops when the base\n'
+                printf 'branch already carries the pin.\n'
+            fi
         fi
         printf '\n'
         printf '## Next\n'

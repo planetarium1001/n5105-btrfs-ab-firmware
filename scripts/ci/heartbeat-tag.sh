@@ -15,8 +15,8 @@
 #   * the baseline is "the newest activity this checkout can see", so a shallow clone is
 #     reported: in a depth-1 checkout the commit that last touched the pin is the shallow
 #     root, the gap is always 0, and the heartbeat never fires. The workflow therefore
-#     fetches tags and 50 commits for this step, and a shallow clone says so instead of
-#     quietly answering too-soon
+#     fetches the full history and the tags for this step, and a shallow clone says so
+#     instead of quietly answering too-soon
 #   * an existing `heartbeat-YYYYMM` makes the run a no-op with `reason=already-tagged`,
 #     so re-running the same month is idempotent: no second tag and no error
 #   * `heartbeat-` never matches `^v`, which is the release trigger. The name is asserted
@@ -159,9 +159,12 @@ while IFS=' ' read -r name epoch; do
             note_baseline "${epoch}" "heartbeat tag ${name}"
             ;;
         *)
-            # A bare `X.Y.Z` tag is one of our releases: the monthly heartbeat only has to
-            # bridge the gap when nothing was released either.
-            if printf '%s\n' "${name}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            # A release tag is a release, whether it carries the `v` prefix or not: this
+            # repository publishes `v0.0.x` through the release line and bare `X.Y.Z` through
+            # the automatic upstream line, and the monthly heartbeat only has to bridge the
+            # gap when neither happened. Matching the bare spelling alone made every `v*`
+            # release invisible, which is most of them.
+            if printf '%s\n' "${name}" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
                 note_baseline "${epoch}" "release tag ${name}"
             fi
             ;;

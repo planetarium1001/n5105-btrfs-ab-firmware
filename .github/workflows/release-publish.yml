@@ -419,6 +419,21 @@ jobs:
               # No --cleanup-tag: the tag is the release identity and the merge just
               # created it; a rehearsal replaces the draft, never the tag.
               gh release delete "${TAG}" --yes
+            else
+              # A rehearsal runs before the tag is pushed, so `gh release create --draft
+              # "${TAG}"` makes an untagged draft (releases/tag/untagged-...) that
+              # `gh release view "${TAG}"` can never find. The rendered title is the one
+              # identifier this rehearsal has, so it is what "the draft this line left
+              # behind" means here; deleting every untagged draft instead would take
+              # another line's rehearsal with it.
+              previous_drafts="$(gh release list --limit 100 --json isDraft,name,tagName |
+                jq -r --arg title "${TITLE}" \
+                  '[.[] | select(.isDraft and .name == $title) | .tagName] | .[]')"
+              while IFS= read -r stale_tag; do
+                [ -n "${stale_tag}" ] || continue
+                echo "dry run: replacing the rehearsal draft ${stale_tag} (title ${TITLE})"
+                gh release delete "${stale_tag}" --yes
+              done <<<"${previous_drafts}"
             fi
             gh release create "${TAG}" \
               --draft \

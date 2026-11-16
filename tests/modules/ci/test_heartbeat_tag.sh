@@ -159,6 +159,37 @@ assert_eq "$(output_of "$tmp/o-released.env" days_since)" "22" \
 assert_eq "$(output_of "$tmp/o-released.env" action)" "skipped" \
   "ac-5 a recent release makes the heartbeat unnecessary"
 
+# ac-4: the tags this repository actually publishes are `v*` (v0.0.1 ... v0.0.11), so a
+# release tag that only the bare spelling matched was never a baseline at all: every gap
+# fell through to "no activity" and the heartbeat fired as if it were the first one.
+released_v="$tmp/released-v"
+new_repo "$released_v" "2026-08-13T00:00:00Z"
+dated_tag "$released_v" "v0.0.10" "2026-09-20T00:00:00Z"
+tag_run "$released_v" "$tmp/o-released-v.env" --now 2026-10-12
+assert_eq "$tag_status" "0" "ac-4 a repository whose only tag is v0.0.10 exits 0"
+assert_eq "$(output_of "$tmp/o-released-v.env" days_since)" "22" \
+  "ac-4 a v-prefixed release tag is the baseline, measured from the tag's own date"
+assert_eq "$(output_of "$tmp/o-released-v.env" reason)" "too-soon" \
+  "ac-4 the v* baseline makes the heartbeat not due, instead of a first-heartbeat"
+assert_eq "$(output_of "$tmp/o-released-v.env" action)" "skipped" \
+  "ac-4 a release 22 days ago makes the heartbeat unnecessary"
+assert_contains "$tag_log" "release tag v0.0.10" \
+  "ac-4 the log names the v* release tag it judged against"
+
+# The other half of ac-4: the same v* tag, old enough, is due *because of the tag*. A
+# repository with no recognisable baseline reports `first-heartbeat` instead, so the reason
+# is what proves the tag was read rather than ignored.
+released_v_old="$tmp/released-v-old"
+new_repo "$released_v_old" "2026-01-05T00:00:00Z"
+dated_tag "$released_v_old" "v0.0.3" "2026-07-01T00:00:00Z"
+tag_run "$released_v_old" "$tmp/o-released-v-old.env" --now 2026-10-12
+assert_eq "$(output_of "$tmp/o-released-v-old.env" days_since)" "103" \
+  "ac-4 the gap is measured from the v* release tag, not from the beginning of history"
+assert_eq "$(output_of "$tmp/o-released-v-old.env" reason)" "due" \
+  "ac-4 a v* release 103 days old is due, not a first heartbeat"
+assert_eq "$(output_of "$tmp/o-released-v-old.env" action)" "created" \
+  "ac-4 the due heartbeat of a v*-released repository is created"
+
 pinned="$tmp/pinned"
 new_repo "$pinned" "2026-08-13T00:00:00Z"
 mkdir -p "$pinned/.github"
@@ -255,8 +286,10 @@ WORKFLOW="$root/.github/workflows/upstream-watch.yml"
 detect_block=$(awk '/^  detect:$/ { flag = 1 } flag && /^  [a-z-]+:$/ && !/^  detect:$/ { exit } flag' "$WORKFLOW")
 assert_contains "$detect_block" "fetch-tags: true" \
   "ac-1 the detect job fetches tags, without which the heartbeat baseline is empty"
-assert_contains "$detect_block" "fetch-depth: 50" \
-  "ac-1 the detect job fetches enough history for the pin commit to have an age"
+assert_contains "$detect_block" "fetch-depth: 0" \
+  "ac-5 the detect job fetches the full history, so the pin commit has a real age"
+assert_eq "$(grep -c 'fetch-depth: 50' "$WORKFLOW" || true)" "0" \
+  "ac-5 the workflow no longer declares the empirical depth 50"
 
 
 assert_eq "$(git -C "$due" tag -l 'v*' | wc -l | tr -d ' ')" "0" \

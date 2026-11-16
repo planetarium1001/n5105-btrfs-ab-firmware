@@ -20,7 +20,7 @@ pin、合并、然后用裸版本号（`25.13.0`）发布。
 
 | | 代码线 | 上游线 |
 |---|---|---|
-| 触发 | push `v*` tag（`release.yml`） | `schedule`（`0 16 * * *`），或 `upstream-watch.yml` 的 `workflow_dispatch` |
+| 触发 | push `v*` tag（`release.yml`） | `schedule`（`0 0 * * *`，UTC 零点），或 `upstream-watch.yml` 的 `workflow_dispatch` |
 | tag 形状 | `v<X.Y.Z>`，例如 `v0.0.8` | 裸 `<X.Y.Z>`，例如 `25.13.0` |
 | `VERSION` | tag 必须等于它：tag 去掉 `v` 就是本次发布的平台版本 | 发布不改它；它必须仍然是镜像里记录的那个平台版本 |
 | 构建哪个上游 | `.github/upstream-pin.conf` 里的 pin；不传版本输入 | `detect` 刚发现的版本，作为 `upstream_version` 传给 `ci.yml` |
@@ -122,11 +122,14 @@ label 为 `auto-release`。同名的 open issue 已经存在就 comment，而不
 让这个 job 自己也是红的。正文里带各 job 的结果和 run URL。
 
 **心跳 tag。** 公开仓库里的 scheduled workflow 在 60 天没有活动后会被禁用，那会让自动发布线悄悄
-停摆。`heartbeat-tag.sh` 只在 `CI_HEARTBEAT_INTERVAL_DAYS`（默认 50）天里什么都没发生时创建
+停摆。注意：GitHub 从不定义「活动」包含什么，普遍观测到的结论是「提交与 push 算」而不是 tag；而本仓库
+从未产生过 `heartbeat-*` tag，所以这条对策**前提未证**。它按已知缺口记录，而不是按已解决问题：被停用的
+watch 不产生任何 run，因此这个 workflow 无法报告「自己被关掉了」，必须从外部查
+`gh api repos/:owner/:repo/actions/workflows/<id> --jq .state`。`heartbeat-tag.sh` 只在 `CI_HEARTBEAT_INTERVAL_DAYS`（默认 50）天里什么都没发生时创建
 `heartbeat-YYYYMM`，基准取三者中最新的一条：上一个心跳 tag、上一个裸版本 release tag、上一次动
 pin 的提交。名字断言 `^heartbeat-[0-9]{6}$`，并且 workflow 拒绝推送任何匹配 `v*` 的 tag —— 一个
 `v*` tag 会拉起代码线，发布一个从零构建出来的固件版本。存在性判断靠 tag 历史，所以那个 job 的
-checkout 带 `fetch-tags: true` 与 `fetch-depth: 50`。
+checkout 带 `fetch-tags: true` 与 `fetch-depth: 0`（全量历史：任何固定深度都是对「pin 提交距 HEAD 有多远」的估算，只在测量它时的密度下成立）。
 
 **合并。** 自动改动是一个分支加一个 PR，落地前重新核一遍：
 
@@ -193,9 +196,9 @@ git push origin "v$(tr -d '[:space:]' < VERSION)"
 push tag 就是启动构建的那一下，不需要再派发任何东西。与 `VERSION` 不一致的 tag 会被 preflight
 拒绝，release 不会出现。
 
-**上游线**用来换 ImmortalWrt 基线，通常什么都不用做：`schedule` 名义上是 UTC 16:00，没有新版本时
-以成功结束。GitHub 启动定时 run 会晚 —— 本仓库实测 3.5 到 4.8 小时 —— 所以通常落在北京时间 04:00
-附近；时间、判读与恢复写在 [daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)。
+**上游线**用来换 ImmortalWrt 基线，通常什么都不用做：`schedule` 锚定 UTC 零点，没有新版本时以成功
+结束。GitHub 启动定时 run 会晚 —— 本仓库实测 3.5 到 4.8 小时 —— 这正是锚点是 UTC 日界而不是某个本地
+时间点的原因；时间、判读与恢复写在 [daily-upstream-watch.zh-CN.md](daily-upstream-watch.zh-CN.md)。
 
 ```sh
 gh workflow run upstream-watch.yml --ref main

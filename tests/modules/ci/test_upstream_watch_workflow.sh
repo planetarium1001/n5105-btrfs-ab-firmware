@@ -36,17 +36,29 @@ job_block() {
 
 assert_contains "$text" "on:
   schedule:" "ac-2 the watch runs on a schedule"
-# 16:00 UTC is 00:00 in Beijing, four hours before the target: GitHub's `schedule` trigger
-# started a 20:00 UTC cron at 23:30-00:48 UTC on this repository, so a nominal time that
-# matches the target would land the build in the working morning.
-assert_contains "$text" 'cron: "0 16 * * *"' \
-  "ac-4 the watch runs at 16:00 UTC, so a delayed start lands around 04:00 Beijing"
+# The cron is anchored at UTC midnight: the schedule states the intent (one run per UTC day
+# at 00:00) and does not shift the nominal time to compensate for GitHub's queue. The old
+# anchor is asserted out below, because it came with a four-hour compensation reasoning that
+# made the run page claim a start time nothing could guarantee.
+assert_contains "$text" 'cron: "0 0 * * *"' \
+  "ac-7 the watch runs at UTC midnight, not at a time shifted for the queue delay"
 assert_eq "$(grep -c 'cron:' "$watch")" "1" \
-  "ac-4 one cron, not a pair: a second daily run buys a hit rate and costs a full build"
-assert_contains "$(sed -n '/^  schedule:/,/^    - cron:/p' "$watch")" "best-effort" \
-  "ac-4 the comment above the cron says the start time is best-effort, not a guarantee"
-assert_contains "$(sed -n '/^  schedule:/,/^    - cron:/p' "$watch")" "four hours early" \
-  "ac-4 the comment above the cron explains why the nominal time is ahead of the target"
+  "ac-7 one cron, not a pair: a second daily run buys a hit rate and costs a full build"
+schedule_comment=$(sed -n '/^  schedule:/,/^    - cron:/p' "$watch")
+assert_contains "$schedule_comment" "best-effort" \
+  "ac-7 the comment above the cron still says the start time is best-effort, not a guarantee"
+assert_contains "$schedule_comment" "UTC midnight" \
+  "ac-7 the comment states the anchor instead of a compensation for the queue delay"
+# The literal is assembled rather than written out: a test that contains the string it
+# searches for matches itself, and that is exactly the pattern grepped for in the next step.
+old_cron="0 16 $(printf '%s %s %s' '*' '*' '*')"
+assert_eq "$(grep -cF "${old_cron}" "$watch" || true)" "0" \
+  "ac-7 the workflow declares no 16:00 UTC cron any more"
+# The tests are the other half of the same claim. The bracket forms keep this file from
+# matching its own pattern: what is grepped for is the literal text, not this regex.
+assert_eq "$(grep -rEn '0 16 [*] [*] [*]|four hours earl[y]' tests/modules/ci 2>/dev/null \
+  | wc -l | tr -d ' ')" "0" \
+  "ac-7 no CI test still asserts the old anchor or the reasoning behind it"
 assert_contains "$text" "  workflow_dispatch:" "ac-2 the watch can be dispatched by hand"
 assert_eq "$(grep -c '^  push:' "$watch")" "0" \
   "ac-2 the watch is not triggered by a push: a push by GITHUB_TOKEN would not trigger it anyway"
@@ -237,10 +249,17 @@ assert_eq "$(grep -c 'permissions:' "$watch" | awk '{print ($1 >= 6) ? "yes" : "
 # tags and the history; the `heartbeat` job keeps its own for the push-time recheck.
 assert_contains "$(job_block detect)" "fetch-tags: true" \
   "ac-1 the detect job fetches the tags the heartbeat decision reads"
-assert_contains "$(job_block detect)" "fetch-depth: 50" \
-  "ac-1 the detect job fetches enough history for the pin commit to have an age"
+# The depth is the whole answer: `git log -1 -- <pin>` can only see what the clone carries,
+# so a depth that is an empirical number under the current commit density silently ages the
+# baseline. `0` is the full history, which for this repository is a few megabytes.
+assert_contains "$(job_block detect)" "fetch-depth: 0" \
+  "ac-5 the detect job fetches the full history, so the pin commit has a real age"
 assert_contains "$(job_block heartbeat)" "fetch-tags: true" \
   "ac-5 the heartbeat job fetches the tags it decides from"
+assert_contains "$(job_block heartbeat)" "fetch-depth: 0" \
+  "ac-5 the heartbeat job fetches the full history its own recheck decides from"
+assert_eq "$(grep -c 'fetch-depth: 50' "$watch" || true)" "0" \
+  "ac-5 no checkout declares depth 50: an empirical depth drifts with commit density"
 # The dead parameter: heartbeat-tag.sh never reads CI_MATRIX_CANDIDATES, so passing it looked
 # like wiring while carrying nothing.
 assert_eq "$(grep -c 'CI_MATRIX_CANDIDATES: \${{ steps.matrix' "$watch")" "0" \
@@ -305,6 +324,15 @@ assert_contains "$(job_block detect)" "merged-sha:" \
   "ac-3 the merge commit is published as a job output"
 assert_contains "$(job_block detect)" "tag-exists:" \
   "ac-3 the tag state is published as a job output"
+# A discovery failure is fatal now (ac-1/ac-2), so the issue job is the only place the
+# operator looks. The reason has to travel there as a value: the workflow cannot read the
+# failed step's log, and a body saying "see the run log" is not a reason.
+assert_contains "$(job_block detect)" "detect-error:" \
+  "ac-1 the discovery failure reason is published as a job output"
+assert_contains "$(job_block issue)" 'CI_DETECT_ERROR: ${{ needs.detect.outputs.detect-error }}' \
+  "ac-1 the failure issue is told why discovery failed"
+assert_contains "$(job_block issue)" 'auto_reason="${CI_DETECT_ERROR}"' \
+  "ac-1 the detect failure's own reason becomes the issue's reason row"
 # The issue body has to be chosen from the state, not assumed: after a merge the sentence
 # "nothing was merged" is false, and it is the sentence an on-call acts on.
 assert_contains "$(job_block issue)" 'CI_PIN_IN_BASE: ${{ needs.detect.outputs.pin-in-base }}' \

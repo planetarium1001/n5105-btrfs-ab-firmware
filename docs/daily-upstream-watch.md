@@ -17,13 +17,13 @@ The trigger is a schedule in [`upstream-watch.yml`](../.github/workflows/upstrea
 ```yaml
 on:
   schedule:
-    - cron: "0 16 * * *"
+    - cron: "0 0 * * *"
 ```
 
-`0 16 * * *` is 16:00 UTC, which is midnight in Beijing. That is the nominal time, and it is not
-the time the run starts: GitHub's `schedule` trigger is best-effort and starts late when its queue
-is busy. Measured on this repository, runs queued for the 20:00 UTC cron this workflow used to
-declare actually started here:
+`0 0 * * *` is UTC midnight: one run per UTC day, at the boundary of the day the schedule talks
+about. It is the nominal time, not the time the run starts - GitHub's `schedule` trigger is
+best-effort, and the delay is not small. Measured on this repository before the schedule was
+anchored:
 
 | queued for 20:00 UTC on | started (UTC) | delay |
 |---|---|---|
@@ -32,10 +32,11 @@ declare actually started here:
 | 2026-11-13 | 2026-11-14T00:34 | +4.6 h |
 | 2026-11-14 | 2026-11-14T23:30 | +3.5 h |
 
-That is a delay of 3.5 to 4.8 hours, and it is why the cron now names 16:00 UTC instead of 20:00
-UTC: with the same delay the build lands around 04:00 Beijing instead of mid-morning. 04:00 is an
-expectation, not a guarantee - a late queue can still start the run later, and a day whose queue is
-empty can start it earlier. The workflow's own comment records the measurement and the target.
+That is a delay of 3.5 to 4.8 hours, and it is the reason the schedule is **not** written to chase
+a local-time target: at that jitter a nominal time can only be an expectation, and a number chosen
+to land "around 04:00 Beijing" would silently become 08:00 on a busy day. The cron therefore states
+the anchor it means - UTC midnight - and nothing downstream depends on the hour the job actually
+starts.
 
 Two smaller facts about the trigger:
 
@@ -54,6 +55,18 @@ the run page says it in the job graph.
 | A new release | `detect` -> `bump` -> `build` -> `locks` -> `merge` -> `publish` | green run, `bump/build/locks/merge/publish` all ran, a bare `<X.Y.Z>` tag and a release exist afterwards |
 | Nothing new | `detect` only | green run, every other job is `skipped`, no branch, tag or release was created |
 | Failure | any job fails or is cancelled | red run, and one issue titled `[auto-release] <version>` labelled `auto-release` |
+
+Only **one** shape is a green quiet run: the index offered a formal release and the pin already
+names it. Two states used to look like it and no longer do, because a green run there is
+indistinguishable from a healthy watch:
+
+| State | Now |
+|---|---|
+| the index parses to **no** formal release at all (broken page, pruned or lagging mirror) | `detect` fails: this is never "upstream released nothing" |
+| the pin is **newer** than the newest formal release (mirror lagging, or a pin bumped past it) | `detect` fails: the pin and the mirror disagree, and the pin is still not downgraded |
+
+A rehearsal (`-f version=<X.Y.Z>`) is exempt: it names the release it wants, so a broken mirror is
+reported as a warning instead of deciding whether the dispatch runs.
 
 The jobs behind the first shape, in the order they run:
 
@@ -99,12 +112,19 @@ gh run view <run-id> --log-failed
 ```
 
 A quiet day also answers "is the watch still alive": when nothing has happened for 50 days the
-`heartbeat` job pushes a `heartbeat-YYYYMM` tag, which is activity for GitHub without being a `v*`
-tag. It shows up in the tag list:
+`heartbeat` job pushes a `heartbeat-YYYYMM` tag, which is not a `v*` tag and so cannot start a
+release. It shows up in the tag list:
 
 ```sh
 git ls-remote --tags origin 'heartbeat-*'
 ```
+
+**Caveat, and it is a real one.** The tag is written on the premise that pushing a tag counts as
+"repository activity" for GitHub's 60-day rule. GitHub's documentation says "no repository activity"
+and does not define the term; the observed behaviour reported by other projects is that commits and
+pushes count, and it is not established that tags do. This repository has also never produced a
+`heartbeat-*` tag (count: 0), so the mechanism has **no confirming sample**. Read the tag as "the
+watch tried", not as proof that the scheduler was reset.
 
 ## Rehearsing a run
 
@@ -149,16 +169,18 @@ What it can leave behind, and how to clean it up:
 |---|---|
 | `auto/upstream-<version>` and an open pull request | `gh pr list --head auto/upstream-25.12.1`, then `gh pr close <number> --delete-branch` |
 | the scratch base branch, when the rehearsal created it | `git push origin --delete rehearsal/upstream-watch` |
-| one draft release | `gh release delete 25.12.1 --yes` |
+| one draft release | `gh release list --json isDraft,name,tagName`, then `gh release delete <tagName> --yes` |
 
-A draft release does not create a tag, so `--yes` alone is enough to remove it; `--cleanup-tag` is
-only needed for a release whose tag exists. Never delete a `v*` tag to tidy up a rehearsal: `v*`
-tags belong to the other release line, and its releases are not rehearsal leftovers.
+A rehearsal runs before the tag is pushed, so its draft is an **untagged** one
+(`releases/tag/untagged-...`): `gh release view <version>` cannot find it and the version number is
+not what identifies it. What identifies it is the rendered release title, and that is what the
+publish step matches on. Do not delete a `v*` tag to tidy up a rehearsal: `v*` tags belong to the
+other release line, and its releases are not rehearsal leftovers.
 
 A rehearsal is repeatable: the same dispatch replaces the branch it created last time, the lockfile
-steps are no-ops when the files already describe the release, and `publish` deletes and recreates
-the draft rather than refusing (it refuses only if the version already exists as a **published**
-release, which a rehearsal can never produce).
+steps are no-ops when the files already describe the release, and `publish` deletes its own
+untagged draft before creating the new one (it refuses only if the version already exists as a
+**published** release, which a rehearsal can never produce).
 
 ## Recovering a failure
 
@@ -231,9 +253,12 @@ be true for the automatic line to work at all.
 - **The repository is public.** A scheduled workflow in a public repository is disabled after 60
   days without repository activity, which would switch the automatic release line off silently.
   That is the only reason the `heartbeat` job exists: after `CI_HEARTBEAT_INTERVAL_DAYS` (50 by
-  default) without a heartbeat tag, a release tag or a commit touching the pin, it pushes
-  `heartbeat-YYYYMM`. The name is asserted against `^heartbeat-[0-9]{6}$` and the workflow refuses
-  to push anything matching `v*`, so a heartbeat can never start a release.
+  default) without a heartbeat tag, a release tag (`v*` or bare) or a commit touching the pin, it
+  pushes `heartbeat-YYYYMM`. The name is asserted against `^heartbeat-[0-9]{6}$` and the workflow
+  refuses to push anything matching `v*`, so a heartbeat can never start a release.
+  **The premise is unproven** - see the caveat in section 2. A disabled watch produces no run at
+  all, so nothing inside this workflow can report that it was switched off; that has to be checked
+  from outside (`gh api repos/:owner/:repo/actions/workflows/<id> --jq .state`).
 - **The default `GITHUB_TOKEN` has write permission.** Settings -> Actions -> General -> Workflow
   permissions must allow read and write. Each job narrows the grant to what it writes
   (`contents: write`, `pull-requests: write`, `issues: write`), and a repository or organisation
