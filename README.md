@@ -171,17 +171,17 @@ Format: `MAJOR.MINOR.PATCH`.
 - `MINOR` marks the project goal being fully achieved; it moves to `0.1.0` only then.
 - `PATCH` marks incremental milestones that leave the goal unmet.
 
-Current version: `0.0.10`. It is a **test release**, not `0.1.0`: the product bytes are the
-same as `0.0.9`, and the only identity change is the platform version in
-`/etc/platform-release`. It exists to prove the update path on real hardware. A tag run now
-gates publishing on the cross-version upgrade - a release whose cross stage is red or skipped
-publishes nothing - and a machine on `0.0.9` can detect and install this release over the air.
-Because the upstream base is unchanged, taking it exercises the platform-only upgrade branch:
-the rootfs is reinstalled, the platform layer is replaced, and the writable layer is
-snapshotted. Two P1 defects remain and are fixed in `0.0.11`: `apk upgrade` can shadow
+Current version: `0.0.11`. It is a **test release**, not `0.1.0`: it carries the two P1 fixes
+`0.0.10` announced, and the platform version in `/etc/platform-release` is the only identity
+change. It exists to prove the update path on real hardware. A tag run now gates publishing on
+the cross-version upgrade - a release whose cross stage is red or skipped publishes nothing -
+and a machine on `0.0.10` can detect and install this release over the air. Because the
+upstream base is unchanged, taking it exercises the platform-only upgrade branch: the rootfs is
+reinstalled, the platform layer is replaced, and the writable layer is snapshotted. The two P1
+defects are fixed here: `apk upgrade` can no longer shadow
 `/lib/upgrade/platform.sh` (the release notes carry the recovery command), and
-`ab-slot packages snapshot` can write `payload-incomplete` on a freshly flashed image until the
-base packages are upgraded.
+`ab-slot packages snapshot` no longer writes `payload-incomplete` on a freshly flashed image
+just because the base packages were not upgraded yet.
 
 The first-boot network generation arrived in `0.0.7`, by reusing the
 upstream `board_detect` and `config_generate` and layering this project's defaults on top:

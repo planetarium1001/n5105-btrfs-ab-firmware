@@ -155,12 +155,12 @@ uci commit firewall
 - `MINOR` 表示项目目标彻底达成，只有那时才升到 `0.1.0`。
 - `PATCH` 表示阶段性里程碑，目标尚未达成。
 
-当前版本：`0.0.10`。这是**测试版**，不是 `0.1.0`：产品字节与 `0.0.9` 相同，唯一的身份变化是
-`/etc/platform-release` 里的平台版本。它用来在真机上验证更新链路：tag run 现在以跨版本升级为发布门
-（cross 红或跳过就不发布），`0.0.9` 的机器可以在线检测并安装这一版。因为上游 base 没变，这次升级
-走的是 platform-only 分支：rootfs 重装、platform 层替换、可写层做快照。还有两个 P1 缺陷在 `0.0.11`
-修复：`apk upgrade` 可能遮蔽 `/lib/upgrade/platform.sh`（恢复命令见 release notes）；
-`ab-slot packages snapshot` 在新刷镜像上可能写 `payload-incomplete`，直到基础包被升级。
+当前版本：`0.0.11`。这是**测试版**，不是 `0.1.0`：它带上 `0.0.10` 预告的两个 P1 修复，
+身份变化只有 `/etc/platform-release` 里的平台版本。它用来在真机上验证更新链路：tag run 现在以
+跨版本升级为发布门（cross 红或跳过就不发布），`0.0.10` 的机器可以在线检测并安装这一版。因为上游
+base 没变，这次升级走的是 platform-only 分支：rootfs 重装、platform 层替换、可写层做快照。
+两个 P1 缺陷在这里修好：`apk upgrade` 不再可能遮蔽 `/lib/upgrade/platform.sh`（恢复命令见 release
+notes）；`ab-slot packages snapshot` 在刚刷好的镜像上不再仅因基础包未升级就写 `payload-incomplete`。
 
 首启自动生成网络配置是 `0.0.7` 引入的：复用上游 `board_detect` 与
 `config_generate`，再叠加本项目默认值 —— `eth1`..`eth3` 入 `br-lan` 桥、LAN 默认
