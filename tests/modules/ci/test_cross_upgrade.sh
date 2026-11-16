@@ -507,6 +507,47 @@ assert_contains "$(CI_TMP_ROOT="$tmp/no-facts-ci" bash "$script" run \
   "cross-upgrade=fail reason=facts-missing" \
   "ac-5 a facts directory that is not there is a verdict, not a crash"
 
+# --- ac-8 the fixture installs with --force on the same-base gate only ------
+# The same-base gate boots the PREVIOUS release's published image. That image carries its own
+# ab-upgrade, whose "already installed" guard knew only the upstream base - and two releases
+# on one base share it exactly, so the guard refused the newer payload with 74 and the gate
+# went red for a reason that has nothing to do with what it proves: that the machine takes
+# the release. `--force` says that. The cross gate keeps the bare command: its old image runs
+# a different base, the guard never fires, and the stronger claim should stay tested.
+fixture_same_base="$(bash "$script" fixture --same-base 2>&1)"
+fixture_cross="$(bash "$script" fixture 2>&1)"
+assert_contains "$fixture_same_base" "ab-upgrade --force /payload.tar" \
+  "ac-8 the same-base fixture installs with --force"
+assert_contains "$fixture_cross" "ab-upgrade /payload.tar" \
+  "ac-8 the cross fixture installs without a flag"
+assert_eq "$(printf '%s\n' "$fixture_cross" | grep -c '^  ab-upgrade --force')" "0" \
+  "ac-8 the cross fixture never gains --force"
+assert_eq "$(printf '%s\n' "$fixture_same_base" | grep -c '^  ab-upgrade')" "1" \
+  "ac-8 the fixture installs exactly once"
+# Everything except that one word is the same script in both modes: the install line is the
+# only thing the gates may disagree about.
+assert_eq "$(printf '%s\n' "$fixture_same_base" | sed 's/ab-upgrade --force \/payload.tar/ab-upgrade \/payload.tar/')" \
+  "$fixture_cross" "ac-8 the two fixtures differ only in the flag"
+
+# --- ac-8b the flag is carried from the CLI all the way to the fixture -------
+# Rendering the fixture right does not help if the caller never asks for it. `run_stage` takes
+# `--expect-same-base` as its fifth argument and must hand it to cross_prepare as its fourth;
+# without this assertion a dropped argument kept every suite green while the gate silently
+# went back to installing with the bare command - and the gate would go red again.
+run_fn="$(sed -n '/^run_stage()/,/^}/p' "$script")"
+assert_contains "$run_fn" 'cross_prepare "${_work}/old.img" "${_payload}" "${_work}" "${_expect_same_base}"' \
+  "ac-8b run_stage hands the same-base flag to cross_prepare"
+assert_contains "$run_fn" '_expect_same_base=${5:-}' \
+  "ac-8b run_stage takes the flag as its fifth argument"
+assert_contains "$(sed -n '/^cross_prepare()/,/^}/p' "$script")" '_same_base=${4:-}' \
+  "ac-8b cross_prepare takes it as its fourth argument"
+assert_contains "$(sed -n '/^cross_prepare()/,/^}/p' "$script")" 'cross_fixture_rc_local "${_same_base}"' \
+  "ac-8b and passes it to the renderer that writes the hook"
+# The CLI half: --expect-same-base must reach run_stage.
+assert_contains "$(sed -n '/^case "${cmd}" in/,/^esac/p' "$script")" \
+  'run_stage "${image}" "${payload}" "${out}" "${inject}" "${expect_same_base}" "${facts}"' \
+  "ac-8b the run subcommand forwards the flag into run_stage"
+
 # The stage's own documentation carries the flag, so the CI file that uses it and the script
 # that implements it cannot drift apart without a test failing.
 assert_contains "$(bash "$script" --help 2>&1)" "--expect-same-base" \

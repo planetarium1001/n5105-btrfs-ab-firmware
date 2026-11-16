@@ -226,8 +226,81 @@ grade() {
 # borrow: the candidate's health check needs a WAN the single-NIC boot would not have.
 # --------------------------------------------------------------------------- #
 
+# cross_fixture_install_cmd <same-base>: the one line the fixture runs to install the payload.
+#
+# The same-base gate boots the PREVIOUS release's published image, and that image carries the
+# ab-upgrade of its own release. Two releases on one base share their rootfs version exactly, so
+# the older release's "already installed" guard - which knew only the base - refused the newer
+# payload with 74 and the gate went red for a reason that has nothing to do with the thing the
+# gate proves. `--force` is the honest flag there: the gate asks "can this machine take this
+# release", not "does the old guard let it".
+#
+# The cross gate keeps the bare command. Its old image runs a different base (measured 25.12.1
+# against 25.12.2), the guard never fires, and leaving it alone keeps the stronger claim that a
+# payload installs without any escape hatch.
+cross_fixture_install_cmd() {
+    if [ "${1:-}" = "1" ]; then
+        printf 'ab-upgrade --force /payload.tar'
+    else
+        printf 'ab-upgrade /payload.tar'
+    fi
+}
+
+# cross_fixture_rc_local <same-base>: the fixture script, printed. Pure: no loop device, no
+# mount, no root - which is what lets a test assert the install line of both modes.
+cross_fixture_rc_local() {
+    _install_cmd=$(cross_fixture_install_cmd "${1:-}")
+    cat <<RCLOCAL
+#!/bin/sh
+# Cross-version fixture. Three boots are involved:
+#   boot 1  /payload.tar is present, no install marker exists: install once, print the
+#           status BEFORE and after staging, then DONE (the caller stops here).
+#   boot 2  the candidate first boot. The snapshot carried /payload.tar and this hook into
+#           the candidate's writable layer, but /boot/cross-fixture-installed lives on the
+#           shared ESP and says the install already happened, so this hook is a no-op.
+#           ab-commit commits at S99 and the caller stops on its console line.
+#   boot 3  the committed slot: the state is settled (pending=none, slot==committed), so
+#           this hook prints the post-commit status the grader reads, then disarms itself.
+# Printing the committed status from boot 2 would describe a state ab-commit has not
+# produced yet: rc.local is S95 and ab-commit is S99.
+if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]; then
+  : >/boot/cross-fixture-installed
+  echo "CROSS-STATUS-BEFORE" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  echo "CROSS-INSTALL" >/dev/console
+  ${_install_cmd} >/dev/console 2>&1
+  echo "ab-upgrade: exit=\$?" >/dev/console
+  echo "CROSS-STATUS-PENDING" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  rm -f /payload.tar
+  echo "CROSS-STATUS-DONE" >/dev/console
+else
+  [ -f /boot/cross-fixture-installed ] || exit 0
+  line="\$(ab-slot status 2>/dev/null | sed -n '1p')"
+  case "\${line}" in
+    *" pending=none "*) : ;;
+    *) exit 0 ;;
+  esac
+  slot=""
+  committed=""
+  for field in \${line}; do
+    case "\${field}" in
+      slot=*) slot="\${field#slot=}" ;;
+      committed=*) committed="\${field#committed=}" ;;
+    esac
+  done
+  [ -n "\${slot}" ] && [ "\${slot}" = "\${committed}" ] || exit 0
+  echo "CROSS-STATUS-COMMITTED" >/dev/console
+  ab-slot status >/dev/console 2>&1
+  echo "CROSS-STATUS-DONE" >/dev/console
+  rm -f /boot/cross-fixture-installed /etc/rc.local
+fi
+exit 0
+RCLOCAL
+}
+
 cross_prepare() {
-    _image=$1 _payload=$2 _work=$3
+    _image=$1 _payload=$2 _work=$3 _same_base=${4:-}
     _loop=$(sudo losetup --find --show --partscan "${_image}") || return 1
     _p4="${_loop}p4"
     _mnt="${_work}/p4"
@@ -246,53 +319,7 @@ cross_prepare() {
     _upper="${_mnt}/${_layer}/upper"
     sudo mkdir -p "${_upper}/etc"
     sudo cp "${_payload}" "${_upper}/payload.tar"
-    sudo tee "${_upper}/etc/rc.local" >/dev/null <<'RCLOCAL'
-#!/bin/sh
-# Cross-version fixture. Three boots are involved:
-#   boot 1  /payload.tar is present, no install marker exists: install once, print the
-#           status BEFORE and after staging, then DONE (the caller stops here).
-#   boot 2  the candidate first boot. The snapshot carried /payload.tar and this hook into
-#           the candidate's writable layer, but /boot/cross-fixture-installed lives on the
-#           shared ESP and says the install already happened, so this hook is a no-op.
-#           ab-commit commits at S99 and the caller stops on its console line.
-#   boot 3  the committed slot: the state is settled (pending=none, slot==committed), so
-#           this hook prints the post-commit status the grader reads, then disarms itself.
-# Printing the committed status from boot 2 would describe a state ab-commit has not
-# produced yet: rc.local is S95 and ab-commit is S99.
-if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]; then
-  : >/boot/cross-fixture-installed
-  echo "CROSS-STATUS-BEFORE" >/dev/console
-  ab-slot status >/dev/console 2>&1
-  echo "CROSS-INSTALL" >/dev/console
-  ab-upgrade /payload.tar >/dev/console 2>&1
-  echo "ab-upgrade: exit=$?" >/dev/console
-  echo "CROSS-STATUS-PENDING" >/dev/console
-  ab-slot status >/dev/console 2>&1
-  rm -f /payload.tar
-  echo "CROSS-STATUS-DONE" >/dev/console
-else
-  [ -f /boot/cross-fixture-installed ] || exit 0
-  line="$(ab-slot status 2>/dev/null | sed -n '1p')"
-  case "${line}" in
-    *" pending=none "*) : ;;
-    *) exit 0 ;;
-  esac
-  slot=""
-  committed=""
-  for field in ${line}; do
-    case "${field}" in
-      slot=*) slot="${field#slot=}" ;;
-      committed=*) committed="${field#committed=}" ;;
-    esac
-  done
-  [ -n "${slot}" ] && [ "${slot}" = "${committed}" ] || exit 0
-  echo "CROSS-STATUS-COMMITTED" >/dev/console
-  ab-slot status >/dev/console 2>&1
-  echo "CROSS-STATUS-DONE" >/dev/console
-  rm -f /boot/cross-fixture-installed /etc/rc.local
-fi
-exit 0
-RCLOCAL
+    cross_fixture_rc_local "${_same_base}" | sudo tee "${_upper}/etc/rc.local" >/dev/null
     sudo chmod 0755 "${_upper}/etc/rc.local"
 
     # The candidate boots with one virtio NIC. net-seed reads a machine with a single
@@ -512,7 +539,7 @@ run_stage() {
     if ! cross_stage_image "${_image}" "${_work}/old.img"; then
         return 0
     fi
-    cross_prepare "${_work}/old.img" "${_payload}" "${_work}" || {
+    cross_prepare "${_work}/old.img" "${_payload}" "${_work}" "${_expect_same_base}" || {
         printf 'cross-upgrade=fail reason=cannot-prepare-the-old-image\n'
         return 0
     }
@@ -599,6 +626,18 @@ run_stage() {
 cmd=${1:-}
 [ "$#" -gt 0 ] && shift
 case "${cmd}" in
+    fixture)
+        # Print the fixture script for one mode. The two gates differ in exactly one word and
+        # this is where a test can see it without a loop device or root.
+        _fixture_same_base=0
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --same-base) _fixture_same_base=1; shift ;;
+                *) ci_die "unknown argument $1" ;;
+            esac
+        done
+        cross_fixture_rc_local "${_fixture_same_base}"
+        ;;
     run)
         image="" payload="" out="" inject="" expect_same_base="" facts=""
         while [ "$#" -gt 0 ]; do

@@ -224,7 +224,15 @@ assert_eq "$([ -n "${extract_line}" ] && [ -n "${last_serial_line}" ] && [ "${la
 # wan-present probe fails; boot 2 of tag run 43622253559 abandoned the candidate with
 # reason=healthcheck-failed. cross_prepare has to write the network fixture itself, into
 # the same writable layer as the boot hook.
+# The hook itself now lives in cross_fixture_rc_local (so a test can print it without a loop
+# device); cross_prepare is what installs it. Read both, or these assertions would pass on
+# a script whose hook is never written.
 prepare_fn="$(sed -n '/^cross_prepare()/,/^}/p' "$script_path")"
+# The hook's own text is asserted on what actually lands on the machine, not on the source:
+# the fixture is rendered by the script's `fixture` subcommand, which is the same text
+# cross_prepare pipes into rc.local. Reading the rendered bytes also survives the escaping a
+# parameterised heredoc needs, without asking the assertion to know about it.
+hook_fn="$(bash "$script_path" fixture 2>/dev/null)"
 assert_contains "$prepare_fn" 'etc/config/network' \
   "ac-1 cross_prepare writes the network fixture into the writable layer"
 assert_contains "$prepare_fn" 'sudo tee "${_upper}/etc/config/network"' \
@@ -250,17 +258,19 @@ assert_eq "$(grep -c "^RCLOCAL'$" "$script_path")" "0" \
 # with reason=packages-not-aligned-after-commit because the third block was empty or
 # pre-commit. The stage therefore takes a third boot of the committed slot, where the state
 # is already settled at S95; the hook only prints when pending=none and slot==committed.
-assert_contains "$prepare_fn" 'CROSS-STATUS-COMMITTED' \
+assert_contains "$hook_fn" 'CROSS-STATUS-COMMITTED' \
   "ac-1 the fixture announces the committed status"
-assert_contains "$prepare_fn" ' pending=none ' \
+assert_contains "$hook_fn" ' pending=none ' \
   "ac-1 it only prints when the state has settled (pending=none)"
-assert_contains "$prepare_fn" '[ "${slot}" = "${committed}" ]' \
+assert_contains "$hook_fn" '[ "${slot}" = "${committed}" ]' \
   "ac-1 and when the running slot is the committed one"
-assert_contains "$prepare_fn" '/boot/cross-fixture-installed' \
+assert_contains "$hook_fn" '/boot/cross-fixture-installed' \
   "ac-1 the installed marker lives on the shared ESP, so a snapshot cannot replay the install"
-assert_contains "$prepare_fn" 'if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]' \
+assert_contains "$hook_fn" 'if [ -f /payload.tar ] && [ ! -f /boot/cross-fixture-installed ]' \
   "ac-1 the candidate boot (snapshot carries payload + rc.local) does not install a second time"
-case "$prepare_fn" in
+# The hook moved into cross_fixture_rc_local, so this negative check has to read the rendered
+# fixture: against $prepare_fn it would match nothing and pass forever (a dead assertion).
+case "$hook_fn" in
   *'rm -f /etc/rc.local'*) assert_eq "removed-before-install" "kept-until-boot-3" \
     "ac-1 rc.local must survive into the candidate snapshot, or boot 3 never prints" ;;
   *) assert_eq "kept-until-boot-3" "kept-until-boot-3" "ac-1 rc.local is not removed before the snapshot" ;;
