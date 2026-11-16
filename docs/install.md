@@ -853,14 +853,25 @@ ab-slot log --prev
 Every failure carries a `reason=` token in the log, which is the same token the CI
 judge lines report, so a machine and a build can be compared without guessing.
 
-## This release: 0.0.8
+## This release: 0.0.11
 
-`VERSION` reads `0.0.8`. What `0.0.8` changed is in the update path, not in the boot: the
-payload now carries its own GRUB and slot menu, so an updated machine boots the loader the
-payload brought instead of the one it was flashed with, and `ab-upgrade` gives you
-`--bootloader` / `--no-bootloader` to decide whether that write happens. The first-boot
-network generation arrived in `0.0.7` and is unchanged. The content of that version, still
-current:
+`VERSION` reads `0.0.11`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
+it carries two fixes found by the real-device acceptance run, both in the update path.
+
+* **A same-base update no longer needs `--force`.** The "already installed" guard used to
+  compare only the upstream base, and two releases on one base share it exactly, so
+  `0.0.10` -> `0.0.11` was refused with `74 payload-already-installed`. The guard now
+  judges the base **and** the platform version, and says `base unchanged, platform 0.0.10
+  -> 0.0.11` when it lets the install through. A payload that carries no platform version
+  is refused with `74 payload-platform-unknown` rather than installed, because a leftover
+  payload must never be able to rewrite the healthy slot. A machine still on `0.0.10`
+  carries the `0.0.10` code, so that one hop still needs `--force` once.
+* **The same-base release gate installs with `--force`.** The gate boots the *previous*
+  release's published image, whose own guard cannot know this release; without the flag the
+  gate could never pass and would have blocked publishing.
+
+The boot path is unchanged from `0.0.8`, and the first-boot network generation from
+`0.0.7` is unchanged. The content of those versions, still current:
 
 * **First-boot generation, the upstream way.** `ab-net-seed`, at `S16` ahead of `S20network`,
   runs `/bin/board_detect` and `/bin/config_generate` when `/etc/config/network` is absent —
