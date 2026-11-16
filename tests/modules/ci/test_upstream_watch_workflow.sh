@@ -142,6 +142,15 @@ assert_contains "$(job_block build)" 'uses: ./.github/workflows/ci.yml' \
   "ac-3 the build is the ordinary pipeline, not a copy of it"
 assert_contains "$(job_block build)" 'upstream_version: ${{ needs.detect.outputs.version }}' \
   "ac-3 the pipeline is told which upstream release to build"
+# ci.yml skips a stage it was not asked for when the triggering event is a
+# workflow_dispatch, and a rehearsal is always dispatched. Leaving the stage to its default
+# skipped S1-S5 and assemble, the run went green, and publish then failed with
+# "Artifact not found for name: image-install" (run 43789908639): the automatic release
+# had nothing to publish. The build therefore names the whole pipeline.
+assert_contains "$(job_block build)" 'stage: all' \
+  "ac-3 the build asks for every stage: a dispatched run would otherwise skip all of them"
+assert_eq "$(grep -c 'stage: ' <<<"$(job_block build)")" "1" \
+  "ac-6 the stage is named once, so a second value cannot silently disagree"
 assert_eq "$(grep -c 'gh workflow run' "$watch")" "0" \
   "ac-3 the watch starts no second workflow run"
 

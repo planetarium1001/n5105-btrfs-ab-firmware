@@ -294,6 +294,14 @@ jobs:
       actions: read
     with:
       upstream_version: ${{ needs.detect.outputs.version }}
+      # Every stage, explicitly. ci.yml skips the stages it was not asked for whenever the
+      # triggering event is a workflow_dispatch - and it is, because a rehearsal is
+      # dispatched and a scheduled run inherits whatever fired it. Without this line the
+      # whole build was skipped (S1-S5 and assemble all reported "skipped"), the run went
+      # green, and publish then failed with "Artifact not found for name: image-install"
+      # (run 43789908639). The automatic release exists to publish a built image, so it
+      # asks for the whole pipeline by name instead of relying on a default.
+      stage: all
 
   # The three lockfiles are contracts for one upstream release; a new release needs its
   # own. They are derived with the same scripts the pipeline uses, committed to the branch,

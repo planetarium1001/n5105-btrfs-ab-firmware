@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: release.yml publish gates on build+cross+same-base; upstream-watch merge splits idempotency into state/skip_merge/skip_tag and detect publishes resume+merge-state outputs; new scripts/ci/release-same-base.sh (select/fetch/judge), cross-upgrade.sh --expect-same-base/--facts, heartbeat-tag.sh --is-shallow-repository
+# reason: the automatic watch asks ci.yml for stage=all: a dispatched run would otherwise skip every build stage
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -2647,6 +2647,7 @@ yaml .github/workflows/upstream-watch.yml jobs.build.needs = [detect, bump]
 yaml .github/workflows/upstream-watch.yml jobs.build.permissions = 
 yaml .github/workflows/upstream-watch.yml jobs.build.uses = ./.github/workflows/ci.yml
 yaml .github/workflows/upstream-watch.yml jobs.build.with = 
+yaml .github/workflows/upstream-watch.yml jobs.build.with.stage = all
 yaml .github/workflows/upstream-watch.yml jobs.build.with.upstream_version = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.bump.if = ${{ needs.detect.outputs.changed == 'true' }}
 yaml .github/workflows/upstream-watch.yml jobs.bump.needs = detect
