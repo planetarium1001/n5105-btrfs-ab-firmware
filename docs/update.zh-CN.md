@@ -368,6 +368,29 @@ ab-slot packages revert          # 按最新一份快照回放版本
 在 `apk upgrade` 时阻止重写（包里的文件落成 `*.apk-new`，apk 数据库照常前进）。
 已经在上 0.0.11 之前被遮蔽的机器，手工修复见 `docs/install.zh-CN.md`。
 
+那条规则是 `+` 规则，而 `apk-protected_paths(5)` 把 `+` 定义为**条件**保护：只有可见文件的
+校验和与 apk 数据库记录不一致时才保护。四个路径里只有 `lib/upgrade/platform.sh` 满足这个条件，
+因为它是这个 platform 层真正替换掉的那一个；另外三个是上游自己的文件，让 apk 跟着上游升级它们
+本来就是目的。`scripts/device/apk-protection-probe.sh` 会在一台运行中的机器上向 apk 询问这个条件，
+并到可写层里找 shadow。请在**下一次真实 `apk upgrade` 前后各跑一次** —— 基线已经是最新版的机器
+没有升级候选，所以今天能查的是探针这一半，`*.apk-new` 计数上涨那一半只有真实升级才能给出。
+
+为什么「造一次事务来验证保护」这条路走不通：这个镜像带的 apk-tools 3.0.5 里，`apk fix <包>`
+是空操作——它输出 `(1/1) [APK unavailable, skipped] Reinstalling <包> (<版本>)` 并且退出码为 0，
+既不下载也不提交。`base-files` 与 `busybox` 都一样，包能正常 `apk fetch` 下来、本地仓库能被 apk
+认出、缓存手工填好、甚至在一个一次性 `--root` 里把文件故意删掉，结果都是 skip。所以
+`*.apk-new` 无法按需产生：它只在真实 `apk upgrade` 有候选时出现，而已经跑在最新版上的机器没有
+候选。这就是探针改为断言前提、并把证明时刻留给下一次真实升级前后对比的原因。
+（探针打印的计数只覆盖 `/lib/upgrade` 与 `/etc/apk`，也就是这些规则与适配层所在的路径，
+不是全机的 `*.apk-new`——0.0.11 那台机器上另有十一个与此无关的历史遗留。）
+
+包列表为什么看起来是空的：`apk version -l '<'` 从缓存索引里取答案，而一台**从未跑过**
+`apk update` 的机器根本没有索引。它会打印
+`WARNING: opening from cache ...: No such file or directory`，`apk upgrade --simulate` 以
+`ERROR: Not continuing due to stale/unavailable repositories` 停下；跑过 `apk update` 之后同一条
+命令给出 `OK: ... in 282 packages`，而 `apk version -l '<'` 是一张空表。**两种情形都是空表**，
+所以要看警告与退出码，不要看表。一台已经跑在最新版上的机器确实零候选 —— 那不是 feed 坏了。
+
 快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本，
 以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。
 
