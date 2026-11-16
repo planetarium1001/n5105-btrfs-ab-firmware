@@ -175,6 +175,18 @@ case "$last" in
         exit 0
         ;;
     *"ab-upgrade /tmp/payload-"*)
+        # The explicit-payload leg, both ways: a machine that takes the file, and the one
+        # measured on the lab machine - the running slot already carries that release, so
+        # ab-upgrade refuses before anything is written (exit 74 payload-already-installed).
+        if [ -n "${STUB_PAYLOAD_REFUSAL:-}" ]; then
+            printf 'ab-upgrade: 41%% free on /mnt/p4\n'
+            if [ "${STUB_PAYLOAD_REFUSAL}" = "payload-already-installed" ]; then
+                printf 'ab-upgrade: slot a already runs 25.12.2 (platform 0.0.12)\n'
+                printf 'Next: ab-upgrade --force to reinstall the version this slot already runs\n'
+            fi
+            printf 'ab-upgrade: refused, reason=%s\n' "${STUB_PAYLOAD_REFUSAL}"
+            exit 74
+        fi
         printf 'ab-upgrade: installed 25.12.2 into slot b (@overlay-25.12.2-r2), 0 conflict(s), reclaimed 0\n'
         printf 'b\n' >"$state/pending"
         echo $((gen + 1)) >"$state/generation"
@@ -278,6 +290,66 @@ assert_eq "$?" "3" "ac-3 a missing payload is a GAP, not a pin failure"
 assert_contains "$out" "no payload to name while the pin is set" "ac-3 the GAP says what is missing"
 assert_eq "$(cat "$pin_state/pin" 2>/dev/null || true)" "" \
   "ac-3 the pin is released even when the payload judgement could not run"
+# The row is evidence, so it names the leg that went unmeasured and the file that was looked
+# for - an empty note would send the reader back to the log for something the row can say.
+ac3_missing_note="$(tail -n 1 "$tmp/pin-results.tsv" | cut -f4)"
+assert_contains "$ac3_missing_note" "the explicit-payload leg was not judged" \
+  "ac-3 the missing-payload GAP row says which leg was not judged"
+assert_contains "$ac3_missing_note" "payload-0.0.12.tar" \
+  "ac-3 the missing-payload GAP row names the file it could not find"
+
+# --- ac-3: the machine refuses the payload, and the row says why -------------
+#
+# Measured on the lab machine (0.0.12 full run): the pin's four other judgements held, the
+# explicit-payload leg could not be put to the machine (the running slot already carried
+# 0.0.12), and the results row read
+#
+#   ac-3	GAP	root@192.168.2.49	none
+#
+# The verdict was right. The note was empty, so the person reading the evidence had to find
+# the log to learn which of the five judgements had gone unmeasured, why, and what would
+# measure it. The note is not the place to leave that out, and locking it here is what keeps
+# the next reader from meeting `none` again.
+reset_pin_state
+out="$(run_feed_install env STUB_PAYLOAD_REFUSAL=payload-already-installed \
+  sh "$install" --case pin --expect 0.0.12)"
+assert_eq "$?" "3" "ac-3 a payload the machine refuses is still a GAP, not a red row"
+assert_contains "$out" "== ac-3 GAP" "ac-3 the case reports GAP"
+assert_contains "$out" "the machine refused the payload this host named (reason=payload-already-installed)" \
+  "ac-3 the GAP line quotes the refusal the machine gave"
+ac3_refused="$(tail -n 1 "$tmp/pin-results.tsv")"
+assert_eq "$(printf '%s\n' "$ac3_refused" | cut -f2)" "GAP" \
+  "ac-3 the refusal is a GAP row and not a PASS"
+ac3_note="$(printf '%s\n' "$ac3_refused" | cut -f4)"
+case "$ac3_note" in
+    "" | none)
+        assert_eq "no note" "the reason in the note" \
+            "ac-3 the GAP row carries a reason instead of none"
+        ;;
+    *)
+        assert_eq "note" "note" "ac-3 the GAP row carries a reason instead of none"
+        ;;
+esac
+assert_contains "$ac3_note" "the explicit-payload leg was not judged" \
+  "ac-3 the note names the judgement that was not made"
+assert_contains "$ac3_note" "slot a already holds 25.12.2" \
+  "ac-3 the note names the slot and the release that made it untestable"
+assert_contains "$ac3_note" "payload-already-installed" \
+  "ac-3 the note keeps the machine's own reason"
+assert_contains "$ac3_note" "target slot is empty" \
+  "ac-3 the note says what would measure it instead"
+
+# A refusal this case cannot explain with a slot still gets a note with the machine's reason
+# in it, and still is a GAP: the note explains, it does not decide.
+reset_pin_state
+out="$(run_feed_install env STUB_PAYLOAD_REFUSAL=payload-digest \
+  sh "$install" --case pin --expect 0.0.12)"
+assert_eq "$?" "3" "ac-3 a payload refused for its digest is a GAP"
+ac3_digest_note="$(tail -n 1 "$tmp/pin-results.tsv" | cut -f4)"
+assert_contains "$ac3_digest_note" "the explicit-payload leg was not judged" \
+  "ac-3 the digest refusal names the leg that was not judged"
+assert_contains "$ac3_digest_note" "payload-digest" \
+  "ac-3 the digest refusal keeps the machine's reason in the row"
 
 # --- ac-13: the candidate is the flag's, the environment's, or the default --
 out="$(AB_DRY_RUN=1 sh "$install" --case check)"

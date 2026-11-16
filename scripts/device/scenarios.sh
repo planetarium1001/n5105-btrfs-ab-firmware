@@ -51,6 +51,24 @@
 # Exit status: 0 every selected case PASS, 1 a case FAIL, 2 bad usage, 3 the red line
 # stopped the run, 4 a case could not run because a prerequisite or payload is missing (GAP).
 #
+# Evidence: one run, two names. Each case writes
+#
+#   <evidence dir>/<UTC stamp>-<case>.log          <- THIS run, never reused
+#   <evidence dir>/<case>.log                      <- the LATEST run of that case (alias)
+#
+# The stamp is the run's UTC instant in the shape the backup directories already use,
+# 2026-11-16T19-33-22Z, compacted for the file name to 20261116T193322Z. It has to carry the
+# time and not just the date: a case is re-run later the same day after a fix, and a name of
+# <date>-<case>.log made the second run truncate the first run's evidence while the backup
+# next to it was already stamped to the second -- the first round survived only in the report,
+# not on disk. The stamp is also the one this case's own backups are named from (S2, S7, S8),
+# so "which run left this file" is one string and not two naming schemes that agree on the
+# day and disagree on everything finer. AB_SCEN_STAMP overrides the stamp (the unit tests use
+# it to run the same case twice inside one simulated day); unset means the clock. The
+# timestamped log is what the --results row names; the stable <case>.log alias is only for a
+# reader that wants "whatever ran last" and is replaced by each run. The --results file
+# itself is the caller's: its path, and whether a second run appends to it, is unchanged.
+#
 # Three verdicts, as in matrix.sh, plus one note prefix:
 #   PASS  every mechanical judgement held
 #   FAIL  data lost, config lost, software gone, mount or service broken, or SSH lost; a
@@ -240,6 +258,10 @@ CASE_FINDINGS=""
 CASE_FAILED=0
 STATUS_LINE=""
 SCEN_CMD=""
+# The UTC instant this case is named after (2026-11-16T19-33-22Z). It names the evidence log
+# and every backup the case takes, so one string answers "which run left this behind". The
+# name is fixed once per case in scen_case(); AB_SCEN_STAMP overrides the clock.
+SCEN_STAMP=""
 RDATA=""
 RENDER_HELPER=""
 
@@ -1540,7 +1562,7 @@ run_s1() {
     fi
 
     _kver=$(kv "${PROBE}" kver)
-    _stamp=$(dev_stamp | tr ':' '-')
+    _stamp=${SCEN_STAMP}
     _mkdirs=$(scen mkdirs "${SCEN_EVIDENCE}" "${SCEN_DATA_DIR}" 2>/dev/null)
     printf '%s\n' "${_mkdirs}" | grep -q 'ok=no' && ev "mkdir problems: $(printf '%s' "${_mkdirs}" | grep 'ok=no' | tr '\n' ' ')"
 
@@ -1734,7 +1756,7 @@ run_s2() {
         return 2
     fi
 
-    _stamp=$(dev_stamp | tr ':' '-')
+    _stamp=${SCEN_STAMP}
     _kver=$(kv "${PROBE}" kver)
     scen mkdirs "${SCEN_EVIDENCE}" "${SCEN_DATA_DIR}" >/dev/null 2>&1
 
@@ -2916,7 +2938,7 @@ run_s7() {
         ev "${CASE_NOTE}"
         return 2
     fi
-    _stamp=$(dev_stamp | tr ':' '-')
+    _stamp=${SCEN_STAMP}
     _bak="${SCEN_BACKUP}/s7-feeds-${_stamp}"
     _bo=$(scen cfg-backup "${_bak}" "${SCEN_S7_FEEDS}" 2>/dev/null)
     _bakf=$(printf '%s\n' "${_bo}" | sed -n 's/^backup=.* -> \(.*\) ok=yes$/\1/p' | head -n 1)
@@ -3722,7 +3744,7 @@ run_s8() {
         return 2
     fi
 
-    _stamp=$(dev_stamp | tr ':' '-')
+    _stamp=${SCEN_STAMP}
     scen mkdirs "${SCEN_EVIDENCE}" "${SCEN_BACKUP}" >/dev/null 2>&1
     : >"${_tmp}/s8-classes.tsv"
     CASE_FAILED=0
@@ -3803,6 +3825,17 @@ run_s8() {
 # Cases
 # --------------------------------------------------------------------------- #
 
+# scen_run_stamp: the UTC instant this run is named after, in the shape the backup
+# directories already use (2026-11-16T19-33-22Z). AB_SCEN_STAMP makes it injectable, which
+# is how the unit tests run the same case twice inside one UTC day; unset means the clock.
+scen_run_stamp() {
+    if [ -n "${AB_SCEN_STAMP:-}" ]; then
+        printf '%s\n' "${AB_SCEN_STAMP}"
+    else
+        dev_stamp | tr ':' '-'
+    fi
+}
+
 # scen_case <case>: 0 PASS, 1 FAIL, 2 GAP; the note and the findings land in the globals.
 scen_case() {
     _case=$1
@@ -3810,10 +3843,24 @@ scen_case() {
     CASE_FINDINGS=""
     CASE_FAILED=0
     mkdir -p "${EVIDENCE_DIR}" || { CASE_NOTE="cannot create ${EVIDENCE_DIR}"; return 1; }
-    AB_EVIDENCE_LOG="${EVIDENCE_DIR}/$(date -u +%Y%m%d)-$(printf '%s' "${_case}" | tr 'A-Z' 'a-z').log"
+    # One stamp per case, to the second: the log name and this case's backup directory names
+    # are derived from the same instant, so a re-run later the same day cannot collide with
+    # the earlier one (the defect this naming exists to prevent: <date>-<case>.log was
+    # truncated by the day's second run while its backups were already time-stamped).
+    SCEN_STAMP=$(scen_run_stamp)
+    _case_slug=$(printf '%s' "${_case}" | tr 'A-Z' 'a-z')
+    AB_EVIDENCE_LOG="${EVIDENCE_DIR}/$(printf '%s' "${SCEN_STAMP}" | tr -d '-')-${_case_slug}.log"
     SCEN_CMD="$0 --case ${_case}"
     export AB_EVIDENCE_LOG SCEN_CMD AB_SCEN_DATA_DIR AB_SCEN_HELPER
     : >"${AB_EVIDENCE_LOG}"
+    # <case>.log is a stable alias for the most recent run of the case: same inode where the
+    # filesystem allows a hard link, a relative symlink otherwise, and simply absent when
+    # neither works. Either way the timestamped name above is untouched and is what the
+    # results row names; the alias says "latest", the timestamp says "this run".
+    AB_EVIDENCE_LATEST="${EVIDENCE_DIR}/${_case_slug}.log"
+    rm -f "${AB_EVIDENCE_LATEST}" 2>/dev/null || true
+    ln "${AB_EVIDENCE_LOG}" "${AB_EVIDENCE_LATEST}" 2>/dev/null \
+        || ln -s "$(basename "${AB_EVIDENCE_LOG}")" "${AB_EVIDENCE_LATEST}" 2>/dev/null || true
     ev "case=${_case} $(case_label "${_case}")"
 
     case "${_case}" in

@@ -101,6 +101,13 @@ export AB_REPO_ROOT
 #   release             ac-1 on the published release (no machine involved)
 #   audit last          it judges the record every phase above just wrote
 #
+# R1 (recovery) is the one phase that needs a file this host has to have: a candidate whose
+# runtime is broken, so its first boot fails its health check and the machine has to come back
+# on the committed slot. The orchestrator names it the way every other driver names a payload -
+# <payload-dir>/payload-<expect>.tar - and when that file is not here the row says so, with the
+# path, instead of the phase quietly asking the driver for nothing. B1 (`ab-slot rollback`)
+# needs no payload and is asked for either way.
+#
 # docker and docker-after are one script in two windows, not two scripts: D1 writes
 # <results>/docker-snapshots/before.snapshot, docker-after reads it and writes after.snapshot
 # in the same directory. Neither one switches a slot or reboots.
@@ -144,6 +151,9 @@ ONLY_CASES=""
 ASSUME_YES=0
 DRY_RUN=0
 PREFLIGHT_ONLY=0
+# Set by the run loop when R1's payload is not on this host: recovery-probe.sh is then asked
+# for the remaining cases only, and R1 is recorded as the GAP it is (see _recovery_payload_gap).
+_RECOVERY_SKIP_R1=0
 
 # Below this a phase is not started: an install writes tens of MiB into the inactive
 # slot and the payload is kept on /data, so a nearly full disk fails in the middle of a
@@ -180,13 +190,14 @@ usage: full-test.sh [--dry-run] [--preflight-only] [--from PHASE] [--stop-after 
   --results DIR        where <phase>.log, <phase>.tsv, verdict.tsv, summary.txt, the
                        docker snapshots and the release assets go (default: results)
   --payload-dir DIR    directory holding payload-<version>.tar; preflight refuses to
-                       start when it is given and holds no payload-*.tar
+                       start when it is given and holds no payload-*.tar. The recovery
+                       phase takes R1's candidate from here as payload-<VERSION>.tar
   --task ID            the task whose evidence the audit phase reads (also AB_TASK_ID).
                        Without one the audit is a GAP row: it will not read the previous
                        round's record just because that id is still around
   --expect VERSION     the candidate the feed is expected to offer (feed-install.sh
-                       --expect, and the tag the release phase reads). Default: the
-                       drivers' own
+                       --expect, and the tag the release phase reads). It also names the
+                       payload R1 installs: payload-<VERSION>.tar. Default: the drivers' own
   --yes                allow the destructive phases (matrix, recovery, power-cut);
                        without it they ask for a typed `yes` and are recorded as GAP
                        when refused. docker, docker-after and release never write a slot
@@ -346,6 +357,56 @@ _release_staged_dir() {
     printf '%s\n' "${PAYLOAD_DIR}"
 }
 
+# _recovery_cases <selected>: the R1/B1 tokens the recovery phase will run, with the
+# driver's own default (R1 B1) spelled out. Which cases this phase covers has to have one
+# answer here, because the payload below is required by R1 alone: a phase that reads its case
+# list in two places would one day skip R1 for a payload B1 does not need.
+_recovery_cases() {
+    _rc_sel=$(printf '%s' "${1:-}" | sed 's/^ *//; s/ *$//')
+    if [ -z "${_rc_sel}" ]; then
+        printf 'R1 B1'
+        return 0
+    fi
+    printf '%s' "${_rc_sel}"
+}
+
+# _recovery_drop_r1 <cases>: the same list without R1.
+_recovery_drop_r1() {
+    _rdr_out=""
+    for _rdr_c in ${1:-}; do
+        [ "${_rdr_c}" = "R1" ] || _rdr_out="${_rdr_out}${_rdr_out:+ }${_rdr_c}"
+    done
+    printf '%s' "${_rdr_out}"
+}
+
+# _recovery_payload: the candidate R1 installs, by the convention the other drivers already
+# share - payloads/payload-<version>.tar with the version this round accepts (--expect or
+# AB_EXPECT, the same knob feed-install.sh --expect and the release phase read). Empty when no
+# version was named: a path built around an empty version (payloads/payload-.tar) would be a
+# GAP about the wrong thing, and "no version was named" is answered in _recovery_payload_gap.
+_recovery_payload() {
+    [ -n "${EXPECT}" ] || return 1
+    printf '%s\n' "${PAYLOAD_DIR:-payloads}/payload-${EXPECT}.tar"
+    return 0
+}
+
+# _recovery_payload_gap: why R1 cannot be put to the machine this round, empty when it can.
+# The path is part of the reason on purpose. "no payload" on its own sends the reader to the
+# driver's own default, and the driver's default is the same directory with a version in it -
+# the one thing the reason has to name is the file this orchestration meant.
+_recovery_payload_gap() {
+    if [ -z "${EXPECT}" ]; then
+        printf '%s' "R1 has no candidate to install: no --expect and no AB_EXPECT, so the payloads/payload-<version>.tar convention names nothing; pass --expect <version> (or queue a candidate on the machine and run recovery-probe.sh --case R1 --installed)"
+        return 0
+    fi
+    _rpg_file=$(_recovery_payload) || return 0
+    if [ ! -f "${_rpg_file}" ]; then
+        printf '%s' "R1 has no candidate to install: ${_rpg_file} is not on this host; put payload-${EXPECT}.tar there, or pass --payload-dir <dir> holding it"
+        return 0
+    fi
+    return 0
+}
+
 # _phase_args <phase>: the arguments, from the flags each driver already supports.
 # Nothing here invents an option: probes takes --probe, the matrix and the scenarios take
 # --case/--payload-dir/--results/--evidence-dir, the case drivers take --case,
@@ -385,10 +446,33 @@ _phase_args() {
             done
             printf '%s %s ' "--snapshot-dir" "${DOCKER_SNAPSHOT_DIR:-${RESULTS_DIR}/docker-snapshots}"
             ;;
-        package-revert | recovery | power-cut)
+        package-revert | power-cut)
             for _pa_c in ${_pa_sel}; do
                 printf '%s %s ' "--case" "${_pa_c}"
             done
+            ;;
+        recovery)
+            # R1's candidate is the payload this round accepts, named the way the other
+            # drivers name theirs (payloads/payload-<version>.tar). Without it the driver
+            # answers `GAP [R1] no --payload given and --installed is not set`, which is how
+            # the rollback evidence of ac-11 once went missing from a whole round: every
+            # phase ran, and the orchestration simply never named a file. B1
+            # (`ab-slot rollback`) needs no payload, so it is asked for either way.
+            _pa_cases=$(_recovery_cases "${_pa_sel}")
+            if [ "${_RECOVERY_SKIP_R1}" = "1" ]; then
+                _pa_cases=$(_recovery_drop_r1 "${_pa_cases}")
+            fi
+            for _pa_c in ${_pa_cases}; do
+                printf '%s %s ' "--case" "${_pa_c}"
+            done
+            case " ${_pa_cases} " in
+                *" R1 "*)
+                    _pa_payload=$(_recovery_payload) || _pa_payload=""
+                    if [ -n "${_pa_payload}" ]; then
+                        printf '%s %s ' "--payload" "${_pa_payload}"
+                    fi
+                    ;;
+            esac
             ;;
         feed-install)
             # A run that says nothing runs all three cases: ac-3 (the pin) is only provable
@@ -482,7 +566,15 @@ _phase_plan() {
             "${_pp_env:+${_pp_env} }" "${_pp_script}"
         return 0
     fi
-    printf '%s%s%s' "${_pp_env:+${_pp_env} }" "${_pp_script}" "${_pp_args:+ ${_pp_args}}"
+    # Whether R1 can run is decided by a file on this host, so the plan can say it before
+    # anything is executed: the command is printed as it would run, and the GAP it would
+    # produce is named next to it instead of being discovered by the phase.
+    _pp_tail=""
+    if [ "${1}" = "recovery" ]; then
+        _pp_why=$(_recovery_payload_gap)
+        [ -n "${_pp_why}" ] && _pp_tail="   # R1 would be a GAP: ${_pp_why}"
+    fi
+    printf '%s%s%s%s' "${_pp_env:+${_pp_env} }" "${_pp_script}" "${_pp_args:+ ${_pp_args}}" "${_pp_tail}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -1016,6 +1108,30 @@ for _run_phase in ${PHASES}; do
         printf '  no task id: pass --task <id> or set AB_TASK_ID\n'
         _phase_done audit "GAP"
         continue
+    fi
+
+    # R1's candidate is a payload on this host, and this is the last place that knows WHICH
+    # file the round meant. When it is not there, R1 is not handed to the driver: the
+    # driver's own GAP ("no --payload given and --installed is not set") is true but does not
+    # say which path is missing, and that is the part a reader can act on. B1 needs no
+    # payload, so the driver is still asked for it rather than losing a case that can run.
+    if [ "${_run_phase}" = "recovery" ]; then
+        _run_r1=0
+        _run_rec_cases=$(_recovery_cases "$(_phase_selected_cases recovery)")
+        case " ${_run_rec_cases} " in
+            *" R1 "*) _run_r1=1 ;;
+        esac
+        _run_payload_why=$(_recovery_payload_gap)
+        if [ "${_run_r1}" = "1" ] && [ -n "${_run_payload_why}" ]; then
+            AB_RESULTS="${TSV}"
+            record R1 GAP - "${_run_payload_why}"
+            printf '  R1 not run: %s\n' "${_run_payload_why}"
+            _RECOVERY_SKIP_R1=1
+            if [ -z "$(_recovery_drop_r1 "${_run_rec_cases}")" ]; then
+                _phase_done recovery "$(_phase_verdict "${TSV}")"
+                continue
+            fi
+        fi
     fi
 
     _run_rcfile="${RESULTS_DIR}/.${_run_phase}.rc"

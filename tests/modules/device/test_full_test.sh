@@ -399,6 +399,30 @@ esac
 STUB
 chmod +x "$hx/evidence-audit.sh" "$hx/release-verify.sh"
 
+# The recovery driver's contract is one row per case in AB_RECOVERY_RESULTS, and its two
+# flags are --case and --payload. This stub prints what it was asked for and reaches no
+# machine, so the orchestrator's own wiring - which payload it names, which cases it leaves
+# out - can be read back instead of inferred from prose.
+cat >"$hx/recovery-probe.sh" <<'STUB'
+#!/bin/sh
+cases=""
+payload=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --case) cases="${cases} $2"; shift 2 ;;
+        --payload) payload=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[ -n "${cases}" ] || cases=" R1 B1"
+printf 'recovery-probe-stub cases=%s payload=%s\n' "${cases# }" "${payload:-none}"
+for c in ${cases}; do
+    printf '%s\tPASS\tstub.log\tstub row\n' "${c}" >>"${AB_RECOVERY_RESULTS:?stub needs AB_RECOVERY_RESULTS}"
+done
+exit 0
+STUB
+chmod +x "$hx/recovery-probe.sh"
+
 # run_hx: the copy, with the same stub machine on PATH.
 run_hx() {
     out=$(bash "$hx/full-test.sh" "$@" </dev/null 2>&1)
@@ -438,6 +462,89 @@ assert_contains "$(cat "$tmp/hx-rel-fail/release.tsv")" "FAIL" \
     "ac-7 release-verify result=fail is a FAIL row"
 assert_eq "$(tail -n 1 "$tmp/hx-rel-fail/summary.txt")" "verdict: FAIL" \
     "ac-7 a wrong release is FAIL, not GAP"
+
+# --- ac-11: the recovery phase is handed the payload R1 installs ------------ #
+# Measured defect (the 0.0.12 full run): the phase ran without --payload, so R1 - the
+# rollback evidence ac-11 exists for - wrote `GAP [R1] no --payload given and --installed is
+# not set` while B1 passed. The orchestration knew which payload the round meant and never
+# named it, and the most important A/B rollback row of the round was missing for that reason
+# alone. The file is named the way every other driver names one:
+# <payload-dir>/payload-<expect>.tar.
+rec_payloads="$tmp/rec-payloads"
+mkdir -p "$rec_payloads"
+: >"$rec_payloads/payload-$round_expect.tar"
+
+# The plan is the command that would run, so --dry-run shows the payload in it.
+run_ft --dry-run --only R1 --expect "$round_expect" --payload-dir "$rec_payloads" \
+    --results "$tmp/results-rec-plan"
+assert_contains "$(plan_line recovery)" "--payload $rec_payloads/payload-$round_expect.tar" \
+    "ac-11 the recovery phase is planned with the payload R1 installs"
+assert_contains "$(plan_line recovery)" "--case R1" \
+    "ac-11 the recovery phase is planned with the case that needs it"
+
+# And the run really passes it: the stub driver prints what it was asked for.
+run_hx --from recovery --stop-after recovery --yes --expect "$round_expect" \
+    --payload-dir "$rec_payloads" --results "$tmp/hx-rec-ok"
+assert_eq "$code" 0 "ac-11 a recovery phase with its payload passes"
+assert_contains "$(cat "$tmp/hx-rec-ok/recovery.log")" \
+    "payload=$rec_payloads/payload-$round_expect.tar" \
+    "ac-11 the payload reaches recovery-probe.sh as --payload"
+assert_eq "$(awk -F'\t' '$1 == "R1" { print $2 }' "$tmp/hx-rec-ok/recovery.tsv")" "PASS" \
+    "ac-11 R1 is judged, not skipped, when its payload is on this host"
+
+# Not there is not the same as not asked. The row names the file the orchestration meant, and
+# B1 - which needs no payload - is still put to the machine.
+rec_empty="$tmp/rec-empty"
+mkdir -p "$rec_empty"
+run_hx --from recovery --stop-after recovery --yes --expect "$round_expect" \
+    --payload-dir "$rec_empty" --results "$tmp/hx-rec-gap"
+assert_eq "$code" 1 "ac-11 a recovery without its payload does not exit 0"
+assert_contains "$(cat "$tmp/hx-rec-gap/recovery.tsv")" "R1	GAP" \
+    "ac-11 the missing payload is a GAP row for R1"
+assert_contains "$(cat "$tmp/hx-rec-gap/recovery.tsv")" "$rec_empty/payload-$round_expect.tar" \
+    "ac-11 the GAP names the payload path that is missing"
+assert_contains "$(cat "$tmp/hx-rec-gap/recovery.log")" "cases=B1" \
+    "ac-11 B1 still runs when R1 has no payload"
+assert_eq "$(awk -F'\t' '$1 == "B1" { print $2 }' "$tmp/hx-rec-gap/recovery.tsv")" "PASS" \
+    "ac-11 B1 is still judged when R1 cannot be"
+
+# R1 on its own with no payload is a GAP and not an empty phase: the driver is not asked for
+# cases it was not given, so the row stays the only thing the phase says.
+run_hx --from recovery --stop-after recovery --yes --only R1 --expect "$round_expect" \
+    --payload-dir "$rec_empty" --results "$tmp/hx-rec-r1only"
+assert_eq "$code" 1 "ac-11 R1 alone without a payload is not a pass"
+assert_contains "$(cat "$tmp/hx-rec-r1only/recovery.tsv")" "R1	GAP" \
+    "ac-11 R1 alone without a payload is the GAP row"
+case "$out" in
+    *recovery-probe-stub*)
+        assert_eq "driver executed" "driver not executed" \
+            "ac-11 nothing is run for a phase whose only case has no payload"
+        ;;
+    *)
+        assert_eq "driver not executed" "driver not executed" \
+            "ac-11 nothing is run for a phase whose only case has no payload"
+        ;;
+esac
+
+# B1 needs no payload, so it is not gated behind one either.
+run_hx --from recovery --stop-after recovery --yes --only B1 --expect "$round_expect" \
+    --payload-dir "$rec_empty" --results "$tmp/hx-rec-b1"
+assert_eq "$code" 0 "ac-11 B1 needs no payload"
+assert_contains "$(cat "$tmp/hx-rec-b1/recovery.log")" "payload=none" \
+    "ac-11 B1 is asked for without a payload argument"
+
+# A round that names no candidate can name no payload either, and says so.
+AB_EXPECT="" run_hx --from recovery --stop-after recovery --yes --payload-dir "$rec_payloads" \
+    --results "$tmp/hx-rec-noexpect"
+assert_contains "$(cat "$tmp/hx-rec-noexpect/recovery.tsv")" "no --expect" \
+    "ac-11 a round with no --expect says why R1 cannot name a payload"
+
+# The plan can say a GAP before anything is executed: the answer is a file on this host.
+run_ft --dry-run --expect 9.9.9 --results "$tmp/results-rec-miss"
+assert_contains "$(plan_line recovery)" "R1 would be a GAP" \
+    "ac-11 the plan names the GAP a missing payload would produce"
+assert_contains "$(plan_line recovery)" "payloads/payload-9.9.9.tar" \
+    "ac-11 the plan names the payload path it looked for"
 
 # --- ac-7: docker, docker-after and release are not destructive -------------- #
 # The docker baseline writes /data and /docker and never a slot, so it runs without --yes.

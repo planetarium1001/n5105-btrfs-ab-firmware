@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci-s5 boot 2 waits for ab-commit's own console decision and the commit phase names esp-corrupt and esp-read-only
+# reason: ci-s5 derives the orphan layer name from the base: fixture1 id, --orphan, orphan_layer_base/name, CI_VERSION_RE
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -194,6 +194,7 @@ sh-flag scripts/ci/release.sh --stepwise
 sh-flag scripts/ci/report.sh --log-failed
 sh-flag scripts/ci/s5-phase.sh --find
 sh-flag scripts/ci/s5-phase.sh --layer
+sh-flag scripts/ci/s5-phase.sh --orphan
 sh-flag scripts/ci/s5-phase.sh --partscan
 sh-flag scripts/ci/s5-phase.sh --phase
 sh-flag scripts/ci/s5-phase.sh --serial
@@ -238,6 +239,8 @@ sh-fn scripts/ci/ab-fixtures.sh mount_one
 sh-fn scripts/ci/ab-fixtures.sh mount_one_ro
 sh-fn scripts/ci/ab-fixtures.sh on_error
 sh-fn scripts/ci/ab-fixtures.sh orphan_layer
+sh-fn scripts/ci/ab-fixtures.sh orphan_layer_base
+sh-fn scripts/ci/ab-fixtures.sh orphan_layer_name
 sh-fn scripts/ci/ab-fixtures.sh repair_slot
 sh-fn scripts/ci/ab-fixtures.sh show_state
 sh-fn scripts/ci/ab-fixtures.sh slot_tree
@@ -438,6 +441,7 @@ sh-var scripts/ci/ab-fixtures.sh CI_REPO_ROOT
 sh-var scripts/ci/ab-fixtures.sh CI_SCRIPT_DIR
 sh-var scripts/ci/ab-fixtures.sh CI_TMP_ROOT
 sh-var scripts/ci/ab-fixtures.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/ab-fixtures.sh CI_VERSION_RE
 sh-var scripts/ci/ab-phase.sh CI_DIAG_DIR
 sh-var scripts/ci/ab-phase.sh CI_IMAGE
 sh-var scripts/ci/ab-phase.sh CI_SCRIPT_DIR
@@ -2109,6 +2113,7 @@ yaml .github/workflows/ci-s5.yml jobs.s5.steps.[8].id = payload
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].env = 
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].env.CI_IMAGE = ${{ steps.disk.outputs.image_path }}
 yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].env.CI_PAYLOAD = ${{ steps.payload.outputs.payload_path }}
+yaml .github/workflows/ci-s5.yml jobs.s5.steps.[9].id = fixture1
 yaml .github/workflows/ci-s5.yml jobs.s5.timeout-minutes = 75
 yaml .github/workflows/ci-s5.yml on = 
 yaml .github/workflows/ci-s5.yml on.workflow_call.inputs = 

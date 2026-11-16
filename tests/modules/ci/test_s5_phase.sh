@@ -226,19 +226,33 @@ SERIAL
     fi
 }
 
-run_commit() { # <dir> [without-serial]
+# The unreferenced layer the fixture created. The commit phase refuses to grade without it:
+# "no unreferenced layer is left" is also true of a run whose fixture created none, and that
+# silence is what let the 25.12.1 line report reclaimed=0 and pass (test_s5_orphan_layer.sh
+# covers the fixture, gc and the phase against one tree).
+orphan_layer='@overlay-25.12.1-gc-orphan'
+
+run_commit() { # <dir> [without-serial|without-orphan]
     local dir=$1 without=${2:-}
     if [ "$without" = "without-serial" ]; then
         CI_IMAGE="$dir/image" CI_TMP_ROOT="$dir/tmp" CI_LOG_DIR="$dir/logs" \
             CI_S5_PART_WAIT_ATTEMPTS=0 S5_FAKE_FIXTURE="$dir" \
             S5_FAKE_LOOP="$dir/loop0" PATH="$tmp/bin:$PATH" \
-            bash "$script" --phase commit --slot b 2>&1
+            bash "$script" --phase commit --slot b --orphan "$orphan_layer" 2>&1
+        return 0
+    fi
+    if [ "$without" = "without-orphan" ]; then
+        CI_IMAGE="$dir/image" CI_TMP_ROOT="$dir/tmp" CI_LOG_DIR="$dir/logs" \
+            CI_S5_PART_WAIT_ATTEMPTS=0 S5_FAKE_FIXTURE="$dir" \
+            S5_FAKE_LOOP="$dir/loop0" PATH="$tmp/bin:$PATH" \
+            bash "$script" --phase commit --slot b --serial "$dir/serial.log" 2>&1
         return 0
     fi
     CI_IMAGE="$dir/image" CI_TMP_ROOT="$dir/tmp" CI_LOG_DIR="$dir/logs" \
         CI_S5_PART_WAIT_ATTEMPTS=0 S5_FAKE_FIXTURE="$dir" \
         S5_FAKE_LOOP="$dir/loop0" PATH="$tmp/bin:$PATH" \
-        bash "$script" --phase commit --slot b --serial "$dir/serial.log" 2>&1
+        bash "$script" --phase commit --slot b --orphan "$orphan_layer" \
+        --serial "$dir/serial.log" 2>&1
 }
 
 # --- ac-1: a failed commit record is not a commit --------------------------
@@ -309,3 +323,12 @@ assert_eq "$(printf '%s\n' "$out" | grep -c 'no-commit-record' || true)" "0" \
 # --- ac-3: the serial log is what carries the FAT evidence -----------------
 assert_contains "$(run_commit "$good" without-serial)" "commit phase needs --serial" \
     "ac-3 the commit phase refuses to grade without the boot serial"
+
+# --- ac-5: the reclamation assertion needs its subject ---------------------
+# Without --orphan the phase could only prove "no unreferenced layer is left", which a run
+# whose fixture created none satisfies by accident. The refusal is what makes the phase
+# unable to grade a reclamation it cannot name.
+assert_contains "$(run_commit "$good" without-orphan)" "commit phase needs --orphan" \
+    "ac-5 the commit phase refuses to grade reclamation without the fixture's layer"
+assert_eq "$(printf '%s\n' "$(run_commit "$good" without-orphan)" | grep -c 'S5-RESULT=ok' || true)" "0" \
+    "ac-5 a nameless reclamation is never reported as ok"

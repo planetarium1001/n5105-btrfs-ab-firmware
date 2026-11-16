@@ -121,7 +121,10 @@ jobs:
           CI_PLATFORM_RUNTIME_DIR: ${{ runner.temp }}/ci/runtime
         run: bash scripts/ci/payload-build.sh 2>&1 | tee -a "${CI_LOG_DIR}/payload.log"
 
+      # The orphan layer is derived from the base this run builds: a fixed @overlay-25.12.1
+      # collided with that image's live layer and was silently renamed to a name gc skips.
       - name: Fixture - network, user banner, orphan layer and payload
+        id: fixture1
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
           CI_PAYLOAD: ${{ steps.payload.outputs.payload_path }}
@@ -129,7 +132,7 @@ jobs:
           bash scripts/ci/ab-fixtures.sh \
             --network \
             --user-banner "user banner, edited before the upgrade" \
-            --orphan-layer @overlay-25.12.1 \
+            --orphan-layer "${CI_UPSTREAM_VERSION}" \
             --payload "${CI_PAYLOAD}" 2>&1 \
             | tee -a "${CI_LOG_DIR}/fixture-1.log"
 
@@ -209,7 +212,7 @@ jobs:
         id: phase3
         env:
           CI_IMAGE: ${{ steps.disk.outputs.image_path }}
-        run: bash scripts/ci/s5-phase.sh --phase commit --slot b --serial "${{ steps.boot3.outputs.serial_log }}" 2>&1 | tee -a "${CI_LOG_DIR}/phase3.log"
+        run: bash scripts/ci/s5-phase.sh --phase commit --slot b --orphan "${{ steps.fixture1.outputs.orphan_layer }}" --serial "${{ steps.boot3.outputs.serial_log }}" 2>&1 | tee -a "${CI_LOG_DIR}/phase3.log"
 
       - name: Verify the commit left the next boot on slot b
         id: verify_commit

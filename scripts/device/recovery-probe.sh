@@ -20,6 +20,19 @@
 #   scripts/device/recovery-probe.sh --case R1 --case B1
 #   AB_DRY_RUN=1 scripts/device/recovery-probe.sh     # print the steps, touch nothing
 #
+# Which way in R1 installs the candidate, and why it is the one it is
+# -------------------------------------------------------------------
+# `--payload <file>` is the normal way in, and it is what scripts/device/full-test.sh hands
+# the phase: the round's own candidate, named <payload-dir>/payload-<expect>.tar.
+#
+# A machine whose running slot already carries that release refuses the payload with exit 74
+# `payload-already-installed` (ab-upgrade's guard, and matrix.sh M5's judgement - not this
+# case's). R1 is about what the candidate's first boot does, so the candidate is laid into the
+# other slot anyway, with the `ab-upgrade --force` the refusal itself names. `--installed` is
+# not the alternative in a full run: it needs a candidate already queued, and every phase
+# before recovery either commits or abandons its slot, so nothing is pending by then. The row
+# says which of the two installs was used.
+#
 # Why R1 needs an injection, and why matrix.sh M7 is not it
 # ---------------------------------------------------------
 # M7 asks `ab-upgrade --check` about a payload with a bad digest and expects exit 74: the
@@ -74,7 +87,7 @@ inject=uci-wan
 INJECT_CMD=${INJECT_CMD:-/mnt/p4/ab/recovery-inject.sh}
 
 usage() {
-    sed -n '17,24p' "$0"
+    sed -n '17,21p' "$0"
     exit 2
 }
 
@@ -341,6 +354,11 @@ run_bad_version() {
     before_version=$(dev_running_version 2>/dev/null) || before_version=""
     before_markers=$(marker_read)
     target=""
+    # "force" once the candidate had to be laid down with `ab-upgrade --force` because the
+    # running slot already carried this release; empty for the plain install and for
+    # --installed. It ends up in the row, so a reader can tell a reinstalled candidate from a
+    # fresh one.
+    install_mode=""
 
     if [ "${armed}" = "1" ]; then
         target=$(_field "${STATUS_LINE}" pending)
@@ -367,6 +385,26 @@ run_bad_version() {
         install_out=$(dev_ssh 'ab-upgrade /tmp/ab-recovery-candidate.tar' 2>&1)
         install_rc=$?
         printf '%s\n' "${install_out}" | sed 's/^/  | /' >&2
+        # A machine whose running slot already carries this release refuses the same payload
+        # with exit 74 payload-already-installed. That refusal is matrix.sh M5's judgement,
+        # not R1's: R1 is about what the candidate's *first boot* does, so the candidate still
+        # has to be laid into the other slot. `--installed` is not the alternative here - it
+        # needs a candidate already queued, and in a full run every phase before recovery
+        # either commits or abandons its slot, so nothing is pending by the time this runs.
+        # The second attempt is `ab-upgrade --force`, which the refusal itself names as the
+        # next step ("Next: ab-upgrade --force to reinstall the version this slot already
+        # runs"). Without it, handing R1 the round's own payload would turn the round's most
+        # important rollback row into a red line against a machine that is perfectly healthy.
+        if [ "${install_rc}" -eq 74 ] &&
+            [ "$(printf '%s\n' "${install_out}" | sed -n 's/^ab-upgrade: refused, reason=//p' | head -n 1)" = "payload-already-installed" ]; then
+            printf 'note [%s] the running slot already carries this release; laying the candidate down with --force so R1 can judge the rollback (the refusal belongs to M5)\n' \
+                "${_case}"
+            ev "R1: plain install refused with payload-already-installed; retrying with --force"
+            install_out=$(dev_ssh 'ab-upgrade --force /tmp/ab-recovery-candidate.tar' 2>&1)
+            install_rc=$?
+            printf '%s\n' "${install_out}" | sed 's/^/  | /' >&2
+            install_mode="force"
+        fi
         if [ "${install_rc}" -ne 0 ]; then
             reason=$(printf '%s\n' "${install_out}" | grep -E '^ab-upgrade: refused, reason=' | head -n 1 | sed 's/.*reason=//')
             if [ "${install_rc}" -eq 74 ]; then
@@ -384,7 +422,11 @@ run_bad_version() {
         fi
         installed_line=$(printf '%s\n' "${install_out}" | grep -E '^ab-upgrade: installed ' | head -n 1)
         target=$(printf '%s\n' "${installed_line}" | sed -n 's/.*into slot \([ab]\).*/\1/p')
-        _ok "${_case}" "candidate installed into slot ${target:-?}"
+        if [ "${install_mode}" = "force" ]; then
+            _ok "${_case}" "candidate installed into slot ${target:-?} with --force (slot ${before_slot} already carried it)"
+        else
+            _ok "${_case}" "candidate installed into slot ${target:-?}"
+        fi
         if [ -z "${target}" ] || [ "${target}" = "${before_slot}" ]; then
             _fail "${_case}" "the candidate did not go into a slot other than the running one (${before_slot})" \
                 "ab-slot status"
@@ -499,7 +541,7 @@ run_bad_version() {
         CASE_STATUS=FAIL
         return 1
     fi
-    CASE_NOTE="candidate ${target} abandoned, machine back on ${before_committed} running ${before_version:-?}"
+    CASE_NOTE="candidate ${target} abandoned, machine back on ${before_committed} running ${before_version:-?}${install_mode:+ (installed with --force: the running slot already carried it)}"
     CASE_STATUS=PASS
     return 0
 }

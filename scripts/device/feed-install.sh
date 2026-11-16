@@ -774,6 +774,35 @@ _pin_payload() {
     return 1
 }
 
+# _pin_leg_note <reason>: the sentence the ac-3 row carries when the explicit-payload leg
+# could not be judged. The verdict stays GAP - the pin's other four judgements held and this
+# one could not be put to the machine - but a row whose note is `none` is not evidence: it
+# says a leg was not measured without saying which one, why, or what would measure it.
+#
+# The slot and the version come out of the machine's own refusal
+# (`ab-upgrade: slot a already runs 25.12.2 (platform 0.0.12)`), because that is the state the
+# case ran into. They fall back to the running slot and the expected candidate when the
+# refusal is a different one (`payload-digest`, `payload-platform-unknown`), where the machine
+# names neither.
+_pin_leg_note() {
+    _pln_reason=${1:?_pin_leg_note needs a reason}
+    _pln_slot=$(printf '%s\n' "${PIN_OUT}" | sed -n 's/^ab-upgrade: slot \([ab]\) already runs.*/\1/p' | head -n 1)
+    _pln_ver=$(printf '%s\n' "${PIN_OUT}" | sed -n 's/^ab-upgrade: slot [ab] already runs \([^ ]*\) .*/\1/p' | head -n 1)
+    [ -n "${_pln_slot}" ] || _pln_slot=${pin_slot:-?}
+    [ -n "${_pln_ver}" ] || _pln_ver=${expect:-?}
+    _pln_target="other slot"
+    case "${pin_slot}" in
+        a) _pln_target=b ;;
+        b) _pln_target=a ;;
+    esac
+    if [ "${_pln_reason}" = "payload-already-installed" ]; then
+        printf '%s' "the explicit-payload leg was not judged: slot ${_pln_slot} already holds ${_pln_ver}, so ab-upgrade refused the payload (reason=${_pln_reason}) and nothing reached slot ${_pln_target}; run it on a machine whose target slot is empty, or reinstall the same release with ab-upgrade --force"
+        return 0
+    fi
+    printf '%s' "the explicit-payload leg was not judged: the machine refused the payload before it reached slot ${_pln_target} (reason=${_pln_reason}); fix the payload this host names, or run the case on a machine whose target slot is empty"
+    return 0
+}
+
 # _pin_abandon_pending: clear a slot the payload install armed. A pending slot is a machine
 # that switches at the next boot, and leaving one behind is the half-installed state this case
 # must not produce - so the install step clears it at once, and the restore calls this again as
@@ -883,6 +912,9 @@ _pin_steps() {
     fi
     _pin_payload
     if [ -z "${_PIN_PAYLOAD_PATH}" ]; then
+        # Same rule as the refusal below: the row is the evidence, so it says which leg went
+        # unmeasured and what would measure it instead of leaving the note empty.
+        CASE_NOTE="the explicit-payload leg was not judged: no payload for ${expect} was found to name (${_PIN_PAYLOAD_WHY}); put payload-${expect}.tar in ${AB_PAYLOAD_DIR} and run the case again"
         _gap "${_case}" "no payload to name while the pin is set (${_PIN_PAYLOAD_WHY})" \
             "AB_PAYLOAD_DIR=payloads scripts/device/feed-install.sh --case pin --expect ${expect}"
     else
@@ -911,6 +943,12 @@ _pin_steps() {
                 _pin_why=$(_pin_reason)
                 case "${_pin_why}" in
                     payload-*)
+                        # The pin's four other judgements held; this leg could not be put to
+                        # the machine, which is a GAP and stays one. What it must not be is a
+                        # GAP whose note is `none`: the row is what the Lead reads, and a row
+                        # that does not say which leg went unmeasured, why, and what would
+                        # measure it sends the reader back to the log every time.
+                        CASE_NOTE=$(_pin_leg_note "${_pin_why}")
                         _gap "${_case}" \
                             "the machine refused the payload this host named (reason=${_pin_why}); the pin itself never came into it" \
                             "AB_PAYLOAD_DIR=payloads scripts/device/feed-install.sh --case pin --expect ${expect}"

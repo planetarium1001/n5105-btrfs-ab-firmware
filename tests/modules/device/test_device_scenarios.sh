@@ -686,11 +686,27 @@ for v in 25.12.0 25.12.1 25.12.2; do
     printf 'payload %s\n' "$v" >"$payloads/payload-${v}.tar"
 done
 
+# The driver names each run's evidence log after a UTC stamp taken to the second, so a
+# re-run inside the same day cannot truncate the earlier run's file. The stamp is injectable
+# (AB_SCEN_STAMP) precisely so these tests need not wait for the clock: every run below gets
+# a fixed, known stamp, and the two-run test further down gives its two runs two different
+# stamps on one simulated UTC date.
+EVIDENCE_STAMP=${EVIDENCE_STAMP:-2026-11-16T02-21-00Z}
+# The suite owns this variable: an AB_SCEN_STAMP inherited from the caller would make every
+# run share a stamp, and evidence_of() would then look somewhere the driver never wrote.
+unset AB_SCEN_STAMP
+evidence_stamp_name() { printf '%s' "$1" | tr -d '-'; }
+evidence_name() { printf '%s-%s.log' "$(evidence_stamp_name "$1")" "$2"; }
+evidence_of() { # <results dir> <case>: the log named by the stamp this suite uses
+    printf '%s/evidence/%s' "$1" "$(evidence_name "${EVIDENCE_STAMP}" "$2")"
+}
+
 run_scen_payloads() { # <payload dir> <results dir> [scenarios args...]
     local pdir=$1 dir=$2
     shift 2
     AB_WAIT_UP=4 AB_WAIT_UP_FIRST=4 AB_WAIT_UP_HARD=8 AB_POLL_INTERVAL=1 \
         AB_HOST=root@stub AB_KEY="$tmp/abkey" \
+        AB_SCEN_STAMP="${AB_SCEN_STAMP:-${EVIDENCE_STAMP}}" \
         sh "$root/scripts/device/scenarios.sh" \
         --payload-dir "$pdir" --results "$dir/results.tsv" "$@" 2>&1
 }
@@ -703,7 +719,6 @@ run_scen() { # <results dir> [scenarios args...]
 
 verdict_of() { awk -F'\t' 'NR == 1 {print $2}' "$1/results.tsv"; }
 note_of() { awk -F'\t' 'NR == 1 {print $4}' "$1/results.tsv"; }
-evidence_of() { printf '%s/evidence/%s-%s.log' "$1" "$(date -u +%Y%m%d)" "$2"; }
 
 # --- ac-4: a package that cannot be installed is not a failure -------------- #
 # The user asked for a batch of packages from the store. One of them is not in the
@@ -1912,6 +1927,54 @@ assert_contains "$out" "S7 6/6 align the 25.12.2 feeds" \
     "the plan says the aligned feed is what has to install something"
 assert_eq "$(wc -l <"$STUB_CALLS" | tr -d ' ')" "$calls_before" "planning S7 reaches no machine"
 assert_eq "$(test -e "$tmp/dry-s7/results.tsv" && echo yes || echo no)" "no" "planning S7 writes no results file"
+
+# --- evidence is one file per run, not one file per day -------------------- #
+# Real-device acceptance re-ran S8 later the same UTC day (02:21, then 03:33) and the second
+# run overwrote the first run's evidence, because the log was named after the date alone
+# while the backup directory next to it already carried a time stamp. Two runs of the same
+# case on one simulated day, two injected stamps: two files must exist, and the first one's
+# bytes must be untouched. The --results file stays the caller's: both runs append to the
+# path the caller gave, and each row names its own run's log.
+setup_fake_device 25.12.2
+printf 'luci-app-ttyd\n' >"$FAKE_DEV/pkgfail"
+stamp_first=2026-11-16T02-21-00Z
+stamp_second=2026-11-16T03-33-22Z
+out=$(AB_SCEN_STAMP="$stamp_first" run_scen "$tmp/r-evidence-twice" --case S1)
+assert_eq "$?" "0" "the first run of S1 passes with one package the feed refuses"
+first_log="$tmp/r-evidence-twice/evidence/$(evidence_name "$stamp_first" s1)"
+assert_file_exists "$first_log" "the first run's evidence log is named after its UTC stamp, not just the date"
+first_sum=$(cksum "$first_log" | awk '{print $1}')
+assert_contains "$(cat "$first_log")" "preinstall luci-app-ttyd: unavailable rc=1" \
+    "the first run's own evidence is in the file its row names"
+
+# The same case later the same day, on a machine whose package now installs: the second run
+# has to get its own file, and the first run's line has to survive on disk.
+: >"$FAKE_DEV/pkgfail"
+out=$(AB_SCEN_STAMP="$stamp_second" run_scen "$tmp/r-evidence-twice" --case S1)
+assert_eq "$?" "0" "the second run of the same case on the same day also passes"
+second_log="$tmp/r-evidence-twice/evidence/$(evidence_name "$stamp_second" s1)"
+assert_file_exists "$second_log" "a second run on the same UTC date writes a second evidence log"
+assert_eq "$(cksum "$first_log" | awk '{print $1}')" "$first_sum" \
+    "the second run does not rewrite the first run's log"
+assert_contains "$(cat "$first_log")" "preinstall luci-app-ttyd: unavailable rc=1" \
+    "the first run's failure line is still on disk after the re-run"
+assert_eq "$(grep -c 'unavailable' "$second_log" || true)" "0" \
+    "the second run's log holds the second run, not a copy of the first"
+assert_eq "$(grep -c '^S1' "$tmp/r-evidence-twice/results.tsv" || true)" "2" \
+    "both runs append to the --results file the caller named"
+assert_eq "$(awk -F'\t' '$1 == "S1" {print $3}' "$tmp/r-evidence-twice/results.tsv" | sed -n '1p')" \
+    "$first_log" "the first row names the first run's log"
+assert_eq "$(awk -F'\t' '$1 == "S1" {print $3}' "$tmp/r-evidence-twice/results.tsv" | sed -n '2p')" \
+    "$second_log" "the second row names the second run's log"
+
+# The stable alias: <case>.log is "the latest run", so after the second run it is the second
+# file and not the first. The timestamped names above are what the rows carry; the alias is
+# for a reader that only wants whatever ran last.
+latest_log="$tmp/r-evidence-twice/evidence/s1.log"
+assert_file_exists "$latest_log" "the stable <case>.log alias exists, so a reader has a latest-run name"
+assert_eq "$(cat "$latest_log")" "$(cat "$second_log")" "the alias carries the latest run's content"
+assert_eq "$(cat "$latest_log" | grep -c 'unavailable' || true)" "0" \
+    "the alias is the second run's log, not the first"
 
 # --- results.tsv shape ----------------------------------------------------- #
 assert_eq "$(awk -F'\t' 'NF != 4' "$tmp/r-s3/results.tsv" | wc -l | tr -d ' ')" "0" \

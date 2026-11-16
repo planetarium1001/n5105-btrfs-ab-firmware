@@ -19,7 +19,11 @@
 #   --user-banner <s>  modify /etc/banner in the writable layer, creating a conflict
 #                      against a payload that changes the same file
 #   --auto-upgrade     install /etc/rc.local that runs ab-upgrade on the payload
-#   --orphan-layer <n> create an unreferenced writable layer, so reclamation has work
+#   --orphan-layer <base> create an unreferenced writable layer named after <base>, so
+#                      reclamation has work; <base> is a release version (25.12.1) or the
+#                      layer name that version produces (@overlay-25.12.1). The name is
+#                      derived here, never taken verbatim, and a name that would collide
+#                      with a layer a slot references is refused - see orphan_layer().
 #   --break-p4         corrupt the writable partition's superblock so it cannot mount
 #   --break-slot <s>   replace the slot's nft binary with a broken stub, which leaves
 #                      the system bootable but fails the firewall probe
@@ -288,28 +292,82 @@ RCLOCAL
     ci_log "installed /etc/rc.local that runs ab-upgrade"
 }
 
-orphan_layer() {
+# orphan_layer_base <argument>: the release version the caller asked the orphan layer for.
+# A layer name is accepted as well as a version, because a layer name is what a reader
+# finds in the state file and in `btrfs subvolume list`; deriving the name from either
+# spelling of the same base keeps one argument meaning one thing.
+orphan_layer_base() {
+    case "$1" in
+        @overlay-*) printf '%s' "${1#@overlay-}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# orphan_layer_name <base-version>: the name of the unreferenced layer, derived from the
+# base the run builds instead of being hardcoded by the workflow.
+#
+# A real writable layer is named by exactly three rules:
+#   * @overlay-<upstream version>      disk.sh installs it, and the version matches
+#                                      ^[0-9]+\.[0-9]+\.[0-9]+$ (resolve.sh asserts it)
+#   * @overlay-<payload version>       payload-build.sh names it, <upstream version>-test1
+#   * @overlay-<version>-r<N>, N >= 2  upgrade_layer_name() adds a second layer of a base
+# None of the three can end in -gc-orphan, so this name is not one the product can produce:
+# a hardcoded @overlay-25.12.1 collided with the live layer of a 25.12.1 image, was renamed
+# to orphan-<pid>-<timestamp> as a fallback, and that fallback matched neither gc's
+# @overlay-* filter nor the commit phase's, so nothing ever reclaimed it and nothing ever
+# reported it (reclaimed=0 on the 25.12.1 line while 25.12.0 reclaimed one layer).
+# The prefix is @overlay- on purpose: the reference set gc computes is `path @overlay-*`.
+# The name is not trusted on its own either - orphan_layer() reads the reference set out of
+# the state file and refuses a collision instead of renaming.
+orphan_layer_name() {
+    printf '@overlay-%s-gc-orphan' "$1"
+}
+
+orphan_layer() { # <base-version>
+    base="$(orphan_layer_base "$1")"
+    ci_match "${base}" "${CI_VERSION_RE}" "orphan fixture base version"
+    name="$(orphan_layer_name "${base}")"
+
+    # "Unreferenced" is a fact to check, not a naming convention to hope for. gc keeps
+    # exactly the layers the state file names (both slots plus pending), so the state file
+    # is the reference set: a name in it is a layer reclamation must *not* remove, and
+    # creating it would turn the stage's reclamation assertion into a wrong failure.
+    cat_esp_file ab/state.json "${work}/state.json"
+    referenced="$(sed -n 's/.*"upper": *"\([^"]*\)".*/\1/p' "${work}/state.json" | sort -u)"
+    if printf '%s\n' "${referenced}" | grep -qxF "${name}"; then
+        ci_die "orphan layer ${name} is a layer a slot references (${referenced//$'\n'/ }); reclamation would have to keep it, so the fixture has no subject"
+    fi
+
     mount_one "${loopdev}p4" p4
-    # An "unreferenced writable layer" has to be a layer no slot names, and the caller's
-    # name can collide with one the image already carries: an image built for upstream
-    # 25.12.1 ships @overlay-25.12.1 as its own live layer, and the S5 fixture asks for that
-    # exact name whatever release the run builds. The old code created it blindly and died
-    # with "Could not create subvolume: File exists" (run 43791574551), which reads as a
-    # product failure instead of a fixture collision. Reusing it would be worse than
-    # failing: a referenced layer is not what reclamation is supposed to remove, so the
-    # stage's "no unreferenced layer survived" assertion would then fail for a real reason.
-    # A name that cannot be the live layer keeps the fixture's intent under any release.
-    name="$1"
+    # A collision is a fixture defect, and it used to be repaired by renaming the layer to
+    # something no filter looks at - which is how an unreclaimed layer passed the stage.
+    # Now it stops the stage: the same base has to produce the same layer, every run.
     if sudo btrfs subvolume show "${work}/p4/${name}" >/dev/null 2>&1; then
-        ci_log "writable layer ${name} already exists; choosing a fresh orphan name"
-        name="orphan-$$-$(date -u +%Y%m%dT%H%M%SZ)"
+        ci_die "writable layer ${name} already exists on p4; the fixture must create the layer its name says it creates, not rename it"
     fi
     sudo btrfs subvolume create "${work}/p4/${name}" >/dev/null ||
         ci_die "cannot create the orphan writable layer ${name}"
-    sudo mkdir -p "${work}/p4/${name}/upper"
-    printf 'orphan\n' | sudo tee "${work}/p4/${name}/upper/marker" >/dev/null
+    sudo mkdir -p "${work}/p4/${name}/upper" ||
+        ci_die "cannot create the upper directory inside the orphan layer ${name}"
+    printf 'orphan\n' | sudo tee "${work}/p4/${name}/upper/marker" >/dev/null ||
+        ci_die "the orphan layer ${name} is not writable"
+
+    # The commit phase and gc both look for @overlay-*: a layer outside that namespace is
+    # invisible to both, which is exactly what the fallback name was. Assert the shape
+    # instead of trusting the derivation, so a future edit that renames out of the
+    # namespace fails here rather than in a green run that reclaimed nothing.
+    case "${name}" in
+        @overlay-?*-gc-orphan) : ;;
+        *) ci_die "orphan layer ${name} is outside the @overlay-* namespace gc and the commit phase filter on" ;;
+    esac
+    # Read back what was created, while the partition is still mounted: after the umount
+    # below the mount point is an empty directory, and btrfs can no longer see the layer.
+    if ! sudo btrfs subvolume show "${work}/p4/${name}" >/dev/null 2>&1; then
+        ci_die "the orphan layer ${name} was not created; nothing is left for reclamation to prove"
+    fi
     sudo sync
     sudo umount "${work}/p4"
+    ci_emit_output "orphan_layer" "${name}"
     ci_log "created unreferenced writable layer ${name}"
 }
 

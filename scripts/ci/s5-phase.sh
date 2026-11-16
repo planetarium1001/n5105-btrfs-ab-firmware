@@ -8,10 +8,15 @@
 #       the upgrade recorded the new layer and version and marked the slot pending
 #       -> S5-EVIDENCE=ok phase=upgrade slot=<slot>
 #
-#   --phase commit --slot b --serial <file>
-#       the candidate boot committed, reclamation left only referenced layers, and the
-#       conflict report is on the ESP
+#   --phase commit --slot b --orphan <layer> --serial <file>
+#       the candidate boot committed, reclamation removed the fixture's unreferenced layer
+#       and left only referenced subvolumes, and the conflict report is on the ESP
 #       -> S5-RESULT=ok upgrade=<slot> conflicts=<n> reclaimed=<n>
+#       --orphan is the layer the fixture created (scripts/ci/ab-fixtures.sh publishes it
+#       as the `orphan_layer` output). It is required: without it the phase can only say
+#       "no unreferenced layer is left", which is also true of a run whose fixture never
+#       created one - and that silence is how the 25.12.1 line reported reclaimed=0 while
+#       proving nothing.
 #       The input is asserted before the output: a FAT chain the driver already declared
 #       broken (reason=esp-corrupt) or an ESP that refuses a write probe
 #       (reason=esp-read-only) is named as the machine fault it is, never as the product
@@ -45,6 +50,7 @@ phase=""
 slot=""
 version=""
 layer=""
+orphan=""
 serial=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -52,6 +58,7 @@ while [ "$#" -gt 0 ]; do
         --slot) slot="${2:?}"; shift 2 ;;
         --version) version="${2:?}"; shift 2 ;;
         --layer) layer="${2:?}"; shift 2 ;;
+        --orphan) orphan="${2:?}"; shift 2 ;;
         --serial) serial="${2:?}"; shift 2 ;;
         *) ci_die "unknown argument: $1" ;;
     esac
@@ -252,6 +259,14 @@ fi
 
 [ "${phase}" = "commit" ] || ci_die "unknown phase: ${phase}"
 [ -n "${slot}" ] || ci_die "commit phase needs --slot"
+# The layer the fixture created is the subject of the reclamation assertion. Required,
+# because "no unreferenced layer is left" is also true of a run whose fixture created
+# none - the exact silence that let the 25.12.1 line report reclaimed=0 and pass.
+[ -n "${orphan}" ] || ci_die "commit phase needs --orphan <layer>: the unreferenced layer the fixture created"
+case "${orphan}" in
+    @overlay-?*) : ;;
+    *) ci_die "--orphan must be a layer in the @overlay-* namespace gc reclaims: ${orphan}" ;;
+esac
 [ "${committed}" = "${slot}" ] || fail_phase "committed-is-${committed}"
 [ "${pending}" = "none" ] || fail_phase "pending-is-${pending}"
 
@@ -289,21 +304,64 @@ if [ "${conflicts}" -lt 1 ]; then
     fail_phase "conflicts-not-detected"
 fi
 
-# Reclamation: the early gc in ab-boot reports how many layers it removed.
-reclaimed="$(sudo sed -n 's/.*stage=gc .*reclaimed=\([0-9]*\).*/\1/p' "${boot_log}" | tail -n 1)"
-[ -n "${reclaimed}" ] || reclaimed=0
-ci_log "early reclamation removed ${reclaimed} layer(s)"
+# Reclamation: the early gc in ab-boot reports how many layers it removed, and the fixture
+# created exactly one unreferenced layer for it to remove. Both halves are asserted: the
+# count says something was removed, the leftover scan below says what is left.
+#
+# The count is read from the whole log ring (boot-0/1/2), not from boot-0.log alone. The
+# ring is rotated on every boot, so the boot that removed the fixture's layer is not
+# necessarily the boot this phase grades - and a fixture layer whose name gc's @overlay-*
+# filter never matched removed nothing in *any* boot. Reading one file printed 0 for both,
+# which is the number that let the 25.12.1 line look like a run with nothing to reclaim.
+reclaimed=0
+reclaimed_ring=""
+for ring_log in "${esp}/ab/log/boot-0.log" "${esp}/ab/log/boot-1.log" "${esp}/ab/log/boot-2.log"; do
+    sudo test -f "${ring_log}" || continue
+    ring_count="$(sudo sed -n 's/.*stage=gc .*reclaimed=\([0-9]*\).*/\1/p' "${ring_log}" | tail -n 1)"
+    [ -n "${ring_count}" ] || ring_count=0
+    reclaimed=$((reclaimed + ring_count))
+    reclaimed_ring="${reclaimed_ring} ${ring_log##*/}=${ring_count}"
+done
+ci_log "early reclamation removed ${reclaimed} layer(s) across the log ring (${reclaimed_ring# })"
+ci_log "the fixture created the unreferenced layer ${orphan}"
+if [ "${reclaimed}" -lt 1 ]; then
+    ci_warn "no boot in the log ring reclaimed a layer, but the fixture created ${orphan} for reclamation to remove"
+    for ring_log in "${esp}/ab/log/boot-0.log" "${esp}/ab/log/boot-1.log" "${esp}/ab/log/boot-2.log"; do
+        sudo test -f "${ring_log}" || continue
+        sudo grep -E 'stage=gc|early reclamation|btrfs-check' "${ring_log}" 2>/dev/null |
+            sed "s/^/[s5-phase]   ${ring_log##*/}: /" || true
+    done
+    fail_phase "reclaim-not-exercised"
+fi
 
-# Every layer left on the writable partition must be referenced by a slot.
+# Every subvolume left on the writable partition must be referenced by a slot, and the
+# unreferenced layer the fixture created must be gone. The scan lists *every* subvolume
+# rather than only the @overlay-* ones: gc deletes whatever its reference set does not name,
+# whatever the name looks like, so a leftover outside the prefix has to be visible here.
+# The 25.12.1 line shipped a fallback layer named orphan-<pid>-<stamp>, this scan filtered
+# on ^@overlay- and gc's own listing filtered on `path @overlay-`, and between the two of
+# them nothing could ever report that layer again.
 sudo mount -o ro "${loopdev}p4" "${p4}"
 mounted+=("${p4}")
-layers="$(sudo btrfs subvolume list "${p4}" | sed -n 's/.* path //p' | grep '^@overlay-' | sort)"
-referenced="$(sudo grep -o '"upper": "@overlay-[^"]*"' "${state}" | sed 's/.*"\(@overlay-[^"]*\)"/\1/' | sort -u)"
-ci_log "layers on p4: $(printf '%s' "${layers}" | tr '\n' ' ')"
-ci_log "referenced:   $(printf '%s' "${referenced}" | tr '\n' ' ')"
-unreferenced="$(printf '%s\n' "${layers}" | grep -vxF -f <(printf '%s\n' "${referenced}") || true)"
+subvols="$(sudo btrfs subvolume list "${p4}" | sed -n 's/.* path //p' | sort)"
+referenced="$(sudo sed -n 's/.*"upper": *"\([^"]*\)".*/\1/p' "${state}" | sort -u)"
+# The subvolumes the image ships for its own purposes (disk.sh creates them next to the
+# layers), so they are neither a slot's layer nor a leak.
+p4_reserved="@docker @swap @data"
+ci_log "subvolumes on p4: $(printf '%s' "${subvols}" | tr '\n' ' ')"
+ci_log "referenced:       $(printf '%s' "${referenced}" | tr '\n' ' ')"
+if printf '%s\n' "${referenced}" | grep -qxF "${orphan}"; then
+    ci_warn "the state file references ${orphan}; the fixture did not create an unreferenced layer"
+    fail_phase "orphan-layer-referenced"
+fi
+if printf '%s\n' "${subvols}" | grep -qxF "${orphan}"; then
+    ci_warn "the unreferenced layer ${orphan} is still on p4 after reclamation"
+    fail_phase "orphan-layer-left"
+fi
+kept="$(printf '%s\n%s\n' "${referenced}" "${p4_reserved}" | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+unreferenced="$(printf '%s\n' "${subvols}" | grep -vxF -f <(printf '%s\n' "${kept}") || true)"
 if [ -n "${unreferenced}" ]; then
-    ci_warn "unreferenced layers survived reclamation: ${unreferenced}"
+    ci_warn "unreferenced subvolumes survived reclamation: ${unreferenced}"
     fail_phase "unreferenced-layer-left"
 fi
 
