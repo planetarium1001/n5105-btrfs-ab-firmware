@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: the automatic watch asks ci.yml for stage=all: a dispatched run would otherwise skip every build stage
+# reason: ci.yml declares stage for workflow_call: the automatic watch passes it, and an undeclared input fails the run at startup
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -2489,6 +2489,10 @@ yaml .github/workflows/ci.yml jobs.versions.steps.[2].id = read
 yaml .github/workflows/ci.yml jobs.versions.timeout-minutes = 5
 yaml .github/workflows/ci.yml on = 
 yaml .github/workflows/ci.yml on.workflow_call.inputs = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage = 
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage.default = "all"
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage.required = false
+yaml .github/workflows/ci.yml on.workflow_call.inputs.stage.type = string
 yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version = 
 yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.default = ""
 yaml .github/workflows/ci.yml on.workflow_call.inputs.upstream_version.required = false

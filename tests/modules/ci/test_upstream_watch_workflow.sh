@@ -151,6 +151,13 @@ assert_contains "$(job_block build)" 'stage: all' \
   "ac-3 the build asks for every stage: a dispatched run would otherwise skip all of them"
 assert_eq "$(grep -c 'stage: ' <<<"$(job_block build)")" "1" \
   "ac-6 the stage is named once, so a second value cannot silently disagree"
+# A reusable workflow only accepts an input it declares. The stage was declared under
+# workflow_dispatch alone, so passing it through workflow_call failed the run at startup
+# with no job list at all (run 43791166821) - the caller looked broken, not the input.
+ci_yml=".github/workflows/ci.yml"
+assert_file_exists "$ci_yml" "ac-3 the pipeline the watch calls exists"
+assert_eq "$(awk '/^  workflow_call:/{f=1;next} f&&/^  [a-z_]+:/{exit} f&&/^      stage:/{print "declared"}' "$ci_yml")" \
+  "declared" "ac-3 ci.yml accepts the stage through workflow_call, not only through dispatch"
 assert_eq "$(grep -c 'gh workflow run' "$watch")" "0" \
   "ac-3 the watch starts no second workflow run"
 
