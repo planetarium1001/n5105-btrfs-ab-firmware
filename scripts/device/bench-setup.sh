@@ -27,9 +27,11 @@ export AB_REPO_ROOT
 # shellcheck source=scripts/device/lib.sh
 . "${DEVICE_DIR}/lib.sh"
 
-# The theme's settings app and its Chinese translation. Both come from the feed the image
-# already points at; nothing here installs a theme, because the theme is in the image.
-BENCH_PACKAGES=${AB_BENCH_PACKAGES:-luci-app-argon-config luci-i18n-argon-config-zh-cn}
+# The theme, its settings app and the Chinese translation. Measured on a clean flash of the
+# current image (2026-11-18): the upstream rootfs carries bootstrap only, so argon has to be
+# installed from the feed here. That is a bench convenience, not a claim that the image ships
+# it - whether argon belongs in the image is a product decision this script cannot make.
+BENCH_PACKAGES=${AB_BENCH_PACKAGES:-luci-theme-argon luci-app-argon-config luci-i18n-argon-config-zh-cn}
 BENCH_THEME=${AB_BENCH_THEME:-/luci-static/argon}
 DRY_RUN=${AB_DRY_RUN:-0}
 
@@ -62,9 +64,10 @@ set -u
 theme='${BENCH_THEME}'
 packages='${BENCH_PACKAGES}'
 
-# The theme itself must be in the image; a bench that has to install it is a bench that
-# would hide a packaging defect.
-[ -d "/www\${theme}" ] || { printf 'bench-setup=fail reason=theme-not-in-image theme=%s\n' "\${theme}"; exit 0; }
+# Where the theme came from is reported, not decided: "in-image" when the directory is
+# already there, "installed" when this run put it there. A caller that expects the image to
+# carry it can check the word.
+if [ -d "/www\${theme}" ]; then theme_source=in-image; else theme_source=installed; fi
 
 apk update >/dev/null 2>&1 || :
 installed=0
@@ -89,8 +92,9 @@ now=\$(uci -q get luci.main.mediaurlbase)
 [ "\${now}" = "\${theme}" ] || {
     printf 'bench-setup=fail reason=mediaurlbase=%s\n' "\${now}"; exit 0
 }
-printf 'bench-setup=ok base=%s packages=%s mediaurlbase=%s\n' \
-    "\${theme##*/}" "\${installed}" "\${now}"
+[ -d "/www\${theme}" ] || { printf 'bench-setup=fail reason=theme-missing theme=%s\n' "\${theme}"; exit 0; }
+printf 'bench-setup=ok base=%s theme_source=%s packages=%s mediaurlbase=%s\n' \
+    "\${theme##*/}" "\${theme_source}" "\${installed}" "\${now}"
 REMOTE
 }
 
