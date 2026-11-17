@@ -8,7 +8,9 @@
 # before the machine is allowed to try the slot:
 #   ac-1 (parent ac-18) world's kernel pin is rewritten to the target's kernel and every
 #        other pin is kept byte for byte
-#   ac-2 the writable layer's distfeeds follow the target release
+#   ac-2 the feed files the *base* ships are the ones aligned: a shadow that carries only the
+#        old release/kernel is dropped, an edit of the user's is moved (feeds-rewritten), and
+#        a file the base does not ship is never created
 #   ac-3 a slot whose metadata needs nothing is left untouched
 #   ac-4 an unknown target kernel or an unwritable file ends in `limited` + a reason, and
 #        the upgrade still installs the slot
@@ -69,26 +71,81 @@ assert_eq "$(grep -v '^kernel=' "$upper/etc/apk/world" | tr '\n' ' ')" "busybox 
   "ac-1 the user's other pins are kept"
 
 # =========================================================================== #
-# ac-2: distfeeds follow the target release
+# ac-2: the feed files the base ships are the ones aligned
 # =========================================================================== #
+# The measured image (192.168.2.49, 2026-11-18) has /etc/apk/repositories.d/*.list and
+# neither /etc/apk/distfeeds.list nor /etc/apk/repositories. A writable layer is a snapshot
+# of the running one, so the user's copy of a feed file survives an upgrade and shadows the
+# base's own; writing the two legacy names instead is how `packages=aligned` came to
+# describe a file apk never opens.
 
-cat >"$upper/etc/apk/distfeeds.list" <<'FEEDS'
+# (a) a copy that carries nothing but the old release and the old kernel build is a shadow:
+#     dropping it lets the base's own file win, and the next upgrade stops inheriting it.
+mkdir -p "$sys/etc/apk/repositories.d" "$upper/etc/apk/repositories.d"
+cat >"$sys/etc/apk/repositories.d/distfeeds.list" <<'FEEDS'
+https://downloads.immortalwrt.org/releases/25.12.0/targets/x86/64/packages/packages.adb
+https://downloads.immortalwrt.org/releases/25.12.0/packages/x86_64/base/packages.adb
+https://downloads.immortalwrt.org/releases/25.12.0/targets/x86/64/kmods/6.12.87-1-bd81971a8c/packages.adb
+FEEDS
+cat >"$upper/etc/apk/repositories.d/distfeeds.list" <<'FEEDS'
 https://downloads.immortalwrt.org/releases/25.12.2/targets/x86/64/packages/packages.adb
 https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/base/packages.adb
-https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/packages.adb
 https://downloads.immortalwrt.org/releases/25.12.2/targets/x86/64/kmods/6.12.103-1-ff11/packages.adb
 FEEDS
+printf '# add your custom package feeds here\n' >"$upper/etc/apk/repositories.d/customfeeds.list"
 out="$(align "$sys" "$upper")"
-assert_contains "$out" "rc=0" "ac-2 distfeeds pointing at the old release are aligned"
-assert_eq "$(grep -c 'releases/25.12.0/' "$upper/etc/apk/distfeeds.list")" "4" \
-  "ac-2 every feed line moves to the target release"
-assert_eq "$(grep -c 'releases/25.12.2/' "$upper/etc/apk/distfeeds.list")" "0" \
+assert_contains "$out" "rc=0" "ac-2 a shadowed feed file does not stop the alignment"
+assert_eq "$([ -f "$upper/etc/apk/repositories.d/distfeeds.list" ] && echo present || echo gone)" "gone" \
+  "ac-2 a copy that only carried the old release and kernel is dropped, so the base's own file wins"
+assert_eq "$(grep -c 'releases/25.12.0/' "$sys/etc/apk/repositories.d/distfeeds.list")" "3" \
+  "ac-2 the feed apk will read names the target release"
+assert_eq "$(cat "$upper/etc/apk/repositories.d/customfeeds.list")" \
+  "# add your custom package feeds here" \
+  "ac-2 the user's own feed list is never touched"
+assert_eq "$([ -e "$upper/etc/apk/repositories.d/distfeeds.list.ab-align.bak" ] && echo leftover || echo clean)" "clean" \
+  "ac-2 a dropped shadow leaves no pre-rewrite copy behind"
+
+# (b) a file the user changed keeps every byte the upgrade does not have to move: the
+#     release and the kernel-bound kmods directory follow the target, the mirror and the
+#     comment stay, and the note says an edit was moved rather than dropped.
+cat >"$upper/etc/apk/repositories.d/distfeeds.list" <<'FEEDS'
+# my own mirror, do not rewrite the host
+https://mirror.example.net/immortalwrt/releases/25.12.2/packages/x86_64/base/packages.adb
+https://mirror.example.net/immortalwrt/releases/25.12.2/targets/x86/64/kmods/6.12.103-1-ff11/packages.adb
+FEEDS
+out="$(align "$sys" "$upper")"
+feeds="$upper/etc/apk/repositories.d/distfeeds.list"
+assert_contains "$out" "rc=0" "ac-2 a feed file the user changed is aligned, not dropped"
+assert_contains "$out" "reason=feeds-rewritten" \
+  "ac-2 the alignment notes that an edit was moved, so nobody has to guess"
+assert_eq "$(grep -c 'releases/25.12.0/' "$feeds")" "2" \
+  "ac-2 every line of the user's file moves to the target release"
+assert_eq "$(grep -c 'releases/25.12.2/' "$feeds")" "0" \
   "ac-2 no line still names the release the machine came from"
-# The release part moves, the kernel hash inside the kmods path does not: guessing a
-# kernel build hash is worse than leaving the old one in front of the user.
-assert_contains "$(cat "$upper/etc/apk/distfeeds.list")" \
-  "releases/25.12.0/targets/x86/64/kmods/6.12.103-1-ff11/packages.adb" \
-  "ac-2 the kernel-bound kmods path keeps its build hash"
+assert_eq "$(grep -c 'kmods/6.12.87-1-bd81971a8c/' "$feeds")" "1" \
+  "ac-2 the kernel-bound kmods directory is the target's, taken from the base's own file"
+assert_eq "$(grep -c 'kmods/6.12.103-1-ff11/' "$feeds")" "0" \
+  "ac-2 and the old kernel's directory is gone"
+assert_contains "$(cat "$feeds")" "mirror.example.net" "ac-2 the user's mirror host is kept"
+assert_eq "$(head -n 1 "$feeds")" "# my own mirror, do not rewrite the host" \
+  "ac-2 the user's comment survives the rewrite"
+
+# (c) a base that does not ship a feed file does not get one created: an unused file is not
+#     evidence, and the user's own copy is left exactly as it is.
+rm -rf "$sys/etc/apk/repositories.d" "$sys/etc/apk/distfeeds.list" "$sys/etc/apk/repositories"
+rm -rf "$upper/etc/apk/repositories.d"
+rm -f "$upper/etc/apk/distfeeds.list" "$upper/etc/apk/repositories"
+printf '%s\n' 'https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/base/packages.adb' \
+  >"$upper/etc/apk/distfeeds.list"
+out="$(align "$sys" "$upper")"
+assert_contains "$out" "rc=0" "ac-2 a base without a feed file still aligns the world"
+assert_eq "$(cat "$upper/etc/apk/distfeeds.list")" \
+  "https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/base/packages.adb" \
+  "ac-2 a feed file the base does not ship is left exactly as the user had it"
+assert_eq "$([ -e "$upper/etc/apk/repositories" ] && echo present || echo absent)" "absent" \
+  "ac-2 no feed file is created out of thin air"
+assert_eq "$([ -e "$upper/etc/apk/distfeeds.list.ab-align.bak" ] && echo leftover || echo clean)" "clean" \
+  "ac-2 and no pre-rewrite copy appears for a file that was not touched"
 
 # =========================================================================== #
 # ac-3: nothing to do is not a failure
@@ -215,14 +272,14 @@ p4="$tmp/e2e/p4"
 slots="$tmp/e2e/slots"
 bin="$tmp/e2e/bin"
 mkdir -p "$esp/ab/log" "$p4" "$bin" "$slots/b/@sys/sbin" "$slots/b/@sys/etc/apk" \
-  "$slots/b/@platform" "$p4/@overlay-25.12.2/upper/etc/apk"
+  "$slots/b/@platform" "$p4/@overlay-25.12.2/upper/etc/apk/repositories.d"
 printf '#!/bin/sh\n' >"$slots/b/@sys/sbin/init"
 chmod +x "$slots/b/@sys/sbin/init"
 printf '{"generation":1,"committed":"a","pending":null,"slots":{"a":{"rootfs":"25.12.2","upper":"@overlay-25.12.2"},"b":{"rootfs":"25.12.2","upper":"@overlay-25.12.2"}}}\n' \
   >"$esp/ab/state.json"
 printf 'busybox\nkernel=6.12.103~ff11223344-r1\n' >"$p4/@overlay-25.12.2/upper/etc/apk/world"
 printf 'https://downloads.immortalwrt.org/releases/25.12.2/targets/x86/64/packages/packages.adb\n' \
-  >"$p4/@overlay-25.12.2/upper/etc/apk/distfeeds.list"
+  >"$p4/@overlay-25.12.2/upper/etc/apk/repositories.d/distfeeds.list"
 
 cat >"$bin/sha256sum" <<'STUB'
 #!/bin/sh
@@ -280,6 +337,10 @@ build_e2e_payload() { # <dir> <version> [--no-kernel-pin]
   else
     printf 'busybox\n' >"$dir/rootfs/etc/apk/world"
   fi
+  # The feed list the base ships: repositories.d/*.list is what apk-tools 3 reads.
+  mkdir -p "$dir/rootfs/etc/apk/repositories.d"
+  printf 'https://downloads.immortalwrt.org/releases/%s/targets/x86/64/packages/packages.adb\n' \
+    "${version}" >"$dir/rootfs/etc/apk/repositories.d/distfeeds.list"
   tar -czf "$dir/rootfs.tar.gz" -C "$dir/rootfs" .
   printf 'vermagic=6.12.87 SMP mod_unload \n' >"$dir/kernel.bin"
   printf 'vermagic=6.12.87 SMP mod_unload \n' >"$dir/cpio/lib/modules/6.12.87/btrfs.ko"
@@ -321,9 +382,13 @@ assert_contains "$(cat "$esp/ab/packages")" "slot=b" \
 new_layer_world="$(ls -d "$p4"/@overlay-25.12.0*/upper/etc/apk/world 2>/dev/null | head -n 1)"
 assert_eq "$(grep -h '^kernel=' "${new_layer_world}" 2>/dev/null)" \
   "kernel=6.12.87~bd81971a8c-r1" "ac-5 the writable layer the new slot uses pins the new kernel"
-new_layer_feeds="$(ls -d "$p4"/@overlay-25.12.0*/upper/etc/apk/distfeeds.list 2>/dev/null | head -n 1)"
-assert_eq "$(grep -hc 'releases/25.12.0/' "${new_layer_feeds}" 2>/dev/null)" "1" \
-  "ac-5 and its distfeeds name the new release"
+new_layer_upper="$(ls -d "$p4"/@overlay-25.12.0*/upper 2>/dev/null | head -n 1)"
+assert_eq "$([ -f "${new_layer_upper}/etc/apk/repositories.d/distfeeds.list" ] && echo present || echo gone)" "gone" \
+  "ac-5 the shadowed feed copy the user never edited is gone from the new layer"
+# The effective feed is the base's own file: the merged view names the new release, which is
+# the only answer that makes `packages=aligned` mean something on this image.
+assert_eq "$(grep -hc 'releases/25.12.0/' "$slots/b/@sys/etc/apk/repositories.d/distfeeds.list" 2>/dev/null)" "1" \
+  "ac-5 and the feed apk will read names the new release"
 
 # Without a kernel pin anywhere the install still goes through and says limited.
 rm -rf "$p4"/@overlay-*

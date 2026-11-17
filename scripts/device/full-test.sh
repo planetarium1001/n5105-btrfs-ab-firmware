@@ -103,6 +103,10 @@ export AB_REPO_ROOT
 #                       above landed on, which is the state a user actually installs things
 #                       on, and installing them before the jumps would make every scenario
 #                       row above judge a machine that is no longer the product baseline
+#   follow              installs the community sample set and records the baseline the matrix
+#                       judges ("still usable after the hop, configuration and data intact");
+#                       it writes state on this side, because the machine's /tmp does not
+#                       survive the hop it describes. matrix.sh reads it through AB_FOLLOW_STATE.
 #   badconfig           right after software, because the broken /etc/config/<app>, the
 #                       broken daemon.json and the fake subscription are the samples' own
 #                       files: before software there is nothing to break, and after matrix2
@@ -127,7 +131,7 @@ export AB_REPO_ROOT
 # docker and docker-after are one script in two windows, not two scripts: D1 writes
 # <results>/docker-snapshots/before.snapshot, docker-after reads it and writes after.snapshot
 # in the same directory. Neither one switches a slot or reboots.
-PHASES="preflight probes feed-install docker matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
+PHASES="preflight probes feed-install docker follow matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
 # A phase that writes a slot, reboots the machine, or both. docker, docker-after and release
 # are deliberately NOT here: docker-probe.sh keeps its images, container, committed image and
 # named volume in the docker store (@docker, under /opt/docker) plus logs under /tmp, and it
@@ -200,7 +204,7 @@ usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
                     [--payload-dir DIR] [--task ID] [--expect VERSION] [--yes]
 
   Runs the device acceptance suite in one order:
-      preflight probes feed-install docker matrix scenarios docker-after
+      preflight probes feed-install docker follow matrix scenarios docker-after
       software badconfig matrix2 package-revert recovery power-cut release audit
 
   --help               print this and exit 0
@@ -288,6 +292,9 @@ _phase_script() {
         # and "the driver exists" stay one question: a file that is not here is the GAP row
         # the run loop writes, with the path in it.
         software) printf '%s\n' "${DEVICE_DIR}/software-probe.sh" ;;
+        # Records what "still usable" will be judged against, before the chain hops the base.
+        # matrix.sh reads the same state file through AB_FOLLOW_STATE.
+        follow) printf '%s\n' "${DEVICE_DIR}/follow-baseline.sh" ;;
         badconfig) printf '%s\n' "${DEVICE_DIR}/badconfig-probe.sh" ;;
         matrix2) printf '%s\n' "${DEVICE_DIR}/matrix-round2.sh" ;;
         package-revert) printf '%s\n' "${DEVICE_DIR}/package-revert.sh" ;;
@@ -495,7 +502,7 @@ _phase_args() {
             done
             printf '%s %s ' "--snapshot-dir" "${DOCKER_SNAPSHOT_DIR:-${RESULTS_DIR}/docker-snapshots}"
             ;;
-        software | badconfig | matrix2)
+        software | follow | badconfig | matrix2)
             # The round-2 drivers take their rows channel as --results, the same flag this
             # script already uses for matrix, scenarios, docker-probe and release-verify, so
             # one phase's rows land in one file and _phase_verdict can read them. Nothing
@@ -505,6 +512,12 @@ _phase_args() {
             # owns them and the driver cannot guess them: see below.
             printf '%s %s ' "--results" "${TSV}"
             case "${1}" in
+                follow)
+                    # The baseline this phase writes is the one matrix.sh judges against;
+                    # handing over the path is what makes "which file is the baseline" one
+                    # answer for the run instead of one per driver.
+                    printf '%s %s ' "--state" "${AB_FOLLOW_STATE}"
+                    ;;
                 badconfig)
                     # "who refused it / who restored it" is a defect candidate, and the
                     # driver drops those when it has no file to write them to. It goes under
@@ -1139,6 +1152,12 @@ if [ "${DRY_RUN}" = "1" ]; then
 fi
 
 _run_i=0
+# The sample baseline lives on this side of the wire: the machine's /tmp does not survive the
+# hop that this file judges. matrix.sh reads the same path through AB_FOLLOW_STATE, so "which
+# file is the baseline" has one answer for the whole run instead of one per phase.
+AB_FOLLOW_STATE=${AB_FOLLOW_STATE:-${RESULTS_DIR}/follow-state.tsv}
+export AB_FOLLOW_STATE
+
 for _run_phase in ${PHASES}; do
     TSV="${RESULTS_DIR}/${_run_phase}.tsv"
     LOG="${RESULTS_DIR}/${_run_phase}.log"

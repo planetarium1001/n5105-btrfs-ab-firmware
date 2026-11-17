@@ -36,7 +36,7 @@ trap 'rm -rf "$tmp"' EXIT
 # package phase: the samples are installed on the release the jumps landed on, the bad
 # configurations are injected once those samples own /etc/config/<app>, and matrix2 is the
 # chain that then carries both across the base down/up hops.
-phase_list="preflight probes feed-install docker matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
+phase_list="preflight probes feed-install docker follow matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
 # shellcheck disable=SC2086
 set -- ${phase_list}
 phase_count=$#
@@ -125,7 +125,7 @@ assert_contains "$out" "usage: full-test.sh" "ac-7 --help prints the usage"
 assert_contains "$out" "verdict: PASS" "ac-7 --help states the verdict rule"
 assert_contains "$out" "scenarios docker-after" \
     "ac-7 --help lists the phase order it runs"
-assert_contains "$out" "software badconfig matrix2" \
+assert_contains "$out" "docker follow matrix scenarios" \
     "ac-7 --help lists the round-2 phases where they run"
 assert_contains "$out" "package-revert recovery power-cut release audit" \
     "ac-7 --help ends the order with the package, recovery, power-cut, release and audit phases"
@@ -818,7 +818,7 @@ hx2="$tmp/hx2/scripts/device"
 mkdir -p "$hx2"
 cp "$ft" "$hx2/full-test.sh"
 cp "$root/scripts/device/lib.sh" "$hx2/lib.sh"
-for round2_driver in software-probe.sh:SW1 matrix-round2.sh:T1 badconfig-probe.sh:BC1; do
+for round2_driver in software-probe.sh:SW1 follow-baseline.sh:FB1 matrix-round2.sh:T1 badconfig-probe.sh:BC1; do
     driver=${round2_driver%%:*}
     case_name=${round2_driver##*:}
     cat >"$hx2/$driver" <<STUB

@@ -238,6 +238,41 @@ assert_boot_health() {
 # assert_boot_log is in lib.sh: it has to search the rotated ring log and is therefore
 # shared with the unit tests rather than living in the orchestrator.
 
+
+# assert_follow <case>: the community samples are still USABLE after this hop, and their
+# fake configuration and their data marker are byte-identical to what the `follow` phase of
+# full-test.sh recorded before the chain started.
+#
+# A run without that phase has no baseline, and this then says so instead of passing: "I
+# did not look" and "everything is fine" are the two answers this whole project keeps
+# having to tell apart. Exit 4 is the driver's "a sample the feed does not offer" - a
+# finding about the feed, recorded as GAP by PRD risk 3, never a failure of the A/B hop.
+assert_follow() {
+    _case=$1
+    if [ -z "${AB_FOLLOW_STATE:-}" ] || [ ! -f "${AB_FOLLOW_STATE}" ]; then
+        printf 'skip follow [%s]: no baseline (run scripts/device/follow-probe.sh --install, then --mark)\n' "${_case}" >&2
+        return 0
+    fi
+    _follow_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --verify --state "${AB_FOLLOW_STATE}" 2>&1)
+    _follow_rc=$?
+    printf '%s\n' "${_follow_out}" | sed 's/^/  /'
+    ev "follow ${_case} rc=${_follow_rc}"
+    case "${_follow_rc}" in
+        0)
+            printf 'ok   [%s] follow: samples usable, config and data unchanged\n' "${_case}"
+            return 0
+            ;;
+        4)
+            printf 'GAP  [%s] follow: a sample the feed does not offer (see the rows above)\n' "${_case}"
+            return 0
+            ;;
+        *)
+            printf 'FAIL [%s] follow: see the rows above\n' "${_case}"
+            return 1
+            ;;
+    esac
+}
+
 # assert_markers <case> <marker_before> <config_before>: user state survived the hop.
 assert_markers() {
     _case=$1
@@ -364,6 +399,7 @@ hop_install() {
         "^@overlay-$(dev_version_re "${_version}")(-r[0-9]+)?\$" "${_case}" upper
     _check assert_boot_log "${_case}" "${_version}"
     assert_markers "${_case}" "${_marker_before}" "${_config_before}"
+    _check assert_follow "${_case}"
     dev_layer_state
     _check assert_layer_invariant "${_case}"
     # A count is only a hint now: a repeated version adds a -rN layer, so a healthy

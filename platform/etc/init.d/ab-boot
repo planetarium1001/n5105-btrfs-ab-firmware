@@ -27,8 +27,18 @@ AB_ESP="${AB_ESP:-/boot}"
 AB_P4="${AB_P4:-/mnt/p4}"
 # Mount table the helpers consult; overridable so a test can describe a system.
 AB_MOUNTS="${AB_MOUNTS:-/proc/mounts}"
+# Package follow (see packages_refresh_schedule below): the library that does the work, the
+# record that says whether it was already attempted, and the root it acts on.
+AB_PACKAGES_LIB="${AB_PACKAGES_LIB:-/lib/upgrade/packages.sh}"
+AB_PACKAGES_FILE="${AB_PACKAGES_FILE:-${AB_ESP}/ab/packages}"
+AB_PACKAGES_TARGET="${AB_PACKAGES_TARGET:-/}"
+# How long the detached child waits for a default route before it tries once anyway.
+AB_PACKAGES_REFRESH_WAIT="${AB_PACKAGES_REFRESH_WAIT:-180}"
 LOG_MAX=32768
 export AB_ESP AB_P4 AB_MOUNTS
+# The follow's four variables are deliberately *not* exported: the detached child is a
+# subshell of this one, so it sees them anyway, while `ab-slot` (which ab-boot calls and
+# which resolves its own AB_PACKAGES_LIB) must not inherit a path this file was pointed at.
 
 # Partition discovery is shared: platform/lib/disk-identity.sh decides which disk this
 # machine booted from and platform/lib/ab-partitions.sh turns that into device nodes.
@@ -343,6 +353,99 @@ esp_health_result() {
 	return 1
 }
 
+# --------------------------------------------------------------------------- #
+# Package follow: the one controlled reinstall a freshly upgraded base gets
+#
+# An upgrade replaces the system tree; the aligner moves world and distfeeds to match it,
+# but the packages themselves were built for the base the machine came from. Making them
+# follow cannot happen here: this hook runs before the network, and a reinstall needs a
+# feed. So this file makes the *decision* - this slot, this version, not attempted yet, all
+# read from the record the upgrade published - and hands the work to a detached child that
+# waits for a default route and then calls platform/lib/upgrade/packages.sh once. Nothing
+# about the boot waits for it, and every outcome is one `stage=packages-refresh` line in
+# the ring log.
+# --------------------------------------------------------------------------- #
+
+# packages_record_field <key>: one field of the published package record, or empty.
+packages_record_field() {
+	[ -r "${AB_PACKAGES_FILE}" ] || return 0
+	sed -n "s/^packages=[a-z]* .* $1=\([^ ]*\).*/\1/p" "${AB_PACKAGES_FILE}" 2>/dev/null | tail -n 1
+}
+
+# packages_refresh_due <slot>: 0 when this boot should start the follow.
+#
+# Both halves come from the record: `version=` and `slot=` say an upgrade aligned this slot
+# for this base, `refresh=` says the follow was already attempted for that same version. A
+# record for another slot, or one with no version, is not a freshly aligned base and is
+# never a reason to reinstall anything.
+packages_refresh_due() {
+	AB_PACKAGES_REFRESH_DUE_VERSION=""
+	[ "${AB_PACKAGES_REFRESH_TRIGGER:-1}" = "1" ] || return 1
+	[ -n "${1:-}" ] || return 1
+	[ -r "${AB_PACKAGES_FILE}" ] || return 1
+	_version="$(packages_record_field version)"
+	_slot="$(packages_record_field slot)"
+	_done="$(packages_record_field refresh)"
+	case "${_version}" in
+		'' | unknown) return 1 ;;
+	esac
+	[ "${_slot}" = "$1" ] || return 1
+	[ "${_done}" = "${_version}" ] && return 1
+	AB_PACKAGES_REFRESH_DUE_VERSION="${_version}"
+	return 0
+}
+
+# packages_refresh_net_up: a default route exists, so a feed has a chance.
+packages_refresh_net_up() {
+	_route="${AB_NET_ROUTE_FILE:-/proc/net/route}"
+	[ -r "${_route}" ] || return 1
+	awk '$2 == "00000000" { found = 1 } END { exit !found }' "${_route}" 2>/dev/null
+}
+
+# packages_refresh_run <slot> <version>: the detached half. Waits (bounded) for the network
+# this hook cannot wait for, then runs the library exactly once. Its stdout and stderr are
+# the log the scheduler redirected.
+packages_refresh_run() {
+	_slot="${1:-?}"
+	_version="${2:-unknown}"
+	_step="${AB_PACKAGES_REFRESH_STEP:-10}"
+	_waited=0
+	while [ "${_waited}" -lt "${AB_PACKAGES_REFRESH_WAIT:-180}" ]; do
+		packages_refresh_net_up && break
+		sleep "${_step}" 2>/dev/null || sleep 10
+		_waited=$((_waited + _step))
+	done
+	if [ ! -f "${AB_PACKAGES_LIB}" ]; then
+		log_append "stage=packages-refresh slot=${_slot} result=fail reason=library-missing version=${_version}"
+		console_say "ab-boot: package follow unavailable, ${AB_PACKAGES_LIB} is missing"
+		return 1
+	fi
+	printf 'ab-boot: package follow for %s (target %s)\n' "${_version}" "${AB_PACKAGES_TARGET}"
+	# shellcheck source=platform/lib/upgrade/packages.sh disable=SC1090
+	. "${AB_PACKAGES_LIB}"
+	ab_packages_refresh "${AB_PACKAGES_TARGET}"
+	_rc=$?
+	_state="${AB_PACKAGES_REFRESH_STATE:-unknown}"
+	_reason="${AB_PACKAGES_REFRESH_REASON:-unknown}"
+	log_append "stage=packages-refresh slot=${_slot} result=${_state} reason=${_reason} version=${AB_PACKAGES_REFRESH_VERSION:-${_version}}"
+	console_say "ab-boot: package follow ${_state} (${_reason}) for ${_version}"
+	return "${_rc}"
+}
+
+# packages_refresh_schedule <slot>: decide now, run later, never block.
+packages_refresh_schedule() {
+	packages_refresh_due "${1:-}" || return 0
+	_version="${AB_PACKAGES_REFRESH_DUE_VERSION}"
+	log_append "stage=packages-refresh slot=${1:-?} result=scheduled version=${_version}"
+	console_say "ab-boot: package follow for ${_version} starts once the network is up"
+	# Detached on purpose: stdin, stdout and stderr all point away from the boot, so rc
+	# never waits for it and no test or serial log is held open by a child that sleeps.
+	(
+		packages_refresh_run "${1:-?}" "${_version}"
+	) </dev/null >"${AB_PACKAGES_REFRESH_LOG:-/tmp/ab-packages-refresh.log}" 2>&1 &
+	return 0
+}
+
 start() {
 	mount_esp || {
 		# Both channels: syslog for the running system, the console for the serial log,
@@ -476,4 +579,9 @@ start() {
 			console_say "ab-boot: early reclamation reported problems ${gc_reason:-}"
 		fi
 	fi
+
+	# One controlled reinstall for a base an upgrade just aligned. The network is not up
+	# yet, so the decision is taken here and the work continues in a detached child; the
+	# boot never waits for it (see packages_refresh_schedule).
+	packages_refresh_schedule "${slot:-?}"
 }

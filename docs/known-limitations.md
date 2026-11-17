@@ -108,6 +108,25 @@ Decided 2026-11-18: the image keeps the upstream default. A release that shipped
 would be a deliberate deviation from upstream for no functional gain, and it is the kind of
 extra that has to be kept in step with every upstream rebase.
 
+## Packages that were installed on top of the base do not follow it by themselves
+
+An upgrade replaces the system tree; the packages a user installed live in the writable
+layer and keep the version they were installed at. That is deliberate - re-resolving the
+world against new feeds during the upgrade would make the upgrade itself the fragile step -
+but it means a package can be older than the base it now runs on.
+
+So the first boot on a freshly upgraded base makes one attempt to bring them along
+(`ab_packages_refresh`, scheduled by `ab-boot`): a full `--force-reinstall` of the world
+against the new feeds, falling back to the kernel/ABI subset (`kmod-*`, `libc`, `docker`)
+when the full pass fails. It never runs without reaching the feeds (`reason=offline`), never
+touches the kernel package the slot owns, and never blocks the boot. The outcome is written
+where `ab-slot status` reads it, as `packages=<state> reason=<token>`.
+
+What is still not covered by an upgrade: a package whose upstream dropped it between the
+two releases. It stays installed at its old version, and only that package's own startup
+will tell; the matrix judges the sample set listed in `tests/fixtures/follow-samples.json`
+after every hop, which is how such a package is caught before a user finds it.
+
 ## The bench opens the whole WAN zone on purpose
 
 A machine being debugged on a lab LAN runs with its WAN zone opened completely

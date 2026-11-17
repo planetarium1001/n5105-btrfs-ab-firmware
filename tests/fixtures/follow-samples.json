@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "updated": "2026-11-18",
+  "version_line": "25.x",
+  "purpose": "The eight community samples the package-follow probe carries across every base hop (task 20261118-01, D3). One row per sample: what to install, where its fake config and data marker live, and the single command that decides whether it is still USABLE - not merely still recorded as installed.",
+  "check_contract": "check.cmd runs on the machine, prints one line of fact=value fields; check.expect is the POSIX ERE that line has to match. The driver compares the two and has no per-package branch, so every criterion is reviewed here rather than read out of a shell nest. The remote preamble defines the helpers a command may use: _ver <pkg> (installed version or empty), _missing <pkg> (payload files the package record names but disk no longer has, etc/uci-defaults excluded because the base consumes those at first boot), _http <path> (status code from the machine's own web server over loopback), _svc <init> <proc> (running|stopped|expected-not-running|missing, without starting anything), _sha <path>.",
+  "state_columns": [
+    "pkg",
+    "state",
+    "version",
+    "config_path",
+    "config_sha256",
+    "data_path",
+    "data_sha256",
+    "note"
+  ],
+  "samples": [
+    {
+      "name": "luci-theme-argon",
+      "packages": [
+        "luci-theme-argon"
+      ],
+      "config_path": "/etc/config/luci-theme-argon",
+      "data_marker": "/data/ab-follow/luci-theme-argon.marker",
+      "check": {
+        "cmd": "c=$(_http /luci-static/argon/css/cascade.css); m=$(_missing luci-theme-argon); echo \"css=${c:-none} missing=$m\"",
+        "expect": "^css=200 missing=0$"
+      },
+      "needs": [
+        "http",
+        "luci"
+      ],
+      "why": "The theme's own stylesheet served by this base's uhttpd: a package whose files survived but whose static tree no longer resolves (or whose menu.d/ucode view stopped loading) answers something other than 200. 'apk list --installed' would still say installed, which is exactly the difference this criterion is here to see. The design fixed this path as the theme criterion.",
+      "limits": "It proves the web path serves the theme asset, not that a browser renders it: no JavaScript is executed."
+    },
+    {
+      "name": "luci-app-argon-config",
+      "packages": [
+        "luci-app-argon-config",
+        "luci-theme-argon"
+      ],
+      "config_path": "/etc/config/luci-app-argon-config",
+      "data_marker": "/data/ab-follow/luci-app-argon-config.marker",
+      "check": {
+        "cmd": "r=$(/usr/libexec/rpcd/luci.argon list 2>/dev/null | head -c 200); case \"$r\" in *remove*) rpc=ok ;; *) rpc=bad ;; esac; j=$(_http /luci-static/resources/view/argon-config.js); m=$(_missing luci-app-argon-config); echo \"rpc=$rpc js=${j:-none} missing=$m\"",
+        "expect": "^rpc=ok js=200 missing=0$"
+      },
+      "needs": [
+        "http",
+        "luci",
+        "rpcd"
+      ],
+      "why": "The theme's config page is a ucode rpcd plugin plus a JS view. Executing the plugin's 'list' method proves the ucode/ubus ABI still runs on this base (a base hop that changes ucode or rpcd breaks it while the package record stays intact), and the 200 on its view proves the page asset is still served. Measured on the reference machine 2026-11-18: the plugin answers { \"remove\": ..., \"rename\": ... }.",
+      "limits": "It does not drive the page in a browser; the ACL/rpcd session path is exercised by luci-entry-probe."
+    },
+    {
+      "name": "luci-app-openclash",
+      "packages": [
+        "luci-app-openclash"
+      ],
+      "config_path": "/etc/config/luci-app-openclash",
+      "data_marker": "/data/ab-follow/luci-app-openclash.marker",
+      "check": {
+        "cmd": "e=no; [ -x /etc/init.d/openclash ] && sh -n /etc/init.d/openclash 2>/dev/null && e=yes; s=$(_svc /etc/init.d/openclash clash); m=$(_missing luci-app-openclash); echo \"init=$e svc=$s missing=$m\"",
+        "expect": "^init=yes svc=(running|stopped) missing=0$"
+      },
+      "needs": [
+        "network",
+        "luci",
+        "kernel"
+      ],
+      "why": "A proxy app is broken in the ways this criterion sees: its init entry gone or no longer parsable by this base's shell, its payload partly missing after the overlay merge, or enabled at boot but with no process (expected-not-running). It accepts 'stopped', because a probe may not start a proxy on a machine somebody else is using. Measured on the reference machine 2026-11-18: luci-app-openclash is in the luci feed and /dev/net/tun is absent until kmod-tun is installed, so the tun device is reported as a fact by the install step instead of being asserted here.",
+      "limits": "It does not start OpenClash: a start rewrites nftables and the machine's routing, which is not a probe's decision to make on a shared device."
+    },
+    {
+      "name": "luci-app-ttyd",
+      "packages": [
+        "luci-app-ttyd",
+        "ttyd"
+      ],
+      "config_path": "/etc/config/luci-app-ttyd",
+      "data_marker": "/data/ab-follow/luci-app-ttyd.marker",
+      "check": {
+        "cmd": "e=no; [ -x /etc/init.d/ttyd ] && sh -n /etc/init.d/ttyd 2>/dev/null && e=yes; b=no; [ -x /usr/sbin/ttyd ] && b=yes; s=$(_svc /etc/init.d/ttyd ttyd); m=$(_missing luci-app-ttyd); echo \"init=$e bin=$b svc=$s missing=$m\"",
+        "expect": "^init=yes bin=yes svc=(running|stopped) missing=0$"
+      },
+      "needs": [
+        "luci",
+        "service"
+      ],
+      "why": "The official-feed control sample: it distinguishes 'the community package broke' from 'the whole feed/base broke'. Its init script must parse under the running base's shell, its daemon binary must still be there, its payload must be complete, and a service enabled at boot must actually run - the last one is the only state that separates 'installed' from 'works' for a daemon sample.",
+      "limits": "Like OpenClash it does not start the daemon; the running-branch only applies to a machine where ttyd is already enabled."
+    },
+    {
+      "name": "istore",
+      "packages": [
+        "istore"
+      ],
+      "config_path": "/etc/config/istore",
+      "data_marker": "/data/ab-follow/istore.marker",
+      "check": {
+        "cmd": "v=$(_ver istore); f=$(ls /usr/libexec/istore* 2>/dev/null | head -1); echo \"ver=${v:-none} launcher=${f:-none}\"",
+        "expect": "^ver=istore-[^ ]+ launcher=/[^ ]+$"
+      },
+      "needs": [
+        "network",
+        "luci"
+      ],
+      "why": "The software-store class. Round 03 measured apk add istore rc=1 on this feed line ('istore (no such package)', re-measured 2026-11-18), so this sample is expected to be a named GAP and never a FAIL: a sample the feed does not offer says nothing about the A/B machinery. When a machine does have it, the criterion is its launcher and an apk record, which is the whole of what the design asks for this class.",
+      "limits": "It cannot distinguish a store whose launcher is present from one whose LuCI page is broken; the page belongs to the store's own packaging, not to this project."
+    },
+    {
+      "name": "docker",
+      "packages": [
+        "docker",
+        "dockerd"
+      ],
+      "config_path": "/etc/config/docker",
+      "data_marker": "/data/ab-follow/docker.marker",
+      "check": {
+        "cmd": "c=no; docker -v >/dev/null 2>&1 && c=yes; d=no; docker info >/dev/null 2>&1 && d=yes; echo \"client=$c daemon=$d\"",
+        "expect": "^client=yes daemon=yes$"
+      },
+      "needs": [
+        "network",
+        "service"
+      ],
+      "setup": "/etc/init.d/dockerd enable && /etc/init.d/dockerd start  # the daemon must be up before the probe: docker info is the criterion",
+      "why": "The kernel-facing sample: 'docker info' only answers when the client, the daemon and the kernel features the daemon needs (overlay2, cgroups, iptables) all agree on this base, so it fails for exactly the case this task exists for - a package that follows to a new kernel without its ABI following with it.",
+      "limits": "A stopped daemon reports daemon=no, which the row prints as-is: the operator starts dockerd before the run (setup) and a green row then means the daemon works on this base."
+    },
+    {
+      "name": "kmod-usb-storage",
+      "packages": [
+        "kmod-usb-storage"
+      ],
+      "config_path": "/etc/config/kmod-usb-storage",
+      "data_marker": "/data/ab-follow/kmod-usb-storage.marker",
+      "check": {
+        "cmd": "k=$(uname -r); ko=$(ls /lib/modules/$k/usb-storage.ko* 2>/dev/null | head -1); p=no; [ -n \"$ko\" ] && p=ko; grep -q usb-storage.ko /lib/modules/$k/modules.builtin 2>/dev/null && p=builtin; if [ \"$p\" = no ] && [ -d /sys/module/usb_storage ]; then p=sysfs; fi; l=no; grep -qE '^usb[-_]storage' /proc/modules && l=yes; m=$(_missing kmod-usb-storage); echo \"kernel=$k mod=$p loaded=$l missing=$m\"",
+        "expect": "^kernel=[^ ]+ mod=(ko|builtin|sysfs) loaded=(yes|no) missing=0$"
+      },
+      "needs": [
+        "kernel"
+      ],
+      "why": "The ABI sample: a kmod is built for one kernel, so the module has to exist for the RUNNING kernel - as a .ko under /lib/modules/$(uname -r), or as a built-in this kernel was compiled with. A hop that swaps the kernel leaves the package record saying installed while the payload names the old kernel's paths, which is the case this criterion separates from health. Measured on the reference machine (25.12.2, 6.12.103, 2026-11-18): usb-storage is built in - /lib/modules/6.12.103/modules.builtin names kernel/drivers/usb/storage/usb-storage.ko and the package ships only /etc/modules.d/usb-storage - so a criterion that looked for the .ko alone would report a healthy sample as broken. 'loaded' is reported, not asserted: the module loads when a USB disk appears and the reference machine has none.",
+      "limits": "It does not modprobe the module: loading one is a device state change, so /proc/modules and the kernel's own builtin list are read instead."
+    },
+    {
+      "name": "htop",
+      "packages": [
+        "htop"
+      ],
+      "config_path": "/etc/config/htop",
+      "data_marker": "/data/ab-follow/htop.marker",
+      "check": {
+        "cmd": "htop --version >/dev/null 2>&1; r=$?; v=$(_ver htop); echo \"rc=$r ver=${v:-none}\"",
+        "expect": "^rc=0 ver=htop-[^ ]+$"
+      },
+      "needs": [],
+      "why": "The pure user-space control: no kernel dependency and no daemon, so a red htop row means the base's libc/loader stopped running an old binary - the plainest form of 'the package is there but no longer usable'.",
+      "limits": "It proves the binary starts and prints its version, not that it draws a screen."
+    }
+  ]
+}

@@ -764,7 +764,7 @@ platform_copy_rootfs() {
             _align_reason="align-not-run"
             if ab_packages_align "${_payload}" "${_target}" "${_sys}" "${AB_P4}/${_new_layer}/upper"; then
                 _align_state="aligned"
-                _align_reason="none"
+                _align_reason="${AB_PACKAGES_ALIGN_NOTE:-none}"
             else
                 _align_reason="${AB_PACKAGES_REASON:-align-failed}"
             fi

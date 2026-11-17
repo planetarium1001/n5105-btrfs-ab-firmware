@@ -3,7 +3,8 @@
 #
 # A downgrade (or an upgrade) replaces the system tree but not the user's apk state: the
 # writable layer carries `/etc/apk/world`, which pins the kernel the machine used to run,
-# and `/etc/apk/distfeeds.list`, which still points at the old release. On a real machine
+# and a feed list (`/etc/apk/repositories.d/*.list` on the current image, `/etc/apk/
+# distfeeds.list` on older ones), which still points at the old release. On a real machine
 # that combination fails like this (measured on 2026-11-11, 20261111-12 quality.md):
 #
 #   apk add kmod-usb-storage        -> rc=0 and nothing happens
@@ -22,6 +23,10 @@
 #     kernel package would add a second owner of the ESP's kernel/initrd files, which is
 #     exactly what ab-slot owns.
 #
+# The one place in this file that does run `apk` is ab_packages_refresh, further down: the
+# *follow-up* a freshly upgraded base gets on its first boot, once, behind a reachability
+# probe, and never for the kernel package. The two rules above stay true for the aligner.
+#
 # ab_packages_align <payload-dir> <target-slot> <target-sys> <target-upper>
 #
 #   Returns 0 when the target's metadata names the target version, non-zero with
@@ -38,6 +43,12 @@
 AB_PACKAGES_REASON=""
 # shellcheck disable=SC2034
 AB_PACKAGES_KERNEL=""
+# A note that belongs with a *successful* alignment (today: `feeds-rewritten`, an edit of
+# the user's that was moved rather than dropped). The record's `reason=` is written by the
+# caller, which currently passes `none` on success; this variable is what a caller has to
+# forward for the note to reach `ab/packages`.
+# shellcheck disable=SC2034
+AB_PACKAGES_ALIGN_NOTE=""
 
 _packages_fail() {
     AB_PACKAGES_REASON="$1"
@@ -105,11 +116,15 @@ _packages_world_mismatch() {
     awk -v want="$2" '/^kernel=/ { if ($0 != want) bad = 1 } END { exit bad ? 0 : 1 }' "$1"
 }
 
-# _packages_feeds_mismatch <file> <wanted version>: 0 when some /releases/<x>/ names another
-# version. The kernel-bound `kmods/<kver>-<hash>` part of a feed path is deliberately not
-# touched: guessing a kernel build hash is worse than leaving the old one in plain sight.
+# _packages_feeds_mismatch <file> <wanted version> [wanted kmods segment]: 0 when some
+# /releases/<x>/ names another version, or - when a kernel-bound kmods segment is given -
+# some /kmods/<segment>/ names another one.
+#
+# The kmods segment is only rewritten from a segment the *target* base ships itself (see
+# _packages_kmods_segment): guessing a kernel build hash is worse than leaving the old one
+# in plain sight, and the base's own feed file already carries the right one.
 _packages_feeds_mismatch() {
-    awk -v want="$2" '
+    awk -v want="$2" -v kmods="${3:-}" '
         {
             rest = $0
             while (match(rest, /\/releases\/[0-9][0-9.]*\//)) {
@@ -117,9 +132,138 @@ _packages_feeds_mismatch() {
                 if (seg != want) bad = 1
                 rest = substr(rest, RSTART + RLENGTH)
             }
+            rest = $0
+            while (match(rest, /\/kmods\/[^\/]+\//)) {
+                seg = substr(rest, RSTART + 7, RLENGTH - 8)
+                if (kmods != "" && seg != kmods) bad = 1
+                rest = substr(rest, RSTART + RLENGTH)
+            }
         }
         END { exit bad ? 0 : 1 }
     ' "$1"
+}
+
+# _packages_feed_files <root>: the repository files this root ships, one relative path per
+# line, in the order apk consults them.
+#
+# repositories.d/*.list comes first because that is what apk-tools 3 reads, and on the
+# measured image (192.168.2.49, 2026-11-18) it is the only place the feeds live: there is
+# neither /etc/apk/distfeeds.list nor /etc/apk/repositories. The two older names are kept
+# for images that use them, and are only ever handled when the base itself ships one - a
+# file apk never opens must not be created just to be able to claim `aligned`.
+_packages_feed_files() {
+    for _ff in "$1/etc/apk/repositories.d/"*.list; do
+        [ -f "${_ff}" ] || continue
+        printf '%s\n' "${_ff#"$1"/}"
+    done
+    for _ff in "$1/etc/apk/distfeeds.list" "$1/etc/apk/repositories"; do
+        [ -f "${_ff}" ] || continue
+        printf '%s\n' "${_ff#"$1"/}"
+    done
+}
+
+# _packages_kmods_segment <root>: the `kmods/<segment>` directory the root's own feeds
+# name, or empty. This is where the target's kernel build hash comes from: it is not
+# guessable, and the base's own file already states it.
+_packages_kmods_segment() {
+    _ks=""
+    while IFS= read -r _kf; do
+        [ -n "${_kf}" ] || continue
+        _ks=$(sed -n 's#.*/kmods/\([^/]*\)/.*#\1#p' "$1/${_kf}" 2>/dev/null | head -n 1)
+        [ -n "${_ks}" ] && break
+    done <<KMODS
+$(_packages_feed_files "$1")
+KMODS
+    printf '%s' "${_ks}"
+}
+
+# _packages_feed_normalize <file> <version> <kmods segment>: the file's content with every
+# release segment (and, when one is known, every kmods segment) brought to the target's
+# values, on stdout. Used twice: as the rewrite, and as the test that tells a pure shadow of
+# the base's file from a file the user actually changed.
+_packages_feed_normalize() {
+    awk -v ver="$2" -v kmods="${3:-}" '
+        {
+            line = $0
+            out = ""
+            rest = line
+            while (match(rest, /\/releases\/[0-9][0-9.]*\//)) {
+                out = out substr(rest, 1, RSTART - 1) "/releases/" ver "/"
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            line = out rest
+            if (kmods != "") {
+                out = ""
+                rest = line
+                while (match(rest, /\/kmods\/[^\/]+\//)) {
+                    out = out substr(rest, 1, RSTART - 1) "/kmods/" kmods "/"
+                    rest = substr(rest, RSTART + RLENGTH)
+                }
+                line = out rest
+            }
+            print line
+        }
+    ' "$1"
+}
+
+# _packages_feed_write <file> <version> <kmods segment>: rewrite one feed file in place
+# through a copy, with the same rules as _packages_rewrite: a reader never sees half a file,
+# the pre-rewrite copy is kept until the result reads back, and it comes back on a mismatch.
+_packages_feed_write() {
+    _fw_norm=$(_packages_feed_normalize "$1" "$2" "$3") || return 1
+    _fw_bak="$1.ab-align.bak"
+    [ -f "${_fw_bak}" ] || cp "$1" "${_fw_bak}" 2>/dev/null || return 1
+    _fw_tmp="$1.ab-align.$$"
+    if ! printf '%s\n' "${_fw_norm}" >"${_fw_tmp}" 2>/dev/null; then
+        rm -f "${_fw_tmp}" 2>/dev/null || true
+        return 1
+    fi
+    sync 2>/dev/null || true
+    if ! mv "${_fw_tmp}" "$1" 2>/dev/null; then
+        rm -f "${_fw_tmp}" 2>/dev/null || true
+        return 1
+    fi
+    sync 2>/dev/null || true
+    if [ "$(cat "$1" 2>/dev/null)" != "${_fw_norm}" ]; then
+        _packages_restore "$1"
+        return 1
+    fi
+    return 0
+}
+
+# _packages_feed_align_one <upper> <sys> <relative path> <version> <kmods segment>: bring one
+# feed file into line, or say why it already is. Sets _packages_feed_result to
+# none|shadow-dropped|rewritten and returns 1 only when the writable layer cannot be written.
+#
+# Three outcomes, never a guess:
+#   * the writable layer has no copy, or the base does not ship the file -> nothing to do
+#     (and nothing is created: that is how `aligned` came to describe a file apk never
+#     opens);
+#   * the copy is byte-identical to the base's own file, or differs from it in exactly the
+#     release and kernel build the upgrade moves -> it is a shadow of the old base and is
+#     dropped, so the base's own file wins and later upgrades stop inheriting it;
+#   * anything else is the user's edit (a mirror, an extra feed, a comment) and is rewritten
+#     in place, keeping every byte the upgrade does not have to move.
+_packages_feed_align_one() {
+    _fa_base="$2/$3"
+    _fa_upper="$1/$3"
+    _packages_feed_result="none"
+    [ -f "${_fa_base}" ] || return 0
+    [ -f "${_fa_upper}" ] || return 0
+    _fa_base_text=$(cat "${_fa_base}" 2>/dev/null)
+    if [ "$(cat "${_fa_upper}" 2>/dev/null)" = "${_fa_base_text}" ]; then
+        rm -f "${_fa_upper}" 2>/dev/null || return 1
+        _packages_feed_result="shadow-dropped"
+        return 0
+    fi
+    if [ "$(_packages_feed_normalize "${_fa_upper}" "$4" "$5")" = "${_fa_base_text}" ]; then
+        rm -f "${_fa_upper}" 2>/dev/null || return 1
+        _packages_feed_result="shadow-dropped"
+        return 0
+    fi
+    _packages_feed_write "${_fa_upper}" "$4" "$5" || return 1
+    _packages_feed_result="rewritten"
+    return 0
 }
 
 ab_packages_align() {
@@ -129,6 +273,7 @@ ab_packages_align() {
     _upper="$4"
     AB_PACKAGES_REASON=""
     AB_PACKAGES_KERNEL=""
+    AB_PACKAGES_ALIGN_NOTE=""
 
     _version="$(_packages_version_from_manifest "${_payload}")"
     if [ -z "${_version}" ]; then
@@ -187,30 +332,33 @@ ab_packages_align() {
     fi
     AB_PACKAGES_KERNEL="${_kernel:-unknown}"
 
-    # 3. distfeeds in the writable layer: the same seven lines the machine was flashed
-    #    with, still naming the old release. The payload's own /etc/apk/distfeeds.list
-    #    already names the new one, so a writable layer without one needs nothing.
-    _feeds_changed=0
-    for _feeds in "${_upper}/etc/apk/distfeeds.list" "${_upper}/etc/apk/repositories"; do
-        [ -f "${_feeds}" ] || continue
-        [ -n "$(sed -n 's|.*/releases/[0-9][0-9.]*/.*|&|p' "${_feeds}" | head -n 1)" ] || continue
-        if _packages_feeds_mismatch "${_feeds}" "${_version}"; then
-            if ! _packages_rewrite "${_feeds}" '
-                    {
-                        out = ""
-                        rest = $0
-                        while (match(rest, /\/releases\/[0-9][0-9.]*\//)) {
-                            out = out substr(rest, 1, RSTART - 1) "/releases/" ver "/"
-                            rest = substr(rest, RSTART + RLENGTH)
-                        }
-                        print out rest
-                    }' -v ver="${_version}"; then
-                _packages_fail "distfeeds-unwritable"
-                return 1
-            fi
-            _feeds_changed=1
+    # 3. the feeds that are actually read. The file names come from the *base*, not from a
+    #    list in this file: on the measured image apk reads /etc/apk/repositories.d/*.list
+    #    and has neither /etc/apk/distfeeds.list nor /etc/apk/repositories, so writing those
+    #    two made `aligned` a claim about a file apk never opens, while the real feed - a
+    #    copy the writable layer inherited from the base it was snapshotted from - kept
+    #    naming the old release and the old kernel's kmods directory.
+    _feeds_shadow=0
+    _feeds_rewritten=0
+    _kmods=$(_packages_kmods_segment "${_sys}")
+    while IFS= read -r _rel; do
+        [ -n "${_rel}" ] || continue
+        # customfeeds.list is the user's own feed list by definition: it names no release,
+        # so it is never a shadow of the base's file and is never rewritten.
+        case "${_rel}" in
+            */customfeeds.list) continue ;;
+        esac
+        if ! _packages_feed_align_one "${_upper}" "${_sys}" "${_rel}" "${_version}" "${_kmods}"; then
+            _packages_fail "distfeeds-unwritable"
+            return 1
         fi
-    done
+        case "${_packages_feed_result}" in
+            shadow-dropped) _feeds_shadow=$((_feeds_shadow + 1)) ;;
+            rewritten) _feeds_rewritten=$((_feeds_rewritten + 1)) ;;
+        esac
+    done <<FEEDS
+$(_packages_feed_files "${_sys}")
+FEEDS
 
     # 4. read back what was written: the verdict has to be evidence, not the intent. A
     #    rewrite that did not land is exactly the silent failure this whole task is about,
@@ -221,27 +369,426 @@ ab_packages_align() {
         _packages_fail "world-not-verified"
         return 1
     fi
-    for _feeds in "${_upper}/etc/apk/distfeeds.list" "${_upper}/etc/apk/repositories"; do
+    while IFS= read -r _rel; do
+        [ -n "${_rel}" ] || continue
+        _feeds="${_upper}/${_rel}"
         [ -f "${_feeds}" ] || continue
-        if _packages_feeds_mismatch "${_feeds}" "${_version}"; then
+        if _packages_feeds_mismatch "${_feeds}" "${_version}" "${_kmods}"; then
             _packages_restore "${_feeds}"
             _packages_fail "distfeeds-not-verified"
             return 1
         fi
-    done
+    done <<FEEDS
+$(_packages_feed_files "${_sys}")
+FEEDS
     # The pre-rewrite copies are only useful until the result is proven; a `.ab-align.bak`
-    # left in the user's own /etc would be junk nobody knows to delete.
+    # left in the user's own /etc would be junk nobody knows to delete. (`*.bak` next to a
+    # feed file is the image's own copy, not this library's: it is never touched.)
     rm -f "${_world}.ab-align.bak" 2>/dev/null || true
+    while IFS= read -r _rel; do
+        [ -n "${_rel}" ] || continue
+        rm -f "${_upper}/${_rel}.ab-align.bak" 2>/dev/null || true
+    done <<FEEDS
+$(_packages_feed_files "${_sys}")
+FEEDS
     rm -f "${_upper}/etc/apk/distfeeds.list.ab-align.bak" 2>/dev/null || true
     rm -f "${_upper}/etc/apk/repositories.ab-align.bak" 2>/dev/null || true
 
     _packages_log="packages: ${_target} on ${_version}"
     [ "${_world_changed}" = "1" ] && _packages_log="${_packages_log}, world pinned to ${_kernel}"
-    [ "${_feeds_changed}" = "1" ] && _packages_log="${_packages_log}, distfeeds moved to ${_version}"
-    [ "${_world_changed}" = "0" ] && [ "${_feeds_changed}" = "0" ] \
+    [ "${_feeds_shadow}" -gt 0 ] && _packages_log="${_packages_log}, ${_feeds_shadow} shadowed feed file(s) dropped"
+    [ "${_feeds_rewritten}" -gt 0 ] && _packages_log="${_packages_log}, ${_feeds_rewritten} edited feed file(s) moved to ${_version}"
+    [ "${_world_changed}" = "0" ] && [ "${_feeds_shadow}" = "0" ] && [ "${_feeds_rewritten}" = "0" ] \
         && _packages_log="${_packages_log}, metadata already matched"
+    # An edit of the user's was rewritten rather than dropped. The state stays `aligned` -
+    # the feeds do describe this release now - and the note travels on AB_PACKAGES_REASON so
+    # a caller that forwards it can say so in the record instead of calling it `none`.
+    if [ "${_feeds_rewritten}" -gt 0 ]; then
+        AB_PACKAGES_ALIGN_NOTE="feeds-rewritten"
+        AB_PACKAGES_REASON="feeds-rewritten"
+        printf 'packages: %s edited feed file(s) rewritten, user changes kept\n' \
+            "${_feeds_rewritten}" >&2
+    else
+        AB_PACKAGES_ALIGN_NOTE=""
+    fi
     printf '%s\n' "${_packages_log}" >&2
     return 0
+}
+
+# --------------------------------------------------------------------------- #
+# Package follow: one controlled reinstall, on the first boot of a new base
+#
+# The alignment above keeps the machine able to *ask* for packages that belong to the
+# release it now runs; it does not make the installed packages belong to it. A machine that
+# crosses a release keeps what apk installed under the old ABI - kmods built for the old
+# kernel, libraries with the old soname - and nothing in the boot path used to notice.
+#
+# ab_packages_refresh <target-dir> is that follow-up, and it is the one place in this
+# library that runs `apk`:
+#
+#   * once per base. ab-boot asks for it on the first boot of a slot an upgrade aligned,
+#     and `refresh=<version>` in the published record is the "already attempted" marker,
+#     so a machine that reboots every day reinstalls once, not every boot;
+#   * behind a reachability probe that costs one HEAD request. `apk update` is never the
+#     probe: a machine whose feed is down must not spend seven index fetches to learn it;
+#   * never for the kernel package. It owns the ESP's kernel/initrd files, and a second
+#     installer of those is exactly what ab-slot exists to prevent;
+#   * with a fall-back: a full reinstall that fails degrades to the kernel/ABI subset
+#     (kmod-*, libc, docker), and the record says which of the two happened. A subset that
+#     works is worth more than a boot that came back from a half-installed world.
+#
+# Measured facts this was written against (device 192.168.2.49, 2026-11-18, apk-tools
+# 3.0.5 on ImmortalWrt 25.12.2):
+#
+#   * /var is a symlink to /tmp, so the apk index cache does not survive a reboot; with an
+#     empty cache `apk add` answers `(no such package)` and fetches nothing, so the
+#     transaction opens with exactly one `apk update`;
+#   * `apk add --force-reinstall` is accepted, and `apk add name=version` still resolves,
+#     so the world's own constraints are passed through verbatim: a refresh must not
+#     quietly drop a pin the user set;
+#   * there is no `timeout` applet, hence _packages_refresh_bounded;
+#   * the feeds live in /etc/apk/repositories.d/*.list, which is where the probe looks
+#     first (that image has neither /etc/apk/distfeeds.list nor /etc/apk/repositories).
+# --------------------------------------------------------------------------- #
+
+# Read by the caller (ab-boot publishes them into its ring log).
+# shellcheck disable=SC2034
+AB_PACKAGES_REFRESH_STATE=""
+# shellcheck disable=SC2034
+AB_PACKAGES_REFRESH_REASON=""
+# shellcheck disable=SC2034
+AB_PACKAGES_REFRESH_VERSION=""
+# Wall-clock cap for one apk transaction, and for the probe.
+AB_PACKAGES_REFRESH_TIMEOUT="${AB_PACKAGES_REFRESH_TIMEOUT:-180}"
+AB_PACKAGES_REFRESH_PROBE_TIMEOUT="${AB_PACKAGES_REFRESH_PROBE_TIMEOUT:-8}"
+
+# _packages_refresh_record_file: the one line the state commands read.
+_packages_refresh_record_file() {
+    printf '%s' "${AB_PACKAGES_FILE:-${AB_ESP:-/boot}/ab/packages}"
+}
+
+# _packages_refresh_record_field <key>: one field of the published record, or empty.
+_packages_refresh_record_field() {
+    _rf=$(_packages_refresh_record_file)
+    [ -r "${_rf}" ] || return 0
+    sed -n "s/^packages=[a-z]* .* $1=\([^ ]*\).*/\1/p" "${_rf}" 2>/dev/null | tail -n 1
+}
+
+# _packages_refresh_record_state: the state the record already carries, `unknown` when it
+# carries none. A follow that could not run keeps this verdict: the machine learnt nothing
+# new about its packages, so it must not publish anything new about them.
+_packages_refresh_record_state() {
+    _rf=$(_packages_refresh_record_file)
+    _rs=""
+    [ -r "${_rf}" ] && _rs=$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${_rf}" 2>/dev/null | tail -n 1)
+    case "${_rs}" in
+        aligned | limited) printf '%s' "${_rs}" ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+# _packages_refresh_publish <state> <reason> <refresh-version>: republish the record.
+#
+# `reason=` has to stay the second field: ab-slot reads the state and the reason with one
+# regex each. Everything after them (version=, kernel=, slot=) is kept exactly as the
+# aligner wrote it - a refresh that rewrote those would become a second author of facts it
+# did not establish. `refresh=` is appended because it is this function's own field.
+_packages_refresh_publish() {
+    _ps=$1
+    _pr=$2
+    _pv=$3
+    _file=$(_packages_refresh_record_file)
+    _dir=$(dirname "${_file}")
+    mkdir -p "${_dir}" 2>/dev/null || {
+        printf 'packages: cannot create %s, the follow stays unrecorded\n' "${_dir}" >&2
+        return 1
+    }
+    _old=""
+    [ -r "${_file}" ] && _old=$(tail -n 1 "${_file}" 2>/dev/null)
+    # Only a record this format understands is carried over. A hand-edited line or a file
+    # that something else wrote must not have its words appended to this one: the result
+    # would be a record no reader can take apart.
+    case "${_old}" in
+        packages=*) ;;
+        *) _old="" ;;
+    esac
+    _line="packages=${_ps} reason=${_pr}"
+    # shellcheck disable=SC2086  # the fields of a one-line record are single words by construction
+    for _kv in ${_old}; do
+        case "${_kv}" in
+            packages=* | reason=* | refresh=*) continue ;;
+        esac
+        _line="${_line} ${_kv}"
+    done
+    _line="${_line} refresh=${_pv}"
+    _tmp="${_file}.tmp.$$"
+    if ! printf '%s\n' "${_line}" >"${_tmp}" 2>/dev/null; then
+        rm -f "${_tmp}" 2>/dev/null || true
+        printf 'packages: cannot write %s\n' "${_tmp}" >&2
+        return 1
+    fi
+    sync 2>/dev/null || true
+    if ! mv "${_tmp}" "${_file}" 2>/dev/null; then
+        rm -f "${_tmp}" 2>/dev/null || true
+        printf 'packages: cannot publish %s\n' "${_file}" >&2
+        return 1
+    fi
+    sync 2>/dev/null || true
+    # Read back: a record that did not land only makes the next boot ask again, which is
+    # harmless; a record that landed *wrong* would be a verdict nobody wrote.
+    if [ "$(tail -n 1 "${_file}" 2>/dev/null)" != "${_line}" ]; then
+        printf 'packages: %s did not read back\n' "${_file}" >&2
+        return 1
+    fi
+    AB_PACKAGES_REFRESH_STATE=${_ps}
+    AB_PACKAGES_REFRESH_REASON=${_pr}
+    AB_PACKAGES_REFRESH_VERSION=${_pv}
+    return 0
+}
+
+# _packages_refresh_version <target-dir> <record-version>: the token `refresh=` is keyed
+# on. The aligner's own version= comes first, so a record reads `version=X ... refresh=X`;
+# platform-release is the fallback for a record written before that field existed, and a
+# value outside the character set (an unsubstituted @UPSTREAM_VERSION@) is never a key.
+_packages_refresh_version() {
+    case "${2:-}" in
+        '' | unknown) ;;
+        *)
+            printf '%s' "$2"
+            return 0
+            ;;
+    esac
+    _rp="$1/etc/platform-release"
+    if [ -r "${_rp}" ]; then
+        _rv=$(sed -n 's/^UPSTREAM_VERSION=//p' "${_rp}" 2>/dev/null | head -n 1)
+        case "${_rv}" in
+            '' | .* | *[!A-Za-z0-9._~+-]*) : ;;
+            *)
+                printf '%s' "${_rv}"
+                return 0
+                ;;
+        esac
+    fi
+    printf 'unknown'
+}
+
+# _packages_refresh_feed_url <target-dir>: the first repository URL apk would consult.
+#
+# <target-dir> is the *merged* root, so this reads exactly the file apk reads after the
+# aligner has decided between a shadow and an edit - repositories.d/*.list first (apk-tools
+# 3; the only place the measured image keeps its feeds), then the two older names for
+# images that use them. customfeeds.list is skipped: it is the user's own list, never the
+# file that decides whether this base can be followed.
+_packages_refresh_feed_url() {
+    for _feeds in "$1/etc/apk/repositories.d/"*.list \
+        "$1/etc/apk/distfeeds.list" "$1/etc/apk/repositories"; do
+        [ -f "${_feeds}" ] || continue
+        case "${_feeds}" in
+            */customfeeds.list) continue ;;
+        esac
+        _url=$(awk '/^[ \t]*https?:\/\// { sub(/^[ \t]*/, ""); sub(/[ \t].*/, ""); print; exit }' \
+            "${_feeds}" 2>/dev/null)
+        [ -n "${_url}" ] || continue
+        printf '%s' "${_url}"
+        return 0
+    done
+    return 1
+}
+
+# _packages_refresh_probe <url>: 0 when the feed answers at all, 1 when it does not, 2 when
+# no fetcher exists. One HEAD request (spider): enough to tell "the mirror is down" from
+# "the package is not there", and deliberately not an `apk update`.
+_packages_refresh_probe() {
+    if command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q --spider -T "${AB_PACKAGES_REFRESH_PROBE_TIMEOUT}" "$1" >/dev/null 2>&1
+        return $?
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q --spider -T "${AB_PACKAGES_REFRESH_PROBE_TIMEOUT}" "$1" >/dev/null 2>&1
+        return $?
+    fi
+    return 2
+}
+
+# _packages_refresh_bounded <seconds> <command...>: run one command under a wall-clock cap.
+# The measured machine has no `timeout` applet, so the cap is a watchdog: SIGTERM at the
+# deadline, SIGKILL two seconds later, and 124 for the caller - the token coreutils
+# `timeout` uses, so there is one status to recognise.
+_packages_refresh_bounded() {
+    _secs=$1
+    shift
+    case "${_secs}" in
+        '' | *[!0-9]* | 0)
+            "$@"
+            return $?
+            ;;
+    esac
+    "$@" &
+    _bounded_pid=$!
+    # The watchdog's own stdio is dropped: a `sleep` left behind by a command that
+    # finished early must not hold the caller's stdout pipe open (measured: a captured
+    # `$(...)` never returned until the full timeout had elapsed).
+    (
+        sleep "${_secs}"
+        kill -TERM "${_bounded_pid}" 2>/dev/null || exit 0
+        sleep 2
+        kill -KILL "${_bounded_pid}" 2>/dev/null || :
+    ) >/dev/null 2>&1 &
+    _bounded_watch=$!
+    wait "${_bounded_pid}"
+    _bounded_rc=$?
+    kill -TERM "${_bounded_watch}" 2>/dev/null || :
+    wait "${_bounded_watch}" 2>/dev/null || :
+    case "${_bounded_rc}" in
+        143 | 137) return 124 ;;
+    esac
+    return "${_bounded_rc}"
+}
+
+# _packages_refresh_apk <target-dir> <apk arguments...>: one apk command against the target
+# root. Production passes "/", which is apk's own default; anything else is a sandbox and
+# gets --root, so a transaction can never reach the running root by accident. --timeout is
+# apk's network-inactivity cap; the wall-clock cap is the watchdog around it.
+_packages_refresh_apk() {
+    _apk_root=$1
+    shift
+    if [ -z "${_apk_root}" ] || [ "${_apk_root}" = "/" ]; then
+        _packages_refresh_bounded "${AB_PACKAGES_REFRESH_TIMEOUT}" \
+            apk --timeout "${AB_PACKAGES_REFRESH_TIMEOUT}" "$@"
+    else
+        _packages_refresh_bounded "${AB_PACKAGES_REFRESH_TIMEOUT}" \
+            apk --root "${_apk_root}" --timeout "${AB_PACKAGES_REFRESH_TIMEOUT}" "$@"
+    fi
+}
+
+# _packages_refresh_world <world-file> [full|subset]: the constraints to reinstall, one per
+# line. Two kinds of entry are never passed on:
+#   * `kernel` / `kernel=...`: ab-slot owns the ESP's kernel and initrd, and a second
+#     package writing those files is the one thing the A/B tooling must not allow;
+#   * `!name` constraints and `@tag` lines, which are not packages.
+# The subset mode keeps the kernel/ABI-relevant part of the world, which is what a failed
+# full transaction degrades to.
+_packages_refresh_world() {
+    [ -f "$1" ] || return 1
+    awk -v want="${2:-full}" '
+        {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            sub(/[ \t]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            if (substr(line, 1, 1) == "!" || substr(line, 1, 1) == "@") next
+            name = line
+            sub(/[=<>~].*/, "", name)
+            if (name == "kernel") next
+            if (want == "subset") {
+                if (name ~ /^kmod-/ || name == "libc" || name ~ /^libc-/ || name ~ /^docker/) print line
+                next
+            }
+            print line
+        }
+    ' "$1"
+}
+
+# ab_packages_refresh <target-dir>: make the installed packages belong to the base the
+# machine now runs. Returns 0 when the whole world was reinstalled, 1 when the result is
+# limited (degraded, stale feeds, unwritable record), 2 when the feed did not answer, 3
+# when there was nothing to work with. Never reboots, never blocks a boot, and never
+# touches /etc/config: the packages' own protected paths are apk's business, not this
+# library's.
+ab_packages_refresh() {
+    _target=${1:-/}
+    # `x/` and `x//` name the same directory; one trailing slash keeps every join below
+    # a single one.
+    while [ "${#_target}" -gt 1 ] && [ "${_target%/}" != "${_target}" ]; do
+        _target=${_target%/}
+    done
+    AB_PACKAGES_REFRESH_STATE=""
+    AB_PACKAGES_REFRESH_REASON=""
+    AB_PACKAGES_REFRESH_VERSION=""
+
+    _previous=$(_packages_refresh_record_state)
+    _version=$(_packages_refresh_version "${_target}" "$(_packages_refresh_record_field version)")
+    AB_PACKAGES_REFRESH_VERSION=${_version}
+
+    _world="${_target}/etc/apk/world"
+    if [ ! -s "${_world}" ]; then
+        printf 'packages: no world at %s, nothing to follow\n' "${_world}" >&2
+        _packages_refresh_publish "${_previous}" "world-empty" "${_version}" || :
+        return 3
+    fi
+
+    _feed=$(_packages_refresh_feed_url "${_target}")
+    if [ -z "${_feed}" ]; then
+        printf 'packages: no feed under %s/etc/apk, nothing to follow\n' "${_target}" >&2
+        _packages_refresh_publish "${_previous}" "no-feeds" "${_version}" || :
+        return 3
+    fi
+
+    # 1. one request, and no apk: this is the whole offline story.
+    if ! _packages_refresh_probe "${_feed}"; then
+        printf 'packages: %s did not answer, the follow is skipped (offline)\n' "${_feed}" >&2
+        _packages_refresh_publish "${_previous}" "offline" "${_version}" || :
+        return 2
+    fi
+
+    # 2. a feed that still names another release cannot make packages follow this base:
+    #    whatever it resolves was built for the base the machine came from. Recording that
+    #    is worth more than a no-op transaction published as `aligned`.
+    _feed_release=$(printf '%s\n' "${_feed}" | sed -n 's#.*/releases/\([0-9][0-9.]*\)/.*#\1#p' | head -n 1)
+    if [ -n "${_feed_release}" ] && [ "${_feed_release}" != "${_version}" ]; then
+        printf 'packages: feed names release %s while the slot runs %s (feeds-stale)\n' \
+            "${_feed_release}" "${_version}" >&2
+        _packages_refresh_publish "limited" "feeds-stale" "${_version}" || :
+        return 1
+    fi
+
+    _full=$(_packages_refresh_world "${_world}" full)
+    if [ -z "${_full}" ]; then
+        printf 'packages: the world holds nothing but entries this library does not own\n' >&2
+        _packages_refresh_publish "${_previous}" "no-packages" "${_version}" || :
+        return 0
+    fi
+
+    # 3. the full transaction. The index is fetched here because /var is a tmpfs on the
+    #    measured image; its status is reported but the reinstall decides the verdict, since
+    #    a warm cache can serve a transaction a failed index fetch did not need.
+    if ! _packages_refresh_apk "${_target}" update; then
+        printf 'packages: apk update failed, the reinstall goes ahead on the cache\n' >&2
+    fi
+    # shellcheck disable=SC2086  # one word per world constraint by construction
+    _packages_refresh_apk "${_target}" add --force-reinstall ${_full}
+    _rc=$?
+    if [ "${_rc}" -eq 0 ]; then
+        printf 'packages: reinstalled the whole world (%s entries) for %s\n' \
+            "$(printf '%s\n' "${_full}" | grep -c .)" "${_version}" >&2
+        _packages_refresh_publish "aligned" "none" "${_version}" || return 1
+        return 0
+    fi
+
+    # 4. the fall-back: at least what the new kernel and the ABI need.
+    _reason="apk-${_rc}"
+    [ "${_rc}" -eq 124 ] && _reason="timeout"
+    _subset=$(_packages_refresh_world "${_world}" subset)
+    if [ -z "${_subset}" ]; then
+        printf 'packages: the full reinstall failed (%s) and the world has no kernel/ABI subset\n' \
+            "${_reason}" >&2
+        _packages_refresh_publish "limited" "refresh-failed" "${_version}" || :
+        return 1
+    fi
+    printf 'packages: the full reinstall failed (%s), falling back to %s kernel/ABI entries\n' \
+        "${_reason}" "$(printf '%s\n' "${_subset}" | grep -c .)" >&2
+    # shellcheck disable=SC2086  # one word per world constraint by construction
+    _packages_refresh_apk "${_target}" add --force-reinstall ${_subset}
+    _rc=$?
+    if [ "${_rc}" -eq 0 ]; then
+        _packages_refresh_publish "limited" "partial" "${_version}" || return 1
+        return 1
+    fi
+    _reason="apk-${_rc}"
+    [ "${_rc}" -eq 124 ] && _reason="timeout"
+    printf 'packages: the kernel/ABI subset failed too (%s)\n' "${_reason}" >&2
+    _packages_refresh_publish "limited" "${_reason}" "${_version}" || :
+    return 1
 }
 
 # --------------------------------------------------------------------------- #

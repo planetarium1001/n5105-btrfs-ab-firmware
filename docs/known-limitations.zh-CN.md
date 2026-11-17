@@ -89,6 +89,22 @@ argon（连同 `luci-app-argon-config` 与中文包）由 `scripts/device/bench-
 2026-11-18 定案：镜像保持上游默认。为了让界面好看而多发一个主题包，是为了非功能收益
 去偏离上游，而且每次上游 rebase 都得跟着维护。
 
+## 装在基底之上的包不会自己跟着基底走
+
+升级替换的是系统树；用户装在上层的包仍是安装时的版本。这是有意的取舍——在升级过程中
+用新 feed 重新解析 world 会让"升级"本身变成最脆弱的一步——但代价是某个包可能比它现在
+运行于其上的基底更旧。
+
+因此，刚升级到新基底的第一次启动会尝试让它们跟上来（`ab_packages_refresh`，由 `ab-boot`
+一次性调度）：对新 feed 做一次全量 `--force-reinstall`，全量失败则降级为内核/ABI 子集
+（`kmod-*`、`libc`、`docker`）。够不到 feed 时它什么都不做并写 `reason=offline`，
+永远不碰槽自己拥有的 kernel 包，也永远不阻塞启动。结果写进 `ab-slot status` 读的那一处：
+`packages=<state> reason=<token>`。
+
+升级仍然覆盖不到的一种情况：某个包在两次发布之间被上游移除。它会以旧版本留在机器上，
+只有它自己启动时才会暴露；矩阵在每次跨基底后判定 `tests/fixtures/follow-samples.json`
+里的样本集，就是为了让这种情况在用户遇到之前被抓住。
+
 ## 调试台上 WAN 整个开放是有意的
 
 在实验室网段里调试的机器，WAN zone 是完全开放的（`wan input ACCEPT`，见
