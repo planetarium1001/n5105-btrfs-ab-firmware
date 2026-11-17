@@ -811,7 +811,10 @@ _each_sample() {
     while IFS="${TAB}" read -r _es_tag _es_name _es_kind _es_url _es_fetched _es_fallback; do
         [ "${_es_tag}" = "sample" ] || continue
         _want "${_es_name}" || continue
-        "$@" "${_es_name}" "${_es_kind}" "${_es_url}" "${_es_fallback}"
+        # `< /dev/null` on purpose: the action runs ssh, and ssh reads stdin - which is the
+        # here-document below. Without this, the first sample swallowed the rest of the list and
+        # a six-sample run reported one (measured on the n5105, 2026-11-17).
+        "$@" "${_es_name}" "${_es_kind}" "${_es_url}" "${_es_fallback}" </dev/null
     done <<EOF
 $(cat "${_manifest_records}")
 EOF
