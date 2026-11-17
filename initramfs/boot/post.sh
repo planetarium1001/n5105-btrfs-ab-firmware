@@ -114,13 +114,17 @@ log "@platform and @sys are both visible: $(tr '\n' ' ' </etc/platform-release)"
 # Probe persistence and copy-up
 # --------------------------------------------------------------------------- #
 
-probe=/.s3-probe
+# One probe file per boot, because the initramfs has already written this boot's file by the
+# time this script runs: a shared name would answer with this boot's content and the check
+# below would be reading its own output. The previous boot's file is the evidence.
+probe="/.s3-probe-${boot}"
 new_file="/.s3-new-${boot}"
 
 if [ "${boot}" = "2" ]; then
-    [ -f "${probe}" ] || fail probe-lost-between-boots
-    case "$(cat "${probe}")" in
-        *boot=1*) log "probe from the first boot found: $(cat "${probe}")" ;;
+    previous="/.s3-probe-$((boot - 1))"
+    [ -f "${previous}" ] || fail probe-lost-between-boots
+    case "$(cat "${previous}")" in
+        *boot=1*) log "probe from the first boot found: $(cat "${previous}")" ;;
         *) fail probe-content-unexpected ;;
     esac
 fi

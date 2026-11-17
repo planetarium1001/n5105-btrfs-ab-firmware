@@ -827,13 +827,19 @@ fi
 # 8. Probe writes: they must land in the generation's upper directory
 # --------------------------------------------------------------------------- #
 
-probe=/.s3-probe
+# One probe file per boot. The write two blocks below happens before the root switch, so a
+# single shared name would be overwritten by this boot before post.sh could look at what the
+# previous one left behind - and that is exactly how this assertion used to pass without
+# proving anything: a /proc/cmdline read that ran before /proc was mounted pinned the boot
+# label to 1, so "the previous boot wrote boot=1" was true even on the second boot.
+probe="/.s3-probe-${BOOT}"
 new_file="/.s3-new-${BOOT}"
 
 if [ "${BOOT}" = "2" ]; then
-    [ -f "/newroot${probe}" ] || wf_fail probe-lost-between-boots
-    case "$(cat "/newroot${probe}")" in
-        *boot=1*) wf_log "first boot probe survived: $(cat "/newroot${probe}")" ;;
+    previous="/.s3-probe-$((BOOT - 1))"
+    [ -f "/newroot${previous}" ] || wf_fail probe-lost-between-boots
+    case "$(cat "/newroot${previous}")" in
+        *boot=1*) wf_log "first boot probe survived: $(cat "/newroot${previous}")" ;;
         *) wf_fail probe-content-unexpected ;;
     esac
 fi
