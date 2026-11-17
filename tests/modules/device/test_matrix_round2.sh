@@ -49,9 +49,14 @@ fake="$tmp/device"
 payloads="$tmp/payloads"
 mkdir -p "$bin" "$state" "$fake/etc/config" "$payloads"
 : >"$tmp/key"
+# The fixtures are placeholders, not archives, and they must look like placeholders on both
+# platforms. An *empty* file is not enough: bsdtar (macOS) reads it as a valid empty archive,
+# so lib.sh's shape check - which only speaks for a file that really is a tar - tripped there
+# and printed "carries no platform.tar", while GNU tar (CI) failed the read and the check was
+# skipped. One byte that is not a tar header reads as "not a tar" everywhere.
 for p in payload-0.0.11.tar payload-0.0.12.tar payload-25.12.0.tar \
     payload-25.12.1.tar payload-25.12.2.tar; do
-    : >"$payloads/$p"
+    printf 'placeholder, not a tar\n' >"$payloads/$p"
 done
 
 cat >"$bin/ssh" <<'STUB'
@@ -313,7 +318,7 @@ assert_eq "$(printf '%s\n' "$out" | grep -oE '^# (P1|P2|D1|D2|U1|U2|REL) ' | awk
 
 # --- ac-6: one continuous chain, every hop judged ---------------------------- #
 reset_machine 25.12.2 0.0.10
-out=$(drv)
+out=$(drv --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "0" "ac-6 the chain on a healthy machine exits zero"
 assert_eq "$(rows)" "P1 P2 D1 D2 U1 U2 REL " "ac-6 one row per hop, in chain order"
@@ -341,7 +346,7 @@ assert_contains "$(note_of REL)" "index.txt" "ac-7 the release row names what it
 # is the documented behaviour and is walked.
 reset_machine 25.12.2 0.0.10
 rm -f "$results"
-out=$(STUB_BASE_ONLY_GUARD=1 drv --only P1)
+out=$(STUB_BASE_ONLY_GUARD=1 drv --only P1 --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "0" "ac-7 a machine that refuses the same-base payload still finishes the hop"
 assert_contains "$(note_of P1)" "regression=refused-payload-already-installed" \
@@ -354,7 +359,7 @@ assert_eq "$(grep -c 'ab-upgrade --force' "$actions" || true)" "1" \
 
 # --- ac-6: a broken hop stops the chain instead of walking on ---------------- #
 reset_machine
-out=$(STUB_BAD_PACKAGES_AFTER_HOP=0 drv)
+out=$(STUB_BAD_PACKAGES_AFTER_HOP=0 drv --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "1" "ac-6 a hop whose assertion fails makes the run fail"
 assert_eq "$(rows)" "P1 REL " \
@@ -371,7 +376,7 @@ assert_eq "$(grep -c 'payload-0.0.12.tar' "$actions" || true)" "0" \
 reset_machine
 : >"$calls"
 : >"$actions"
-out=$(drv --from 3)
+out=$(drv --from 3 --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "0" "ac-6 --from <step> resumes and finishes"
 assert_eq "$(rows)" "D1 D2 U1 U2 REL " "ac-6 the resumed run records only the hops it walked"
@@ -382,7 +387,7 @@ assert_eq "$(grep -c 'payload-0.0.12.tar' "$actions" || true)" "0" \
 
 # --- ac-6: one hop on its own ------------------------------------------------ #
 reset_machine
-out=$(drv --only D1)
+out=$(drv --only D1 --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "0" "ac-6 --only runs a single hop"
 assert_eq "$(rows)" "D1 " "ac-6 --only records that hop and nothing else"
@@ -447,7 +452,7 @@ assert_eq "$rc" "4" "ac-6 a payload that is not there is an environment gap"
 assert_eq "$(cut -f2 "$tmp/gap.tsv")" "GAP" "ac-6 the row is GAP when the payload is missing"
 
 reset_machine
-out=$(STUB_NO_COMMITTED=1 drv --only D1)
+out=$(STUB_NO_COMMITTED=1 drv --only D1 --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "3" "ac-6 a machine with no committed slot stops the run at the red line"
 assert_contains "$out" "red-line" "ac-6 the red line says what it refused to do"
