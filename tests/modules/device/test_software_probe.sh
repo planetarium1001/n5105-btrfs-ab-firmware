@@ -144,11 +144,11 @@ case "$cmd" in
     'apk update')
         exit 0
         ;;
-    'curl '*cgi-bin/luci*)
+    'curl '*127.0.0.1/*)
         [ "${STUB_NO_CURL:-0}" = "1" ] && exit 127
         printf '%s' "${STUB_UI:-200}"
         ;;
-    'uclient-fetch '*cgi-bin/luci*)
+    'uclient-fetch '*127.0.0.1/*)
         [ "${STUB_UI_FAIL:-0}" = "1" ] && exit 1
         exit 0
         ;;

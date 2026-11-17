@@ -92,8 +92,8 @@
 
 set -u
 
-BADC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "${BADC_DIR}/../.." && pwd)
+BADC_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(cd -- "${BADC_DIR}/../.." && pwd)
 : "${AB_REPO_ROOT:=${REPO_ROOT}}"
 AB_RESULTS_FROM_ENV=${AB_RESULTS:-}
 
@@ -142,7 +142,7 @@ DOCKER_TRIES=${AB_BADCFG_DOCKER_TRIES:-4}
 DOCKER_PAUSE=${AB_BADCFG_DOCKER_PAUSE:-1}
 
 AB_RESULTS=${RESULTS}
-DEVCFG_RESULTS=${RESULTS}
+export DEVCFG_RESULTS="${RESULTS}"
 
 TOT_PASS=0
 TOT_FAIL=0
@@ -213,7 +213,7 @@ done
 CASES=$(printf '%s' "${CASES}" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ *$//')
 N_CASES=$(printf '%s' "${CASES}" | wc -w | tr -d ' ')
 AB_RESULTS=${RESULTS}
-DEVCFG_RESULTS=${RESULTS}
+export DEVCFG_RESULTS="${RESULTS}"
 : "${EV_DIR:=$(dirname "${RESULTS}")/badconfig-evidence}"
 
 # --------------------------------------------------------------------------- #

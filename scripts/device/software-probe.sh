@@ -472,14 +472,18 @@ _machine_base() {
 # (`-w %{http_code}` is the only way to see the code); otherwise uclient-fetch, which can
 # only say whether the page answered - 200 when it did, 000 when it did not.
 _ui_code() {
-    _uc=$(devcfg_exec "curl -s -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1/cgi-bin/luci/'" 2>/dev/null) || _uc=""
+    # Deliberately `/` and not `/cgi-bin/luci/`: measured on the n5105 on 2026-11-17, uhttpd
+    # answers 200 on `/` and 403 on `/cgi-bin/luci/` on a healthy machine, so a probe that
+    # asked for the CGI path called every working sample a failure (`ui=http:403`). The
+    # question here is "is the web UI served at all", and the front page answers exactly that.
+    _uc=$(devcfg_exec "curl -s -o /dev/null -w '%{http_code}' --max-time 10 'http://127.0.0.1/'" 2>/dev/null) || _uc=""
     _uc=$(printf '%s' "${_uc}" | tr -d ' \t\r\n')
     _uc=$(printf '%s' "${_uc}" | sed -n 's/.*\([1-5][0-9][0-9]\)$/\1/p')
     if [ -n "${_uc}" ]; then
         printf '%s' "${_uc}"
         return 0
     fi
-    if devcfg_exec "uclient-fetch -T 10 -O /dev/null 'http://127.0.0.1/cgi-bin/luci/'" >/dev/null 2>&1; then
+    if devcfg_exec "uclient-fetch -T 10 -O /dev/null 'http://127.0.0.1/'" >/dev/null 2>&1; then
         printf '200'
     else
         printf '000'
