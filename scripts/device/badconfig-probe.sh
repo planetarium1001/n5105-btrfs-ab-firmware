@@ -385,6 +385,35 @@ fetch_kind() {
     esac
 }
 
+# _unresolvable <host>: true when this machine's resolver has no address for the name.
+#
+# Two witnesses, because the images differ: `nslookup` when the busybox in the rootfs has
+# it, `ping -c1 -W1` otherwise (busybox ping prints "bad address" and exits non-zero for a
+# name it cannot resolve). A resolver that answers with an address is a no either way - the
+# caller then reports an unattributable failure instead of inventing one.
+_unresolvable() {
+    _ur_host=$1
+    [ -n "${_ur_host}" ] || return 1
+    if dev_ssh "command -v nslookup >/dev/null 2>&1"; then
+        _ur_out=$(dev_ssh "nslookup ${_ur_host} 2>&1") || return 0
+        case "${_ur_out}" in
+            *"can't resolve"*|*"No answer"*|*"NXDOMAIN"*|*"not found"*) return 0 ;;
+        esac
+        case "${_ur_out}" in
+            *"Address"*|*"answer"*) return 1 ;;
+        esac
+        return 1
+    fi
+    if dev_ssh "ping -c1 -W1 ${_ur_host} >/dev/null 2>&1"; then
+        return 1
+    fi
+    _ur_out=$(dev_ssh "ping -c1 -W1 ${_ur_host} 2>&1") || :
+    case "${_ur_out}" in
+        *"bad address"*|*"unknown host"*|*"not found"*) return 0 ;;
+    esac
+    return 1
+}
+
 # --------------------------------------------------------------------------- #
 # The injection, and the way back
 # --------------------------------------------------------------------------- #
@@ -760,9 +789,22 @@ config subscription '${NET_NAME}_sub'
                 _note_add "domain=accepted"
                 ;;
             unknown)
-                fail_line assert_fake_domain_refused \
-                    "refused_by=unknown: the fetcher failed and said nothing this driver can attribute: $(printf '%s\n' "${_FETCH_OUT}" | head -n 1)"
-                _note_add "domain=refused_by=unknown"
+                # The fetcher failed without naming the reason. On this image uclient-fetch
+                # reports `Failed to send request: Operation not permitted` for a name that
+                # cannot be resolved, which is a resolver answer with the resolver's own
+                # words missing - so the domain is asked directly, and that answer is the
+                # witness. A domain that resolves and still fails stays a failure: it means
+                # the source exists and was refused on some other ground.
+                _c5_host=$(printf '%s' "${SUB_FAKE}" | sed -e 's#^[a-z]*://##' -e 's#/.*##')
+                if _unresolvable "${_c5_host}"; then
+                    ok_line assert_fake_domain_refused \
+                        "refused_by=dns-unresolved host=${_c5_host} fetch_rc=${_c5_fake_rc}: ${_c5_host} does not resolve, so there is no source to accept"
+                    _note_add "domain=refused_by=dns-unresolved"
+                else
+                    fail_line assert_fake_domain_refused \
+                        "refused_by=unknown: the fetcher failed, ${_c5_host} resolves, and the driver can attribute the failure to nothing: $(printf '%s\n' "${_FETCH_OUT}" | head -n 1)"
+                    _note_add "domain=refused_by=unknown"
+                fi
                 ;;
             *)
                 ok_line assert_fake_domain_refused "refused_by=${_c5_fake_kind}: $(printf '%s\n' "${_FETCH_OUT}" | head -n 1)"
