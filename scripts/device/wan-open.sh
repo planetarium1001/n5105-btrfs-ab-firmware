@@ -129,6 +129,6 @@ out=$(dev_ssh "${script}") || {
 }
 printf '%s\n' "${out}"
 case "${out}" in
-    *"=fail"*|*"=fail "*) exit 1 ;;
+    *"=fail"*) exit 1 ;;
 esac
 exit 0
