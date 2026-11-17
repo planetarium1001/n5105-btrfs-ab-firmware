@@ -80,6 +80,15 @@ devpts 挂载选项、`/dev/tty`、procd 的会话处理、A/B 布局都不参�
 - **不是 devpts 上的 `gid=5`，也不是缺 `tty` 组。** 这个镜像里从设备节点属于 `root`、mode 0622；
   这两个值都不决定成败。
 
+## 主题是调试台包装的，不在镜像里
+
+发布镜像刷完是 `bootstrap`：上游 rootfs 里没有 `luci-theme-argon`，也没有任何东西安装它。
+argon（连同 `luci-app-argon-config` 与中文包）由 `scripts/device/bench-setup.sh` 装到正在
+被观察的那台机器上，脚本会报 `theme_source=installed` 说明是它做的。
+
+2026-11-18 定案：镜像保持上游默认。为了让界面好看而多发一个主题包，是为了非功能收益
+去偏离上游，而且每次上游 rebase 都得跟着维护。
+
 ## 调试台上 WAN 整个开放是有意的
 
 在实验室网段里调试的机器，WAN zone 是完全开放的（`wan input ACCEPT`，见

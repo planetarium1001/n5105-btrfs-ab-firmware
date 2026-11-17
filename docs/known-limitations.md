@@ -97,6 +97,17 @@ and `tty1` never closes stdin and is not affected.
 - **Not the `gid=5` on the devpts mount, and not the missing `tty` group.** The slave node is
   owned by `root` with mode 0622 in this image; neither value decides success.
 
+## The theme is a bench package, not part of the image
+
+A clean flash of a release image comes up on `bootstrap`: the upstream rootfs carries no
+`luci-theme-argon` and nothing installs one. Argon (with `luci-app-argon-config` and its
+zh-CN translation) is installed by `scripts/device/bench-setup.sh` on a machine that is
+being looked at, and the script reports `theme_source=installed` when it did the work.
+
+Decided 2026-11-18: the image keeps the upstream default. A release that shipped a theme
+would be a deliberate deviation from upstream for no functional gain, and it is the kind of
+extra that has to be kept in step with every upstream rebase.
+
 ## The bench opens the whole WAN zone on purpose
 
 A machine being debugged on a lab LAN runs with its WAN zone opened completely
