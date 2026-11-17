@@ -519,11 +519,19 @@ _ask() {
     if ! _remote_script "${ACTION}" >"${_tmpfile}"; then
         return 1
     fi
-    _answer=$(dev_ssh "$(cat "${_tmpfile}")")
+    # The remote half goes over stdin, not as an argv: dropbear closes the connection for a
+    # command line past its limit, and the eight-sample mark script is past it (measured
+    # 2026-11-18: rc=255 with no output, which the old code reported as "no machine").
+    _answer=$(dev_ssh 'sh -s' <"${_tmpfile}")
     _answer_rc=$?
     rm -f "${_tmpfile}"
     _tmpfile=""
     if [ "${_answer_rc}" -ne 0 ] || [ -z "${_answer}" ]; then
+        # Not "no machine": a remote script that ran and failed looks nothing like a machine
+        # that did not answer, and calling both "no-machine" hides the reason (measured
+        # 2026-11-18: the mark script failed on a live machine and every row said no-machine).
+        printf 'follow-probe: remote %s failed rc=%s out=%s\n' \
+            "${ACTION}" "${_answer_rc}" "${_answer:-<empty>}" >&2
         return 1
     fi
     return 0

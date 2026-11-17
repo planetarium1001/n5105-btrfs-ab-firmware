@@ -253,8 +253,20 @@ assert_follow() {
         printf 'skip follow [%s]: no baseline (run scripts/device/follow-probe.sh --install, then --mark)\n' "${_case}" >&2
         return 0
     fi
-    _follow_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --verify --state "${AB_FOLLOW_STATE}" 2>&1)
-    _follow_rc=$?
+    # The hop that just happened may still be finishing: a first boot on a new base also
+    # runs the package refresh, and on this box that is minutes of apk against the feeds.
+    # A driver that reports "no machine answered" is retried; a real verdict is not.
+    _follow_attempt=0
+    while :; do
+        _follow_attempt=$((_follow_attempt + 1))
+        _follow_rc=0
+        _follow_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --verify --state "${AB_FOLLOW_STATE}" 2>&1) || _follow_rc=$?
+        [ "${_follow_rc}" -eq 3 ] && [ "${_follow_attempt}" -lt 4 ] || break
+        case "${_follow_out}" in
+            *no-machine*) sleep 30 ;;
+            *) break ;;
+        esac
+    done
     printf '%s\n' "${_follow_out}" | sed 's/^/  /'
     ev "follow ${_case} rc=${_follow_rc}"
     case "${_follow_rc}" in

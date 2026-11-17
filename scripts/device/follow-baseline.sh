@@ -37,17 +37,54 @@ if [ -n "${AB_DRY_RUN:-}" ] && [ "${AB_DRY_RUN}" = "1" ]; then
     exit 0
 fi
 
-if ! dev_ssh true >/dev/null 2>&1; then
-    printf 'follow-baseline: no machine answered, nothing recorded\n' >&2
+# Installing seven packages can take the machine off the network for a moment (measured
+# 2026-11-18: the install phase passed and the very next call answered nothing). Waiting for
+# it to answer is the difference between "the box is busy" and "the box is gone"; five
+# minutes is longer than the heaviest apk transaction seen on this hardware.
+_wait_up() {
+    _wu_n=0
+    while [ "${_wu_n}" -lt 30 ]; do
+        dev_ssh true >/dev/null 2>&1 && return 0
+        _wu_n=$((_wu_n + 1))
+        sleep 10
+    done
+    return 1
+}
+
+if ! _wait_up; then
+    printf 'follow-baseline: no machine answered for 300s, nothing recorded\n' >&2
     exit 3
 fi
 
 _install_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --install 2>&1) || _install_rc=$?
 _install_rc=${_install_rc:-0}
 printf '%s\n' "${_install_out}"
+# The transaction may still be settling (post-install scripts, dockerd coming up).
+_wait_up || {
+    printf 'follow-baseline: the machine did not come back after the install, nothing recorded\n' >&2
+    exit 3
+}
 
-_mark_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --mark --state "${STATE}" 2>&1) || _mark_rc=$?
-_mark_rc=${_mark_rc:-0}
+# A machine that just took seven packages can lose the connection for a moment -
+# measured 2026-11-18: the install phase passed and the mark right after it died with
+# "Connection reset by peer", which reads exactly like a broken driver. One retry after a
+# pause separates "the machine came back" from "the machine is gone"; the second failure is
+# reported as it is.
+_mark_rc=0
+_mark_attempt=0
+while :; do
+    _mark_attempt=$((_mark_attempt + 1))
+    _mark_rc=0
+    _mark_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --mark --state "${STATE}" 2>&1) || _mark_rc=$?
+    case "${_mark_rc}" in
+        0|4) break ;;
+    esac
+    case "${_mark_out}" in
+        *no-machine*) [ "${_mark_attempt}" -lt 3 ] || break ;;
+        *) break ;;
+    esac
+    sleep 15
+done
 printf '%s\n' "${_mark_out}"
 
 _installed=$(printf '%s\n' "${_mark_out}" | grep -c 'status=pass' || true)
