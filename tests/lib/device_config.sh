@@ -103,6 +103,19 @@ devcfg_sha256() { # <file>
     fi
 }
 
+# The injection registry is one directory for the whole run, and it has to be the *same*
+# directory the caller sees: `devcfg__registry` is asked through `$(...)`, so a value it
+# assigns there lives in the subshell and is gone by the time a restore looks for it. That
+# is exactly how the first version of this library "restored" nothing: every restore found
+# no registry, returned 0, and the driver printed `restored=yes` over a file it had not
+# touched (measured on the n5105, 2026-11-17 - six `<file>.devcfg-bak-*` files were still
+# on the machine afterwards). Initialising and exporting it here, once, makes the value
+# visible to every subshell that asks.
+if [ -z "${DEVCFG_STATE_DIR:-}" ]; then
+    DEVCFG_STATE_DIR=$(mktemp -d "${DEVCFG_TMPDIR:-${TMPDIR:-/tmp}}/devcfg-state.XXXXXX") || DEVCFG_STATE_DIR=""
+    [ -n "${DEVCFG_STATE_DIR}" ] && export DEVCFG_STATE_DIR
+fi
+
 devcfg_tmpfile() {
     _dir=${DEVCFG_TMPDIR:-${TMPDIR:-/tmp}}
     [ -d "${_dir}" ] || _dir=/tmp
