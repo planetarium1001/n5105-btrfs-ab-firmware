@@ -116,11 +116,23 @@ else
 	}
 fi
 
-# ensure_dev <path>: procd may start these hooks before devtmpfs carries every node.
+# ensure_dev <path>: wait for procd to carry the node, and never build one here.
+#
+# /dev belongs to procd: it mounts the tmpfs and replays /sys/dev into it (early_dev, then
+# coldplug). This hook can start before that replay has reached the partition node, so a
+# node that will exist a moment later is not there yet. Waiting is the only honest option:
+# the kernel has no devtmpfs (mount -t devtmpfs returns ENODEV) and the upstream busybox
+# has no mdev applet, so the `mdev -s` that used to sit here could only fail silently.
+# Two seconds in 0.1s steps, then report the missing node to the caller.
 ensure_dev() {
 	[ -b "$1" ] && return 0
-	mdev -s 2>/dev/null || :
-	[ -b "$1" ]
+	_waited=0
+	while [ "${_waited}" -lt 20 ]; do
+		sleep 0.1 2>/dev/null || sleep 1
+		[ -b "$1" ] && return 0
+		_waited=$((_waited + 1))
+	done
+	return 1
 }
 
 mount_p4() {

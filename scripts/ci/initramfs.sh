@@ -59,7 +59,175 @@ trap on_error ERR
 
 ci_stage_init initramfs
 
-ci_require_cmd cpio gzip find sort cmp
+ci_require_cmd cpio gzip find sort cmp python3 awk
+
+# --------------------------------------------------------------------------- #
+# The /dev contract
+# --------------------------------------------------------------------------- #
+# The initramfs owns /dev for the window before switch_root. This kernel has no devtmpfs
+# and the upstream busybox has no mdev applet, so the nodes have to be inside the archive:
+# init/initramfs.c unpacks a newc device entry by calling init_mknod, and that is the only
+# way a device node can exist in an initramfs at all.
+#
+# initramfs/lib/wf.sh carries the one list, WF_DEV_CONTRACT, with an owner for every
+# entry, and this stage reads it out of that file instead of carrying a second copy: the
+# boot (wf_make_dev / wf_assert_dev) and the build then assert the same list, which is the
+# whole point - a copied list is the drift this stage exists to stop.
+#
+# mknod(1) needs CAP_MKNOD and the build host is an unprivileged runner (a laptop running
+# this suite is macOS, which has no newc device nodes at all), so the entries cannot come
+# from the build host filesystem. The two programs below generate them as newc records and
+# grade the archive afterwards. They are kept in variables rather than functions because
+# this file's structure is frozen in tests/fixtures/ci-structure-fingerprint.txt: a new
+# named helper there is a re-baseline with its own reason, not a detail of this change.
+dev_contract_source="${CI_REPO_ROOT}/initramfs/lib/wf.sh"
+
+# dev_contract_insert: <tree.cpio> <out.cpio>, with WF_DEV_CONTRACT in the environment.
+# Copies the tree's records, adds one newc record for every "ours" entry the tree does not
+# already carry (at dev/<name>), keeps the trailer and the 512-byte padding, and prints the
+# paths it added.
+dev_contract_insert='
+import os
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+manifest = os.environ.get("WF_DEV_CONTRACT", "")
+if not manifest.strip():
+    raise SystemExit("initramfs: empty /dev contract")
+
+
+def normalise(name):
+    return name[2:] if name.startswith("./") else name
+
+
+def walk(blob):
+    offset = 0
+    while offset < len(blob):
+        if blob[offset:offset + 6] != b"070701":
+            raise SystemExit("initramfs: expected a newc header at offset %d" % offset)
+        values = [int(blob[offset + 6 + i * 8:offset + 14 + i * 8], 16) for i in range(13)]
+        filesize, namesize = values[6], values[11]
+        name_end = offset + 110 + namesize
+        name = blob[offset + 110:name_end - 1].decode("utf-8", "replace")
+        end = (name_end + 3) & ~3
+        end = (end + filesize + 3) & ~3
+        yield name, blob[offset:end]
+        offset = end
+
+
+blob = open(src, "rb").read()
+records = []
+names = set()
+trailer = b""
+for name, record in walk(blob):
+    if name == "TRAILER!!!":
+        trailer = record
+        break
+    records.append(record)
+    names.add(normalise(name))
+if not trailer:
+    raise SystemExit("initramfs: the archive carries no TRAILER!!! record")
+
+added = []
+ino = 0x00C0FFEE
+for spec in manifest.split():
+    fields = spec.split(":")
+    if len(fields) != 6:
+        raise SystemExit("initramfs: malformed contract entry %r" % spec)
+    name, kind, owner, major, minor, mode = fields
+    path = normalise(name) if kind == "dir" else "dev/" + normalise(name)
+    if owner != "ours" or path in names:
+        continue
+    if kind == "dir":
+        st_mode, nlink, rdev_major, rdev_minor = 0o40755, 2, 0, 0
+    else:
+        st_mode = 0o20000 | int(mode, 8)
+        nlink, rdev_major, rdev_minor = 1, int(major), int(minor)
+    name_bytes = path.encode() + b"\0"
+    values = (ino, st_mode, 0, 0, nlink, 0, 0, 0, 0, rdev_major, rdev_minor, len(name_bytes), 0)
+    record = b"070701" + b"".join(b"%08X" % value for value in values) + name_bytes
+    record += b"\0" * ((4 - len(record) % 4) % 4)
+    records.append(record)
+    added.append(path)
+    ino += 1
+
+out = b"".join(records) + trailer
+out += b"\0" * ((512 - len(out) % 512) % 512)
+with open(dst, "wb") as handle:
+    handle.write(out)
+print(" ".join(added))
+'
+
+# dev_contract_check: reads the `cpio -itv` listing of one archive, with -v manifest and
+# -v archive. Prints one line per way the archive fails the contract and nothing when it
+# passes. The listing comes from cpio, so the check reads the bytes the kernel will read
+# instead of trusting the program that wrote them, and an archive that does not list at all
+# is a finding rather than an empty pass. A "kernel" entry that appears in our archive is a
+# finding too: two owners for one path is how a console ends up bound to an inode nobody
+# reads.
+dev_contract_check='
+BEGIN {
+    count = split(manifest, spec, " ")
+    for (i = 1; i <= count; i++) {
+        if (split(spec[i], field, ":") != 6) {
+            printf "malformed contract entry: %s\n", spec[i]
+            count = i - 1
+            break
+        }
+        name[i] = field[1]
+        type[i] = field[2]
+        owner[i] = field[3]
+        major[i] = field[4]
+        minor[i] = field[5]
+    }
+}
+{
+    entry = $NF
+    sub(/^\.\//, "", entry)
+    if (entry == "." || entry == "") next
+    seen[entry] = $0
+    listed = 1
+}
+END {
+    if (!listed) {
+        printf "unreadable: %s does not list as a cpio archive\n", archive
+        exit
+    }
+    if (!("dev" in seen))
+        printf "dev/: missing (the archive carries no /dev directory)\n"
+    else if (substr(seen["dev"], 1, 1) != "d")
+        printf "dev/: expected a directory, the archive carries %s\n", seen["dev"]
+    for (i = 1; i <= count; i++) {
+        expected = type[i] " " major[i] ":" minor[i]
+        path = (type[i] == "dir") ? name[i] : "dev/" name[i]
+        if (!(path in seen)) {
+            if (owner[i] == "kernel") continue
+            printf "%s: missing (expected %s)\n", path, expected
+            continue
+        }
+        line = seen[path]
+        if (owner[i] == "kernel") {
+            printf "%s: shipped although the kernel provides it: %s\n", path, line
+            continue
+        }
+        kind = (type[i] == "dir") ? "d" : "c"
+        if (substr(line, 1, 1) != kind) {
+            printf "%s: expected %s, the archive carries %s\n", path, expected, line
+            continue
+        }
+        if (type[i] == "dir") continue
+        ids = ""
+        n = split(line, token, /[ \t]+/)
+        for (j = 1; j <= n; j++) {
+            if (token[j] ~ /^[0-9]+,$/) { ids = token[j] token[j + 1]; break }
+            if (token[j] ~ /^[0-9]+,[0-9]+$/) { ids = token[j]; break }
+        }
+        gsub(/,/, ":", ids)
+        if (ids != major[i] ":" minor[i])
+            printf "%s: expected %s:%s, the archive carries %s\n", path, major[i], minor[i], ids
+    }
+}
+'
 
 kmods_out="${CI_KMODS_OUT:-${CI_TMP_ROOT}/kmods}"
 kernel_version="${CI_KERNEL_VERSION:?CI_KERNEL_VERSION is required}"
@@ -202,19 +370,56 @@ mkdir -p "$(dirname "${out_file}")"
 # GNU cpio is what the runner provides; --null keeps the archive safe for names with
 # spaces, but fall back to newline separation where the flag is missing.
 # The kernel unpacks the initramfs as-is, so pin ownership to root and keep the modes.
+tree_archive="${CI_TMP_ROOT}/initramfs/root.cpio"
+archive_plain="${CI_TMP_ROOT}/initramfs/root-with-dev.cpio"
+rm -f "${tree_archive}" "${archive_plain}"
 if cpio --help 2>&1 | grep -q -- '--null'; then
-    (cd "${stage}" && find . -print0 | cpio --null -o -H newc -R 0:0 2>/dev/null) | gzip -9 >"${out_file}"
+    (cd "${stage}" && find . -print0 | cpio --null -o -H newc -R 0:0 2>/dev/null) >"${tree_archive}"
 else
-    (cd "${stage}" && find . -print | cpio -o -H newc -R 0:0 2>/dev/null) | gzip -9 >"${out_file}"
+    (cd "${stage}" && find . -print | cpio -o -H newc -R 0:0 2>/dev/null) >"${tree_archive}"
 fi
+
+# The /dev entries the contract calls "ours" are inserted now, between the tree cpio and
+# the gzip step: they cannot come from `find`, because creating a device node on the build
+# host needs CAP_MKNOD and macOS has no newc device nodes at all.
+dev_manifest="$(sed -n 's/^WF_DEV_CONTRACT="\([^"]*\)"$/\1/p' "${dev_contract_source}" 2>/dev/null \
+    | head -n 1)" || dev_manifest=""
+[ -n "${dev_manifest}" ] \
+    || ci_die "no WF_DEV_CONTRACT line in ${dev_contract_source}: the /dev contract cannot be read"
+# The list has to be the one the initramfs will assert at boot. A staged wf.sh that
+# carries a different one would build and grade an archive against a rule the boot does
+# not use, which is worse than a build that does not start.
+if [ -f "${stage}/lib/wf.sh" ]; then
+    staged_manifest="$(sed -n 's/^WF_DEV_CONTRACT="\([^"]*\)"$/\1/p' "${stage}/lib/wf.sh" 2>/dev/null \
+        | head -n 1)" || staged_manifest=""
+    [ "${staged_manifest}" = "${dev_manifest}" ] \
+        || ci_die "the staged /lib/wf.sh carries a different /dev contract than ${dev_contract_source}"
+fi
+dev_entries="$(WF_DEV_CONTRACT="${dev_manifest}" \
+    python3 -c "${dev_contract_insert}" "${tree_archive}" "${archive_plain}")"
+[ -s "${archive_plain}" ] || ci_die "the /dev insertion produced no archive"
+gzip -9 <"${archive_plain}" >"${out_file}"
 
 gzip -t "${out_file}" || ci_die "produced initramfs is not valid gzip"
 entries="$(gzip -dc "${out_file}" | cpio -t 2>/dev/null | wc -l | tr -d ' ')"
 size_bytes="$(ci_file_size "${out_file}")"
 
+# The assertion the stage exists for: the archive a machine will be flashed with carries
+# every /dev entry the contract calls ours, with the right type and numbers. A missing or
+# duplicated entry is a build failure, never a warning and never a skip - a boot that only
+# finds out at runtime powers the machine off on somebody's desk.
+deviations="$(gzip -dc "${out_file}" 2>/dev/null | cpio -itv 2>/dev/null \
+    | awk -v manifest="${dev_manifest}" -v archive="${out_file}" "${dev_contract_check}" || true)"
+if [ -n "${deviations}" ]; then
+    while IFS= read -r deviation; do
+        ci_log "  dev-contract: ${deviation}"
+    done <<<"${deviations}"
+    ci_die "the initramfs does not satisfy the /dev contract of ${dev_contract_source#"${CI_REPO_ROOT}"/}"
+fi
 
 ci_log "initramfs: ${out_file}"
 ci_log "  size: ${size_bytes} bytes, ${entries} archive entries"
+ci_log "  dev: ${dev_entries:-none generated} (contract from ${dev_contract_source#"${CI_REPO_ROOT}"/})"
 ci_log "  toolset: ${toolset}, ${tools_files} locked file(s), digest ${tools_digest:0:12}"
 ci_log "  modules: ${module_count}, ${lib_count} shell lib(s)"
 ci_log "  shared libraries: ${shared_count}"

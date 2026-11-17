@@ -234,9 +234,8 @@ reflash if you would rather start from the defaults again.
 
 ## Known limitations
 
-* **Images written before `0.0.7` have no first-boot network.** `0.0.6` and earlier replace
-  the upstream preinit that generates `/etc/config/network`, so a freshly written disk comes
-  up with no address on any port, no DHCP server on the LAN, and `dropbear` bound to an
+* **Images written before `0.0.7` have no first-boot network.** `0.0.6` and earlier leave a freshly
+  written disk without `/etc/config/network`, so it comes up with no address on any port, no DHCP server on the LAN, and `dropbear` bound to an
   interface that does not exist. The only way in is the console and `uci` by hand. On such an
   image the health check also reports `probe=wan-present result=fail`, never writes
   `stage=commit`, and the machine stays up anyway (`action=stay`). `0.0.7` is the first
@@ -257,6 +256,11 @@ reflash if you would rather start from the defaults again.
   image carries no WAN rule at all. On the convenience image the rule and the unbound
   `dropbear` stay until you delete them, and `dropbear` accepts password authentication with
   whatever root password the image carries. Close it as soon as the LAN side answers.
+* **A `</dev/null` interactive ssh probe reports a healthy machine as broken.** dropbear
+  2025.89 closes the pty master as soon as either direction of the channel ends, so
+  `ssh -tt host cmd </dev/null` is dropped while a person logging in on the same machine gets a
+  prompt. [known-limitations.md](known-limitations.md) has the errno-level reason, the three
+  ways out, and the form a probe has to use instead.
 
 ## Network defaults on a real machine
 
@@ -891,8 +895,9 @@ The boot path is unchanged from `0.0.8`, and the first-boot network generation f
 
 * **First-boot generation, the upstream way.** `ab-net-seed`, at `S16` ahead of `S20network`,
   runs `/bin/board_detect` and `/bin/config_generate` when `/etc/config/network` is absent —
-  the same two programs an official ImmortalWrt image runs from preinit, which this image's
-  A/B initramfs replaces. `system` therefore carries upstream's hostname and timezone.
+  the same two programs an official ImmortalWrt image runs from preinit. This image runs
+  them itself instead of depending on that path, so a freshly written disk always has an
+  address. `system` therefore carries upstream's hostname and timezone.
 * **Four ports, one WAN.** `eth0` is the WAN (`dhcp`, plus `wan6`), `eth1` through `eth3` join
   `br-lan`. The port set is read from `/sys/class/net`, so a machine with fewer ports gets a
   smaller bridge and a single-port machine degrades to LAN-only.

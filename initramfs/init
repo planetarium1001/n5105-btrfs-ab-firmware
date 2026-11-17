@@ -25,18 +25,29 @@ set -u
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
+# /dev comes first, before the first `2>/dev/null` in this script: a shell output redirect
+# creates its target, so a missing /dev/null would become a regular file instead of a bit
+# bucket. The character nodes themselves are in this initramfs' cpio (the /dev contract in
+# /lib/wf.sh, asserted when the archive is built, the same list the production init uses);
+# wf_make_dev only repairs a node the unpacker could not create.
+if [ -r /lib/wf.sh ]; then
+    # shellcheck source=initramfs/lib/wf.sh
+    . /lib/wf.sh
+    if command -v wf_make_dev >/dev/null 2>&1; then
+        wf_make_dev /dev
+    fi
+fi
+
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 
-# Device nodes come from devtmpfs when the kernel has it, and from sysfs otherwise: the
-# upstream busybox in this initramfs has no mdev applet, and the kernel this repository
-# boots does not mount devtmpfs at all. wf_coldplug_dev (staged /lib/wf.sh) is the same
-# implementation the production init uses, so the two cannot drift.
-if [ -r /lib/wf.sh ]; then
-    . /lib/wf.sh
-fi
+# Block devices come from sysfs: which disks exist is only known at boot, so no archive
+# entry can carry them. The two attempts this function used to make first are gone rather
+# than left to fail quietly - this kernel has no devtmpfs (`mount -t devtmpfs` returns
+# ENODEV, the name is absent from /proc/filesystems, the kernel image has no devtmpfs code)
+# and the upstream busybox has no mdev applet. wf_coldplug_dev is the same implementation
+# the production init uses, so the two cannot drift.
 ensure_devices() {
-    mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
     [ -e "${DEV}" ] && return 0
     if command -v wf_coldplug_dev >/dev/null 2>&1; then
         wf_coldplug_dev /dev

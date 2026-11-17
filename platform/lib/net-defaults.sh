@@ -4,9 +4,10 @@
 # Why this file exists: the image consumes the upstream ImmortalWrt rootfs, which does
 # not ship /etc/config/network. Upstream generates it on first boot from a *preinit*
 # hook (lib/preinit/82_config_generate -> /bin/board_detect -> /bin/config_generate).
-# Our A/B initramfs replaces preinit entirely, so that hook never runs and a freshly
-# written disk comes up without an address. This file puts the same generation back,
-# once, and then applies the defaults this project ships on top of it:
+# This image does not depend on that path still holding: it composes the root itself
+# before /sbin/init runs, and a freshly written disk has to come up with an address.
+# So the same generation runs here, deterministically, once, and then this project's
+# defaults are applied on top of it:
 #
 #   * eth0 is the WAN (dhcp), every other physical eth* joins the br-lan bridge
 #   * br-lan is 192.168.100.1/24 (deliberately not 192.168.1.1: most home routers

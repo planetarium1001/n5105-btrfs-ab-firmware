@@ -177,11 +177,12 @@ ip addr add 192.168.100.1/24 dev eth1
 
 ## 已知限制
 
-* **`0.0.7` 之前刷的镜像首启没有网络。** `0.0.6` 及更早的版本替掉了上游负责生成 `/etc/config/network` 的 preinit，所以刚写好的盘在任何口上都没有地址、LAN 上没有 DHCP 服务，`dropbear` 还绑在一个不存在的接口上。唯一进去的路是控制台加手工 `uci`。这类镜像上健康检查还会报 `probe=wan-present result=fail`、永远写不出 `stage=commit`，但机器照样起来（`action=stay`）。`0.0.7` 是第一个自己生成网络的发布：重新刷镜像，不要在老镜像上打补丁。
+* **`0.0.7` 之前刷的镜像首启没有网络。** `0.0.6` 及更早的版本里，刚写好的盘没有 `/etc/config/network`，所以在任何口上都没有地址、LAN 上没有 DHCP 服务，`dropbear` 还绑在一个不存在的接口上。唯一进去的路是控制台加手工 `uci`。这类镜像上健康检查还会报 `probe=wan-present result=fail`、永远写不出 `stage=commit`，但机器照样起来（`action=stay`）。`0.0.7` 是第一个自己生成网络的发布：重新刷镜像，不要在老镜像上打补丁。
 * **口名是内核给的，不是丝印给的。** `eth0` 到 `eth3` 不一定对应机壳上的标号，镜像里也没有任何猜硬件的地方。每台机器都要做一遍下面的对照，并记下来。
 * **单口机不是路由器。** 种子会把它降级成 LAN-only（`stage=net-seed result=lan-only`）：唯一的口进 `br-lan`，`wan` 段被删掉。于是 `wan-present` 探针找不到 WAN 设备，那次启动不会提交该槽（`action=stay`）；LAN 侧照常可用。
 * **默认值只叠加一次。** 它们属于"生成配置的那次启动"。升级带着可写层一起走，不会重新叠加——这是有意的（你的改动优先），代价是改过的默认值只对重新写盘的机器生效。
 * **便利镜像会在 WAN 侧放开 `22/tcp`，而且没有东西替你关它。** 只有 `n5105-ab-<upstream>-install-wan-ssh.img.gz` 带 `allow_ssh_wan` 规则；默认镜像一条 WAN 规则都没有。在便利镜像上，那条规则与解绑的 `dropbear` 会一直留着，`dropbear` 也会用镜像里带的 root 口令接受密码认证。LAN 侧一旦能连，就把它关掉。
+* **用 `</dev/null` 驱动的交互 ssh 探针会把一台健康机器报成坏的。** dropbear 2025.89 在 channel 任一方向结束时立刻关掉 pty master，所以 `ssh -tt host cmd </dev/null` 会被断开，而同一个人手登录却拿得到提示符。[known-limitations.zh-CN.md](known-limitations.zh-CN.md) 写清了 errno 级的根因、三条出路，以及探针该用的形态。
 
 ## 真机上的网络默认值
 
@@ -710,7 +711,7 @@ ab-slot log --prev
 启动这条路与 `0.0.8` 相同，首启自动生成网络配置与 `0.0.7` 相同。那几版的内容，仍然是现在这一版的内容：
 
 * **上游同款的首启生成。** `ab-net-seed` 在 `S16`、早于 `S20network`；当 `/etc/config/network` 不存在时，它调用
-  `/bin/board_detect` 与 `/bin/config_generate`——就是官方 ImmortalWrt 镜像从 preinit 里跑的那两个程序，而本镜像的 A/B initramfs 替掉了那段 preinit。因此 `system` 里的主机名与时区是上游的。
+  `/bin/board_detect` 与 `/bin/config_generate`——就是官方 ImmortalWrt 镜像从 preinit 里跑的那两个程序。本镜像不等那条路，自己跑一遍，所以刚写好的盘一定有地址。因此 `system` 里的主机名与时区是上游的。
 * **四个口，一个 WAN。** `eth0` 做 WAN（`dhcp`，另有 `wan6`），`eth1` 到 `eth3` 进 `br-lan`。端口集合读自 `/sys/class/net`，所以口少的机器得到更小的桥，单口机降级为 LAN-only。
 * **LAN 上是 `192.168.100.1/24`**，由上游的 dnsmasq 发地址。这个网段刻意避开 `192.168.1.0/24`。
 * **WAN 侧只有便利镜像才放行 `22/tcp`。** 默认镜像什么都不开：`wan` zone 保持 `input 'REJECT'`，`dropbear` 保持上游的绑定 `lan`。`-wan-ssh` 镜像多一条 `allow_ssh_wan` 规则并把 `dropbear.Interface` 置空，好让规则真的能摸到守护进程。两个镜像里 LuCI 的 `80/tcp` 都不进 WAN。这是构建期常量：便利镜像就是同一条流水线带 `CI_NET_WAN_SSH=open`。

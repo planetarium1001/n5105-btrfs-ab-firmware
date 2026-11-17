@@ -71,15 +71,209 @@ WF_SERIAL="${WF_SERIAL:-/dev/ttyS0}"
 WF_SYS_BLOCK="${WF_SYS_BLOCK:-/sys/class/block}"
 WF_CONSOLES="${WF_CONSOLES:-/proc/consoles}"
 
+# --------------------------------------------------------------------------- #
+# The /dev contract
+# --------------------------------------------------------------------------- #
+#
+# This initramfs runs before the composed root exists, so for that window it owns /dev and
+# nobody else does. Neither of the two usual helpers is available: this kernel has no
+# devtmpfs (mount -t devtmpfs fails with ENODEV, `devtmpfs` is absent from
+# /proc/filesystems, and the kernel image carries no devtmpfs code) and the upstream
+# busybox has no mdev applet. Every node therefore has one of two owners, and the list
+# below is the single place that says which one:
+#
+#   ours    the entry is shipped inside this initramfs' own cpio and wf_make_dev creates
+#           it at boot when it is missing or is not the node it has to be.
+#           scripts/ci/initramfs.sh generates exactly these entries into the archive (as
+#           dev/<name>) and fails the build when one is missing; it reads this file to get
+#           the list, so the two sides cannot drift.
+#   kernel  the kernel's own built-in initramfs already carries it. /dev/console is the
+#           one node that is not in our archive at all: the kernel's 3-entry initramfs
+#           (`dev`, `dev/console` char 5:1 mode 0600, `root`) is unpacked before ours, and
+#           console_on_rootfs() dups PID1's stdin/stdout/stderr from that inode before
+#           /init is exec'd. We assert it, we never replace it.
+#
+# The names are relative to /dev: `null` is /dev/null and `dev/null` inside the archive.
+# The directory itself is not an entry of this list - both sides check it separately,
+# because it is the one thing nothing else can be created without.
+#
+# Format: <name>:<type>:<owner>:<major>:<minor>:<octal mode>, space separated. It has to
+# stay on one line because scripts/ci/initramfs.sh reads it back with sed.
+#
+# Why the extra node checks are not paranoia: a missing /dev/null does not fail loudly.
+# A shell output redirect (`2>/dev/null`, used all over this initramfs) creates its target
+# with O_CREAT, so the first one silently leaves a *regular file* named /dev/null in the
+# ramfs. That is why the old `[ -e /dev/null ]` gate never fired, and why the output meant
+# for the bit bucket was written into memory instead. Reproduced on the reference device
+# with the same busybox (2026-11-17).
+WF_DEV_CONTRACT="console:char:kernel:5:1:0600 null:char:ours:1:3:0666 zero:char:ours:1:5:0666 urandom:char:ours:1:9:0666 ttyS0:char:ours:4:64:0660"
+
+# Overridable for tests: the programs the contract needs, and the one listing that tells a
+# node apart from a regular file left behind by a redirect and from nothing at all.
+WF_LS="${WF_LS:-ls}"
+WF_MKNOD="${WF_MKNOD:-mknod}"
+WF_RM="${WF_RM:-rm}"
+WF_CHMOD="${WF_CHMOD:-chmod}"
+WF_FILESYSTEMS="${WF_FILESYSTEMS:-/proc/filesystems}"
+
+# wf_dev_split <spec>: split one contract entry into the wf_ds_* variables.
+wf_dev_split() {
+    wf_ds_name="${1%%:*}"
+    wf_ds_rest="${1#*:}"
+    wf_ds_type="${wf_ds_rest%%:*}"
+    wf_ds_rest="${wf_ds_rest#*:}"
+    wf_ds_owner="${wf_ds_rest%%:*}"
+    wf_ds_rest="${wf_ds_rest#*:}"
+    wf_ds_major="${wf_ds_rest%%:*}"
+    wf_ds_rest="${wf_ds_rest#*:}"
+    wf_ds_minor="${wf_ds_rest%%:*}"
+    wf_ds_mode="${wf_ds_rest#*:}"
+    return 0
+}
+
+# wf_dev_describe <path>: "<file type> <major>:<minor>" for one path, or nothing when
+# there is nothing there. The major:minor of a node is only readable from `ls -l` (there
+# is no stat applet in the toolset), and its device field is either "1," + "3" or "1,3"
+# depending on the ls that produced it, so both spellings are folded into "1:3". Nothing
+# else on an ls -l line carries a comma, so the field is unambiguous.
+#
+# The -d is not optional: `ls -l <directory>` lists the directory's *contents*, so without
+# it the first child of /dev would answer for /dev itself.
+wf_dev_describe() {
+    "${WF_LS}" -ld "$1" 2>/dev/null | awk '
+        NR > 1 { exit }
+        {
+            ids = ""
+            for (i = 2; i <= NF; i++) {
+                if ($i ~ /^[0-9]+,$/) { ids = $i $(i + 1); break }
+                if ($i ~ /^[0-9]+,[0-9]+$/) { ids = $i; break }
+            }
+            gsub(",", ":", ids)
+            print substr($1, 1, 1) " " ids
+        }'
+}
+
+# wf_dev_found <type>: name a file type for a log line. Empty means "nothing there".
+wf_dev_found() {
+    case "$1" in
+        "") printf 'nothing' ;;
+        -) printf 'a regular file' ;;
+        l) printf 'a symlink' ;;
+        d) printf 'a directory' ;;
+        c) printf 'a character device' ;;
+        b) printf 'a block device' ;;
+        p) printf 'a named pipe' ;;
+        s) printf 'a socket' ;;
+        *) printf 'file type %s' "$1" ;;
+    esac
+    return 0
+}
+
+# wf_make_dev [dir]: create every "ours" entry of the contract, repair the rest.
+#
+# Call this before anything redirects to /dev/null: an output redirect would create that
+# path as a regular file, and then mknod could not take the name. A path that already
+# carries the right node is left byte-for-byte alone - /dev/console in particular is
+# never touched, its inode is PID1's stdio - and a path that carries the wrong kind of
+# file is removed first, which is the case this function exists for.
+wf_make_dev() {
+    wf_md_dir="${1:-/dev}"
+    if [ ! -d "${wf_md_dir}" ]; then
+        mkdir -p "${wf_md_dir}" 2>/dev/null || return 0
+    fi
+    for wf_md_spec in ${WF_DEV_CONTRACT}; do
+        wf_dev_split "${wf_md_spec}"
+        [ "${wf_ds_owner}" = "ours" ] || continue
+        # The list carries character nodes only; a new type would need its own branch here
+        # and in scripts/ci/initramfs.sh, so anything else is left to the assertion below
+        # to report instead of being created on a guess.
+        case "${wf_ds_type}" in
+            char) ;;
+            *) continue ;;
+        esac
+        wf_md_path="${wf_md_dir}/${wf_ds_name}"
+        wf_md_have="$(wf_dev_describe "${wf_md_path}")"
+        if [ "${wf_md_have}" = "c ${wf_ds_major}:${wf_ds_minor}" ]; then
+            continue
+        fi
+        # The listing is the authority on "something is in the way": it names a regular
+        # file, a directory or a node with the wrong numbers in exactly the cases mknod
+        # would refuse the name.
+        if [ -n "${wf_md_have}" ]; then
+            "${WF_RM}" -f "${wf_md_path}" 2>/dev/null || :
+        fi
+        "${WF_MKNOD}" "${wf_md_path}" c "${wf_ds_major}" "${wf_ds_minor}" \
+            2>/dev/null || continue
+        "${WF_CHMOD}" "${wf_ds_mode}" "${wf_md_path}" 2>/dev/null || :
+    done
+    return 0
+}
+
+# wf_assert_dev [dir]: check every entry of the contract, ours and the kernel's.
+#
+# One line per entry that is missing or is the wrong node - expected versus found, so the
+# log says which node and which number is wrong - followed by the kernel's filesystem
+# table, and a non-zero return. The caller fails the boot after dumping the directory, so
+# a broken /dev is diagnosable from the serial log alone.
+wf_assert_dev() {
+    wf_ad_dir="${1:-/dev}"
+    wf_ad_bad=0
+    wf_ad_dirline="$(wf_dev_describe "${wf_ad_dir}")"
+    if [ "${wf_ad_dirline%% *}" != "d" ]; then
+        wf_log "dev-contract: ${wf_ad_dir} expected a directory, found $(wf_dev_found "${wf_ad_dirline%% *}")"
+        wf_ad_bad=$((wf_ad_bad + 1))
+    fi
+    for wf_ad_spec in ${WF_DEV_CONTRACT}; do
+        wf_dev_split "${wf_ad_spec}"
+        wf_ad_path="${wf_ad_dir}/${wf_ds_name}"
+        wf_ad_have="$(wf_dev_describe "${wf_ad_path}")"
+        wf_ad_kind="${wf_ad_have%% *}"
+        wf_ad_ids=""
+        if [ "${wf_ad_have}" != "${wf_ad_kind}" ]; then
+            wf_ad_ids="${wf_ad_have#* }"
+        fi
+        case "${wf_ds_type}" in
+            dir)
+                if [ "${wf_ad_kind}" != "d" ]; then
+                    wf_log "dev-contract: ${wf_ad_path} expected a directory (${wf_ds_owner}), found $(wf_dev_found "${wf_ad_kind}")"
+                    wf_ad_bad=$((wf_ad_bad + 1))
+                fi
+                ;;
+            char)
+                if [ "${wf_ad_kind}" != "c" ]; then
+                    wf_log "dev-contract: ${wf_ad_path} expected a character device ${wf_ds_major}:${wf_ds_minor} (${wf_ds_owner}), found $(wf_dev_found "${wf_ad_kind}")"
+                    wf_ad_bad=$((wf_ad_bad + 1))
+                elif [ "${wf_ad_ids}" != "${wf_ds_major}:${wf_ds_minor}" ]; then
+                    wf_log "dev-contract: ${wf_ad_path} expected ${wf_ds_major}:${wf_ds_minor} (${wf_ds_owner}), found ${wf_ad_ids}"
+                    wf_ad_bad=$((wf_ad_bad + 1))
+                fi
+                ;;
+        esac
+    done
+    if [ "${wf_ad_bad}" -gt 0 ]; then
+        wf_log "dev-contract: ${wf_ad_bad} entr(y/ies) missing or wrong; /proc/filesystems: $(tr '\n' ' ' <"${WF_FILESYSTEMS}" 2>/dev/null)"
+        return 1
+    fi
+    return 0
+}
+
+# wf_dev_dump [dir]: every entry of the directory, one log line each. Used on the failure
+# path, where the whole listing is the evidence and a comma-joined single line is not.
+wf_dev_dump() {
+    "${WF_LS}" -l "${1:-/dev}" 2>/dev/null | while IFS= read -r wf_dd_line; do
+        wf_log "${wf_dd_line}"
+    done
+    return 0
+}
+
 # wf_coldplug_dev [dir]: create the block device nodes the kernel already knows about.
 #
-# This kernel ships without devtmpfs (it is not in /proc/filesystems) and the upstream
-# busybox has no mdev applet, so /dev holds only the two nodes the kernel unpacks out of
-# the initramfs archive (`console`, `null`). The nodes are therefore built from sysfs by
-# hand: every /sys/class/block/<name>/dev holds "<major>:<minor>", which is exactly the
-# walk `mdev -s` used to do. Call it again after a partition table rewrite, because the
-# kernel publishes the new partition kobjects at that point and nothing creates their
-# nodes for us.
+# Only block devices, and only for the initramfs window: the composed root's procd mounts
+# its own tmpfs on /dev and builds every node it needs from sysfs, so nothing created here
+# is visible after switch_root. Every /sys/class/block/<name>/dev holds "<major>:<minor>",
+# which is the walk `mdev -s` did on kernels that had that applet; this busybox does not.
+# Call it again after a partition table rewrite, because the kernel publishes the new
+# partition kobjects at that point and nothing creates their nodes for us.
 wf_coldplug_dev() {
     wf_cd_dir="${1:-/dev}"
     [ -d "${wf_cd_dir}" ] || mkdir -p "${wf_cd_dir}"
@@ -94,7 +288,8 @@ wf_coldplug_dev() {
         wf_cd_minor="${wf_cd_numbers##*:}"
         case "${wf_cd_major}" in ""|*[!0-9]*) continue ;; esac
         case "${wf_cd_minor}" in ""|*[!0-9]*) continue ;; esac
-        mknod "${wf_cd_dir}/${wf_cd_name}" b "${wf_cd_major}" "${wf_cd_minor}" 2>/dev/null || true
+        "${WF_MKNOD}" "${wf_cd_dir}/${wf_cd_name}" b "${wf_cd_major}" "${wf_cd_minor}" \
+            2>/dev/null || true
     done
     return 0
 }

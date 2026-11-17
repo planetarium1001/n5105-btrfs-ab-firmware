@@ -19,6 +19,7 @@
 | [network.zh-CN.md](network.zh-CN.md) | 首启网络生成、出厂默认值（WAN 口、桥端口、LAN 网段）、怎么改、WAN SSH 例外 |
 | [debug-ssh.zh-CN.md](debug-ssh.zh-CN.md) | 人工交互调试入口：触发、连接、已备好的产物、会话时长、安全、为什么它不是门禁 |
 | [backup.zh-CN.md](backup.zh-CN.md) | 三种产物各自能恢复到多大的盘、整盘镜像为什么在更小的盘上写入即失败、恢复决策树（路径 A–D），以及 `ab-backup` / `ab-restore` 往包里装什么 |
+| [known-limitations.zh-CN.md](known-limitations.zh-CN.md) | 本项目决定不改的行为及其取证：dropbear 2025.89 上的交互式 SSH 登录（三行 pty 报错的语义、何时发生、三条出路），以及交互探针必须使用的形态 |
 
 ## 约定
 

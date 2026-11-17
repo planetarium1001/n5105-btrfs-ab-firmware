@@ -2,9 +2,10 @@
 # ab-net-seed - first-boot network generation, before netifd starts.
 #
 # The image's writable layer comes up empty, and the upstream rootfs deliberately does
-# not carry /etc/config/network: upstream generates it in preinit, and this image
-# replaces preinit with the A/B initramfs. Without this hook a freshly written disk has
-# no address at all, and the wan-present health probe has nothing to look at.
+# not carry /etc/config/network: upstream generates it in preinit. This image composes
+# its own root before /sbin/init runs, so it does not leave that up to the upstream
+# path: without this hook a freshly written disk has no address at all, and the
+# wan-present health probe has nothing to look at.
 #
 # The work itself lives in platform/lib/net-defaults.sh; this file only decides when it
 # runs and where the result is reported:

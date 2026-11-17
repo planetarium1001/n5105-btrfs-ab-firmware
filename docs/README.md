@@ -19,6 +19,7 @@ Each document covers one topic. Every number is either measured or has an explic
 | [network.md](network.md) | First-boot network generation, the shipped defaults (WAN port, bridge ports, LAN subnet), how to change them, and the WAN SSH exception |
 | [debug-ssh.md](debug-ssh.md) | Manual interactive debugging entry point: trigger, connection, prepared artifacts, session bounds, security, why it is not a gate |
 | [backup.md](backup.md) | The three products and the capacity each one can be restored to, why a whole-disk image fails on a smaller disk, the restore decision tree (paths A-D), and what `ab-backup` / `ab-restore` put in a package |
+| [known-limitations.md](known-limitations.md) | Behaviour this project decided not to change, and the evidence behind that decision: interactive SSH login on dropbear 2025.89 (what the three pty errors mean, when it happens, the three ways out), and the form every interactive probe has to use |
 
 ## Conventions
 

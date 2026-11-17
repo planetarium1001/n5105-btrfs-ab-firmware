@@ -46,6 +46,8 @@ scripts/device/full-test.sh --yes --task <id> --expect 0.0.12 --payload-dir <dir
 `ControlMaster=no`、`ControlPath=none` 与忽略 `known_hosts`：重刷过的机器会换主机密钥，
 而跑驱动的沙箱没有可写的 `~/.ssh`。
 
+交互登录与上面这些非交互调用是两个问题，它有自己的驱动：`scripts/device/login-probe.sh` 在整个会话期间保持客户端 stdin 打开——因为把 `/dev/null` 重定向进 `ssh -tt` 的探针在这个镜像上会报假失败（dropbear 2025.89，见 [known-limitations.zh-CN.md](known-limitations.zh-CN.md)）。
+
 ## 用户场景
 
 `scenarios.sh` 回答的是另一个问题：用户装过软件、写过数据、改过设置之后，跨版本跳变还能不能保住这些，

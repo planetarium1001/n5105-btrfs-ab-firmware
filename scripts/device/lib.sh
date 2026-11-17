@@ -6,6 +6,7 @@
 #
 #   . scripts/device/lib.sh
 #   dev_status                                 # one machine readable line
+#   dev_ssh_tty 8 'readlink /proc/$$/fd/0'     # interactive: pty, stdin kept open
 #   dev_push payload.tar /tmp/payload.tar      # stdin pipe, the guest has no sftp
 #   dev_install /tmp/payload.tar               # ab-upgrade
 #   dev_reboot; dev_wait_up_after after-install
@@ -35,6 +36,10 @@ AB_HOST=${AB_HOST:-root@192.168.2.49}
 # fails as "Permission denied" and dev_wait_up reports it as "machine is down".
 AB_KEY=${AB_KEY:-${AB_REPO_ROOT}/.workflow/secrets/n5105-device-ssh-key}
 AB_SSH_CONNECT_TIMEOUT=${AB_SSH_CONNECT_TIMEOUT:-8}
+# How long dev_ssh_tty keeps the client stdio open, in seconds. It is the session clock of
+# an interactive probe: the pty lives exactly as long as this hold, so a probe that needs
+# the login shell to print a prompt gives it a few seconds, not a fixed minute.
+AB_SSH_TTY_HOLD=${AB_SSH_TTY_HOLD:-8}
 
 AB_REMOTE_TMP=${AB_REMOTE_TMP:-/tmp}
 AB_P4_MOUNT=${AB_P4_MOUNT:-/mnt/p4}
@@ -158,6 +163,77 @@ dev_ssh() {
         return 0
     fi
     ssh -i "${AB_KEY}" \
+        -o IdentitiesOnly=yes \
+        -o PreferredAuthentications=publickey \
+        -o PubkeyAuthentication=yes \
+        -o ControlMaster=no \
+        -o ControlPath=none \
+        -o BatchMode=yes \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o "ConnectTimeout=${AB_SSH_CONNECT_TIMEOUT}" \
+        "${AB_HOST}" "$@"
+}
+
+# dev_ssh_tty <hold_s> <cmd...>: one ssh call over a pty, driven the way a person drives
+# it. This is the only form a probe of interactive login may use.
+#
+#   dev_ssh_tty 8 'readlink /proc/$$/fd/0'    # pty facts, exits when the command ends
+#   dev_ssh_tty 8                             # no command = login shell; the hold ends it
+#
+# Why the stdin keeper and not `</dev/null`
+# -----------------------------------------
+# The device runs dropbear 2025.89 (ImmortalWrt 25.12.2). Commit e28ba1b "Don't try to
+# shutdown() a pty" changed the pty channel to `channel->bidir_fd = 0` (svr-chansession.c),
+# and `close_chan_fd()` in common-channel.c then calls `m_close()` instead of `shutdown()`
+# as soon as *either* direction of the channel is finished. A client whose stdin is already
+# at EOF - `</dev/null`, or a heredoc, or any redirect of an empty file - finishes the write
+# direction before the child has run `setsid()` + `TIOCSCTTY`, so dropbear closes the pty
+# master first and the child lands on a tty that is already gone. Upstream bug report:
+# mkj/dropbear#365, still open; the behaviour is in dropbear master too.
+#
+# The three errors that follow are pinned to that single cause, measured on the reference
+# machine on 2026-11-17 (task 20261117-03, research/agent-3.md: the errno-by-errno kernel
+# source reading, the sampling of the slave node appearing and being unlinked, and the
+# controlled comparison that changed only the stdin the client offered). The same reasoning
+# without the task-local evidence is in docs/known-limitations.md:
+#
+#   ioctl(TIOCSCTTY): I/O error       EIO from tiocsctty() can only come from
+#                                     hung_up_tty_ioctl(): the tty is already hung up
+#   /dev/pts/N: No such file...       ENOENT for a devpts slave can only come from
+#                                     devpts_pty_kill(), i.e. the master was released
+#   open /dev/tty failed - ENXIO      "no controlling terminal", a consequence, not a cause
+#
+# So `/dev/pts`, `/dev/ptmx` and `/dev/tty` are fine, and no amount of device-node work in
+# an initramfs changes the outcome: procd owns the runtime /dev and rebuilds it. A client
+# whose stdin stays open for the length of the session - a person's terminal, or the keeper
+# below - gets a prompt on the same machine.
+#
+# Why `sleep N | ssh -tt`, and not `< <(sleep N)`
+# ----------------------------------------------
+# scripts/device/*.sh are POSIX sh and run under dash in CI (tests/modules/device/
+# test_device_scripts_posix.sh enforces it), so process substitution is not available. A
+# `sleep` at the head of a pipeline holds the write end of the pipe open for N seconds and
+# writes nothing, which is exactly what `<(sleep N)` provides: an stdin that is open, empty
+# and not at EOF. The pipeline exits with ssh's status; the call lasts up to <hold_s>
+# seconds even when the remote side finishes sooner, which is the bound, not a delay.
+#
+# /dev/null appears in this file only as the value of UserKnownHostsFile, never as stdin.
+dev_ssh_tty() {
+    _tty_hold=${1:-${AB_SSH_TTY_HOLD}}
+    if [ $# -gt 0 ]; then
+        shift
+    fi
+    case "${_tty_hold}" in
+        '' | *[!0-9]*) _tty_hold=${AB_SSH_TTY_HOLD} ;;
+    esac
+    [ "${_tty_hold}" -ge 1 ] || _tty_hold=1
+    if [ "${AB_DRY_RUN:-0}" = "1" ]; then
+        printf 'dry-run: sleep %s | ssh -tt %s %s\n' "${_tty_hold}" "${AB_HOST}" "$*" >&2
+        return 0
+    fi
+    sleep "${_tty_hold}" | ssh -i "${AB_KEY}" \
+        -tt \
         -o IdentitiesOnly=yes \
         -o PreferredAuthentications=publickey \
         -o PubkeyAuthentication=yes \

@@ -89,31 +89,47 @@ P4_RESIZE_MOUNT=/mnt/p4resize
 # scripts/ci/initramfs.sh). Named once here so the handover below asks a single question -
 # "is it in this initramfs" - and so a test can point it somewhere else.
 WF_POST_HOOK="${WF_POST_HOOK:-/s3-post.sh}"
-for arg in $(cat /proc/cmdline); do
-    case "${arg}" in
-        wf.boot=*) BOOT="${arg#wf.boot=}" ;;
-    esac
-done
 
 . /lib/wf.sh
 . /lib/grow.sh
 . /lib/disk-identity.sh
 . /lib/esp-health.sh
 
-wf_log "S3 layered boot, boot ${BOOT}"
-
+# /dev first, before anything below redirects into it. The list lives in /lib/wf.sh
+# (WF_DEV_CONTRACT) and names an owner for every node: the entries this initramfs ships
+# in its own cpio, and /dev/console, which the kernel's own built-in initramfs provides
+# and which this init must never replace because PID1's stdio is that inode.
+#
+# This has to run before the first `2>/dev/null`: a shell output redirect creates its
+# target with O_CREAT, so a missing /dev/null silently turns into a regular file. That is
+# exactly what used to happen here: the existence-only gate this replaced passed on such
+# a regular file, and the output meant for the bit bucket was written into ramfs.
+wf_make_dev /dev
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
-# Device nodes: devtmpfs when the kernel has it, otherwise built from sysfs. This kernel
-# does not mount devtmpfs and the upstream busybox has no mdev applet, so the sysfs walk
-# is the path that actually runs. wf_coldplug_dev is called again after the partition
-# table is rewritten, because the grow step needs the new partition node.
-mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+# The command line is read only now, after /proc exists: read any earlier, `cat
+# /proc/cmdline` returns nothing and wf.boot= silently stays at its default. /proc/consoles
+# is the same story - it is what tells wf_say whether stdout already reaches the serial
+# port, so a milestone logged before this point is mirrored a second time.
+for arg in $(cat /proc/cmdline); do
+    case "${arg}" in
+        wf.boot=*) BOOT="${arg#wf.boot=}" ;;
+    esac
+done
+
+wf_log "S3 layered boot, boot ${BOOT}"
+# The block devices are the one part of /dev no cpio entry can carry: which disks exist is
+# only known at boot, so they come from sysfs. Called again after the partition table is
+# rewritten, because the grow step needs the new partition node.
 wf_coldplug_dev /dev
-if [ ! -e /dev/null ]; then
-    wf_log "no /dev/null after the sysfs coldplug; /proc/filesystems: $(tr '\n' ' ' </proc/filesystems 2>/dev/null)"
-    wf_log "/dev entries: $(ls /dev 2>/dev/null | tr '\n' ' ')"
-    wf_fail no-dev-directory
+# Assert the whole contract now that both owners have acted. A missing or wrong node is
+# reported entry by entry with expected versus found, then the directory is dumped and the
+# boot stops: mounting partitions on a /dev nobody can open only fails later and worse.
+if ! wf_assert_dev /dev; then
+    wf_log "/dev listing:"
+    wf_dev_dump /dev
+    wf_fail dev-contract
 fi
 mkdir -p /mnt /newroot
 

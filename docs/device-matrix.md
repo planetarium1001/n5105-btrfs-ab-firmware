@@ -53,6 +53,11 @@ The SSH call always uses `ControlMaster=no`, `ControlPath=none` and an ignored
 `known_hosts`: a reflashed machine presents a new host key, and the sandbox that runs the
 driver has no writable `~/.ssh`.
 
+An interactive login is a separate question from these non-interactive calls, and it has its
+own driver: `scripts/device/login-probe.sh` keeps the client stdin open for the whole session,
+because a probe that redirects `/dev/null` into `ssh -tt` reports a false failure on this image
+(dropbear 2025.89; see [known-limitations.md](known-limitations.md)).
+
 ## User scenarios
 
 `scenarios.sh` answers a different question: the user installed packages, wrote files,
