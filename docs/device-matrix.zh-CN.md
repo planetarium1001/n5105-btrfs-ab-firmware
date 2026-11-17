@@ -72,6 +72,25 @@ scripts/device/full-test.sh --yes --task <id> --expect 0.0.12 --payload-dir <dir
 ABI 只报告不判定：换了内核后 kmod 不匹配在 apk 世界是正常行为，因此记成 `FINDING:` 并附重装清单，
 不单独改变任何 verdict。
 
+## 社区软件样本（第二轮）
+
+第一轮证明的是「机器上只有验收套件自己装的五个包」时的 A/B 事务。真实机器不是那样：用户会装 LuCI 主题、
+软件站、代理类应用，还会改这些应用自己的 `/etc/config`。第二轮把这层装上再跳版本，回答一个问题——
+事务是否仍然 commit，样本是否保住自己的配置。
+
+- `scripts/device/software-probe.sh` 安装 `tests/fixtures/software-samples.json` 里列的样本
+  （`--manifest` 换清单，`--sample` 只跑一个）。每个样本一行：装上就记 PASS 与落到的版本，
+  装不上记 GAP 并给出原因与重跑命令——第三方源挂了、或内核模块 ABI 与本机不符，都算 GAP，永远不算 PASS。
+- `--baseline <tag>` 在跳版本前记录、`--compare <tag>` 在跳版本后比对样本**自己的配置**（取值而不只是文件哈希），
+  用的是其它驱动同一套快照助手。配置漂移会写进证据：它是本轮的发现，不是把已 commit 的一跳判红的理由。
+- `--cleanup` 移除样本、它们的配置与加进去的源，机器回到产品基线。第三方源只写在设备侧
+  `/etc/apk/repositories.d/`，**不**进镜像、不进 payload、也不改 `scripts/ci/net-defaults.conf.in`。
+- `scripts/device/badconfig-probe.sh` 写一份「人真的能写出来」的坏配置（坏的 `daemon.json`、坏的 UCI 段、
+  fw4 只警告的防火墙规则、假订阅地址），并且分开判两件事：谁拒绝了它／谁恢复了它，以及有没有别的东西被连累。
+
+两条限制先说清，不等跑完才发现：样本清单**只用 25.x**，24.x 是 opkg，结论不可迁移；样本是测试夹具，
+不是产品内容——仓库里没有任何东西依赖它们，装不装样本，发布资产的字节完全一样。
+
 ## 全套验收：一个顺序、一个结论
 
 `full-test.sh` 把上面这些驱动，加上两个各自只回答一个问题的新驱动

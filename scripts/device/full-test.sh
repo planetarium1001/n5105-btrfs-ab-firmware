@@ -8,6 +8,9 @@
 #   matrix.sh          M1..M7  does a version jump keep a bootable machine
 #   scenarios.sh       S1..S8  does the user's data and software survive it
 #   docker-probe.sh    D1  then D2+D3  a real docker payload across the hop
+#   software-probe.sh  the community samples install on 25.x and keep their own config
+#   badconfig-probe.sh fake and broken configurations, and whether anything else reacted
+#   matrix-round2.sh   the platform rise then the base down/up chain, with samples on board
 #   package-revert.sh  P1..P4/U1  the package snapshot and the offline way back
 #   recovery-probe.sh  R1/B1   a bad version rolls itself back; `ab-slot rollback`
 #   power-cut.sh       I1..I2  an interrupted candidate boot is not retried forever
@@ -95,6 +98,19 @@ export AB_REPO_ROOT
 #   docker-after        D2 and D3, immediately after the jumps they judge: did the images,
 #                       the container's and volume's bytes, and the subvolume identities
 #                       survive the upgrade and the downgrade
+#   software            the community samples (LuCI theme, software station, proxy app) are
+#                       installed HERE and not earlier: they go on the release the jumps
+#                       above landed on, which is the state a user actually installs things
+#                       on, and installing them before the jumps would make every scenario
+#                       row above judge a machine that is no longer the product baseline
+#   badconfig           right after software, because the broken /etc/config/<app>, the
+#                       broken daemon.json and the fake subscription are the samples' own
+#                       files: before software there is nothing to break, and after matrix2
+#                       a broken configuration would be carried across a boot
+#   matrix2             the round-2 chain: platform rise, base down 25.12.2->1->0, base up
+#                       0->1->2. It runs last of the three because it is what carries the
+#                       samples and their configs across the hops, and because it writes
+#                       slots and reboots the machine (it is in DESTRUCTIVE_PHASES)
 #   package-revert      P1..P4 (U1 only by name: it upgrades the machine's packages)
 #   recovery, power-cut the destructive pair: a bad version rolls back, an interrupted
 #                       candidate is not retried for ever
@@ -111,19 +127,26 @@ export AB_REPO_ROOT
 # docker and docker-after are one script in two windows, not two scripts: D1 writes
 # <results>/docker-snapshots/before.snapshot, docker-after reads it and writes after.snapshot
 # in the same directory. Neither one switches a slot or reboots.
-PHASES="preflight probes feed-install docker matrix scenarios docker-after package-revert recovery power-cut release audit"
+PHASES="preflight probes feed-install docker matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
 # A phase that writes a slot, reboots the machine, or both. docker, docker-after and release
 # are deliberately NOT here: docker-probe.sh keeps its images, container, committed image and
 # named volume in the docker store (@docker, under /opt/docker) plus logs under /tmp, and it
 # writes no slot, no ESP entry and no boot decision; release-verify.sh does not reach a
-# machine at all.
-DESTRUCTIVE_PHASES="matrix recovery power-cut"
+# machine at all. software and badconfig are not here either: software-probe.sh installs
+# packages and writes /etc/config/<app> on the running system, badconfig-probe.sh injects and
+# restores those same files, and neither installs a payload, writes a slot or reboots.
+# matrix2 IS here: it is the round-2 chain of payload installs, so it writes slots and
+# reboots like matrix.sh, and a run without --yes must record a GAP rather than jump.
+DESTRUCTIVE_PHASES="matrix matrix2 recovery power-cut"
 # Phases whose "no verdict" exit (3) is a GAP and not a FAIL: the question could not be put
 # to the machine or to the network (a dead mirror, an unreachable release, a machine that was
 # not in a state the case needs). A GAP is still not a pass, but it must not turn the whole
 # round red - PRD risk 3 says a mirror outage is not a defect of this product. matrix,
 # scenarios, package-revert, recovery and power-cut keep their own meaning of exit 3 (the red
-# line stopped the run) and stay FAIL when they write no row.
+# line stopped the run) and stay FAIL when they write no row. software, badconfig and matrix2
+# are in the same group as matrix: their exit 3 is the red line that stopped the run (a
+# 24.x/opkg machine, a sample layer that cannot be installed at all), which is a FAIL of the
+# round and not a GAP; a missing precondition is exit 4, which is a GAP for every phase.
 GAP_EXIT_PHASES="feed-install docker docker-after release"
 # The probes a caller may name with --only; probes.sh owns these names.
 PROBE_NAMES="grow network wan22 key platform adapter initrd packages"
@@ -151,6 +174,11 @@ ONLY_CASES=""
 ASSUME_YES=0
 DRY_RUN=0
 PREFLIGHT_ONLY=0
+# --list: print the phases and exit before anything else is decided. It is the one flag that
+# answers "which phases exist, in which order" without a plan, a results directory or a
+# machine, and it reads the same PHASES string the run loop reads - a second copy of the
+# order would be a list that answers for phases the run does not have.
+LIST_ONLY=0
 # Set by the run loop when R1's payload is not on this host: recovery-probe.sh is then asked
 # for the remaining cases only, and R1 is recorded as the GAP it is (see _recovery_payload_gap).
 _RECOVERY_SKIP_R1=0
@@ -167,15 +195,19 @@ LOG=""
 
 usage() {
     cat <<'USAGE'
-usage: full-test.sh [--dry-run] [--preflight-only] [--from PHASE] [--stop-after PHASE]
-                    [--only CASE]... [--results DIR] [--payload-dir DIR] [--task ID]
-                    [--expect VERSION] [--yes]
+usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
+                    [--stop-after PHASE] [--only CASE]... [--results DIR]
+                    [--payload-dir DIR] [--task ID] [--expect VERSION] [--yes]
 
   Runs the device acceptance suite in one order:
-      preflight probes feed-install matrix scenarios docker package-revert
-      recovery power-cut docker-after release audit
+      preflight probes feed-install docker matrix scenarios docker-after
+      software badconfig matrix2 package-revert recovery power-cut release audit
 
   --help               print this and exit 0
+  --list               print the phases in the order they run, one per line, and exit;
+                       nothing is executed, no results directory is made and no machine
+                       is contacted. This is also the answer to "which phases exist":
+                       a phase missing from this list is not registered at all
   --dry-run            print the plan for every phase and exit; nothing is executed and
                        no file is written
   --preflight-only     run preflight and stop there; its rows are the whole result
@@ -186,22 +218,26 @@ usage: full-test.sh [--dry-run] [--preflight-only] [--from PHASE] [--stop-after 
                          I1/I2 power-cut    ac-12/ac-13/ac-3 feed-install
                          verdict/sums/index release              grow/network/... probes
                          (feed-install also takes check, install, pin, both and all)
+                       software/badconfig/matrix2 are named by the phase itself
   --stop-after PHASE   stop once PHASE has run
   --results DIR        where <phase>.log, <phase>.tsv, verdict.tsv, summary.txt, the
-                       docker snapshots and the release assets go (default: results)
+                       docker snapshots, the release assets and the bad-config defect
+                       list (badconfig-defects.tsv) go (default: results)
   --payload-dir DIR    directory holding payload-<version>.tar; preflight refuses to
-                       start when it is given and holds no payload-*.tar. The recovery
-                       phase takes R1's candidate from here as payload-<VERSION>.tar
+                       start when it is given and holds no payload-*.tar. matrix,
+                       scenarios and matrix2 jump from here, and the recovery phase takes
+                       R1's candidate from here as payload-<VERSION>.tar
   --task ID            the task whose evidence the audit phase reads (also AB_TASK_ID).
                        Without one the audit is a GAP row: it will not read the previous
                        round's record just because that id is still around
   --expect VERSION     the candidate the feed is expected to offer (feed-install.sh
                        --expect, and the tag the release phase reads). It also names the
                        payload R1 installs: payload-<VERSION>.tar. Default: the drivers' own
-  --yes                allow the destructive phases (matrix, recovery, power-cut);
-                       without it they ask for a typed `yes` and are recorded as GAP
-                       when refused. docker, docker-after and release never write a slot
-                       and never reboot, so they are not in that set
+  --yes                allow the destructive phases (matrix, matrix2, recovery,
+                       power-cut); without it they ask for a typed `yes` and are recorded
+                       as GAP when refused. docker, docker-after, release, software and
+                       badconfig never write a slot and never reboot, so they are not in
+                       that set
 
   A phase that already has only PASS rows in its results file is skipped, so a rerun
   continues where the last one stopped. Remove results/<phase>.tsv to force a phase.
@@ -248,6 +284,12 @@ _phase_script() {
         # One driver, two windows: D1 before the switches that follow this phase, D2/D3 after
         # them. Same script, same snapshot directory, only --case differs.
         docker | docker-after) printf '%s\n' "${DEVICE_DIR}/docker-probe.sh" ;;
+        # The round-2 drivers. They are named as they are on disk so that "the phase exists"
+        # and "the driver exists" stay one question: a file that is not here is the GAP row
+        # the run loop writes, with the path in it.
+        software) printf '%s\n' "${DEVICE_DIR}/software-probe.sh" ;;
+        badconfig) printf '%s\n' "${DEVICE_DIR}/badconfig-probe.sh" ;;
+        matrix2) printf '%s\n' "${DEVICE_DIR}/matrix-round2.sh" ;;
         package-revert) printf '%s\n' "${DEVICE_DIR}/package-revert.sh" ;;
         recovery) printf '%s\n' "${DEVICE_DIR}/recovery-probe.sh" ;;
         power-cut) printf '%s\n' "${DEVICE_DIR}/power-cut.sh" ;;
@@ -283,6 +325,13 @@ _phase_owns() {
         # release-verify.sh prints one line per check; these are the clauses of ac-1 plus the
         # phase name itself, so `--only release` (and any single clause) selects it.
         release) case "${2}" in verdict | sums | index | release) return 0 ;; esac; return 1 ;;
+        # The three round-2 phases are selected by their own name and nothing else. Their
+        # case vocabularies (sample names, injection names, hop names) belong to the drivers,
+        # and a second copy here would be a list that drifts from the one the driver reads;
+        # `--only software` asks for the whole phase, which is what a caller who read a red
+        # row in software.tsv needs. matrix2's own --from/--only stay available on the driver
+        # itself, whose rerun line the row carries.
+        software | badconfig | matrix2) [ "${2}" = "${1}" ] ;;
         *) return 1 ;;
     esac
 }
@@ -445,6 +494,34 @@ _phase_args() {
                 printf '%s %s ' "--case" "${_pa_c}"
             done
             printf '%s %s ' "--snapshot-dir" "${DOCKER_SNAPSHOT_DIR:-${RESULTS_DIR}/docker-snapshots}"
+            ;;
+        software | badconfig | matrix2)
+            # The round-2 drivers take their rows channel as --results, the same flag this
+            # script already uses for matrix, scenarios, docker-probe and release-verify, so
+            # one phase's rows land in one file and _phase_verdict can read them. Nothing
+            # else is invented here: their own defaults cover everything they were written to
+            # judge, and an argument this script guessed wrong would be a driver exit 2 that
+            # reads like a product defect. Two channels are handed over because the round
+            # owns them and the driver cannot guess them: see below.
+            printf '%s %s ' "--results" "${TSV}"
+            case "${1}" in
+                badconfig)
+                    # "who refused it / who restored it" is a defect candidate, and the
+                    # driver drops those when it has no file to write them to. It goes under
+                    # the results directory, beside the rows, so one round's candidates are
+                    # in one place for the defect list (ac-11) to read.
+                    printf '%s %s ' "--defects" "${RESULTS_DIR}/badconfig-defects.tsv"
+                    ;;
+                matrix2)
+                    # matrix2 jumps payload to payload, so it is told where this round keeps
+                    # them, exactly like matrix and scenarios. Without the flag it would fall
+                    # back to its own default (payloads) and jump from a directory the round
+                    # never filled.
+                    if [ -n "${PAYLOAD_DIR}" ]; then
+                        printf '%s %s ' "--payload-dir" "${PAYLOAD_DIR}"
+                    fi
+                    ;;
+            esac
             ;;
         package-revert | power-cut)
             for _pa_c in ${_pa_sel}; do
@@ -935,6 +1012,10 @@ while [ $# -gt 0 ]; do
             PREFLIGHT_ONLY=1
             shift
             ;;
+        --list)
+            LIST_ONLY=1
+            shift
+            ;;
         --from)
             FROM_PHASE=${2:?--from needs a phase}
             shift 2
@@ -979,6 +1060,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# --list is answered before any of the window rules: it has no window, no results directory
+# and no machine. It also has to come before --from/--stop-after validation, because a caller
+# who only wants to see the order has not named a phase yet.
+if [ "${LIST_ONLY}" = 1 ]; then
+    for _list_phase in ${PHASES}; do
+        printf '%s\n' "${_list_phase}"
+    done
+    exit 0
+fi
+
 # --preflight-only is --stop-after preflight, so there is one window rule and not two.
 if [ "${PREFLIGHT_ONLY}" = 1 ]; then
     if [ -n "${STOP_AFTER}" ] && [ "${STOP_AFTER}" != "preflight" ]; then
@@ -1019,8 +1110,9 @@ if [ -n "${ONLY_CASES}" ]; then
         if [ "${_arg_own}" = 0 ]; then
             printf 'full-test: --only: no phase owns case: %s\n' "${_arg_c}" >&2
             printf 'full-test: cases are M1..M7, S1..S8, P1..P4, U1, R*, B*, I*, D1, D2, D3,\n' >&2
-            printf 'full-test: ac-3/pin, ac-12/check, ac-13/install, both, all, release/verdict/sums/index, %s\n' \
+            printf 'full-test: ac-3/pin, ac-12/check, ac-13/install, both, all, release/verdict/sums/index, %s,\n' \
                 "${PROBE_NAMES}" >&2
+            printf 'full-test: and the round-2 phases by their own name: software, badconfig, matrix2\n' >&2
             exit 2
         fi
     done

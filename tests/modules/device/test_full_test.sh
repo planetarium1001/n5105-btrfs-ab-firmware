@@ -15,6 +15,9 @@
 #   ac-7 the audit phase is given the round's task id and is a GAP row without one
 #   ac-7 docker, docker-after and release are not destructive (they never write a slot)
 #   ac-7 a missing key file is a preflight FAIL, not a silent skip into the phases
+#   ac-2 the round-2 phases (software, badconfig, matrix2) are registered: listed by
+#        --list, in an order that matches the drivers' dependencies, selected by --only,
+#        a GAP row when the driver is not installed, and matrix2 gated behind --yes
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -29,8 +32,11 @@ trap 'rm -rf "$tmp"' EXIT
 
 # The acceptance order, spelled once. Both the order assertion and the verdict arithmetic
 # read it, so a phase added to the script fails here instead of silently leaving a hole in
-# the coverage of this test.
-phase_list="preflight probes feed-install docker matrix scenarios docker-after package-revert recovery power-cut release audit"
+# the coverage of this test. The round-2 phases sit between the docker windows and the
+# package phase: the samples are installed on the release the jumps landed on, the bad
+# configurations are injected once those samples own /etc/config/<app>, and matrix2 is the
+# chain that then carries both across the base down/up hops.
+phase_list="preflight probes feed-install docker matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
 # shellcheck disable=SC2086
 set -- ${phase_list}
 phase_count=$#
@@ -99,9 +105,10 @@ run_ft() {
 }
 
 # planned_phases: every `phase <name>:` line in $out, in the order it was printed. Skipped
-# phases print too, so this is the order of the whole suite and not only of what ran.
+# phases print too, so this is the order of the whole suite and not only of what ran. The
+# name may carry a digit (matrix2), so the character class is not letters and dashes alone.
 planned_phases() {
-    printf '%s\n' "$out" | sed -n 's/^phase \([a-z-]*\):.*/\1/p' | tr '\n' ' '
+    printf '%s\n' "$out" | sed -n 's/^phase \([a-z0-9-]*\):.*/\1/p' | tr '\n' ' '
 }
 
 # plan_line <phase>: the `phase <name>: plan ...` line for one phase, empty when the phase
@@ -116,7 +123,13 @@ run_ft --help
 assert_eq "$code" 0 "ac-7 --help exits 0"
 assert_contains "$out" "usage: full-test.sh" "ac-7 --help prints the usage"
 assert_contains "$out" "verdict: PASS" "ac-7 --help states the verdict rule"
-assert_contains "$out" "docker-after release audit" "ac-7 --help lists the phase order it runs"
+assert_contains "$out" "scenarios docker-after" \
+    "ac-7 --help lists the phase order it runs"
+assert_contains "$out" "software badconfig matrix2" \
+    "ac-7 --help lists the round-2 phases where they run"
+assert_contains "$out" "package-revert recovery power-cut release audit" \
+    "ac-7 --help ends the order with the package, recovery, power-cut, release and audit phases"
+assert_contains "$out" "--list" "ac-7 --help documents the phase list"
 assert_contains "$out" "D1 docker" "ac-7 --help names the docker case tokens"
 assert_contains "$out" "D2/D3 docker-after" "ac-7 --help says which segment D2/D3 belong to"
 assert_contains "$out" "--task ID" "ac-7 --help documents the audit's task id"
@@ -577,8 +590,8 @@ assert_contains "$out" "cases=D2,D3" "ac-7 docker-after asks for D2 and D3 and n
 # docker-after and release are not in it: D1 writes /data and @docker and no slot, D2/D3 only
 # read, and the release phase never reaches a machine.
 destructive_set=$(sed -n 's/^DESTRUCTIVE_PHASES="\(.*\)"$/\1/p' "$ft")
-assert_eq "$destructive_set" "matrix recovery power-cut" \
-    "ac-7 only matrix, recovery and power-cut are destructive"
+assert_eq "$destructive_set" "matrix matrix2 recovery power-cut" \
+    "ac-7 only the phases that write a slot, matrix2 included, are destructive"
 for not_destructive in docker docker-after release; do
     case " $destructive_set " in
         *" $not_destructive "*)
@@ -668,5 +681,221 @@ run_ft --results "$agg" --from audit
 assert_eq "$code" 1 "ac-7 a FAIL row exits 1"
 assert_contains "$(head -n 1 "$agg/summary.txt")" "failed=1" "ac-7 the FAIL is counted"
 assert_eq "$(tail -n 1 "$agg/summary.txt")" "verdict: FAIL" "ac-7 any FAIL is FAIL"
+
+# --- ac-2: the round-2 phases are registered, ordered and never silently skipped ---- #
+# software, badconfig and matrix2 are the three drivers this round adds. They are phases of
+# this orchestrator like any other: listed, ordered, selectable by --only/--from, and a GAP
+# row when the driver is not installed on this host.
+
+# phase_pos <phase>: its 1-based position in the planned order, 0 when it is not planned.
+phase_pos() {
+    local want=$1 i=1 p
+    for p in $(planned_phases); do
+        if [ "$p" = "$want" ]; then
+            printf '%s' "$i"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    printf '0'
+}
+
+# assert_before <first> <second> <message>: both are planned and the first comes first.
+assert_before() {
+    local first second
+    first=$(phase_pos "$1")
+    second=$(phase_pos "$2")
+    if [ "$first" -gt 0 ] && [ "$second" -gt 0 ] && [ "$first" -lt "$second" ]; then
+        assert_eq "$1 before $2" "$1 before $2" "$3"
+    else
+        assert_eq "$1@$first, $2@$second" "$1 before $2" "$3"
+    fi
+}
+
+# --list is the one-line answer to "which phases, in which order": no machine, no results
+# directory, no plan line. It is also the cheapest way for a reader to see that the three
+# new phases are really registered rather than only mentioned in a comment.
+list_results="$tmp/results-list"
+: >"$stub_calls"
+run_ft --list --results "$list_results"
+assert_eq "$code" 0 "ac-2 --list exits 0"
+assert_eq "$(printf '%s\n' "$out" | tr '\n' ' ')" "$phase_list " \
+    "ac-2 --list prints every phase in the acceptance order, one per line"
+for new_phase in software badconfig matrix2; do
+    assert_contains "$out" "$new_phase" "ac-2 --list names the round-2 phase $new_phase"
+done
+assert_eq "$(stub_calls_count)" "0" "ac-2 --list contacts no machine"
+if [ -e "$list_results" ]; then
+    assert_eq "results dir created" "results dir absent" "ac-2 --list writes nothing"
+else
+    assert_eq "results dir absent" "results dir absent" "ac-2 --list writes nothing"
+fi
+
+# The order is the drivers' dependency, not the order this round's authors happen to have
+# written them down in: software needs the machine the jumps brought to the newest release,
+# badconfig needs the samples' /etc/config/<app>, and matrix2 is the chain that carries both
+# across the base hops - so it comes after them and before the package phase.
+: >"$stub_calls"
+run_ft --dry-run --results "$tmp/results-round2-plan"
+assert_eq "$code" 0 "ac-2 the plan with the round-2 phases exits 0"
+assert_before matrix software "ac-2 software runs after the first version jump"
+assert_before scenarios software \
+    "ac-2 software runs after the jumps that bring the machine to the newest release"
+assert_before software badconfig "ac-2 badconfig runs once the samples are installed"
+assert_before badconfig matrix2 "ac-2 matrix2 runs after the samples and their bad configs"
+assert_before matrix2 package-revert "ac-2 matrix2 runs before the phase that changes packages"
+assert_eq "$(stub_calls_count)" "0" "ac-2 planning the round-2 phases reaches no machine"
+
+# --only selects a round-2 phase by its own name, and the plan says what would run.
+run_ft --dry-run --only software --results "$tmp/results-only-software"
+assert_eq "$code" 0 "ac-2 --only software exits 0"
+assert_contains "$out" "phase software: plan" "ac-2 --only software plans the software phase"
+assert_contains "$out" "phase badconfig: skipped" "ac-2 --only software skips badconfig"
+assert_contains "$out" "phase matrix2: skipped" "ac-2 --only software skips matrix2"
+assert_contains "$(plan_line software)" "--results $tmp/results-only-software/software.tsv" \
+    "ac-2 the software phase is pointed at its own results file"
+run_ft --dry-run --only matrix2 --results "$tmp/results-only-matrix2"
+assert_contains "$out" "phase matrix2: plan" "ac-2 --only matrix2 plans the round-2 chain"
+assert_contains "$(plan_line matrix2)" "--results $tmp/results-only-matrix2/matrix2.tsv" \
+    "ac-2 matrix2 writes a results file of its own"
+run_ft --dry-run --only badconfig --results "$tmp/results-only-badconfig"
+assert_contains "$out" "phase badconfig: plan" "ac-2 --only badconfig plans the bad-config phase"
+# The defect list of the bad-config phase goes under the results directory: without it the
+# driver has nowhere to put "who refused it / who restored it" and drops those candidates.
+assert_contains "$(plan_line badconfig)" "--defects $tmp/results-only-badconfig/badconfig-defects.tsv" \
+    "ac-2 the badconfig phase is given a defect list under the results directory"
+# matrix2 jumps payload to payload, so it is told where the round keeps them, exactly like
+# matrix and scenarios: a chain that fell back to its own default would jump from a
+# directory this round never filled.
+run_ft --dry-run --only matrix2 --payload-dir "$tmp/payloads" --results "$tmp/results-m2-payload"
+assert_contains "$(plan_line matrix2)" "--payload-dir $tmp/payloads" \
+    "ac-2 matrix2 is told where the round's payloads are"
+
+# --from/--stop-after take these names as phases, and the segment in between is what runs.
+run_ft --dry-run --from software --stop-after matrix2 --results "$tmp/results-round2-seg"
+assert_eq "$code" 0 "ac-2 --from software --stop-after matrix2 exits 0"
+assert_contains "$out" "phase docker-after: skipped" "ac-2 the segment starts after docker-after"
+assert_contains "$out" "phase software: plan" "ac-2 the segment plans software"
+assert_contains "$out" "phase badconfig: plan" "ac-2 the segment plans badconfig"
+assert_contains "$out" "phase matrix2: plan" "ac-2 the segment plans matrix2"
+assert_contains "$out" "phase package-revert: skipped" "ac-2 the segment stops before package-revert"
+
+# --dry-run of a phase that writes slots executes nothing: no ssh, no results directory.
+: >"$stub_calls"
+run_ft --dry-run --only matrix2 --yes --results "$tmp/results-dry-matrix2"
+assert_eq "$(stub_calls_count)" "0" "ac-2 --dry-run of matrix2 reaches no machine"
+assert_contains "$out" "plan: nothing was executed" "ac-2 --dry-run of matrix2 says it executed nothing"
+if [ -e "$tmp/results-dry-matrix2" ]; then
+    assert_eq "results dir created" "results dir absent" "ac-2 --dry-run of matrix2 writes no results"
+else
+    assert_eq "results dir absent" "results dir absent" "ac-2 --dry-run of matrix2 writes no results"
+fi
+
+# A driver that is not installed is a GAP row and not an omission: hx is a copy of this
+# orchestrator with no round-2 driver beside it, so "we did not ask" cannot look like
+# "the machine said yes".
+for absent in software badconfig matrix2; do
+    miss_results="$tmp/round2-miss-$absent"
+    : >"$stub_calls"
+    run_hx --from "$absent" --stop-after "$absent" --results "$miss_results"
+    assert_eq "$code" 1 "ac-2 a missing $absent driver does not exit 0"
+    assert_contains "$(cat "$miss_results/$absent.tsv")" "GAP" \
+        "ac-2 a missing $absent driver is a GAP row, not a skip"
+    assert_contains "$(cat "$miss_results/$absent.tsv")" "script not present" \
+        "ac-2 the $absent GAP names the missing script"
+    assert_eq "$(tail -n 1 "$miss_results/summary.txt")" "verdict: GAP" \
+        "ac-2 a missing $absent driver leaves the round at GAP"
+    assert_eq "$(stub_calls_count)" "0" "ac-2 a missing $absent driver reaches no machine"
+done
+run_hx --dry-run --from software --stop-after software
+assert_contains "$(plan_line software)" "would be recorded GAP" \
+    "ac-2 the plan says a missing driver would be recorded GAP"
+
+# The same three phases with their drivers present: the rows land in the phase's own file
+# through --results, software and badconfig are not gated (they write no slot and reboot
+# nothing), and matrix2 is gated behind --yes like the other slot-writing phases.
+hx2="$tmp/hx2/scripts/device"
+mkdir -p "$hx2"
+cp "$ft" "$hx2/full-test.sh"
+cp "$root/scripts/device/lib.sh" "$hx2/lib.sh"
+for round2_driver in software-probe.sh:SW1 matrix-round2.sh:T1 badconfig-probe.sh:BC1; do
+    driver=${round2_driver%%:*}
+    case_name=${round2_driver##*:}
+    cat >"$hx2/$driver" <<STUB
+#!/bin/sh
+res=""
+for a in "\$@"; do
+    case "\$a" in
+        --results) res=next ;;
+        *) [ "\${res:-}" = next ] && res=\${a:-} ;;
+    esac
+done
+printf '${driver%.sh}-stub args=%s\n' "\$*"
+printf '${case_name}\tPASS\tstub.log\tstub row\n' >>"\${res:?stub needs --results}"
+exit 0
+STUB
+    chmod +x "$hx2/$driver"
+done
+
+run_hx2() {
+    out=$(bash "$hx2/full-test.sh" "$@" </dev/null 2>&1)
+    code=$?
+    return 0
+}
+
+run_hx2 --from software --stop-after badconfig --results "$tmp/hx2-samples"
+assert_eq "$code" 0 "ac-2 software and badconfig run without --yes"
+assert_contains "$(cat "$tmp/hx2-samples/software.log")" "--results $tmp/hx2-samples/software.tsv" \
+    "ac-2 software-probe.sh is pointed at its results file through --results"
+assert_eq "$(awk -F'\t' '$1 == "SW1" { print $2 }' "$tmp/hx2-samples/software.tsv")" "PASS" \
+    "ac-2 the software rows land in the software phase's own file"
+assert_eq "$(awk -F'\t' '$1 == "BC1" { print $2 }' "$tmp/hx2-samples/badconfig.tsv")" "PASS" \
+    "ac-2 the badconfig rows land in the badconfig phase's own file"
+assert_contains "$(cat "$tmp/hx2-samples/badconfig.log")" \
+    "--defects $tmp/hx2-samples/badconfig-defects.tsv" \
+    "ac-2 the defect list reaches badconfig-probe.sh as --defects"
+# Nothing here invents case names for the round-2 drivers: their vocabularies are theirs.
+case "$(cat "$tmp/hx2-samples/software.log")" in
+    *--case*)
+        assert_eq "software asked for a case" "software asked for no case" \
+            "ac-2 the software phase is not given a case name this script made up"
+        ;;
+    *)
+        assert_eq "software asked for no case" "software asked for no case" \
+            "ac-2 the software phase is not given a case name this script made up"
+        ;;
+esac
+
+run_hx2 --from matrix2 --stop-after matrix2 --results "$tmp/hx2-matrix2-noyes"
+assert_eq "$code" 1 "ac-2 matrix2 without --yes does not exit 0"
+assert_contains "$(cat "$tmp/hx2-matrix2-noyes/matrix2.tsv")" "GAP" \
+    "ac-2 matrix2 is gated behind --yes like the other slot-writing phases"
+assert_contains "$(cat "$tmp/hx2-matrix2-noyes/matrix2.tsv")" "not confirmed" \
+    "ac-2 the matrix2 refusal names --yes as the way through"
+case "$out" in
+    *matrix-round2-stub*)
+        assert_eq "driver executed" "driver not executed" \
+            "ac-2 an unconfirmed matrix2 executes nothing"
+        ;;
+    *)
+        assert_eq "driver not executed" "driver not executed" \
+            "ac-2 an unconfirmed matrix2 executes nothing"
+        ;;
+esac
+run_hx2 --from matrix2 --stop-after matrix2 --yes --results "$tmp/hx2-matrix2"
+assert_eq "$code" 0 "ac-2 matrix2 with --yes runs"
+assert_eq "$(awk -F'\t' '$1 == "T1" { print $2 }' "$tmp/hx2-matrix2/matrix2.tsv")" "PASS" \
+    "ac-2 the matrix2 rows land in the matrix2 phase's own file"
+
+# --- ac-2: the orchestrator carries no second copy of the round's own lists ---------- #
+# The samples are tests/fixtures/software-samples.json (read by software-probe.sh) and the
+# 25.x line is decided by the drivers, not here. A sample name or a 24.x path baked into this
+# script would be a second list to keep in sync, and a version line the round has excluded
+# would come back in through the orchestration. Comments are skipped: they are allowed to
+# explain what the phases judge.
+script_hits=$(grep -nE 'openclash|istore|luci-app|argon|24\.[0-9]' "$ft" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+assert_eq "${script_hits:-none}" "none" \
+    "ac-2 full-test.sh names no sample and no 24.x path of its own"
 
 finish

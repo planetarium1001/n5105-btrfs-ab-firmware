@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "updated": "2026-11-17",
+  "version_line": "25.x",
+  "samples": [
+    {
+      "name": "luci-theme-argon",
+      "kind": "luci-theme",
+      "source_url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/luci-theme-argon-2.4.7-r20260824.apk",
+      "fetched_at": "2026-11-17",
+      "why": "社区最常用的非默认 LuCI 主题；25.12.2 的 luci feed 直接提供 apk，同目录还有配套的 luci-app-argon-config-26.298.29275~c84adb9.apk（主题配置页，一并装才算装完整）。只用 25.x：24.x 是 opkg 的 .ipk，包管理器与依赖 ABI 都不同，结论不可迁移到本产品线。",
+      "fallback": "若精确文件名随 feed 刷新失效，取 feed 目录 https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/ 并按包名重新匹配；该包整体缺失时改同目录 luci-theme-material 或 luci-theme-footstrap（同为非默认主题），仍不可用则记具名 GAP，不算 A/B 失败。"
+    },
+    {
+      "name": "istore",
+      "kind": "software-store",
+      "source_url": "https://github.com/istoreos/istore",
+      "fetched_at": "2026-11-17",
+      "why": "社区最常被用来一键装插件的软件站（iStore，纯脚本 LuCI 应用）；该仓库没有任何预编译 apk 资产（releases 列表为空，2026-11-17 核对），所以它考的是「软件站类装法在 A/B 体系下的表现」，装法本身可能要现场凑。只用 25.x：24.x 时代配的是 opkg 与旧安装脚本，包管理器与 ABI 都不同，结论不可迁移。",
+      "fallback": "若在 25.12.x 上装不成，改用官方 feed 的同功能对照 luci-app-package-manager（https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/luci-app-package-manager-26.298.29275~c84adb9.apk，已确认可拉取）代表「软件站类」，并把 istore 记具名 GAP 附尝试命令。"
+    },
+    {
+      "name": "luci-app-openclash",
+      "kind": "proxy-app",
+      "source_url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/luci-app-openclash-0.48.002.apk",
+      "fetched_at": "2026-11-17",
+      "why": "代理类社区应用首选，与 ac-5 的坏 openclash 配置同源；25.12.2 的 luci feed 自带 apk，不必引第三方源（上游 https://github.com/vernesong/OpenClash/releases/latest 的 v0.48.002 同时提供 apk/ipk 两种包，可做交叉核对）。只用 25.x：24.x 是 opkg 的 .ipk，依赖（kmod-tun、dnsmasq-full）与 ABI 不同，结论不可迁移。",
+      "fallback": "若该 apk 从 feed 消失，先用同目录 luci-app-passwall-26.10.29-r1.apk（同源代理类，已确认可拉取）替代并记 GAP；依赖 kmod-tun/dnsmasq-full 装不上时同样记 GAP，不阻断样本层其余用例。"
+    },
+    {
+      "name": "luci-app-ttyd",
+      "kind": "feed-control",
+      "source_url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/luci-app-ttyd-26.298.29275~c84adb9.apk",
+      "fetched_at": "2026-11-17",
+      "why": "官方 feed 既有对照样本：不依赖第三方源，用来分辨「社区软件坏了」还是「整套 feed 都坏了」。只用 25.x：24.x 的 opkg 包管理器与 apk 不同，版本线结论不可迁移。",
+      "fallback": "若文件名随 feed 刷新失效，取 feed 目录 https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/ 按包名重新匹配；目录整体不可达则本对照记 GAP。"
+    },
+    {
+      "name": "htop",
+      "kind": "feed-control",
+      "source_url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/packages/htop-3.5.3-r1.apk",
+      "fetched_at": "2026-11-17",
+      "why": "官方 feed 既有对照样本（纯用户态程序，无内核依赖），用来确认升级/降级后普通包仍在、版本仍可查。只用 25.x：24.x 是 opkg，包与索引格式都不同，结论不可迁移。",
+      "fallback": "若该 apk 失效，取 feed 目录 https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/packages/ 按包名重新匹配，或用同目录另一个纯用户态包替代并记 GAP。"
+    },
+    {
+      "name": "kmod-usb-storage",
+      "kind": "feed-control",
+      "source_url": "https://downloads.immortalwrt.org/releases/25.12.2/targets/x86/64/kmods/6.12.103-1-0413601b1c3f0490e17f340fe09229ea/kmod-usb-storage-6.12.103-r1.apk",
+      "fetched_at": "2026-11-17",
+      "why": "官方 feed 既有对照样本（内核模块），用来验证「与内核 ABI 绑定的包」在跨跳版本后是否仍一致；25.12.2 当前内核目录为 6.12.103-1-0413601b1c3f0490e17f340fe09229ea，目录里是 kmod-usb-storage-6.12.103-r1.apk。只用 25.x：24.x 是 opkg 且 kmods 目录按另一套 ABI 命名，结论不可迁移。",
+      "fallback": "kmods 目录名含内核构建 hash，必须先用设备上 packages.adb 的地址推出实际目录（本文件里的 hash 只代表 2026-11-17 的 25.12.2），再按包名匹配；目录对不上或包不可用时本对照记 GAP，不阻断样本层。"
+    }
+  ]
+}

@@ -82,6 +82,37 @@ ABI is reported, not judged: a kmod built against another kernel is normal in th
 world, so a mismatch is recorded as `FINDING:` with the reinstall list, and never changes
 a verdict on its own.
 
+## Community software samples (round 2)
+
+Round 1 proved the A/B transaction on a machine whose only extra software was the five
+packages the suite itself installs. A real machine is not that machine: people install a
+LuCI theme, a software store, a proxy app, and edit those apps' own `/etc/config` files.
+Round 2 puts that layer on the machine and jumps it, to answer one question - does the
+transaction still commit, and do the samples keep their own configuration.
+
+- `scripts/device/software-probe.sh` installs the samples listed in
+  `tests/fixtures/software-samples.json` (`--manifest` overrides the list, `--sample`
+  narrows it). Each sample row is PASS with the version it landed on, or GAP with the
+  reason and the command to retry: a third-party source that is down, or a kernel module
+  whose ABI does not match this kernel, is a GAP and never a pass.
+- `--baseline <tag>` before a hop and `--compare <tag>` after it record and compare the
+  samples' own configuration (values, not just file hashes) through the same snapshot
+  helper the other drivers use. A drifting config is written into the evidence; it is a
+  finding for the round, not a reason to call a committed hop red.
+- `--cleanup` removes the samples, their config and the source it added, so the machine
+  goes back to the product baseline. The third-party source is written only to the
+  device's `/etc/apk/repositories.d/` - never to the image, the payload or
+  `scripts/ci/net-defaults.conf.in`.
+- `scripts/device/badconfig-probe.sh` writes broken configurations of the same kind a
+  person can produce (a bad `daemon.json`, a bad UCI section, a firewall rule fw4 warns
+  about, a fake subscription URL) and judges two things separately: who refused or
+  restored it, and whether anything else reacted.
+
+Two limits are stated up front rather than discovered later. The sample list is 25.x only:
+a 24.x package tree is opkg and its results do not transfer. And the samples are test
+fixtures, not product contents - nothing in this repository depends on them, and the
+release assets are byte-identical whether or not the samples were installed.
+
 ## The whole suite: one order, one verdict
 
 `full-test.sh` runs the drivers above - and two more that only answer a question on their
