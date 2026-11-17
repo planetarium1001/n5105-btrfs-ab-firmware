@@ -97,6 +97,19 @@ and `tty1` never closes stdin and is not affected.
 - **Not the `gid=5` on the devpts mount, and not the missing `tty` group.** The slave node is
   owned by `root` with mode 0622 in this image; neither value decides success.
 
+## The bench opens the whole WAN zone on purpose
+
+A machine being debugged on a lab LAN runs with its WAN zone opened completely
+(`wan input ACCEPT`, see `scripts/device/wan-open.sh`). That is a bench state, not shipped
+behaviour and not a claim about the product: enumerating the ports that happen to be needed
+(22 for the `-wan-ssh` variant, 80 for the web UI, 443 when a theme adds it) turns every
+missing rule into a fault that looks like a product defect - the web UI "does not load"
+when it is in fact answering `403` with its login page.
+
+The release images keep the upstream default (WAN input `REJECT`); the `-wan-ssh` variant
+opens 22 only. `scripts/device/wan-open.sh --restore` puts the firewall back from the backup
+the driver wrote to `/root/firewall.before-open-wan.bak` and verifies its sha256.
+
 ## Why this project does not fix it
 
 The failure is in dropbear, between a client that closes stdin early and a server that treats

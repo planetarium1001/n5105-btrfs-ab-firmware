@@ -305,7 +305,10 @@ _have() { _rsh "command -v $(_sq "$1") >/dev/null 2>&1"; }
 
 _read_file() { _rsh "cat $(_sq "$1")" 2>/dev/null; }
 
-uci_export() { _rsh "uci -q export $(_sq "$1")" 2>&1; }
+# Not `uci -q`: the quiet flag suppresses the very line this probe judges. A parse error is
+# the witness for "the parser refused the file", and with -q the reader gets rc=1 and no
+# reason, which is how C1 came to report refused_by=none on a file libuci had rejected.
+uci_export() { _rsh "uci export $(_sq "$1")" 2>&1; }
 
 # app_start <init script>: "rc=<n>" when the app was asked to start, "absent" when this image
 # has no such init script. Deliberately not `pidof`: a service that procd re-spawns keeps a
@@ -662,7 +665,11 @@ config rule
     # ssh session away. `check` parses and translates without touching the running ruleset.
     _c4_chk=$(_rsh 'fw4 check' 2>&1)
     _c4_chk_rc=$?
-    _c4_print=$(_rsh 'fw4 print' 2>&1)
+    # stdout only, and that is the whole point: `fw4 print` repeats the "Section @rule[10]
+    # (ab-badcfg-rule) skipped due to invalid options" warning on stderr, so a merged stream
+    # matches the rule's own name in the warning text and reports "adopted" for a rule the
+    # firewall skipped. The rendered ruleset is what decides adoption, and that is stdout.
+    _c4_print=$(_rsh 'fw4 print')
     _c4_print_rc=$?
     _c4_warn=no
     case "${_c4_chk}" in

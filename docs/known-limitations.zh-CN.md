@@ -80,6 +80,18 @@ devpts 挂载选项、`/dev/tty`、procd 的会话处理、A/B 布局都不参�
 - **不是 devpts 上的 `gid=5`，也不是缺 `tty` 组。** 这个镜像里从设备节点属于 `root`、mode 0622；
   这两个值都不决定成败。
 
+## 调试台上 WAN 整个开放是有意的
+
+在实验室网段里调试的机器，WAN zone 是完全开放的（`wan input ACCEPT`，见
+`scripts/device/wan-open.sh`）。这是**调试台状态**，不是出厂行为，也不代表产品口径：
+把"需要的那几个端口"逐个放行（22 给 `-wan-ssh` 变体、80 给网页界面、主题再要 443），
+会把每一条漏放的规则都变成看起来像产品缺陷的故障——网页界面"打不开"，其实是它在用
+`403` 回登录页。
+
+发布镜像保持上游默认（WAN input `REJECT`），`-wan-ssh` 变体只开 22。
+`scripts/device/wan-open.sh --restore` 会用驱动写在 `/root/firewall.before-open-wan.bak`
+的备份还原并校验 sha256。
+
 ## 本项目为什么不在本地修它
 
 故障在 dropbear 里，夹在「早关 stdin 的客户端」与「把任一方向结束当成 pty 结束的服务端」之间。两边都不是我们的，

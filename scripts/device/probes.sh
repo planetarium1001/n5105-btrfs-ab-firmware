@@ -1087,7 +1087,20 @@ probe_packages() {
     _dockerd_state=$(printf '%s\n' "${_docker_facts}" | sed -n 's/^dockerd=\([^ ]*\).*/\1/p' | head -n 1)
 
     _begin
-    [ "${_pkg}" = "${AB_PROBE_PACKAGES}" ] || _bad packages-mismatch
+    # `packages=` is a claim about the running kernel only once a slot carries the metadata
+    # that names it. A freshly flashed machine has none ("unknown"/no-record): the coherence
+    # is unproven, not wrong, and docker has not arrived either - its payload comes with the
+    # upgrade. Judging that as a failure reports a broken machine for a machine that has
+    # simply not been through the chain yet, so it is a gap with the reason spelled out.
+    _unproven=""
+    case "${_pkg}" in
+        ""|unknown) _unproven="packages-unrecorded" ;;
+    esac
+    if [ -n "${_unproven}" ]; then
+        _pkg_reason="${_pkg_reason:-no-record}"
+    else
+        [ "${_pkg}" = "${AB_PROBE_PACKAGES}" ] || _bad packages-mismatch
+    fi
     case "${_docker_state}" in
         exec-ok) : ;;
         "") _bad docker-unknown ;;
@@ -1101,6 +1114,22 @@ probe_packages() {
     esac
 
     _tokens="packages=${_pkg:-unknown} packages_reason=${_pkg_reason:-unknown} docker=${_docker_state:-unknown} docker_path=${_docker_path:-none} dockerd=${_dockerd_state:-none} slot=${_run_slot:-unknown} committed=${_committed:-unknown} pending=${_pending:-unknown}"
+    if [ -n "${_unproven}" ]; then
+        _emit packages "${_ac}" gap reason=precondition-not-met "${_unproven}" "${_tokens}"
+        _next "take an upgrade once (the chain in scripts/device/matrix.sh), then rerun: sh scripts/device/probes.sh --probe packages"
+        return 0
+    fi
+    # docker is an optional payload, not part of the image: a machine that never had it
+    # installed cannot say anything about it. docker-probe.sh installs it and judges it -
+    # here its absence is a missing precondition, not a defect. "It is installed but broken"
+    # (not-executable / cli-missing) stays a failure.
+    case "${REASONS}" in
+        docker-missing|docker-unknown)
+            _emit packages "${_ac}" gap reason=precondition-not-met docker-not-installed "${_tokens}"
+            _next "apk add docker   # or run scripts/device/docker-probe.sh, which installs its payload first"
+            return 0
+            ;;
+    esac
     if [ -z "${REASONS}" ]; then
         _emit packages "${_ac}" pass "${_tokens}"
         return 0

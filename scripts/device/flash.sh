@@ -92,19 +92,39 @@ fi
 stage_sha=$(dev_ssh "sha256sum $AB_STAGE | cut -d' ' -f1")
 [ "$stage_sha" = "$sha" ] || die sha-mismatch
 
+# The identity of the boot we are about to destroy. A machine that answers on 22 after the
+# write is not news - it answers *during* the write too, and that is exactly how this script
+# used to report flash=ok seven seconds in, on a machine that had not rebooted yet. The only
+# answer that means anything is a different boot id.
+old_boot=$(dev_ssh 'cat /proc/sys/kernel/random/boot_id')
+[ -n "$old_boot" ] || die boot-id-unreadable
+
 start=$(date +%s)
 dev_ssh "printf '%s\n' '#!/bin/sh' 'sync' 'killall -q syslogd logd crond 2>/dev/null' \
-    'gunzip -c $AB_STAGE | dd of=$AB_DISK bs=4M conv=fsync' 'rc=\$?' 'sync' 'echo dd rc=\$rc' 'reboot -f' \
+    'gunzip -c $AB_STAGE | dd of=$AB_DISK bs=4M conv=fsync' 'rc=\$?' 'sync' \
+    'echo dd rc=\$rc >/dev/console' 'reboot -f' \
     > /tmp/ab-flash.sh; chmod +x /tmp/ab-flash.sh; setsid sh /tmp/ab-flash.sh </dev/null >/dev/null 2>&1 & sleep 1; echo launched"
 
-# Wait for the machine to answer again: dd plus one boot.
+# Wait for the machine to come back *as a different boot*: dd plus one reboot.
+#
+# Two phases, because either one alone is a false positive. The machine is still answering
+# while dd runs (phase 1), and a machine that never rebooted keeps answering with the same
+# boot id (phase 2). A refused port is the signal that the write is over and the reboot is
+# under way; it is not required if the machine comes back faster than one poll, which is why
+# phase 1 is a bounded wait and not a gate.
 elapsed=0
+saw_down=0
 while [ "$elapsed" -lt "$AB_WAIT" ]; do
     sleep 5
     elapsed=$(( $(date +%s) - start ))
     if nc -z "${AB_HOST#*@}" 22 2>/dev/null; then
-        say "flash=ok wait=$elapsed boot=ok"
-        exit 0
+        boot=$(dev_ssh 'cat /proc/sys/kernel/random/boot_id')
+        if [ -n "$boot" ] && [ "$boot" != "$old_boot" ]; then
+            say "flash=ok wait=$elapsed boot=ok saw_down=$saw_down boot_id=$boot"
+            exit 0
+        fi
+    else
+        saw_down=1
     fi
 done
 say "flash=fail reason=no-boot-after-$AB_WAIT"
