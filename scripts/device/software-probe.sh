@@ -71,7 +71,19 @@ export AB_REPO_ROOT
 MANIFEST=${AB_SWPROBE_MANIFEST:-${AB_REPO_ROOT}/tests/fixtures/software-samples.json}
 RESULTS=${AB_RESULTS:-software-probe-results.tsv}
 EVIDENCE_DIR=${AB_EVIDENCE_DIR:-}
-STATE_DIR=${AB_SWPROBE_STATE:-software-probe-state}
+# The state of a run belongs beside that run's rows, not in whatever directory the caller
+# happened to be standing in. Defaulting to a bare relative name left software-probe-state/
+# in the repository root of a full round, where it showed up as an untracked directory and as
+# "changes outside task scope" - a driver's working file refusing a commit it has nothing to
+# do with. RESULTS is the row channel full-test.sh already hands over, so its directory is
+# the one that is guaranteed to be the round's own.
+if [ -n "${AB_SWPROBE_STATE:-}" ]; then
+    STATE_DIR=${AB_SWPROBE_STATE}
+elif [ -n "${RESULTS:-}" ]; then
+    STATE_DIR=${RESULTS%/*}/software-state
+else
+    STATE_DIR=software-probe-state
+fi
 DRY_RUN=${AB_DRY_RUN:-0}
 
 # The one file this driver is allowed to add to the device's source list.
