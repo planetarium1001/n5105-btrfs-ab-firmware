@@ -291,6 +291,10 @@ _ab_plan_gap_print() {
 # order, one blank line between. Groups are collected first and printed here because the
 # order is this file's decision, not the caller's: a block whose order depends on the order
 # the gate happened to report is a block nobody can compare across two runs.
+#
+# shellcheck disable=SC2154  # _abf_* below are assigned by the eval that reads _abp_g<N>_state,
+# _members, _cause and _effects: the group fields are named dynamically, so no static pass can
+# see the assignment. Every one of them is read back in the same iteration it is written in.
 _ab_plan_gap_flush() {
     _abf_rank=1
     while [ "${_abf_rank}" -le 9 ]; do

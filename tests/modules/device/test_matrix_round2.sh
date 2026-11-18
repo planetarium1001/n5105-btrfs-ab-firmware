@@ -119,7 +119,14 @@ install_payload() {
 # The driver installs with `ab-upgrade --yes`: these runs have no terminal, and an
 # unanswered package plan is a refusal (exit 74) that writes nothing. The commands the stub
 # judges are the ones without the flag, so every assertion stays about intent.
-last=${last/ab-upgrade --yes /ab-upgrade }
+#
+# POSIX parameter expansion, not `${last/ab-upgrade --yes /ab-upgrade }`: this stub runs under
+# `sh`, which is bash on the laptop the suite is written on and dash on the CI runner, and the
+# substitution form is a bashism - measured 2026-11-19, the whole stub died with "Bad
+# substitution" on the runner while every assertion passed locally.
+case "${last}" in
+    'ab-upgrade --yes '*) last="ab-upgrade ${last#ab-upgrade --yes }" ;;
+esac
 case "${last}" in
     'ab-slot status')
         if [ "${STUB_NO_COMMITTED:-0}" = "1" ]; then

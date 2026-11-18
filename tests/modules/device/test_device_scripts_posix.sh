@@ -38,7 +38,41 @@ device_dir="$root/scripts/device"
 # either. `source` and `function` are deliberately left out: they occur legitimately in
 # strings and in awk programs in these scripts, and both are runtime failures rather than
 # parse failures, so the importing script's own tests are where they belong.
-bashism_re='<<<|BASH_SOURCE|pipefail|\bdeclare\b|(^|[^\\])\[\[[[:space:]]'
+#
+# `${var/pat/repl}` is the one that got through this guard on 2026-11-19: it was written
+# inside a heredoc that a *test* hands to `sh` (the stub `ssh` of test_matrix_round2.sh), so
+# it was not in scripts/device at all, and on the laptop's bash-as-sh it even worked. The
+# second scan below is what covers that shape; the pattern belongs here too because a
+# device script can carry it just as easily.
+bashism_re='<<<|BASH_SOURCE|pipefail|\bdeclare\b|(^|[^\\])\[\[[[:space:]]|\$\{[A-Za-z_][A-Za-z0-9_]*/[^}]'
+# A heredoc whose first line is `#!/bin/sh` is a program, and it runs under dash on the CI
+# runner whatever the file carrying it says. Only its body is scanned: the file around it is
+# often a bash script that is allowed every bashism.
+sh_heredoc_bodies() {
+    awk '
+        state == 0 && /<<[-]?["'"'"']?[A-Za-z_][A-Za-z0-9_]*["'"'"']?:?$/ {
+            tag = $0
+            sub(/.*<<[-]?"?/, "", tag)
+            sub(/["'"'"'].*/, "", tag)
+            body = 0
+            state = 1
+            next
+        }
+        state == 1 {
+            if ($0 == tag) { state = 0; next }
+            if (body == 0) {
+                if ($0 ~ /^#![ \t]*\/bin\/sh/) body = 1
+                else { state = 0; next }
+                next
+            }
+            # A comment is allowed to name what it warns against: the rewritten stub in
+            # test_matrix_round2.sh explains the construct it no longer uses.
+            if ($0 !~ /^[ \t]*#/) print FILENAME ":" FNR ":" $0
+            next
+        }
+    ' "$1"
+}
+
 
 # Non-comment lines carrying one of the above, with file:line numbers.
 bashism_hits() {
@@ -106,5 +140,66 @@ done
 # happened to: naming it keeps this file honest if the scan above ever stops discovering it.
 assert_contains "${files[*]}" "apk-protection-probe.sh" \
   "ac-1 the probe whose here-string broke the CI gate is inside the scan"
+
+# --- `#!/bin/sh` heredoc bodies, wherever they live ------------------------- #
+# The 2026-11-19 regression was a bash parameter substitution inside the stub `ssh` that
+# tests/modules/device/test_matrix_round2.sh hands to `sh`: nothing in scripts/device was
+# touched, the laptop's bash-as-sh ran it fine, and the runner's dash answered
+# "Bad substitution" for the whole stub - 24 assertions red on facts the file had just
+# asserted green at home. So the scan covers the bodies too, not only the device scripts.
+cat >"$tmp/stub-bad.sh" <<'BADSTUB'
+#!/usr/bin/env bash
+cat >"$tmp/ssh" <<'STUB'
+#!/bin/sh
+last=${last/ab-upgrade --yes /ab-upgrade }
+STUB
+BADSTUB
+cat >"$tmp/stub-clean.sh" <<'CLEANSTUB'
+#!/usr/bin/env bash
+cat >"$tmp/ssh" <<'STUB'
+#!/bin/sh
+case "${last}" in
+    'ab-upgrade --yes '*) last="ab-upgrade ${last#ab-upgrade --yes }" ;;
+esac
+# A comment may still name ${last/x/y} without the stub doing it.
+STUB
+# A bash heredoc that is not a sh program may use every bashism it likes.
+cat >"$tmp/helper" <<'HELPER'
+#!/usr/bin/env bash
+name=${1//\//__}
+HELPER
+CLEANSTUB
+assert_eq "$(sh_heredoc_bodies "$tmp/stub-bad.sh" | grep -cE "$bashism_re" || true)" "1" \
+  "ac-4 the scan reads the body of a sh heredoc, not only the file carrying it"
+assert_eq "$(sh_heredoc_bodies "$tmp/stub-bad.sh" | sed -n '1p' | cut -d: -f2)" "4" \
+  "ac-4 and reports the line inside the file where the body sits"
+assert_eq "$(sh_heredoc_bodies "$tmp/stub-clean.sh" | grep -cE "$bashism_re" || true)" "0" \
+  "ac-4 a POSIX stub, a comment and a bash heredoc are not flagged"
+
+# Every test file is scanned for that shape: the suite is where a stub like this is written.
+# This file is excluded from the scan it defines: the fixtures above are *supposed* to carry
+# the construct (a detector with no positive example proves nothing), and the fixture is
+# unreachable from any `sh` except by this test reading it.
+test_files=()
+while IFS= read -r path; do
+    # `here` is this file's own directory; the file itself is ${here}/$(basename of $0).
+    [ "$path" = "${here}/$(basename "${BASH_SOURCE[0]}")" ] && continue
+    test_files+=("$path")
+done < <(find "$root/tests/modules" -type f -name '*.sh' | LC_ALL=C sort)
+assert_eq "$([ "${#test_files[@]}" -gt 0 ] && echo yes || echo no)" "yes" \
+  "ac-4 the scan discovers the test files"
+
+for path in "${test_files[@]}"; do
+    rel=${path#"$root"/}
+    hits=$(sh_heredoc_bodies "$path" | grep -E "$bashism_re" | sed 's/^/line /' || true)
+    if [ -z "$hits" ]; then
+        _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+        printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-4 ${rel} runs no bash-only construct inside a sh heredoc"
+    else
+        _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+        _assert_fail "ac-4 ${rel} runs no bash-only construct inside a sh heredoc" \
+            "$(printf '%s' "$hits" | tr '\n' ' ')" ""
+    fi
+done
 
 finish

@@ -559,6 +559,7 @@ ${_pr_list}
 QUOTA
         done
     fi
+    # shellcheck disable=SC2034  # read by the caller after this returns (ab-packages status)
     AB_PKGS_ASSETS_BYTES=$(ab_pkgs_assets_bytes "${_pr_root}")
     return 0
 }
@@ -572,7 +573,9 @@ ab_pkgs_assets_maintain() {
     _mt_superseded=${AB_PKGS_ASSETS_SUPERSEDED}
     _mt_sup_state=${AB_PKGS_ASSETS_STATE}
     ab_pkgs_assets_prune "${_mt_root}" || :
+    # shellcheck disable=SC2034  # both are read by the caller after this returns
     AB_PKGS_ASSETS_SUPERSEDED=${_mt_superseded}
+    # shellcheck disable=SC2034
     AB_PKGS_ASSETS_SUPERSEDED_STATE=${_mt_sup_state}
     return 0
 }
@@ -667,9 +670,11 @@ BODIES
         return 0
     fi
     if [ "${AB_PKGS_REPLAY_OK}" -eq 0 ] && [ "${AB_PKGS_REPLAY_UNCHANGED}" -eq 0 ]; then
+        # shellcheck disable=SC2034  # read by the caller after this returns
         AB_PKGS_REPLAY_STATE="fail"
         return 1
     fi
+    # shellcheck disable=SC2034
     AB_PKGS_REPLAY_STATE="partial"
     return 0
 }

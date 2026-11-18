@@ -308,7 +308,7 @@ assert_eq "$out" "rc=1" \
   "ac-8 a boot worker that never sees a feed gives up after the window"
 assert_eq "$(grep -c 'rung=w1-' <<<"$(ring)")" "6" \
   "ac-8 W1 is six rungs in the first five minutes (immediately, then 15/30/60/120 s)"
-assert_eq "$(printf '%s\n' $(head -n 5 "$sleeps") | tr '\n' ' ')" "15 15 30 60 180 " \
+assert_eq "$(head -n 5 "$sleeps" | tr '\n' ' ')" "15 15 30 60 180 " \
   "ac-8 the W1 rungs are the offsets 15/30/60/120/300, so the six attempts fit in five minutes"
 assert_eq "$(sed -n '6p' "$sleeps")" "1800" \
   "ac-8 W3 waits half an hour between rungs"
@@ -356,7 +356,7 @@ out="$(run_worker boot b "$tmp/probe-body")"
 assert_eq "$out" "rc=0" "ac-8 a feed that comes back ends the ladder instead of waiting it out"
 assert_eq "$(grep -c '' "$entrylog")" "1" \
   "ac-8 the transaction runs exactly once, on the first rung that can reach a feed"
-assert_eq "$(printf '%s\n' $(head -n 3 "$sleeps") | tr '\n' ' ')" "15 15 30 " \
+assert_eq "$(head -n 3 "$sleeps" | tr '\n' ' ')" "15 15 30 " \
   "ac-8 ... and no rung after it is waited for"
 assert_eq "$(grep -c '' "$sleeps")" "3" \
   "ac-8 ... the ladder stopped at the rung that worked"

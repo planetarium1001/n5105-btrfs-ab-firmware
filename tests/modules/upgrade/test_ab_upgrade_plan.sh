@@ -323,7 +323,12 @@ assert_eq "$(grep '^kernel=' "$stage/layer/etc/apk/world" 2>/dev/null)" \
   "ac-6 the staged world is pinned to the base the slot will carry"
 assert_file_exists "$stage/target/etc/apk/ab/cache/busybox-1.0-r1.apk" \
   "ac-6 the prefetch left the package body in the staging cache the first boot reads"
-assert_eq "$(ls "$stage/target/etc/apk/ab/cache" 2>/dev/null | grep -c '\.apk$')" \
+bodies=0
+for body in "$stage/target/etc/apk/ab/cache"/*.apk; do
+  [ -f "$body" ] || continue
+  bodies=$((bodies + 1))
+done
+assert_eq "$bodies" \
   "$(awk 'NF && $0 !~ /^kernel(=|$)/ { n++ } END { printf "%d", n + 0 }' \
     "$stage/target/etc/apk/world" 2>/dev/null)" \
   "ac-6 one body per world entry the follow has to move (the kernel is ab-slot's and is never fetched)"

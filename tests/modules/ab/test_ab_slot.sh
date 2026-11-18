@@ -756,28 +756,38 @@ assert_eq "$(( elapsed < 900 ))" "1" \
 
 # 4. stale locks are taken over without spending the wait budget: a lock from another boot,
 #    and one from this boot whose pid is gone.
+#
+#    The assertion is "the stale branch does not spend the wait budget", and it is written
+#    against a budget it makes large enough to dominate this host's own cost: one
+#    `slot_cmd_nosync` here pays two `python3` starts for now_ms, a shell start and a dozen
+#    state-file reads, which measured 700-930 ms on a loaded authoring machine and made the
+#    old "under 900 ms against the 1 s default budget" bound fail one run in three (2026-11-19,
+#    three standalone runs: pass, fail, pass). A takeover that really waited would cost the
+#    whole budget, so a 5 s budget and a 2 s bound still tells the two apart - and it no longer
+#    measures how fast the machine is.
+_stale_budget=5
 write_state a none 23
 lock_owner "boot-0000-dead-0000" "999999"
 started="$(now_ms)"
-out="$(slot_cmd_nosync pending b 2>&1)"
+out="$(AB_LOCK_WAIT_SECS="$_stale_budget" slot_cmd_nosync pending b 2>&1)"
 rc=$?
 elapsed=$(( $(now_ms) - started ))
 assert_eq "$rc" "0" "ac-9 a lock from another boot is taken over"
 assert_contains "$out" "action=stale-lock-taken" "ac-9 and reported as a takeover"
-assert_eq "$(( elapsed < 900 ))" "1" \
-  "ac-9 a stale lock is not waited for (${elapsed}ms, budget is 1000ms)"
+assert_eq "$(( elapsed < 2000 ))" "1" \
+  "ac-9 a stale lock is not waited for (${elapsed}ms, budget is ${_stale_budget}000ms)"
 assert_eq "$(pending_of_state)" "b" "ac-9 the stale takeover writes the state"
 
 write_state a none 24
 lock_owner "$(cat "$boot_id_file")" "4000000"
 started="$(now_ms)"
-out="$(slot_cmd_nosync pending b 2>&1)"
+out="$(AB_LOCK_WAIT_SECS="$_stale_budget" slot_cmd_nosync pending b 2>&1)"
 rc=$?
 elapsed=$(( $(now_ms) - started ))
 assert_eq "$rc" "0" "ac-9 a lock of this boot whose pid is gone is taken over"
 assert_contains "$out" "action=stale-lock-taken" "ac-9 and reported here too"
-assert_eq "$(( elapsed < 900 ))" "1" \
-  "ac-9 a dead pid does not make the writer wait (${elapsed}ms, budget is 1000ms)"
+assert_eq "$(( elapsed < 2000 ))" "1" \
+  "ac-9 a dead pid does not make the writer wait (${elapsed}ms, budget is ${_stale_budget}000ms)"
 
 # 5. source-level: the takeover counter only advances in the stale branch, so contention
 #    cannot use up the five attempts that are there for a lock that will not clear.
@@ -793,12 +803,12 @@ assert_contains "$(cat "$ab_slot")" '[ "${_lock_try}" -lt 5 ]' \
 write_state a none 25
 rm -rf "$esp/ab/.lock"
 started="$(now_ms)"
-out="$(slot_cmd_nosync commit 2>&1)"
+out="$(AB_LOCK_WAIT_SECS="$_stale_budget" slot_cmd_nosync commit 2>&1)"
 rc=$?
 elapsed=$(( $(now_ms) - started ))
 assert_eq "$rc" "0" "ac-9 a commit with no contention succeeds"
-assert_eq "$(( elapsed < 900 ))" "1" \
-  "ac-9 the uncontended path does not sleep (${elapsed}ms, budget is 1000ms)"
+assert_eq "$(( elapsed < 2000 ))" "1" \
+  "ac-9 the uncontended path does not sleep (${elapsed}ms, budget is ${_stale_budget}000ms)"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'action=stale-lock-taken' || true)" "0" \
   "ac-9 and no takeover is reported"
 

@@ -122,6 +122,7 @@ export APK_CALLS="$tmp/apk.calls"
 : >"$tmp/apk.calls"
 
 # The aligner's record: what an upgrade published before any follow ran.
+# shellcheck disable=SC2120  # the optional extra-field argument is part of the helper's shape
 seed_record() { # [extra-field...]
   {
     printf 'packages=aligned reason=none version=25.12.2 kernel=kernel=6.12.103~0413601b1c3f0490e17f340fe09229ea-r1 slot=b'
