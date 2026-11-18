@@ -752,11 +752,21 @@ cmd_status() {
     # the kernel this slot runs; a limited slot boots fine and cannot install matched
     # packages.
     _packages_hint=""
+    # The prune leaves its count in the same record the state comes from: a slot whose world
+    # lost entries is still aligned for what remains, and that difference is exactly what a
+    # reader needs to see here instead of in a log they were not told about.
+    _packages_dropped="$(sed -n 's/.*world_dropped=\([0-9][0-9]*\).*/\1/p' "${AB_PACKAGES_FILE}" 2>/dev/null | tail -n 1)"
+    case "${_packages_dropped:-}" in
+        "" | 0) _packages_dropped="" ;;
+    esac
     case "${_packages}" in
         aligned) _packages_hint=", packages matched to this kernel" ;;
         limited) _packages_hint=", package metadata is limited (${_packages_reason}): installing packages for this kernel needs it fixed first" ;;
         *) _packages_hint=", no upgrade recorded package metadata, so nothing here proves it matches" ;;
     esac
+    if [ -n "${_packages_dropped}" ]; then
+        _packages_hint="${_packages_hint}; ${_packages_dropped} package(s) this release does not offer were dropped from the slot's world (see ab-slot log)"
+    fi
     say "ab-slot: packages ${_packages}${_packages_hint}"
     say "ab-slot: the next boot runs slot ${_next}, ${_identity}"
 }

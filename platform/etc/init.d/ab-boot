@@ -427,8 +427,26 @@ packages_refresh_run() {
 	_rc=$?
 	_state="${AB_PACKAGES_REFRESH_STATE:-unknown}"
 	_reason="${AB_PACKAGES_REFRESH_REASON:-unknown}"
-	log_append "stage=packages-refresh slot=${_slot} result=${_state} reason=${_reason} version=${AB_PACKAGES_REFRESH_VERSION:-${_version}}"
+	_followed=${AB_PACKAGES_REFRESH_VERSION:-${_version}}
+	_dropped="${AB_PACKAGES_REFRESH_DROPPED_COUNT:-0}"
+	case "${_dropped}" in
+		'' | *[!0-9]*) _dropped=0 ;;
+	esac
+	log_append "stage=packages-refresh slot=${_slot} result=${_state} reason=${_reason} version=${_followed} dropped=${_dropped}"
 	console_say "ab-boot: package follow ${_state} (${_reason}) for ${_version}"
+	# What a prune dropped is its own milestone: a machine that lost world entries has to be
+	# able to see it without reading the record, and the names are what an operator acts on.
+	if [ "${_dropped}" -gt 0 ]; then
+		_dropped_list=${AB_PACKAGES_REFRESH_DROPPED_LIST:-unknown}
+		log_append "stage=packages-prune slot=${_slot} result=ok dropped=${_dropped} version=${_followed} packages=${_dropped_list}"
+		# The ring log carries every name; the console line stays readable, and a long list is
+		# still one `grep stage=packages-prune` away.
+		if [ "$(printf '%s' "${_dropped_list}" | tr ',' '\n' | grep -c .)" -gt 8 ]; then
+			console_say "ab-boot: ${_dropped} package(s) not offered by ${_followed} were dropped from slot ${_slot}'s world (list in ab/log/boot-0.log)"
+		else
+			console_say "ab-boot: ${_dropped} package(s) not offered by ${_followed} were dropped from slot ${_slot}'s world (${_dropped_list})"
+		fi
+	fi
 	return "${_rc}"
 }
 

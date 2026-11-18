@@ -16,6 +16,11 @@
 #        records the status apk gave, and something to reinstall is never claimed as done.
 #   ac-4 idempotent: ab-boot asks for the follow only for the slot an upgrade aligned, and
 #        only until `refresh=<version>` is in the record; a second run writes the same line.
+#   ac-5 prune: a world entry the target's feeds do not offer is dropped from the world (the
+#        package stays installed, its /etc/config untouched) and the record names it;
+#        everything offered -> nothing dropped; nothing offered -> the world keeps what this
+#        library owns and the follow still completes; a pin whose version is gone is not a
+#        missing package and is never dropped; offline drops nothing.
 #
 # The record `ab_packages_refresh` publishes is also read back with the real `ab-slot
 # status`, so a new field cannot quietly make the state unreadable.
@@ -79,19 +84,92 @@ mkdir -p "$bin"
 # what it installs, `--root` and `--timeout` are global options in front of the applet,
 # and nothing here installs anything. APK_ADD_FAIL_CALLS names the 1-based add call that
 # has to fail, which is how the full-then-subset fall-back is driven.
+# The stub answers the way apk-tools 3.0.5 does on the measured machine. Two answers matter
+# as much as the transaction itself: `--simulate add` names what it cannot select
+# (`  <entry> (no such package):` on stderr, exit 1) and `search -q -e` names what the
+# indexes offer. APK_AVAILABLE is the feed's set, one name per line; a name missing from it is
+# a package this release does not carry.
 cat >"$bin/apk" <<'APK'
 #!/bin/sh
 printf '%s\n' "$*" >>"${APK_CALLS:-/dev/null}"
+# Parse the way apk does: global options take a value, the applet decides the rest.
 applet=""
+simulate=0
+skip=0
 for arg in "$@"; do
+  if [ "$skip" = "1" ]; then
+    skip=0
+    continue
+  fi
   case "$arg" in
-    update|add|fix|info|fetch|upgrade) applet=$arg; break ;;
+    --root|-p|--timeout|--cache-dir|--keys-dir|--repository|-X|--repositories-file | --repository-config)
+      skip=1
+      continue
+      ;;
+    --simulate|-s)
+      simulate=1
+      continue
+      ;;
+    update|add|fix|info|fetch|upgrade|search)
+      applet=$arg
+      break
+      ;;
   esac
 done
+available() { grep -qx "$1" "${APK_AVAILABLE:-/dev/null}" 2>/dev/null; }
+entries() {
+  skip=0
+  for arg in "$@"; do
+    if [ "$skip" = "1" ]; then skip=0; continue; fi
+    case "$arg" in
+      --root|-p|--timeout|--cache-dir|--keys-dir) skip=1 ;;
+      add|search|--force-reinstall|-q|-e|-x|--*) ;;
+      *) printf '%s\n' "$arg" ;;
+    esac
+  done
+}
 case "$applet" in
   update) exit "${APK_UPDATE_RC:-0}" ;;
+  search)
+    # `apk search -q -e <name>...`: the offered names, exit 1 when one is not there.
+    rc=0
+    for entry in $(entries "$@"); do
+      if available "${entry%%[=<>~]*}"; then
+        printf '%s\n' "${entry%%[=<>~]*}"
+      else
+        rc=1
+      fi
+    done
+    exit "$rc"
+    ;;
   add)
-    calls=$(grep -c ' add ' "${APK_CALLS:-/dev/null}" 2>/dev/null || :)
+    if [ "$simulate" = "1" ]; then
+      # A pin whose version is gone answers differently from a package the release lacks:
+      # the name is in the index, the version is not. Measured 2026-11-18:
+      #   htop-3.5.3-r1:\n    breaks: world[htop=3.3.0-r1]
+      if [ -n "${APK_PIN_BROKEN:-}" ]; then
+        for entry in $(entries "$@"); do
+          if [ "$entry" = "${APK_PIN_BROKEN}" ]; then
+            printf 'ERROR: unable to select packages:\n  %s:\n    breaks: world[%s]\n' \
+              "${APK_PIN_BROKEN%%[=<>~]*}-9.9.9-r9" "${entry}" >&2
+            exit 1
+          fi
+        done
+      fi
+      missing=""
+      for entry in $(entries "$@"); do
+        available "${entry%%[=<>~]*}" || missing="$missing $entry"
+      done
+      if [ -n "$missing" ]; then
+        printf 'ERROR: unable to select packages:\n' >&2
+        for entry in $missing; do
+          printf '  %s (no such package):\n    required by: world[%s]\n' "$entry" "$entry" >&2
+        done
+        exit 1
+      fi
+      exit 0
+    fi
+    calls=$(grep ' add --force-reinstall' "${APK_CALLS:-/dev/null}" 2>/dev/null | grep -v -- '--simulate' | grep -c . || :)
     calls=${calls:-0}
     case ",${APK_ADD_FAIL_CALLS:-}," in
       *",${calls},"*) exit "${APK_ADD_FAIL_RC:-1}" ;;
@@ -112,6 +190,19 @@ chmod +x "$bin/apk" "$bin/uclient-fetch"
 
 : >"$tmp/apk.calls"
 : >"$tmp/probe.calls"
+# The feed's set: by default everything the world names is offered, so a case that says
+# nothing about availability sees the pre-prune behaviour exactly.
+available="$tmp/available.txt"
+offered_all() {
+  {
+    awk '{ name = $0; sub(/[=<>~].*/, "", name); if (name != "kernel") print name }' "$target/etc/apk/world"
+    # The index itself is readable: a feed that answers these names was read, which is what
+    # separates "this release offers none of them" from "the index was never there".
+    printf '%s\n' apk-openssl dropbear procd uci ubus
+  } >"$available"
+}
+offered_all
+export APK_AVAILABLE="$available"
 export APK_CALLS="$tmp/apk.calls"
 export PROBE_CALLS="$tmp/probe.calls"
 
@@ -127,6 +218,11 @@ seed_record() { # [extra-field...]
     "${1:+ $1}" >"$record_file"
 }
 record() { tail -n 1 "$record_file" 2>/dev/null; }
+# The apk log now carries four kinds of call: the index, the solver's --simulate answer, the
+# indexes' answer (search), and the transaction. These two read the transaction alone.
+txn_calls() { grep ' add --force-reinstall' "$tmp/apk.calls" 2>/dev/null | grep -v -- '--simulate' || true; }
+txn_count() { txn_calls | grep -c . || true; }
+all_calls() { grep -c . "$tmp/apk.calls" 2>/dev/null || true; }
 
 run_refresh() {
   AB_ESP="$esp" PATH="$bin:$PATH" sh -c '
@@ -157,6 +253,8 @@ assert_eq "$(grep -c ' update' "$tmp/apk.calls" || true)" "0" \
   "ac-1 the probe is not an apk update"
 assert_eq "$(grep -c '' "$tmp/probe.calls")" "1" \
   "ac-1 the probe is exactly one request"
+assert_eq "$(record | grep -c 'world_dropped=' || true)" "0" \
+  "ac-1 an offline machine drops nothing from the world either"
 
 # The record did not claim the refresh happened: a second boot asks again... no - it asks
 # once per base, which is what refresh= is for. The state line is the honest half.
@@ -205,11 +303,16 @@ assert_eq "$(record)" \
 assert_eq "$(sed -n '1p' "$tmp/apk.calls")" \
   "--root $target --timeout 180 update" \
   "ac-2 the index is refreshed first: /var is a tmpfs, so a fresh boot has no apk index"
-assert_eq "$(sed -n '2p' "$tmp/apk.calls")" \
+assert_eq "$(txn_calls)" \
   "--root $target --timeout 180 add --force-reinstall base-files=1950~0c4cd0f9920a kmod-usb-storage kmod-nls-iso8859-1 libc=1.2.5-r5 htop=3.3.0-r1 luci-theme-argon docker" \
   "ac-2 one reinstall of the whole world, constraints verbatim, minus the kernel"
-assert_eq "$(grep -c '' "$tmp/apk.calls")" "2" \
-  "ac-2 exactly two apk calls: the index and the one transaction"
+assert_eq "$(txn_count)" "1" "ac-2 the world is reinstalled exactly once"
+assert_eq "$(grep -c -- '--simulate' "$tmp/apk.calls" || true)" "1" \
+  "ac-2 the prune asks the solver first (one simulated transaction), it does not guess"
+assert_eq "$(grep -c ' search ' "$tmp/apk.calls" || true)" "0" \
+  "ac-2 and never has to confirm anything: everything the world names is offered"
+assert_eq "$(record | grep -c 'world_dropped=' || true)" "0" \
+  "ac-2 nothing was dropped, so the record carries no prune field"
 assert_eq "$(grep -c 'kernel' "$tmp/apk.calls" || true)" "0" \
   "ac-2 the kernel package ab-slot owns is never reinstalled"
 
@@ -225,10 +328,10 @@ assert_eq "$out" "rc=1 state=limited reason=partial version=25.12.2" \
 assert_eq "$(record)" \
   "packages=limited reason=partial version=25.12.2 kernel=kernel=6.12.103~0413601b1c3f0490e17f340fe09229ea-r1 slot=b refresh=25.12.2" \
   "ac-3 the degraded result is a limited record with reason=partial"
-assert_eq "$(sed -n '3p' "$tmp/apk.calls")" \
+assert_eq "$(txn_calls | sed -n '2p')" \
   "--root $target --timeout 180 add --force-reinstall kmod-usb-storage kmod-nls-iso8859-1 libc=1.2.5-r5 docker" \
   "ac-3 the fall-back reinstalls only kmod-*, libc and docker"
-assert_eq "$(grep -c '' "$tmp/apk.calls")" "3" \
+assert_eq "$(txn_count)" "2" \
   "ac-3 the fall-back is one extra transaction, not a loop"
 
 # Both transactions failing is a fact the operator has to be able to read: the status apk
@@ -249,7 +352,7 @@ reset_calls
 out="$(run_refresh)"
 assert_eq "$out" "rc=0 state=aligned reason=no-packages version=25.12.2" \
   "ac-3 an empty world records no-packages instead of pretending"
-assert_eq "$(grep -c '' "$tmp/apk.calls")" "0" \
+assert_eq "$(all_calls)" "0" \
   "ac-3 and runs no apk at all"
 cat >"$target/etc/apk/world" <<'WORLD'
 base-files=1950~0c4cd0f9920a
@@ -358,6 +461,101 @@ assert_eq "$(pkg_field "$status")" "aligned" \
   "ac-4 an offline attempt is still not a claim the machine cannot keep"
 assert_eq "$(pkg_reason_field "$status")" "offline" \
   "ac-4 and the reason is the offline token ab-slot prints"
+
+# =========================================================================== #
+# ac-5: world entries the target release does not offer
+# =========================================================================== #
+# A move between releases can leave the world naming packages the new base's feeds do not
+# carry. Every later apk transaction then fails to solve - including the reinstall above and
+# a plain `apk add kmod-x` by hand - so those entries are dropped from the world. The
+# packages themselves stay installed, and nothing under /etc/config or /data is touched.
+
+world_default() {
+  cat >"$target/etc/apk/world" <<'WORLD'
+base-files=1950~0c4cd0f9920a
+kernel=6.12.103~0413601b1c3f0490e17f340fe09229ea-r1
+kmod-usb-storage
+kmod-nls-iso8859-1
+libc=1.2.5-r5
+htop=3.3.0-r1
+luci-theme-argon
+docker
+WORLD
+  offered_all
+}
+
+# (b) one entry is not offered: it leaves the world, the rest is kept and reinstalled, and
+#     the user's configuration for the dropped package stays exactly as it was.
+world_default
+mkdir -p "$target/etc/config"
+printf "config openclash\n\toption ab_marker 'keep-me'\n" >"$target/etc/config/openclash"
+cfg_before=$(cksum <"$target/etc/config/openclash")
+grep -vx 'luci-theme-argon' "$available" >"$available.tmp"
+mv "$available.tmp" "$available"
+seed_record
+reset_calls
+out="$(run_refresh)"
+assert_eq "$out" "rc=0 state=limited reason=pruned version=25.12.2" \
+  "ac-5 a package this release does not offer is dropped, and the verdict says so"
+assert_contains "$(record)" "world_dropped=1 dropped=luci-theme-argon" \
+  "ac-5 the record names how many entries were dropped, and which"
+assert_eq "$(grep -c '^luci-theme-argon$' "$target/etc/apk/world" || true)" "0" \
+  "ac-5 the world no longer asks for it"
+assert_eq "$(grep -c '^kernel=' "$target/etc/apk/world")" "1" \
+  "ac-5 the kernel ab-slot owns is still pinned"
+assert_eq "$(txn_count)" "1" "ac-5 the survivors are reinstalled in one transaction"
+assert_eq "$(txn_calls | grep -c 'luci-theme-argon' || true)" "0" \
+  "ac-5 and the transaction does not name what was dropped"
+assert_contains "$(txn_calls)" "kmod-usb-storage" "ac-5 the offered entries are still reinstalled"
+assert_eq "$(cksum <"$target/etc/config/openclash")" "$cfg_before" \
+  "ac-5 the dropped package's /etc/config file is untouched (an unmanaged package is not a deleted one)"
+
+# (c) nothing is offered: the world keeps what this library owns, the follow completes, and
+#     no transaction is attempted with an empty set.
+world_default
+before_entries=$(grep -vc '^kernel=' "$target/etc/apk/world")
+# A readable feed that carries none of the world's names: only the canaries answer.
+printf '%s\n' apk-openssl dropbear >"$available"
+seed_record
+reset_calls
+out="$(run_refresh)"
+assert_eq "$out" "rc=0 state=limited reason=pruned version=25.12.2" \
+  "ac-5 a release that offers none of them still completes the follow"
+assert_eq "$(cat "$target/etc/apk/world")" \
+  "kernel=6.12.103~0413601b1c3f0490e17f340fe09229ea-r1" \
+  "ac-5 and the world keeps the one entry this library must never drop"
+assert_contains "$(record)" "world_dropped=${before_entries}" \
+  "ac-5 the count says how much was dropped"
+assert_eq "$(txn_count)" "0" "ac-5 with nothing left there is no transaction to run"
+
+# (d) a pin whose version is gone is not a missing package: the index still offers the name,
+#     so nothing is dropped and the user's constraint stands.
+world_default
+seed_record
+reset_calls
+out="$(APK_PIN_BROKEN='htop=3.3.0-r1' run_refresh)"
+assert_eq "$(grep -c '^htop=3.3.0-r1$' "$target/etc/apk/world")" "1" \
+  "ac-5 an unavailable pin is kept: the package exists, the version does not"
+assert_eq "$(record | grep -c 'world_dropped=' || true)" "0" \
+  "ac-5 and no prune is recorded for it"
+assert_eq "$out" "rc=0 state=aligned reason=none version=25.12.2" \
+  "ac-5 the follow itself still reports what it did"
+
+# (e) an index that cannot be read answers "no" to every question. That is the shape of a
+#     world where nothing is offered, and the two must never be confused: nothing is dropped.
+world_default
+: >"$available"
+seed_record
+reset_calls
+out="$(run_refresh)"
+assert_eq "$out" "rc=0 state=aligned reason=none version=25.12.2" \
+  "ac-5 an unusable index does not change the verdict"
+assert_eq "$(grep -c '^luci-theme-argon$' "$target/etc/apk/world")" "1" \
+  "ac-5 and not one world entry is dropped on the strength of a feed that answered nothing"
+assert_eq "$(record | grep -c 'world_dropped=' || true)" "0" \
+  "ac-5 no prune is recorded"
+
+world_default
 
 # =========================================================================== #
 # ab-boot asks for it, and only once

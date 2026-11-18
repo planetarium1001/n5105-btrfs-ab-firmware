@@ -458,6 +458,11 @@ AB_PACKAGES_REFRESH_STATE=""
 AB_PACKAGES_REFRESH_REASON=""
 # shellcheck disable=SC2034
 AB_PACKAGES_REFRESH_VERSION=""
+# What a prune dropped from the world, so the caller's ring log can name it.
+# shellcheck disable=SC2034
+AB_PACKAGES_REFRESH_DROPPED_COUNT=0
+# shellcheck disable=SC2034
+AB_PACKAGES_REFRESH_DROPPED_LIST=""
 # Wall-clock cap for one apk transaction, and for the probe.
 AB_PACKAGES_REFRESH_TIMEOUT="${AB_PACKAGES_REFRESH_TIMEOUT:-180}"
 AB_PACKAGES_REFRESH_PROBE_TIMEOUT="${AB_PACKAGES_REFRESH_PROBE_TIMEOUT:-8}"
@@ -497,6 +502,11 @@ _packages_refresh_publish() {
     _ps=$1
     _pr=$2
     _pv=$3
+    # Optional: how many world entries a prune dropped, and which ones. They sit right after
+    # reason= (the shape the record documents), and a line that does not carry them must not
+    # inherit them from a previous run's verdict.
+    _pd=${4:-0}
+    _pl=${5:-}
     _file=$(_packages_refresh_record_file)
     _dir=$(dirname "${_file}")
     mkdir -p "${_dir}" 2>/dev/null || {
@@ -513,10 +523,14 @@ _packages_refresh_publish() {
         *) _old="" ;;
     esac
     _line="packages=${_ps} reason=${_pr}"
+    if [ "${_pd}" -gt 0 ] 2>/dev/null; then
+        _line="${_line} world_dropped=${_pd}"
+        [ -n "${_pl}" ] && _line="${_line} dropped=${_pl}"
+    fi
     # shellcheck disable=SC2086  # the fields of a one-line record are single words by construction
     for _kv in ${_old}; do
         case "${_kv}" in
-            packages=* | reason=* | refresh=*) continue ;;
+            packages=* | reason=* | refresh=* | world_dropped=* | dropped=*) continue ;;
         esac
         _line="${_line} ${_kv}"
     done
@@ -543,6 +557,10 @@ _packages_refresh_publish() {
     AB_PACKAGES_REFRESH_STATE=${_ps}
     AB_PACKAGES_REFRESH_REASON=${_pr}
     AB_PACKAGES_REFRESH_VERSION=${_pv}
+    if [ "${_pd}" -gt 0 ] 2>/dev/null; then
+        AB_PACKAGES_REFRESH_DROPPED_COUNT=${_pd}
+        AB_PACKAGES_REFRESH_DROPPED_LIST=${_pl}
+    fi
     return 0
 }
 
@@ -689,6 +707,247 @@ _packages_refresh_world() {
     ' "$1"
 }
 
+# _packages_refresh_apk_capture <target-dir> <apk arguments...>: one apk command with both
+# streams on stdout, because apk writes its solver verdict to stderr and a prune has to read
+# it. Returns apk's own status.
+_packages_refresh_apk_capture() {
+    _cap_root=$1
+    shift
+    _cap_out=$(_packages_refresh_apk "${_cap_root}" "$@" 2>&1)
+    _cap_rc=$?
+    printf '%s\n' "${_cap_out}"
+    return "${_cap_rc}"
+}
+
+# _packages_prune_candidates <target-dir> <constraint...>: the world entries apk itself calls
+# "(no such package)", one name per line on stdout.
+#
+# The question "is this package offered by the release this slot runs" is answered by running
+# the transaction the refresh would run, in --simulate: that is the failure the machine would
+# hit, not a second opinion about it. A pin whose version is gone answers differently
+# (`<pkg>-<version>:` plus `breaks: world[...]`), so it never looks like a missing package.
+#
+# Returns 0 when apk answered (with or without candidates), 1 when the transaction failed for
+# some other reason: the caller must then leave the world alone, because a prune that cannot
+# name what it drops is a mass delete.
+_packages_prune_candidates() {
+    _pcd_target=$1
+    shift
+    _pcd_out=$(_packages_refresh_apk_capture "${_pcd_target}" --simulate add --force-reinstall "$@")
+    _pcd_rc=$?
+    if [ "${_pcd_rc}" -eq 0 ]; then
+        return 0
+    fi
+    _pcd_names=$(printf '%s\n' "${_pcd_out}" \
+        | sed -n 's/^  \([^ ][^ ]*\) (no such package):$/\1/p' \
+        | sed 's/[=<>~].*//')
+    if [ -z "${_pcd_names}" ]; then
+        printf 'packages: apk refused the transaction, and not with a missing package:\n' >&2
+        printf '%s\n' "${_pcd_out}" | head -n 6 | sed 's/^/packages:   /' >&2
+        return 1
+    fi
+    printf '%s\n' "${_pcd_names}" | sort -u
+    return 0
+}
+
+# _packages_prune_confirm <target-dir> <candidates-file>: the candidates the indexes do not
+# offer either, one name per line on stdout.
+#
+# Two independent answers, the same way the aligner reads its own writes back: the solver
+# says "cannot select", the index says "not there". A candidate the index does offer is a pin
+# whose version is gone, not a package this release lacks - dropping that entry would throw
+# away something the user can still install.
+_packages_prune_confirm() {
+    _pcf_names=$(cat "$2" 2>/dev/null)
+    [ -n "${_pcf_names}" ] || return 0
+    # shellcheck disable=SC2086  # one word per package name by construction
+    _pcf_offered=$(_packages_refresh_apk_capture "$1" search -q -e ${_pcf_names})
+    while IFS= read -r _pcf_name; do
+        [ -n "${_pcf_name}" ] || continue
+        case " $(printf '%s' "${_pcf_offered}" | tr '\n' ' ') " in
+            *" ${_pcf_name} "*) continue ;;
+        esac
+        printf '%s\n' "${_pcf_name}"
+    done <"$2"
+}
+
+# _packages_prune_world <world-file> <drop-file>: remove exactly the named entries and keep
+# every other byte. Verified on the way out: the count has to drop by exactly as many entries
+# as were dropped, and no dropped name may still be in the file, or the pre-rewrite copy comes
+# back. Returns 1 when the file could not be written or did not read back right.
+_packages_prune_world() {
+    _pww_world=$1
+    _pww_drop=$2
+    _pww_before=$(grep -c . "${_pww_world}" 2>/dev/null || true)
+    _pww_n=$(grep -c . "${_pww_drop}" 2>/dev/null || true)
+    _pww_before=${_pww_before:-0}
+    _pww_n=${_pww_n:-0}
+    if ! _packages_rewrite "${_pww_world}" '
+            BEGIN {
+                while ((getline _dropped < dropfile) > 0) {
+                    if (_dropped == "") continue
+                    drop[_dropped] = 1
+                }
+            }
+            {
+                name = $0
+                sub(/[=<>~].*/, "", name)
+                if (name in drop) next
+                print
+            }' -v dropfile="${_pww_drop}"; then
+        return 1
+    fi
+    _pww_after=$(grep -c . "${_pww_world}" 2>/dev/null || true)
+    if [ "${_pww_after:-0}" -ne "$((_pww_before - _pww_n))" ]; then
+        _packages_restore "${_pww_world}"
+        printf 'packages: the world lost %s entries instead of %s, restored\n' \
+            "$((_pww_before - ${_pww_after:-0}))" "${_pww_n}" >&2
+        return 1
+    fi
+    while IFS= read -r _pww_name; do
+        [ -n "${_pww_name}" ] || continue
+        if awk -v n="${_pww_name}" '
+                { line = $0; sub(/[=<>~].*/, "", line); if (line == n) found = 1 }
+                END { exit !found }' "${_pww_world}"; then
+            _packages_restore "${_pww_world}"
+            printf 'packages: %s is still in the world after the prune, restored\n' "${_pww_name}" >&2
+            return 1
+        fi
+    done <"${_pww_drop}"
+    rm -f "${_pww_world}.ab-align.bak" 2>/dev/null || true
+    return 0
+}
+
+# _packages_prune_index_usable <target-dir> <world-file>: 0 when the indexes can answer at all.
+#
+# The prune's question is "does this release offer X", and an index that cannot be read
+# answers "no" to everything - which is exactly the shape of a world where nothing is offered.
+# The two must never be confused: dropping every entry because the index was missing is a mass
+# delete dressed as a diagnostic. The canaries are names the world does not mention, so a feed
+# that answers them is a feed that was read; only then is an "absent" answer believable.
+# Measured 2026-11-18: `apk --root <dir>` with an empty cache answers nothing for every name.
+_packages_prune_index_usable() {
+    _piu_target=$1
+    _piu_world=$2
+    _piu_names=$(_packages_refresh_world "${_piu_world}" full \
+        | awk '{ name = $0; sub(/[=<>~].*/, "", name); print name }')
+    _piu_probe=""
+    for _piu_canary in apk-openssl base-files busybox dropbear libc procd uci ubus; do
+        case " ${_piu_names} " in
+            *" ${_piu_canary} "*) continue ;;
+        esac
+        _piu_probe="${_piu_probe} ${_piu_canary}"
+    done
+    # Every canary happens to be in this world: fall back to the world's own names, which
+    # still separates "read nothing" from "offered something".
+    [ -n "${_piu_probe}" ] || _piu_probe=${_piu_names}
+    [ -n "${_piu_probe}" ] || return 1
+    # shellcheck disable=SC2086  # one word per package name by construction
+    _piu_offered=$(_packages_refresh_apk_capture "${_piu_target}" search -q -e ${_piu_probe})
+    # A name has to come back, not merely "some output": apk's warnings about a cache it
+    # cannot read are output too, and a guard that counts them as an answer is no guard at
+    # all. Measured 2026-11-18: a sandbox root answered with nothing but "opening from cache
+    # ...: No such file or directory" and every world entry was dropped.
+    _piu_words=$(printf '%s' "${_piu_offered}" | tr '\n' ' ')
+    for _piu_name in ${_piu_probe}; do
+        case " ${_piu_words} " in
+            *" ${_piu_name} "*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# ab_packages_prune <target-dir>: drop the world entries the release this slot runs does not
+# offer.
+#
+# A move between releases can leave the world naming packages the new base's feeds no longer
+# carry (measured 2026-11-18: a 25.12.2 machine with community packages, downgrading to
+# 25.12.0). Nothing else notices: the slot installs, and then *every* later apk transaction
+# fails to solve because one world entry cannot be selected - including the reinstall this
+# library runs and a plain `apk add kmod-x` by hand.
+#
+# Dropping the entry fixes the transactions and keeps everything else: the package stays
+# installed, its files and its `/etc/config` stay exactly as they are (an unmanaged package is
+# not a deleted one), and the record names what was dropped and why. `/data` and the user's
+# configuration are never touched.
+#
+# The index has to be current - the caller refreshes it - because the answer comes from apk:
+# first the transaction it would run (--simulate), then the indexes, so a pin whose version is
+# gone is never mistaken for a package the release lacks.
+#
+# Sets AB_PACKAGES_PRUNE_COUNT / AB_PACKAGES_PRUNE_LIST / AB_PACKAGES_PRUNE_REASON.
+# Returns 0 when the question was answered (whether or not anything was dropped), 1 when the
+# world could not be rewritten, 2 when apk could not answer - nothing is ever touched then.
+ab_packages_prune() {
+    _prune_target=${1:-/}
+    while [ "${#_prune_target}" -gt 1 ] && [ "${_prune_target%/}" != "${_prune_target}" ]; do
+        _prune_target=${_prune_target%/}
+    done
+    AB_PACKAGES_PRUNE_COUNT=0
+    AB_PACKAGES_PRUNE_LIST=""
+    AB_PACKAGES_PRUNE_REASON=""
+
+    _prune_world="${_prune_target}/etc/apk/world"
+    if [ ! -s "${_prune_world}" ]; then
+        AB_PACKAGES_PRUNE_REASON="world-empty"
+        return 2
+    fi
+    _prune_full=$(_packages_refresh_world "${_prune_world}" full)
+    if [ -z "${_prune_full}" ]; then
+        return 0
+    fi
+    _prune_tmp="${TMPDIR:-/tmp}/ab-packages-prune.$$"
+    # shellcheck disable=SC2086  # one word per world constraint by construction
+    if ! _packages_prune_candidates "${_prune_target}" ${_prune_full} \
+        >"${_prune_tmp}" 2>"${_prune_tmp}.log"; then
+        sed 's/^/packages: /' "${_prune_tmp}.log" >&2 2>/dev/null || true
+        rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+        AB_PACKAGES_PRUNE_REASON="prune-unanswerable"
+        return 2
+    fi
+    if [ ! -s "${_prune_tmp}" ]; then
+        rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+        return 0
+    fi
+    # Two answers before anything is dropped: the index has to be readable (a feed that
+    # cannot answer must not look like a release that offers nothing), and the caller has to
+    # say its index refresh worked when it made one.
+    case "${AB_PACKAGES_PRUNE_INDEX_OK:-1}" in
+        0)
+            rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+            AB_PACKAGES_PRUNE_REASON="index-stale"
+            printf 'packages: the index refresh failed, nothing is dropped\n' >&2
+            return 2
+            ;;
+    esac
+    if ! _packages_prune_index_usable "${_prune_target}" "${_prune_world}"; then
+        rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+        AB_PACKAGES_PRUNE_REASON="index-unusable"
+        printf 'packages: the indexes answer nothing for any name, so no "missing" answer is believable; nothing is dropped\n' >&2
+        return 2
+    fi
+    _prune_keep=$(cat "${_prune_tmp}")
+    _prune_drop=$(_packages_prune_confirm "${_prune_target}" "${_prune_tmp}")
+    if [ -z "${_prune_drop}" ]; then
+        printf 'packages: apk cannot select %s, but the feed offers it (a pin, not a missing package); nothing dropped\n' \
+            "$(printf '%s' "${_prune_keep}" | tr '\n' ' ')" >&2
+        rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+        return 0
+    fi
+    printf '%s\n' "${_prune_drop}" >"${_prune_tmp}"
+    if ! _packages_prune_world "${_prune_world}" "${_prune_tmp}"; then
+        rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+        AB_PACKAGES_PRUNE_REASON="prune-unwritable"
+        return 1
+    fi
+    AB_PACKAGES_PRUNE_COUNT=$(grep -c . "${_prune_tmp}" 2>/dev/null || true)
+    AB_PACKAGES_PRUNE_LIST=$(grep . "${_prune_tmp}" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    rm -f "${_prune_tmp}" "${_prune_tmp}.log"
+    printf 'packages: %s world entr(ies) dropped, this release does not offer them: %s\n' \
+        "${AB_PACKAGES_PRUNE_COUNT}" "${AB_PACKAGES_PRUNE_LIST}" >&2
+    return 0
+}
+
 # ab_packages_refresh <target-dir>: make the installed packages belong to the base the
 # machine now runs. Returns 0 when the whole world was reinstalled, 1 when the result is
 # limited (degraded, stale feeds, unwritable record), 2 when the feed did not answer, 3
@@ -705,6 +964,8 @@ ab_packages_refresh() {
     AB_PACKAGES_REFRESH_STATE=""
     AB_PACKAGES_REFRESH_REASON=""
     AB_PACKAGES_REFRESH_VERSION=""
+    AB_PACKAGES_REFRESH_DROPPED_COUNT=0
+    AB_PACKAGES_REFRESH_DROPPED_LIST=""
 
     _previous=$(_packages_refresh_record_state)
     _version=$(_packages_refresh_version "${_target}" "$(_packages_refresh_record_field version)")
@@ -752,13 +1013,44 @@ ab_packages_refresh() {
     # 3. the full transaction. The index is fetched here because /var is a tmpfs on the
     #    measured image; its status is reported but the reinstall decides the verdict, since
     #    a warm cache can serve a transaction a failed index fetch did not need.
-    if ! _packages_refresh_apk "${_target}" update; then
+    _index_ok=0
+    if _packages_refresh_apk "${_target}" update; then
+        _index_ok=1
+    else
         printf 'packages: apk update failed, the reinstall goes ahead on the cache\n' >&2
     fi
+
+    # 3b. a world entry the target's own feeds do not offer poisons every later apk
+    #     transaction on this slot - including the one below and a plain `apk add kmod-x` by
+    #     hand. Drop those entries (the packages stay installed, with their configuration)
+    #     and carry what was dropped into the record.
+    AB_PACKAGES_PRUNE_INDEX_OK=${_index_ok}
+    ab_packages_prune "${_target}" || :
+    _dropped=${AB_PACKAGES_PRUNE_COUNT:-0}
+    _dropped_list=${AB_PACKAGES_PRUNE_LIST:-}
+    if [ "${_dropped}" -gt 0 ]; then
+        AB_PACKAGES_REFRESH_DROPPED_COUNT=${_dropped}
+        AB_PACKAGES_REFRESH_DROPPED_LIST=${_dropped_list}
+        # The transaction below has to be built from the world as it is *now*: one name that
+        # is no longer offered makes apk refuse the whole set.
+        _full=$(_packages_refresh_world "${_world}" full)
+        if [ -z "${_full}" ]; then
+            printf 'packages: nothing this release offers is left in the world after the prune\n' >&2
+            _packages_refresh_publish "limited" "pruned" "${_version}" "${_dropped}" "${_dropped_list}" || :
+            return 0
+        fi
+    fi
+
     # shellcheck disable=SC2086  # one word per world constraint by construction
     _packages_refresh_apk "${_target}" add --force-reinstall ${_full}
     _rc=$?
     if [ "${_rc}" -eq 0 ]; then
+        if [ "${_dropped}" -gt 0 ]; then
+            # The survivors follow this base; the verdict still says something was dropped,
+            # because a slot that lost packages is not `aligned` with the release's set.
+            _packages_refresh_publish "limited" "pruned" "${_version}" "${_dropped}" "${_dropped_list}" || return 1
+            return 0
+        fi
         printf 'packages: reinstalled the whole world (%s entries) for %s\n' \
             "$(printf '%s\n' "${_full}" | grep -c .)" "${_version}" >&2
         _packages_refresh_publish "aligned" "none" "${_version}" || return 1
@@ -772,7 +1064,7 @@ ab_packages_refresh() {
     if [ -z "${_subset}" ]; then
         printf 'packages: the full reinstall failed (%s) and the world has no kernel/ABI subset\n' \
             "${_reason}" >&2
-        _packages_refresh_publish "limited" "refresh-failed" "${_version}" || :
+        _packages_refresh_publish "limited" "refresh-failed" "${_version}" "${_dropped}" "${_dropped_list}" || :
         return 1
     fi
     printf 'packages: the full reinstall failed (%s), falling back to %s kernel/ABI entries\n' \
@@ -781,13 +1073,13 @@ ab_packages_refresh() {
     _packages_refresh_apk "${_target}" add --force-reinstall ${_subset}
     _rc=$?
     if [ "${_rc}" -eq 0 ]; then
-        _packages_refresh_publish "limited" "partial" "${_version}" || return 1
+        _packages_refresh_publish "limited" "partial" "${_version}" "${_dropped}" "${_dropped_list}" || return 1
         return 1
     fi
     _reason="apk-${_rc}"
     [ "${_rc}" -eq 124 ] && _reason="timeout"
     printf 'packages: the kernel/ABI subset failed too (%s)\n' "${_reason}" >&2
-    _packages_refresh_publish "limited" "${_reason}" "${_version}" || :
+    _packages_refresh_publish "limited" "${_reason}" "${_version}" "${_dropped}" "${_dropped_list}" || :
     return 1
 }
 
