@@ -857,11 +857,32 @@ ab-slot log --prev
 Every failure carries a `reason=` token in the log, which is the same token the CI
 judge lines report, so a machine and a build can be compared without guessing.
 
-## This release: 0.0.12
+## This release: 0.0.13
 
-`VERSION` reads `0.0.12`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
-the upstream base is unchanged and no user-visible feature is added. It packages the defects
-found after `0.0.11`, and the acceptance capability that now covers them:
+`VERSION` reads `0.0.13`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
+the upstream base is unchanged. It adds one user-visible behaviour — the packages follow the
+new base — and the machinery that makes that sentence honest:
+
+* **The switch asks once and then moves the packages with it.** `ab-upgrade` prints one
+  English plan block (`Update` / `Packages` / `Config`), names every package it will hold back
+  and why, and asks `Proceed and follow N packages? [y/N]`. Only `y` goes ahead; Enter, `n`,
+  a typo or end-of-input decline and write nothing at all, and a run with no terminal refuses
+  with exit 74 unless `--yes` is given. `--system-only` (or `--no-follow`) replaces the system
+  and leaves the packages where they are.
+* **The bodies are fetched before the switch, so the first boot needs no network.** The
+  download is 3,445,041 bytes for the measured 39-package follow; the first boot then installs
+  those files with no network at all, which keeps a captive portal or a home outage off the
+  critical path. A prefetch that fails never fails the
+  upgrade: the record says `follow=pending reason=network` and the boot falls back to retrying.
+* **A package that cannot follow says why, once.** `UNREACHABLE`, `NO COPY`, `ABI STALE`,
+  `DROPPED` and `PINNED` are the only five answers, `ab-slot status` prints the one line
+  (`packages=` / `follow=` / `hint=`) and `ab-packages status` prints the detail. The plan block
+  is a prediction; the record on the ESP is the fact.
+* **Your configuration is not the package's.** apk keeps your file and writes the package copy
+  as `*.apk-new`; that is asserted, not assumed. Locally installed packages keep a copy under
+  `/etc/apk/ab/local/` so a later base can replay them, and an upstream package with the same
+  name supersedes that copy.
+* **The defects found after `0.0.12` are packaged with the acceptance that covers them:**
 
 * **An apk protection rule is judged by its premise.** `scripts/device/apk-protection-probe.sh`
   asks `apk audit --backup` whether apk sees a protected path as unmodified, which is exactly

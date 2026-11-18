@@ -554,9 +554,11 @@ dev_ab_check() {
     dev_ssh "ab-upgrade --check ${1:?dev_ab_check needs a payload path}"
 }
 
-# dev_install <payload>: write the inactive slot and mark it pending.
+# dev_install <payload>: write the inactive slot and mark it pending. The plan question is
+# answered up front: these drivers run without a terminal, and an unanswered question is a
+# refusal (exit 74) that writes nothing - measured 2026-11-18 against ab-upgrade's plan block.
 dev_install() {
-    dev_ssh "ab-upgrade ${1:?dev_install needs a payload path}"
+    dev_ssh "ab-upgrade --yes ${1:?dev_install needs a payload path}"
 }
 
 # dev_reboot: reboot and do not wait for the answer.

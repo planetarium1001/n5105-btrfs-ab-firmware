@@ -163,7 +163,7 @@ never hides another.
 Design stage. Partition geometry, boot chain, and update transaction are finalized.
 Implementation proceeds through stages S0–S6.
 
-Current version: `0.0.12`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
+Current version: `0.0.13`, on upstream base `25.12.2`. It is a **test release**, not `0.1.0`:
 the upstream base is unchanged and no user-visible feature is added. It packages the defects
 found after `0.0.11` together with the acceptance capability that now covers them.
 

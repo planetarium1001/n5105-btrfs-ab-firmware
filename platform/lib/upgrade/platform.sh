@@ -150,9 +150,25 @@ ab_packages_record() {
         _upgrade_log "packages: cannot create ${_dir}, the state will read as unknown"
         return 0
     }
+    # What this call is not told is not therefore unknown: the prefetch publishes the bodies it
+    # staged and what it had to skip, and a rewrite that dropped those fields would make the
+    # record disagree with what is on the disk - measured 2026-11-18, where `skipped=` and
+    # `cache=` vanished between the prefetch and the first boot that had to consume them.
+    # Only the fields this call owns are rewritten; the rest are carried word for word.
+    _prev=""
+    [ -r "${AB_PACKAGES_FILE}" ] && _prev=$(tail -n 1 "${AB_PACKAGES_FILE}" 2>/dev/null)
+    _carry=""
+    case "${_prev}" in
+        packages=*)
+            for _carry_key in follow upgraded kept skipped cache dropped world_dropped refresh; do
+                _carry_val=$(printf '%s\n' "${_prev}" | sed -n "s/.* ${_carry_key}=\([^ ]*\) .*/\1/p")
+                [ -n "${_carry_val}" ] && _carry="${_carry} ${_carry_key}=${_carry_val}"
+            done
+            ;;
+    esac
     _tmp="${AB_PACKAGES_FILE}.tmp.$$"
-    printf 'packages=%s reason=%s version=%s kernel=%s slot=%s\n' \
-        "${_state}" "${_reason}" "${_version}" "${_kernel}" "${_slot}" >"${_tmp}" 2>/dev/null || {
+    printf 'packages=%s reason=%s version=%s kernel=%s slot=%s%s\n' \
+        "${_state}" "${_reason}" "${_version}" "${_kernel}" "${_slot}" "${_carry}" >"${_tmp}" 2>/dev/null || {
         rm -f "${_tmp}" 2>/dev/null || true
         return 0
     }
@@ -772,6 +788,38 @@ platform_copy_rootfs() {
         fi
     fi
     ab_packages_record "${_align_state}" "${_align_reason}" "${_version}" "${_align_kernel}" "${_target}"
+    # A base whose metadata is aligned has not had its packages followed yet, and the record
+    # written above is built from nowhere: it says `packages=aligned` and says nothing about
+    # the follow, which reads as "the packages moved with the base". They have not. Saying
+    # `follow=pending` in the same line is what the first boot and `ab-slot status` read, and
+    # it costs nothing when the library that installs the new layer has no follow engine yet.
+    # A caller that asked for a system-only switch says so in AB_PACKAGES_PLAN_MODE, and then
+    # the record must not promise a follow the user just declined.
+    case "${AB_PACKAGES_PLAN_MODE:-follow}" in
+        system-only)
+            command -v ab_packages_follow_never >/dev/null 2>&1 && { ab_packages_follow_never || :; }
+            ;;
+        *)
+            if [ "${_align_state}" = "aligned" ] && command -v ab_packages_follow_pending >/dev/null 2>&1; then
+                # shellcheck disable=SC2034
+                ab_packages_follow_pending "${_align_reason}" || :
+            fi
+            ;;
+    esac
+
+    # The prefetch ran before the switch, in a staging tree under /tmp: the bodies and the
+    # index the first boot needs with no network at all (design.md §8). Carrying them into
+    # the layer that will be booted is what makes `apk --network=0` possible; with no staged
+    # cache the first boot simply falls back to the network fallback.
+    _stage_cache="${_payload}/pkgplan/target/etc/apk/ab/cache"
+    if [ -d "${_stage_cache}" ] && [ -n "$(ls -A "${_stage_cache}" 2>/dev/null)" ]; then
+        _cache_dst="${AB_P4}/${_new_layer}/upper/etc/apk/ab/cache"
+        if mkdir -p "${_cache_dst}" 2>/dev/null && cp -a "${_stage_cache}/." "${_cache_dst}/" 2>/dev/null; then
+            _upgrade_log "upgrade: prefetched packages staged into ${_cache_dst}"
+        else
+            _upgrade_log "upgrade: the staged packages could not be carried over; the first boot will use the network"
+        fi
+    fi
     _upgrade_log "upgrade: package meta ${_align_state} (${_align_reason})"
 
     # 4. the ESP has to carry the matching kernel and initramfs for that slot

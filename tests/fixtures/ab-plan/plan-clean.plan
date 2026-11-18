@@ -1,0 +1,22 @@
+# Plan data for tests/modules/upgrade/test_plan_render.sh - a follow with no gap at all.
+#
+# The shape the three gate propositions produce when they all pass (design.md §5): the count
+# line has nothing to hold back, no gap group is printed, and the block still ends with the
+# question. A renderer that always prints a header, or that prints `(0)` for a group nobody
+# reported, fails here.
+section Update
+row base 25.12.2 -> 25.12.2
+row kernel 6.12.87 -> 6.12.87
+row platform 0.0.12 -> 0.0.13
+row Tested YES - patch range covered in CI
+row Risk LOW - same base, only the platform layer moves
+
+section Packages
+row follow 8 to follow, 0 held back, 0 replay from local copies
+row gate feeds answer, every constraint solves, no local copies to judge
+
+section Config
+row files 0 files differ from their package
+
+note apk keeps your configuration; nothing here changes it.
+count 8

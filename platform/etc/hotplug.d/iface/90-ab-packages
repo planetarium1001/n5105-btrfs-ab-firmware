@@ -1,0 +1,39 @@
+#!/bin/sh
+# 90-ab-packages - an `ifup` is the best evidence that the network changed, so it is also
+# a reason to ask the package follow once more.
+#
+# This is the W2 rung of the retry ladder (design.md §9). The first-boot worker sleeps
+# between the half-hour rungs of W3; a machine whose cable is plugged in at minute three
+# would otherwise wait half an hour for an answer it could have had immediately. So every
+# `ifup` makes one attempt: same probe, same single-instance lock, no second apk
+# transaction, and nothing at all when the record has no follow outstanding.
+#
+# It must never hold up netifd: the attempt happens in a detached child, the hook returns
+# at once and always success. Everything it learns goes into the ring log ab-boot rotates
+# (`stage=packages-refresh ... rung=w2-ifup ...`), which is where an operator already looks
+# for this machine's network story.
+#
+# No `START`: /etc/hotplug.d/iface is run by netifd, not by rc.common.
+
+ACTION="${ACTION:-}"
+AB_NET_PROBE_LIB="${AB_NET_PROBE_LIB:-/lib/ab-net-probe.sh}"
+AB_PACKAGES_IFUP_LOG="${AB_PACKAGES_IFUP_LOG:-/tmp/ab-packages-ifup.log}"
+
+# Only an interface coming up is a reason; `ifdown` is the opposite fact and `ifupdate`
+# carries nothing new about reachability.
+[ "${ACTION}" = "ifup" ] || exit 0
+
+# A platform layer without the fallback library cannot answer the network question, and
+# guessing would be worse than silence: the worker from ab-boot is still scheduled if the
+# record says there is work to do.
+[ -f "${AB_NET_PROBE_LIB}" ] || exit 0
+
+(
+	# shellcheck source=platform/lib/ab-net-probe.sh disable=SC1090
+	. "${AB_NET_PROBE_LIB}"
+	# The running slot comes from the kernel command line: /etc/hotplug.d runs long after
+	# GRUB has passed it, and `ab-slot status` would be a second opinion about the same fact.
+	ab_net_follow_ifup "$(ab_net_running_slot)"
+) </dev/null >"${AB_PACKAGES_IFUP_LOG}" 2>&1 &
+
+exit 0

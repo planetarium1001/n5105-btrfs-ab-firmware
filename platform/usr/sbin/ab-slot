@@ -61,7 +61,9 @@
 #   status                 one machine readable line plus a human summary on stderr
 #                          (boot= and esp= are the two facts a machine cannot claim without
 #                          evidence: how this boot started, and what the initramfs thought
-#                          of the ESP it started from)
+#                          of the ESP it started from. packages= / follow= / reason= / hint=
+#                          are the package half of the same line: what the metadata is, whether
+#                          the packages actually moved, why not, and what to run about it)
 #   commit [slot]          set committed, clear pending (default: the running slot), and
 #                          re-judge the package record for the slot it commits
 #   pending <slot>         set pending, after checking the slot payload exists
@@ -90,7 +92,8 @@
 #                    (default $AB_ESP/boot/grub/ab-slot.cfg)
 #   AB_SLOT_CFG_LIB  shared writer of that file (default /lib/ab-slot-cfg.sh)
 #   AB_PARTITIONS_LIB  shared partition discovery (default /lib/ab-partitions.sh)
-#   AB_PACKAGES_FILE   the package-alignment verdict the last upgrade published
+#   AB_PACKAGES_FILE   the record the last upgrade published: the alignment verdict and the
+#                      follow state the first boot wrote into the same line
 #                      (default $AB_ESP/ab/packages)
 #   AB_PACKAGES_LIB  package snapshot/replay library (default /lib/upgrade/packages.sh)
 #   AB_VERSION_LIB   version comparison and identity (default /lib/ab-version.sh)
@@ -623,8 +626,12 @@ packages_record_applies() {
 # runs, as the last upgrade published it (platform/lib/upgrade/packages.sh). `aligned`
 # means "world pins this kernel and distfeeds name this release", not "the feeds are
 # reachable": the alignment is offline on purpose, so a machine that upgrades without a
-# network is still aligned. A missing or unreadable record is `unknown`, never `aligned`,
-# for the same reason boot= and esp= refuse to claim a boot nothing recorded.
+# network is still aligned. `followed` is the same metadata after the follow transaction
+# moved the packages onto the base, and it is reported as itself instead of being folded
+# into `aligned`: which of the two a machine is in is the difference between "the packages
+# have not moved yet" and "they have", and `follow=` spells that out beside it. A missing
+# or unreadable record is `unknown`, never `aligned`, for the same reason boot= and esp=
+# refuse to claim a boot nothing recorded.
 packages_state() {
     _pkg_file="${AB_PACKAGES_FILE}"
     [ -r "${_pkg_file}" ] || {
@@ -637,7 +644,7 @@ packages_state() {
     fi
     _pkg_state="$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${_pkg_file}" 2>/dev/null | tail -n 1)"
     case "${_pkg_state}" in
-        aligned | limited) printf '%s' "${_pkg_state}" ;;
+        aligned | limited | followed) printf '%s' "${_pkg_state}" ;;
         *) printf 'unknown' ;;
     esac
 }
@@ -659,6 +666,78 @@ packages_reason() {
     printf '%s' "${_pkg_reason}"
 }
 
+# packages_record_field <key>: one field of the record, as the publisher wrote it. `hint=` is not
+# read here: its value holds a space (`ab-packages update`) and it is the last field, so it has
+# its own reader in packages_follow_hint().
+packages_record_field() {
+    _prf_file="${AB_PACKAGES_FILE}"
+    [ -r "${_prf_file}" ] || return 0
+    # A field per line, then one match: `reason=` is the second field and has no space in front
+    # of it inside `packages=<state> reason=...`, so a regex with a leading space would answer
+    # `unknown` for the most important field of the record.
+    tail -n 1 "${_prf_file}" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$1=//p" | head -n 1
+}
+
+# packages_follow_state: whether the packages of this base still owe a follow.
+#
+# `aligned` alone is not the whole story, and reading it as one is what made a machine that
+# upgraded without a network look finished: the metadata was aligned, the packages had not
+# moved. `follow=` is the field that says which of the two a reader is looking at
+# (design.md §2), and only the tokens the state machine can produce are passed on - a line
+# written by something else is `unknown`, never a claim this machine cannot support.
+packages_follow_state() {
+    _pfs_file="${AB_PACKAGES_FILE}"
+    [ -r "${_pfs_file}" ] || {
+        printf 'unknown'
+        return 0
+    }
+    if ! packages_record_applies; then
+        printf 'unknown'
+        return 0
+    fi
+    _pfs=$(packages_record_field follow)
+    case "${_pfs}" in
+        pending | followed | failed | abandoned | never) printf '%s' "${_pfs}" ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+# packages_follow_reason: the record's own `reason=` - why the last attempt ended the way it
+# did (`network`, `apk-<rc>`, `no-evidence`, `declined`, ...), `other-slot` when the record
+# describes another slot, `unknown` when the record carries none.
+packages_follow_reason() {
+    _pfr_file="${AB_PACKAGES_FILE}"
+    [ -r "${_pfr_file}" ] || {
+        printf 'unknown'
+        return 0
+    }
+    if ! packages_record_applies; then
+        printf 'other-slot'
+        return 0
+    fi
+    _pfr=$(packages_record_field reason)
+    [ -n "${_pfr}" ] || _pfr="unknown"
+    printf '%s' "${_pfr}"
+}
+
+# packages_follow_hint: the command that retries the follow, as the record published it. `none`
+# when there is nothing to run (a followed or deliberately unfollowed base), because a hint that
+# points at a command with nothing to do is a loop.
+packages_follow_hint() {
+    _pfh_file="${AB_PACKAGES_FILE}"
+    [ -r "${_pfh_file}" ] || {
+        printf 'none'
+        return 0
+    }
+    if ! packages_record_applies; then
+        printf 'none'
+        return 0
+    fi
+    _pfh=$(tail -n 1 "${_pfh_file}" 2>/dev/null | sed -n 's/^.* hint=//p')
+    [ -n "${_pfh}" ] || _pfh="none"
+    printf '%s' "${_pfh}"
+}
+
 # packages_record_retarget <slot>: make the published verdict speak for the slot a
 # rollback, or a boot-path commit, has just committed.
 #
@@ -675,7 +754,7 @@ packages_record_retarget() {
     _verdict="unknown"
     if [ "$(packages_record_slot)" = "${_slot}" ]; then
         case "$(sed -n 's/^packages=\([a-z]*\).*/\1/p' "${_file}" 2>/dev/null | tail -n 1)" in
-            aligned | limited)
+            aligned | limited | followed)
                 _line="$(tail -n 1 "${_file}" 2>/dev/null)"
                 _verdict=$(printf '%s\n' "${_line}" | sed -n 's/^packages=\([a-z]*\).*/\1/p')
                 ;;
@@ -736,13 +815,29 @@ cmd_status() {
         _identity="disk=unknown method=unavailable"
     fi
 
+    # The follow fields belong beside the verdict they qualify (design.md §2, §11): `packages=`
+    # says what the metadata is, `follow=` says whether the packages were actually moved, and
+    # `hint=` says what to run if they were not. They are appended only when there *is* a
+    # record: a machine with no record has nothing to report about a follow, and inventing
+    # `follow=none` for it would be a claim nothing measured (the same rule boot= and esp=
+    # follow).
+    _follow=""
+    _follow_reason=""
+    _follow_hint=""
+    _follow_tail=""
+    if [ -r "${AB_PACKAGES_FILE}" ]; then
+        _follow="$(packages_follow_state)"
+        _follow_reason="$(packages_follow_reason)"
+        _follow_hint="$(packages_follow_hint)"
+        _follow_tail=" follow=${_follow} reason=${_follow_reason} hint=${_follow_hint}"
+    fi
     # esp= is appended after boot=, never inserted: the fields before it are parsed by
     # pattern elsewhere (platform/lib/upgrade/platform.sh takes upper= by regex) and the
     # human line below reads as one sentence about this boot.
-    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s esp=%s packages=%s packages_reason=%s\n' \
+    printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=%s data=%s docker=%s swap=%s next=%s %s boot=%s esp=%s packages=%s packages_reason=%s%s\n' \
         "${_slot}" "${_upper}" "${_generation}" "${_committed}" "${_pending}" "${_p4}" \
         "${_data}" "${_docker}" "${_swap}" "${_next}" "${_identity}" "${_boot}" "${_esp}" \
-        "${_packages}" "${_packages_reason}"
+        "${_packages}" "${_packages_reason}" "${_follow_tail}"
     say "ab-slot: running slot ${_slot} (${_upper}), generation ${_generation}"
     say "ab-slot: committed ${_committed}, pending ${_pending}, writable layer ${_p4}"
     say "ab-slot: mounts data=${_data} docker=${_docker} swap=${_swap}"
@@ -761,6 +856,7 @@ cmd_status() {
     esac
     case "${_packages}" in
         aligned) _packages_hint=", packages matched to this kernel" ;;
+        followed) _packages_hint=", packages followed onto this kernel" ;;
         limited) _packages_hint=", package metadata is limited (${_packages_reason}): installing packages for this kernel needs it fixed first" ;;
         *) _packages_hint=", no upgrade recorded package metadata, so nothing here proves it matches" ;;
     esac
@@ -768,6 +864,32 @@ cmd_status() {
         _packages_hint="${_packages_hint}; ${_packages_dropped} package(s) this release does not offer were dropped from the slot's world (see ab-slot log)"
     fi
     say "ab-slot: packages ${_packages}${_packages_hint}"
+    # Two sentences, in the order a person needs them: what did not happen, and what to do
+    # about it (ac-9). The state token alone is not an answer - `follow=pending` beside
+    # `packages=aligned` is exactly the pair that reads like "all good" and is not.
+    case "${_follow}" in
+        pending | failed | abandoned)
+            case "${_follow_reason}" in
+                # The measured shape of a machine that upgraded without a network: the bodies
+                # were never prefetched, the follow could not reach a feed, and nothing about
+                # the system changed. Saying "no usable network" is the whole diagnosis.
+                network) _follow_hint_text="retry when it is back: ${_follow_hint}" ;;
+                *) _follow_hint_text="retry: ${_follow_hint}" ;;
+            esac
+            case "${_follow_reason}" in
+                network) _follow_cause="no usable network" ;;
+                none) _follow_cause="nothing was attempted yet" ;;
+                *) _follow_cause="reason=${_follow_reason}" ;;
+            esac
+            say "ab-slot: packages were not followed: ${_follow_cause}"
+            say "ab-slot: ${_follow_hint_text}"
+            ;;
+        never)
+            # A deliberate answer, not a failure: the last upgrade replaced the system only.
+            # Saying so keeps the next reader from looking for a follow that was never owed.
+            say "ab-slot: packages were left to the system update on purpose (follow=never)"
+            ;;
+    esac
     say "ab-slot: the next boot runs slot ${_next}, ${_identity}"
 }
 
@@ -1161,12 +1283,18 @@ cmd_packages() {
 
 cmd_packages_upgrade() {
     _align=$(packages_alignment)
-    if [ "${_align}" != "aligned" ]; then
-        say "ab-slot: refused, reason=packages-not-aligned"
-        say "  The writable layer's package metadata does not describe this release."
-        say "  Next: ab-slot status | grep packages=    then re-run the upgrade that aligned it"
-        exit 74
-    fi
+    # `followed` is the same metadata after the follow transaction ran, so it is the strongest
+    # form of "aligned" there is: refusing an explicit package upgrade on it would make a
+    # machine that just followed its base less capable than one that never tried.
+    case "${_align}" in
+        aligned | followed) : ;;
+        *)
+            say "ab-slot: refused, reason=packages-not-aligned"
+            say "  The writable layer's package metadata does not describe this release."
+            say "  Next: ab-slot status | grep packages=    then re-run the upgrade that aligned it"
+            exit 74
+            ;;
+    esac
     if ! packages_apk_supported; then
         say "ab-slot: refused, reason=apk-unsupported"
         say "  apk-tools is not available on this system."

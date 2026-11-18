@@ -1,0 +1,37 @@
+# Plan data for tests/modules/upgrade/test_plan_render.sh - the shapes the real plans only
+# reach occasionally, kept in one fixture so they are exercised at every width.
+#
+#   * a member whose name and version together do not fit under W=60, which is the only case
+#     where a version moves to its own line (a name is never cut);
+#   * a cause with no URL in it that has to fold instead of eliding;
+#   * a state token this renderer has no display word for, which must still be shown: an
+#     unknown gap that disappears is a package the user was never told about.
+section Update
+row base 25.12.2 -> 25.12.0
+row kernel 6.12.103 -> 6.12.87
+row platform 0.0.12 -> 0.0.13
+row Tested YES - patch range covered in CI
+row Risk MEDIUM - running system replaced; the previous slot is the way back
+
+section Packages
+row follow 4 to follow, 3 held back, 1 replay from local copies
+row gate two feeds answer, one answers with a redirect that goes nowhere, one local copy is older than the base it was installed on
+
+gap stale-abi built for kernel 6.12.103, this base runs 6.12.87, and no rebuild of this module exists in any configured feed
+member kmod-net-broadcom-fullcone-accelerator 6.12.87-r20260824-1~abc1234
+effect not replayed; the installed module stays, and the kernel it was built for is gone
+
+gap no-copy local package, no .apk kept, and the name is long enough that the version does not fit beside it on a 60 column terminal
+member luci-app-openwrt-advanced-reboot-tools 2.4.7-r20260824
+effect kept as installed; reinstall one to keep a copy for replay
+
+gap superseded-sideways the sources disagree about which of two spellings of this package is the current one
+member some-third-party-package 1.0
+
+section Config
+row files 1 file differs from its package
+row keep apk keeps your file and writes the package copy as *.apk-new
+
+note apk keeps your configuration; only the package copy changes.
+warn 3 packages keep their current version.
+count 4

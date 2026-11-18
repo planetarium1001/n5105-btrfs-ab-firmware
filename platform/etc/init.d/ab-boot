@@ -27,16 +27,16 @@ AB_ESP="${AB_ESP:-/boot}"
 AB_P4="${AB_P4:-/mnt/p4}"
 # Mount table the helpers consult; overridable so a test can describe a system.
 AB_MOUNTS="${AB_MOUNTS:-/proc/mounts}"
-# Package follow (see packages_refresh_schedule below): the library that does the work, the
-# record that says whether it was already attempted, and the root it acts on.
+# Package follow (see packages_follow_schedule below): the library that owns the
+# transaction, the network-fallback library that decides when to call it, the record that
+# says whether there is anything outstanding, and the root it acts on.
 AB_PACKAGES_LIB="${AB_PACKAGES_LIB:-/lib/upgrade/packages.sh}"
+AB_PACKAGES_FOLLOW_LIB="${AB_PACKAGES_FOLLOW_LIB:-/lib/ab-net-probe.sh}"
 AB_PACKAGES_FILE="${AB_PACKAGES_FILE:-${AB_ESP}/ab/packages}"
 AB_PACKAGES_TARGET="${AB_PACKAGES_TARGET:-/}"
-# How long the detached child waits for a default route before it tries once anyway.
-AB_PACKAGES_REFRESH_WAIT="${AB_PACKAGES_REFRESH_WAIT:-180}"
 LOG_MAX=32768
 export AB_ESP AB_P4 AB_MOUNTS
-# The follow's four variables are deliberately *not* exported: the detached child is a
+# The follow's variables are deliberately *not* exported: the detached worker is a
 # subshell of this one, so it sees them anyway, while `ab-slot` (which ab-boot calls and
 # which resolves its own AB_PACKAGES_LIB) must not inherit a path this file was pointed at.
 
@@ -354,16 +354,20 @@ esp_health_result() {
 }
 
 # --------------------------------------------------------------------------- #
-# Package follow: the one controlled reinstall a freshly upgraded base gets
+# Package follow: handed to a worker, never run here
 #
 # An upgrade replaces the system tree; the aligner moves world and distfeeds to match it,
-# but the packages themselves were built for the base the machine came from. Making them
-# follow cannot happen here: this hook runs before the network, and a reinstall needs a
-# feed. So this file makes the *decision* - this slot, this version, not attempted yet, all
-# read from the record the upgrade published - and hands the work to a detached child that
-# waits for a default route and then calls platform/lib/upgrade/packages.sh once. Nothing
-# about the boot waits for it, and every outcome is one `stage=packages-refresh` line in
-# the ring log.
+# but the packages themselves were built for the base the machine came from. Following them
+# is a network transaction, and this hook runs before the network - so nothing of it happens
+# in this file, and no apk is run on the boot path at all. The old shape of this section
+# waited for a default route inside a detached child and then reinstalled; the default route
+# is not the question (a captive portal has one) and the reinstall was the wrong primitive.
+#
+# What this file does is the decision - this slot, this version, nothing outstanding in the
+# record yet, all read from the record the upgrade published - and then it detaches
+# platform/lib/ab-net-probe.sh's worker, which owns the network question, the single
+# instance lock and the retry ladder (design.md §9). The boot never waits for it, and every
+# outcome is one `stage=packages-refresh` line in the ring log, written by the worker.
 # --------------------------------------------------------------------------- #
 
 # packages_record_field <key>: one field of the published package record, or empty.
@@ -374,10 +378,21 @@ packages_record_field() {
 
 # packages_refresh_due <slot>: 0 when this boot should start the follow.
 #
-# Both halves come from the record: `version=` and `slot=` say an upgrade aligned this slot
-# for this base, `refresh=` says the follow was already attempted for that same version. A
-# record for another slot, or one with no version, is not a freshly aligned base and is
-# never a reason to reinstall anything.
+# The record's `follow=` field decides. `pending` is exactly "this base still owes a follow";
+# `followed`, `failed`, `abandoned` and `never` are settled - a failed transaction is the
+# user's to re-run with `ab-packages update`, and an abandoned one has already waited a day -
+# and a record for another slot is another base's business.
+#
+# A record written before the field existed falls back to the old key: `version=` present and
+# not `unknown`, this slot, and `refresh=` not equal to it (one attempt per base). That is the
+# stricter of the two answers for a record that names no base, and deliberately so: without a
+# version there is nothing to follow to, and starting a worker on it would be noise.
+#
+# The rule belongs to platform/lib/upgrade/packages.sh (`ab_packages_follow_due`) and is only
+# restated here because a boot hook cannot be sourced by the hotplug hook that answers the
+# same question on `ifup`, and because the boot must be able to decide without a library that
+# may be missing. tests/modules/upgrade/test_net_probe.sh asserts this restatement and the one
+# in platform/lib/ab-net-probe.sh agree, and that the worker defers to the owner once loaded.
 packages_refresh_due() {
 	AB_PACKAGES_REFRESH_DUE_VERSION=""
 	[ "${AB_PACKAGES_REFRESH_TRIGGER:-1}" = "1" ] || return 1
@@ -385,82 +400,89 @@ packages_refresh_due() {
 	[ -r "${AB_PACKAGES_FILE}" ] || return 1
 	_version="$(packages_record_field version)"
 	_slot="$(packages_record_field slot)"
-	_done="$(packages_record_field refresh)"
+	[ -z "${_slot}" ] || [ "${_slot}" = "$1" ] || return 1
+	case "$(packages_record_field follow)" in
+		pending)
+			case "${_version}" in
+				'' | unknown) _version="unknown" ;;
+			esac
+			AB_PACKAGES_REFRESH_DUE_VERSION="${_version}"
+			return 0
+			;;
+		'') ;;
+		*) return 1 ;;
+	esac
 	case "${_version}" in
 		'' | unknown) return 1 ;;
 	esac
-	[ "${_slot}" = "$1" ] || return 1
-	[ "${_done}" = "${_version}" ] && return 1
+	[ "$(packages_record_field refresh)" = "${_version}" ] && return 1
 	AB_PACKAGES_REFRESH_DUE_VERSION="${_version}"
 	return 0
 }
 
-# packages_refresh_net_up: a default route exists, so a feed has a chance.
-packages_refresh_net_up() {
-	_route="${AB_NET_ROUTE_FILE:-/proc/net/route}"
-	[ -r "${_route}" ] || return 1
-	awk '$2 == "00000000" { found = 1 } END { exit !found }' "${_route}" 2>/dev/null
-}
-
-# packages_refresh_run <slot> <version>: the detached half. Waits (bounded) for the network
-# this hook cannot wait for, then runs the library exactly once. Its stdout and stderr are
-# the log the scheduler redirected.
-packages_refresh_run() {
+# packages_follow_oneshot <slot> <version>: the follow without the network fallback.
+#
+# Called when the platform layer has no ab-net-probe.sh - a partial install, a chroot, or a
+# test that only supplies the package library. It is the behaviour this hook had before the
+# fallback existed: one call, and the library answers the network question for itself. The
+# shipped layer carries the library, so the ladder above is what a machine runs.
+packages_follow_oneshot() {
 	_slot="${1:-?}"
 	_version="${2:-unknown}"
-	_step="${AB_PACKAGES_REFRESH_STEP:-10}"
-	_waited=0
-	while [ "${_waited}" -lt "${AB_PACKAGES_REFRESH_WAIT:-180}" ]; do
-		packages_refresh_net_up && break
-		sleep "${_step}" 2>/dev/null || sleep 10
-		_waited=$((_waited + _step))
-	done
 	if [ ! -f "${AB_PACKAGES_LIB}" ]; then
 		log_append "stage=packages-refresh slot=${_slot} result=fail reason=library-missing version=${_version}"
 		console_say "ab-boot: package follow unavailable, ${AB_PACKAGES_LIB} is missing"
 		return 1
 	fi
-	printf 'ab-boot: package follow for %s (target %s)\n' "${_version}" "${AB_PACKAGES_TARGET}"
 	# shellcheck source=platform/lib/upgrade/packages.sh disable=SC1090
 	. "${AB_PACKAGES_LIB}"
-	ab_packages_refresh "${AB_PACKAGES_TARGET}"
-	_rc=$?
-	_state="${AB_PACKAGES_REFRESH_STATE:-unknown}"
-	_reason="${AB_PACKAGES_REFRESH_REASON:-unknown}"
-	_followed=${AB_PACKAGES_REFRESH_VERSION:-${_version}}
-	_dropped="${AB_PACKAGES_REFRESH_DROPPED_COUNT:-0}"
-	case "${_dropped}" in
-		'' | *[!0-9]*) _dropped=0 ;;
-	esac
-	log_append "stage=packages-refresh slot=${_slot} result=${_state} reason=${_reason} version=${_followed} dropped=${_dropped}"
-	console_say "ab-boot: package follow ${_state} (${_reason}) for ${_version}"
-	# What a prune dropped is its own milestone: a machine that lost world entries has to be
-	# able to see it without reading the record, and the names are what an operator acts on.
-	if [ "${_dropped}" -gt 0 ]; then
-		_dropped_list=${AB_PACKAGES_REFRESH_DROPPED_LIST:-unknown}
-		log_append "stage=packages-prune slot=${_slot} result=ok dropped=${_dropped} version=${_followed} packages=${_dropped_list}"
-		# The ring log carries every name; the console line stays readable, and a long list is
-		# still one `grep stage=packages-prune` away.
-		if [ "$(printf '%s' "${_dropped_list}" | tr ',' '\n' | grep -c .)" -gt 8 ]; then
-			console_say "ab-boot: ${_dropped} package(s) not offered by ${_followed} were dropped from slot ${_slot}'s world (list in ab/log/boot-0.log)"
-		else
-			console_say "ab-boot: ${_dropped} package(s) not offered by ${_followed} were dropped from slot ${_slot}'s world (${_dropped_list})"
+	_entry=""
+	for _candidate in ab_packages_follow_if_ready ab_packages_follow ab_packages_refresh; do
+		if command -v "${_candidate}" >/dev/null 2>&1; then
+			_entry="${_candidate}"
+			break
 		fi
+	done
+	if [ -z "${_entry}" ]; then
+		# The record keeps `follow=pending`: a library that exposes no entry has not followed
+		# anything, and claiming otherwise would be the defect this unit exists to remove.
+		log_append "stage=packages-refresh slot=${_slot} result=deferred reason=entry-missing version=${_version}"
+		console_say "ab-boot: ${AB_PACKAGES_LIB} exposes no follow entry, the record keeps follow pending"
+		return 1
 	fi
+	# The slot is the entry's own gate where it takes one (a follow for the other slot is
+	# another base's business); the older spellings take one argument and ignore it.
+	"${_entry}" "${AB_PACKAGES_TARGET}" "${_slot}"
+	_rc=$?
+	_state="${AB_PACKAGES_FOLLOW_STATE:-${AB_PACKAGES_REFRESH_STATE:-unknown}}"
+	_reason="${AB_PACKAGES_FOLLOW_REASON:-${AB_PACKAGES_REFRESH_REASON:-unknown}}"
+	_followed="${AB_PACKAGES_FOLLOW_VERSION:-${AB_PACKAGES_REFRESH_VERSION:-${_version}}}"
+	log_append "stage=packages-refresh slot=${_slot} result=${_state} reason=${_reason} version=${_followed}"
+	console_say "ab-boot: package follow ${_state} (${_reason}) for ${_version}"
 	return "${_rc}"
 }
 
-# packages_refresh_schedule <slot>: decide now, run later, never block.
-packages_refresh_schedule() {
+# packages_follow_schedule <slot>: decide now, run later, never block.
+packages_follow_schedule() {
 	packages_refresh_due "${1:-}" || return 0
-	_version="${AB_PACKAGES_REFRESH_DUE_VERSION}"
-	log_append "stage=packages-refresh slot=${1:-?} result=scheduled version=${_version}"
-	console_say "ab-boot: package follow for ${_version} starts once the network is up"
+	_slot="${1:-?}"
+	_version="${AB_PACKAGES_REFRESH_DUE_VERSION:-unknown}"
+	log_append "stage=packages-refresh slot=${_slot} result=scheduled version=${_version}"
+	console_say "ab-boot: package follow for ${_version} starts when a feed answers"
 	# Detached on purpose: stdin, stdout and stderr all point away from the boot, so rc
 	# never waits for it and no test or serial log is held open by a child that sleeps.
 	(
-		packages_refresh_run "${1:-?}" "${_version}"
-	) </dev/null >"${AB_PACKAGES_REFRESH_LOG:-/tmp/ab-packages-refresh.log}" 2>&1 &
+		if [ -f "${AB_PACKAGES_FOLLOW_LIB}" ]; then
+			# One library for both carriers: the first boot and an `ifup` then make the same
+			# decision about the network and queue behind the same lock.
+			# shellcheck source=platform/lib/ab-net-probe.sh disable=SC1090
+			. "${AB_PACKAGES_FOLLOW_LIB}"
+			AB_NET_SAY=1
+			ab_net_follow_boot "${_slot}"
+			exit 0
+		fi
+		packages_follow_oneshot "${_slot}" "${_version}"
+	) </dev/null >"${AB_PACKAGES_FOLLOW_LOG:-${AB_PACKAGES_REFRESH_LOG:-/tmp/ab-packages-follow.log}}" 2>&1 &
 	return 0
 }
 
@@ -598,8 +620,8 @@ start() {
 		fi
 	fi
 
-	# One controlled reinstall for a base an upgrade just aligned. The network is not up
-	# yet, so the decision is taken here and the work continues in a detached child; the
-	# boot never waits for it (see packages_refresh_schedule).
-	packages_refresh_schedule "${slot:-?}"
+	# One follow for a base an upgrade just aligned. The network is not up yet, so the
+	# decision is taken here and the work continues in a detached worker; the boot never
+	# waits for it and never runs apk itself (see packages_follow_schedule).
+	packages_follow_schedule "${slot:-?}"
 }

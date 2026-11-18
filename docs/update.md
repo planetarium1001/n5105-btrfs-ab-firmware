@@ -234,6 +234,12 @@ brackets is a recommendation, such as `[recommended]`. A `Backup` line appears a
 for the levels that recommend one, and a `Route` line appears only when the update cannot
 proceed without a route.
 
+This block describes the system update. From 0.0.13 an install whose payload carries the plan
+engine also prints a `Packages` block and `Config` block after it and asks about the follow
+with `Proceed and follow N packages? [y/N] ` - one question for both, because the answer to
+"replace the system" and "bring the packages along" is the same decision. What those blocks
+contain is in [How packages follow a base](#how-packages-follow-a-base).
+
 ## Risk levels and what each one asks of you
 
 The level is a statement about **test coverage**, not about the size of the change, and it
@@ -371,7 +377,9 @@ Deleting the line, or `--unpin`, releases the machine. The pin is not written in
 ## Package updates
 
 A system update replaces a slot; packages are a separate transaction with a separate way
-back. Both live on the writable layer, and nothing here is automatic: you ask for it.
+back. Both live on the writable layer. Bringing the packages onto a new base is part of an
+upgrade and asks once ([How packages follow a base](#how-packages-follow-a-base)); the
+commands below are the manual side - snapshots and versions you ask for by name.
 
 ```sh
 ab-slot packages list            # snapshots on this layer, newest first
@@ -380,7 +388,8 @@ ab-slot packages upgrade         # snapshot, then apk update && apk upgrade
 ab-slot packages revert          # replay the newest snapshot's versions
 ```
 
-`upgrade` refuses to run unless `ab-slot status` reports `packages=aligned`: that field
+`upgrade` refuses to run unless `ab-slot status` reports `packages=aligned` (or
+`packages=followed`, which is the same metadata after the follow transaction ran): that field
 means the writable layer's `world` pins the kernel this slot runs and `distfeeds` name the
 release it runs. Upgrading packages behind a stale pin installs modules for a kernel the
 machine is not running.
@@ -506,13 +515,223 @@ The two ways back, side by side:
 
 Both write `upgrade.log`; neither runs by itself.
 
+## How packages follow a base
+
+An update is two actions, and they are kept apart on purpose:
+
+| Layer | When it runs | What it does | What a failure costs |
+| --- | --- | --- | --- |
+| mechanical alignment | always, inside `ab-upgrade` | writes the new base, points `world` and the feed list at it, judges the tree and prefetches | nothing: it is file work, and it never blocks the boot |
+| package follow | by default, after `y` and on the first boot | one `apk upgrade` over the world, so packages built for the old base move onto the new one | only the packages: the machine boots and runs either way |
+
+The follow is automatic, but it is not unconditional. Before the slot is written, `ab-upgrade`
+judges three propositions on the tree that will be booted - the pins agree with the base, apk can
+solve the transaction, and every local package is classified - and prints the result as a plan
+block:
+
+```
+Packages
+  - follow     39 to follow, 2 held back, 1 replay from local copies
+  - gate       2 of 41 entries are held back; the rest can follow
+```
+
+**The block is a prediction; the record is the fact.** It is rendered from `apk --simulate` against
+a staged copy of the tree, and the feed can change between the question and the boot. What
+happened is what `/boot/ab/packages` says afterwards, and every verdict below is read from that
+file, never from the block.
+
+There are exactly three ways past the question, and the block names them when something is held
+back:
+
+| Answer | What happens |
+| --- | --- |
+| `y` (or `--yes`) | the base is switched and the packages follow it |
+| `--system-only` / `--no-follow` | the base is switched, no package is touched, and the record says `follow=never` |
+| `n` (or anything that is not an answer) | nothing is written at all: `ab-upgrade: declined, nothing was written` and exit `0` |
+
+`--dry-run` (the same as `--check`) stops before the first write, and a run with no terminal and
+no `--yes` refuses with `reason=noninteractive` and exit `74` instead of hanging. Enter is never an
+answer, here as everywhere else.
+
+What the machine then reports lives in one line, `/boot/ab/packages`:
+
+```
+packages=aligned reason=network follow=pending upgraded=0 kept=24 skipped=local:htop cache=0 version=25.12.2 kernel=kernel=6.12.103 slot=b hint=ab-packages update
+```
+
+`reason=` is the second field and `hint=` is the last, whose value holds a space (`ab-packages
+update`), so a script can read either without parsing the middle. `follow=` is the state of the
+follow itself:
+
+| `follow=` | Meaning | What changes it |
+| --- | --- | --- |
+| `pending` | this base still owes a follow: no prefetch, or a transaction that has not run yet | the first boot, or `ab-packages update` |
+| `followed` | the packages moved onto this base | - |
+| `failed` | a transaction ran and failed, or moved nothing at all; `reason=` says which | `ab-packages update` |
+| `abandoned` | the network fallback ran out of time (24 hours) | `ab-packages update` |
+| `never` | the user chose a system-only switch | the next upgrade |
+
+`ab-slot status` prints the pair together - `packages=followed packages_reason=none follow=followed
+reason=none hint=none` - and, when a follow is still owed, two sentences about it:
+
+```
+ab-slot: packages were not followed: no usable network
+ab-slot: retry when it is back: ab-packages update
+```
+
+That pair is the point: `packages=aligned` alone reads like "all good", and it means only that
+the metadata matches the base. The packages are a separate answer.
+
+## Prefetch, and a first boot with no network
+
+The download happens before the switch, while the machine still runs a slot that works. After `y`,
+`ab-upgrade` asks the solver which packages the transaction would move and runs `apk fetch` for
+exactly those, into the new slot's own cache (`/etc/apk/ab/cache/` in the layer that will be
+booted). One follow measured on this board is 3,445,041 bytes over 39 packages - the moving set,
+not the 316-package world, because `apk fetch` over the world would pull about 105 MB. The first
+boot then installs the prefetched files with no network at all:
+
+```sh
+apk --cache-dir /etc/apk/ab/cache --cache-max-age 100000 \
+    add --virtual .ab-follow --allow-untrusted --force-non-repository \
+    /etc/apk/ab/cache/*.apk
+apk del .ab-follow
+```
+
+The bodies a repository serves are signed by the repository's index rather than by each file, so
+installing them as files needs `--allow-untrusted`; that is how they got here. The virtual entry
+exists only around the transaction: `apk del` puts the world back byte for byte, and a world the
+user did not ask for never gains a line. A captive portal, a hijacked DNS answer or a home outage
+during the reboot therefore has nothing to break - the measured offline run made zero network
+attempts. `--no-prefetch` skips the download and lets the first boot use the network instead; a
+prefetch that fails is not an upgrade that fails - the record falls back to
+`packages=aligned reason=network follow=pending` and the network fallback picks it up.
+
+The fallback is only used when there was no prefetch. It asks a probe, and the probe answers three
+ways by reading the first four bytes of the target's index: a captive portal cannot fake the
+`ADBd` magic that an apk index starts with, so `ok`, `portal` and `offline` are told apart by
+evidence rather than by a successful HTTP status. Only `ok` lets a transaction run; the others wait
+and retry:
+
+| Rung | When it retries |
+| --- | --- |
+| W1 | immediately, then 15, 30, 60 and 120 seconds later (six attempts inside five minutes) |
+| W2 | once per `ifup` event, so a cable or a VPN coming up is not ignored |
+| W3 | every 30 minutes until 24 hours after the boot, after which the record says `follow=abandoned` |
+
+One worker runs at a time (`/var/lock/ab-packages-follow.lock`), so two apk transactions cannot
+interleave, and every attempt writes one `stage=packages-refresh` line to the ring log
+(`ab-slot log`). The boot never waits for any of it.
+
+## Why a package did not move
+
+Every package that stayed where it was has one of five reasons, and the reason is written down
+rather than guessed. The source of a package is asked of apk (`apk policy`): an answer with a feed
+in it is a feed package, an answer whose only source is the installed database is a local one.
+
+| Token | Plan block | Meaning | What the machine does | Where it is written |
+| --- | --- | --- | --- | --- |
+| `unreachable` | `UNREACHABLE` | the package comes from a source, and that source did not answer | keeps the installed version and the world entry, and retries | `reason=network`, `follow=pending` |
+| `local` | `NO COPY` | a local package, and no body was kept | keeps the installed version; reinstall it once to keep a body | `skipped=local:<name>` |
+| `stale-abi` | `ABI STALE` | a local body built against another kernel, or one that depends on one | does not replay it: a module that cannot load is worse than an old one | `skipped=stale-abi:<name>` |
+| `gone` | `DROPPED` | no source offers it any more, and it is not a local package | removes the `world` entry, leaves the package installed | `dropped=<name>` |
+| `pinned` | `PINNED` | pinned in `world` with `=` | leaves it alone, whatever the feed says | `skipped=pinned:<name>` |
+
+The plan block groups the held-back packages under these words, in that order, and the record uses
+the same vocabulary, so a line in a log and a group in a block are the same fact.
+`ab-packages status` expands them into sentences:
+
+```
+ab-packages: held back by the last follow (local:htop,stale-abi:luci-app-x):
+ab-packages:   htop: no body was kept, so it cannot be replayed; it stays installed at its version
+ab-packages:   luci-app-x: built against another kernel; replaying it would install a module that cannot load
+```
+
+`ab-packages sources <name>` answers the neighbouring question - which of this machine's feeds
+offers a package, with the full URL, when the plan block had to shorten it. A package nothing
+offers and nothing kept is `DROPPED`: the `world` entry goes, the files on disk stay, and the next
+`ab-upgrade` no longer tries to follow it.
+
+## Keeping a local package body
+
+A package installed from a local `.apk` file has no source. apk records that it is installed and
+never where it came from, and on this machine the body is gone the moment the transaction ends:
+`/var` is a tmpfs and the default package cache dies with the boot (measured 2026-11-18:
+`find / -name '*.apk'` on a machine carrying four local packages answered nothing). So a machine
+that replaces its base cannot put such a package back, and the record says `skipped=local:<name>`
+rather than pretending otherwise.
+
+From 0.0.13 the platform keeps a body on request:
+
+```sh
+ab-packages replay /tmp/htop-3.3.0-r1.apk    # installs it and keeps the body in the same step
+ab-packages replay                           # installs every kept body again
+```
+
+Kept bodies live in `/etc/apk/ab/local/<name>-<version>.apk` - on the writable layer, beside
+`world` and the apk database, so they ride the generation snapshot and never touch `/data`. The
+store keeps one body per name (the highest version), which is also the name the gate looks for when
+it asks whether a local package can be replayed.
+
+Three rules bound the store:
+
+* a body whose name a feed starts offering is `superseded`: journalled in
+  `/etc/apk/ab/local/superseded`, then deleted. The feed is the better source - it is maintained
+  and follows the base - and `ab-packages status` keeps printing the journal line, so the deletion
+  is not silent;
+* the store is bounded by `AB_PKGS_CACHE_MAX` (256 MiB by default). Over the bound, the oldest
+  bodies that are not the installed version go first: a body the machine runs is the one a replay
+  would want;
+* a body that cannot be named (neither `<name>-<version>.apk` nor a `.PKGINFO` inside it) is
+  refused rather than filed under a guess.
+
+A replay is `apk add --allow-untrusted <body>` and nothing else: no `--force-*`, no `--overwrite`.
+The trust is the file you kept, because there is no keyring for local archives; the digest list in
+a package snapshot is a different mechanism with a different job. apk's protected paths then do the
+part that matters for a person: a `/etc/config/*` you edited keeps its bytes and the package's own
+copy lands beside it as `*.apk-new` (measured 2026-11-18: `apk upgrade dnsmasq-full` kept an edited
+`/etc/config/dhcp` byte for byte and wrote `dhcp.apk-new`). Nothing merges those files for you -
+see [known-limitations.md](known-limitations.md).
+
+What is out of scope: a body built for another kernel (replaying it installs a module that cannot
+load, so it is `stale-abi` and stays installed at its old version), and a base switch - a kept body
+replays onto the base it was built for. `/etc/apk/ab/cache/` is the other directory: it holds one
+follow's downloads and is emptied when the follow ends.
+
+## The package commands
+
+| Command | What it does | Writes |
+| --- | --- | --- |
+| `ab-packages status` | the record, the gap list and how long ago the last attempt was | nothing |
+| `ab-packages sources [<name>...]` | every feed, or every source that offers a name (`feed`, `customfeeds`, `installed`) | nothing |
+| `ab-packages update` | retries the follow: the gate, the plan, one question, one `apk upgrade`, and the record | the record, `/boot/ab/log/upgrade.log` |
+| `ab-packages update --only <name>` | retries a single package with `apk upgrade <name>` and measures whether it moved; the record is left alone, because it describes the whole world | no record |
+| `ab-packages replay [--yes] [<file.apk>...]` | installs kept bodies, or keeps the file it is handed and installs that | `/etc/apk/ab/local/` |
+| `ab-packages cache status` / `cache clean` | what one follow left behind, or empty it (kept bodies stay) | the cache |
+
+`ab-packages status` is deliberately offline and read-only: it asks no package manager and needs no
+network, because the machine it is asked about may be the one whose packages are broken. Its first
+line is facts a script can read, its second one the store and the cache, and everything after that
+is the explanation. The time of the last attempt is the record's own write time - the record format
+has no timestamp field, and it should not grow one for a fact the file system already keeps.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | done, or nothing to do - including `n` at the question, which writes nothing |
+| `1` | a transaction failed, or a name's sources could not be answered; the lines above say which |
+| `2` | usage error |
+| `74` | refused before anything was written (`reason=<token>` on one line) |
+
 ## The confirmation prompt
 
-Every question the tool asks has the same shape: `Proceed? [y/N] `. Enter, `n`, `N` and
-`no` all decline, and a decline is not an error - it prints
-`ab-upgrade: declined, nothing was written reason=declined` and exits `0`. Only `y`, `Y`,
-`yes` and `YES` accept. A firmware write that starts because somebody pressed Enter is a
-bug, so the safe answer is the default; scripts pass `--yes` instead of piping a `y`.
+Every question the tool asks has the same shape: `Proceed? [y/N] `, and the package plan
+asks the same way with the number in front of it, `Proceed and follow N packages? [y/N] `.
+Enter, `n`, `N` and `no` all decline, and a decline is not an error - it prints
+`ab-upgrade: declined, nothing was written reason=declined` (or `ab-packages: declined, ...`
+for the package commands) and exits `0`. Only `y`, `Y`, `yes` and `YES` accept, and anything
+else that is not an answer prints the same line again without moving on. A firmware write
+that starts because somebody pressed Enter is a bug, so the safe answer is the default;
+scripts pass `--yes` instead of piping a `y`.
 
 `AB_UPGRADE_ASSUME_TTY=1` exists only for the test suite, which runs without a terminal: it
 makes the prompt read stdin as if one were attached. It does not change which answers

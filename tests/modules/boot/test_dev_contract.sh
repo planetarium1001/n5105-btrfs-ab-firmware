@@ -217,7 +217,7 @@ assert_contains "${boot_source}" 'if ! wf_assert_dev /dev; then' \
 assert_contains "${boot_source}" 'wf_dev_dump /dev' \
     "ac-5 ... and dumps the directory before failing"
 dump_line="$(printf '%s\n' "${boot_source}" | grep -n 'wf_dev_dump /dev' | head -n 1 | cut -d: -f1)"
-fail_line="$(printf '%s\n' "${boot_source}" | grep -n 'wf_fail no-dev-directory' | head -n 1 | cut -d: -f1)"
+fail_line="$(printf '%s\n' "${boot_source}" | grep -n 'wf_fail dev-contract' | head -n 1 | cut -d: -f1)"
 assert_eq "$([ "${dump_line}" -lt "${fail_line}" ] && echo before)" "before" \
     "ac-5 the listing is in the log before the poweroff"
 

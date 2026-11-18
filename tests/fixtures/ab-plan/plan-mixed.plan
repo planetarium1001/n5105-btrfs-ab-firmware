@@ -1,0 +1,46 @@
+# Plan data for tests/modules/upgrade/test_plan_render.sh - a follow with every gap kind.
+#
+# One gap of each of the five states, written in an order that is not the order the plan is
+# allowed to print, so the sort is asserted rather than assumed. The custom-feed URL is
+# deliberately longer than any width the plan renders at: it is the one thing on the block
+# that cannot be folded.
+section Update
+row base 25.12.2 -> 25.12.0
+row kernel 6.12.103 -> 6.12.87
+row platform 0.0.12 -> 0.0.13
+row Tested YES - patch range covered in CI
+row Risk MEDIUM - running system replaced; the previous slot is the way back
+
+section Packages
+row follow 232 to follow, 7 held back, 3 replay from local copies
+row gate feeds answer, every constraint solves, 3 local copies match kernel 6.12.87
+
+gap pinned version held by world
+member base-files 1950~0c4cd0f9920a
+effect no action; a base switch rewrites it from the new base
+
+gap gone no source offers it for 25.12.0
+member kmod-usb-storage 6.12.103-r1
+effect world entry removed; the package stays installed
+
+gap no-copy local packages with no .apk kept
+member luci-app-openclash 0.46.077
+member luci-theme-argon 2.4.7-r20260824
+effect kept as installed; reinstall one to keep a copy for replay
+
+gap unreachable custom feed https://mirror.some-long-domain-name.example.net/immortalwrt/releases/25.12.2/targets/x86/64/packages/packages.adb did not answer
+member istore 0.1.23
+member luci-app-istore 0.1.23
+effect kept as installed; entries stay in world, the follow retries them
+
+gap stale-abi built for kernel 6.12.103, this base runs 6.12.87
+member kmod-r8125 9.014.02
+effect not replayed; the installed module stays
+
+section Config
+row files 14 files differ from their package
+row keep apk keeps your file and writes the package copy as *.apk-new
+
+note apk keeps your configuration; only the package copy changes.
+warn 6 packages keep their current version.
+count 232

@@ -116,6 +116,10 @@ install_payload() {
     fi
     printf 'ab-upgrade: installed %s into slot %s\n' "${new}" "$(get pending a)"
 }
+# The driver installs with `ab-upgrade --yes`: these runs have no terminal, and an
+# unanswered package plan is a refusal (exit 74) that writes nothing. The commands the stub
+# judges are the ones without the flag, so every assertion stays about intent.
+last=${last/ab-upgrade --yes /ab-upgrade }
 case "${last}" in
     'ab-slot status')
         if [ "${STUB_NO_COMMITTED:-0}" = "1" ]; then
@@ -263,7 +267,11 @@ make_release_dir "$tmp/release"
 rows() { cut -f1 "$results" 2>/dev/null | tr '\n' ' '; }
 verdicts() { cut -f2 "$results" 2>/dev/null | tr '\n' ' '; }
 note_of() { awk -F'\t' -v c="$1" '$1 == c { print $4 }' "$results" 2>/dev/null; }
-installs() { grep -oE 'ab-upgrade( --force)? /tmp/payload-[^ ]+\.tar' "$actions" 2>/dev/null | sed 's#.*/##' | tr '\n' ' '; }
+installs() { grep -oE 'ab-upgrade( --yes)?( --force)? /tmp/payload-[^ ]+\.tar' "$actions" 2>/dev/null | sed 's#.*/##' | tr '\n' ' '; }
+# The flag the driver has to pass: without it the plan block refuses (exit 74, nothing
+# written) because these runs have no terminal to answer the question.
+installs_with_yes() { grep -cE 'ab-upgrade --yes( --force)? /tmp/payload-[^ ]+\.tar' "$actions" 2>/dev/null || true; }
+installs_total() { grep -cE 'ab-upgrade( --yes)?( --force)? /tmp/payload-[^ ]+\.tar' "$actions" 2>/dev/null || true; }
 
 # --- ac-6/ac-7: the plan, and it touches nothing ----------------------------- #
 # A dry run is read by an operator standing in front of one machine; it has to say what
@@ -328,7 +336,7 @@ assert_eq "$(installs)" \
     "ac-6 each hop installs its own payload, in order: down to 25.12.0 and back up"
 assert_contains "$(grep -c 'ab-upgrade --check' "$actions" || true)" "6" \
     "ac-6 every hop is validated before it is written"
-assert_eq "$(grep -c 'ab-upgrade --force' "$actions" || true)" "0" \
+assert_eq "$(grep -cE 'ab-upgrade( --yes)? --force' "$actions" || true)" "0" \
     "ac-6 a hop that was not refused is never forced: --force is not the default"
 p1_note=$(note_of P1)
 assert_contains "$p1_note" "regression=not-refused" \
@@ -352,9 +360,11 @@ assert_eq "$rc" "0" "ac-7 a machine that refuses the same-base payload still fin
 assert_contains "$(note_of P1)" "regression=refused-payload-already-installed" \
     "ac-7 the refusal is recorded as the regression it is"
 assert_contains "$(note_of P1)" "force" "ac-7 the note says the hop went through with --force"
-assert_contains "$(cat "$actions")" "ab-upgrade --force /tmp/payload-0.0.11.tar" \
+assert_eq "$(installs_with_yes)" "$(installs_total)" \
+    "ac-6 every install the driver makes answers the plan block, because there is no terminal"
+assert_contains "$(cat "$actions")" "ab-upgrade --yes --force /tmp/payload-0.0.11.tar" \
     "ac-7 the second attempt is the flag the refusal names"
-assert_eq "$(grep -c 'ab-upgrade --force' "$actions" || true)" "1" \
+assert_eq "$(grep -cE 'ab-upgrade( --yes)? --force' "$actions" || true)" "1" \
     "ac-7 --force is spent on the refusal and on nothing else"
 
 # --- ac-6: a broken hop stops the chain instead of walking on ---------------- #

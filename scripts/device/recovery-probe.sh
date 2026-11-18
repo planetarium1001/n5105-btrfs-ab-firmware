@@ -400,7 +400,7 @@ run_bad_version() {
             printf 'note [%s] the running slot already carries this release; laying the candidate down with --force so R1 can judge the rollback (the refusal belongs to M5)\n' \
                 "${_case}"
             ev "R1: plain install refused with payload-already-installed; retrying with --force"
-            install_out=$(dev_ssh 'ab-upgrade --force /tmp/ab-recovery-candidate.tar' 2>&1)
+            install_out=$(dev_ssh 'ab-upgrade --yes --force /tmp/ab-recovery-candidate.tar' 2>&1)
             install_rc=$?
             printf '%s\n' "${install_out}" | sed 's/^/  | /' >&2
             install_mode="force"

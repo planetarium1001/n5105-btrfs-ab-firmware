@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: ci-s5 derives the orphan layer name from the base: fixture1 id, --orphan, orphan_layer_base/name, CI_VERSION_RE
+# reason: the rc.local fixture installs with ab-upgrade --yes: the package plan refuses (exit 74) when no terminal answers it
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -31,6 +31,7 @@ sh-flag scripts/ci/ab-fixtures.sh --pending
 sh-flag scripts/ci/ab-fixtures.sh --repair-slot
 sh-flag scripts/ci/ab-fixtures.sh --show
 sh-flag scripts/ci/ab-fixtures.sh --user-banner
+sh-flag scripts/ci/ab-fixtures.sh --yes
 sh-flag scripts/ci/ab-phase.sh --expect-committed
 sh-flag scripts/ci/ab-phase.sh --expect-log
 sh-flag scripts/ci/ab-phase.sh --expect-pending

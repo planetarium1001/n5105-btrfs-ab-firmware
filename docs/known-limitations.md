@@ -108,24 +108,60 @@ Decided 2026-11-18: the image keeps the upstream default. A release that shipped
 would be a deliberate deviation from upstream for no functional gain, and it is the kind of
 extra that has to be kept in step with every upstream rebase.
 
-## Packages that were installed on top of the base do not follow it by themselves
+## A package follows the base only when the follow can run
 
-An upgrade replaces the system tree; the packages a user installed live in the writable
-layer and keep the version they were installed at. That is deliberate - re-resolving the
-world against new feeds during the upgrade would make the upgrade itself the fragile step -
-but it means a package can be older than the base it now runs on.
+An upgrade replaces the system tree; the packages a user installed live in the writable layer and
+keep the version they were installed at. That is deliberate - re-resolving the world inside the
+upgrade would make the upgrade itself the fragile step - so from 0.0.13 the packages are followed by
+their own transaction, after the base is switched (see
+[update.md](update.md#how-packages-follow-a-base)). It is one `apk upgrade` over the world, judged
+by what it printed, and it can fail without touching the system that just booted.
 
-So the first boot on a freshly upgraded base makes one attempt to bring them along
-(`ab_packages_refresh`, scheduled by `ab-boot`): a full `--force-reinstall` of the world
-against the new feeds, falling back to the kernel/ABI subset (`kmod-*`, `libc`, `docker`)
-when the full pass fails. It never runs without reaching the feeds (`reason=offline`), never
-touches the kernel package the slot owns, and never blocks the boot. The outcome is written
-where `ab-slot status` reads it, as `packages=<state> reason=<token>`.
+What this still does not cover:
 
-What is still not covered by an upgrade: a package whose upstream dropped it between the
-two releases. It stays installed at its old version, and only that package's own startup
-will tell; the matrix judges the sample set listed in `tests/fixtures/follow-samples.json`
-after every hop, which is how such a package is caught before a user finds it.
+* **No network and no prefetch.** The follow needs bodies. If the prefetch could not run and the
+  machine is offline (or behind a captive portal) on its first boot, the packages stay where they
+  are and the record says `follow=pending reason=network`. The network fallback retries for a day
+  (`follow=abandoned` afterwards) and `ab-packages update` retries on demand; nothing else moves
+  them, and the machine is otherwise completely usable.
+* **A local package with no kept body.** A package installed from a `.apk` file has no source, and
+  apk keeps no copy (`/var` is a tmpfs; measured 2026-11-18: `find / -name '*.apk'` finds nothing on
+  a machine carrying four local packages). Such a package is `NO COPY` in the plan block and
+  `skipped=local:<name>` in the record: it keeps the version it has until somebody keeps a body
+  (`ab-packages replay <file>`).
+* **A body built for another kernel.** A local package that depends on `kernel=<hash>` cannot be
+  replayed onto a base with another kernel, and replaying it would install a module that cannot
+  load. It is `ABI STALE` and stays installed at its old version.
+* **A package upstream dropped.** It keeps working with the files it has, only its own startup will
+  tell, and the `world` entry is removed so the next upgrade stops trying. The matrix judges the
+  sample set listed in `tests/fixtures/follow-samples.json` after every hop, which is how such a
+  package is caught before a user finds it.
+* **The prediction can be wrong.** The plan block is rendered from `apk --simulate` against a staged
+  copy, and a feed can change between the question and the boot. The record is the fact; a block
+  that promised 39 packages and a record that says 37 is not a contradiction, it is a prediction
+  and a measurement.
+
+## `*.apk-new` files are not merged for you
+
+apk protects a configuration file it finds edited: the user's file keeps its bytes, and the
+package's own copy is written beside it as `<file>.apk-new`. That property is what makes a package
+follow safe: `tests/modules/upgrade/test_local_assets.sh` asserts it around a replay, and it was
+measured on this board (`apk upgrade dnsmasq-full` kept an edited `/etc/config/dhcp` byte for byte
+and wrote `dhcp.apk-new`).
+
+What it is not is a merge. A `*.apk-new` file is evidence that the package changed something the
+user also changed, and nothing in this project reads, merges or deletes it: the difference sits
+there silently until somebody looks. Two ways to look:
+
+```sh
+find /etc/config -name '*.apk-new'                    # what is waiting for a decision
+apk audit --backup /etc/config                        # what apk's database says differs
+```
+
+Deciding is manual on purpose: a merge that a machine picks itself is how a firewall rule or a
+network interface disappears without anybody editing it. From 0.0.13 the plan block counts the files
+it will not overwrite (`Config: N files differ from their package`), so the size of the decision is
+visible before the upgrade rather than after it.
 
 ## The bench opens the whole WAN zone on purpose
 

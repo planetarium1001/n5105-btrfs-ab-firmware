@@ -448,7 +448,11 @@ ci_platform_modes() {
     [ -d "${dir}" ] || return 0
     find "${dir}" -type f -exec ${argv} 0644 {} +
     local sub
-    for sub in usr/sbin etc/init.d lib/upgrade; do
+    # etc/hotplug.d is in this list because a hook there is executed by netifd's
+    # hotplug-call, not sourced: stored at 0644 it is silently skipped, and a fallback that
+    # never runs looks exactly like one that found nothing to do (measured 2026-11-18, while
+    # wiring the iface hook that retries a package follow when the network comes back).
+    for sub in usr/sbin etc/init.d lib/upgrade etc/hotplug.d; do
         [ -d "${dir}/${sub}" ] || continue
         find "${dir}/${sub}" -type f -exec ${argv} 0755 {} +
     done

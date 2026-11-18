@@ -628,7 +628,7 @@ hop_run() {
     esac
 
     if [ "${_force}" = "1" ]; then
-        _out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_ssh "ab-upgrade --force ${_remote}")
+        _out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_ssh "ab-upgrade --yes --force ${_remote}")
     else
         _out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_install "${_remote}")
     fi

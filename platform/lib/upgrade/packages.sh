@@ -23,9 +23,11 @@
 #     kernel package would add a second owner of the ESP's kernel/initrd files, which is
 #     exactly what ab-slot owns.
 #
-# The one place in this file that does run `apk` is ab_packages_refresh, further down: the
-# *follow-up* a freshly upgraded base gets on its first boot, once, behind a reachability
-# probe, and never for the kernel package. The two rules above stay true for the aligner.
+# What runs `apk` in this file is the *follow* half, and it is a separate layer from the
+# aligner above: aligning metadata is offline and mechanical, following packages needs a
+# network, a transaction and a record of what the transaction did. That layer is
+# ab_packages_gate / ab_packages_prefetch / ab_packages_follow, further down; the two rules
+# above (never run apk from the aligner, never add or remove packages) stay true for it.
 #
 # ab_packages_align <payload-dir> <target-slot> <target-sys> <target-upper>
 #
@@ -33,6 +35,11 @@
 #   AB_PACKAGES_REASON set when it cannot (nothing to align from, an unwritable file, a
 #   rewrite that did not read back). AB_PACKAGES_KERNEL carries the identity that was
 #   written, for the state line the caller publishes.
+#
+#   On success it also sets AB_PACKAGES_FOLLOW=pending and AB_PACKAGES_HINT, which the
+#   caller publishes with the verdict (see ab_packages_record_follow_fields): a base whose
+#   metadata was aligned has *not* had its packages followed yet, and saying so in the same
+#   line is what keeps `packages=aligned` from being read as "the packages moved".
 #
 # Neither failure blocks the upgrade: the machine boots and runs, it just cannot install
 # packages matched to its kernel until the metadata is fixed, and that is what the
@@ -49,6 +56,24 @@ AB_PACKAGES_KERNEL=""
 # forward for the note to reach `ab/packages`.
 # shellcheck disable=SC2034
 AB_PACKAGES_ALIGN_NOTE=""
+# The follow state a successful alignment hands to the caller: `pending`, because the
+# packages have not moved yet - only their metadata describes the new base now. Empty when
+# the alignment did not succeed, so a caller that publishes in both cases cannot turn a
+# failed alignment into a promise that a follow is coming.
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW=""
+# shellcheck disable=SC2034
+AB_PACKAGES_HINT=""
+
+# The three names whose version decides whether what is installed can run on this base.
+#
+# Measured 2026-11-18 on the device: the 25.12.0 base pins base-files=1933~... and
+# kernel=6.12.87~..., the 25.12.2 base pins 1950~... and 6.12.103~...; the aligner moved
+# only the kernel, so a machine crossing that pair kept a base-files pin from the release it
+# left, and `apk info -v` disagreed with the feed the slot now reads. libc rides along for
+# the same reason: it is the soname every binary in the slot links against, so a libc pin
+# from another release describes a machine that no longer exists either.
+AB_PACKAGES_PINS="kernel base-files libc"
 
 _packages_fail() {
     AB_PACKAGES_REASON="$1"
@@ -56,10 +81,34 @@ _packages_fail() {
     return 1
 }
 
-# _packages_kernel_lines <file>: every `kernel=` line of a world file, one per line.
-_packages_kernel_lines() {
+# _packages_pin_lines <file> <name>: every `<name>=<version>` line of a world file, one per
+# line. Written with sed rather than awk because it is also used to read the target base's
+# own world inside a rewrite's read-back, where a second awk would need its own quoting.
+_packages_pin_lines() {
     [ -f "$1" ] || return 0
-    sed -n 's/^\(kernel=[^[:space:]]*\).*/\1/p' "$1"
+    sed -n "s/^\($2=[^[:space:]]*\).*/\1/p" "$1"
+}
+
+# _packages_pin_versions <file> <name>: the distinct versions a world file pins for one name.
+# Two different ones mean two of them were installed at some point - see the aligner.
+_packages_pin_versions() {
+    _pv_lines=$(_packages_pin_lines "$1" "$2")
+    [ -n "${_pv_lines}" ] || return 0
+    printf '%s\n' "${_pv_lines}" | sed "s/^$2=//" | sort -u
+}
+
+# _packages_base_pin <sys-root> <name>: what the *target base* pins for one name, as a whole
+# `<name>=<version>` line, or empty when it does not pin it.
+#
+# The kernel falls back to the base's apk database: that is the contract the aligner already
+# had (a slot whose payload carries no world file still carries an installed kernel), and a
+# pin that is read from the wrong place would be a guess about the release.
+_packages_base_pin() {
+    _bp=$(_packages_pin_lines "$1/etc/apk/world" "$2")
+    if [ -z "${_bp}" ] && [ "$2" = "kernel" ]; then
+        _bp=$(_packages_kernel_from_db "$1/lib/apk/db/installed")
+    fi
+    printf '%s' "${_bp}"
 }
 
 # _packages_kernel_from_db <installed>: the kernel package the slot's apk database holds,
@@ -111,9 +160,23 @@ _packages_restore() {
     return 0
 }
 
-# _packages_world_mismatch <file> <wanted kernel line>: 0 when some `kernel=` line differs.
+# _packages_world_mismatch <file> <wanted line...>: 0 when some line for one of the wanted
+# names differs from the wanted line. The wanted lines are whole `<name>=<version>` pairs, so
+# "a line that starts with the wanted pin but is not it" (a longer version with the same
+# prefix) counts as a mismatch: the read-back exists to catch a rewrite that landed wrong.
 _packages_world_mismatch() {
-    awk -v want="$2" '/^kernel=/ { if ($0 != want) bad = 1 } END { exit bad ? 0 : 1 }' "$1"
+    _wm_file=$1
+    shift
+    awk -v wants="$*" '
+        BEGIN {
+            n = split(wants, w, " ")
+            for (i = 1; i <= n; i++) want[w[i]] = 1
+        }
+        {
+            for (k in want) if (index($0, k) == 1 && $0 != k) bad = 1
+        }
+        END { exit bad ? 0 : 1 }
+    ' "${_wm_file}"
 }
 
 # _packages_feeds_mismatch <file> <wanted version> [wanted kmods segment]: 0 when some
@@ -274,6 +337,8 @@ ab_packages_align() {
     AB_PACKAGES_REASON=""
     AB_PACKAGES_KERNEL=""
     AB_PACKAGES_ALIGN_NOTE=""
+    AB_PACKAGES_FOLLOW=""
+    AB_PACKAGES_HINT=""
 
     _version="$(_packages_version_from_manifest "${_payload}")"
     if [ -z "${_version}" ]; then
@@ -290,47 +355,78 @@ ab_packages_align() {
             ;;
     esac
 
-    # 1. the kernel identity the target carries: what its own world pins, else what its
-    #    apk database holds. Both are read from the payload's tree, never from the running
-    #    system, because the running system is the version being replaced.
-    _kernel="$(_packages_kernel_lines "${_sys}/etc/apk/world" | head -n 1)"
-    if [ -z "${_kernel}" ]; then
-        _kernel="$(_packages_kernel_from_db "${_sys}/lib/apk/db/installed")"
-    fi
+    # 1. the identities the target base pins: kernel, base-files and libc, each read from the
+    #    payload's tree, never from the running system, because the running system is the
+    #    version being replaced. Which names are pinned at all is the base's answer: a base
+    #    that does not pin one of them has no opinion about it, and inventing a pin for it
+    #    would add a constraint the user never asked for.
+    _want_kernel=$(_packages_base_pin "${_sys}" kernel)
+    _want_base=$(_packages_base_pin "${_sys}" base-files)
+    _want_libc=$(_packages_base_pin "${_sys}" libc)
+    AB_PACKAGES_KERNEL="${_want_kernel:-unknown}"
 
-    # 2. world in the writable layer: the pin that makes apk refuse a kmod for this kernel.
-    #    Every `kernel=` line is moved, not just the first one: a world with two pins would
-    #    otherwise keep the second one and still report success.
+    # 2. world in the writable layer: the pins that make apk refuse a package for this base.
+    #    Every line of the three is moved, not just the first one: a world with two pins for
+    #    one name would otherwise keep the second one and still report success.
     _world="${_upper}/etc/apk/world"
     _world_changed=0
+    # What the read-back below expects; only names the world pins *and* the base pins end up
+    # here, because those are the only lines this step is allowed to move.
+    _pins_want=""
     if [ -f "${_world}" ]; then
-        _pins="$(_packages_kernel_lines "${_world}")"
-        _pin_count="$(printf '%s\n' "${_pins}" | grep -c . || true)"
-        if [ -n "${_pins}" ] && [ "${_pin_count}" -gt 1 ]; then
-            _distinct="$(printf '%s\n' "${_pins}" | sort -u | grep -c . || true)"
-            if [ "${_distinct}" -gt 1 ]; then
-                # Two different pins mean two kernels were installed at some point; picking
-                # one would be a guess about the user's intent.
-                _packages_fail "multiple-kernel-pins"
+        # shellcheck disable=SC2086  # a space separated list of names by construction
+        for _name in ${AB_PACKAGES_PINS}; do
+            _distinct=$(_packages_pin_versions "${_world}" "${_name}" | grep -c . || true)
+            if [ "${_distinct:-0}" -gt 1 ]; then
+                # Two different pins for one name mean two of them were installed at some
+                # point (measured: a machine that ran two kernels). Picking one would be a
+                # guess about the user's intent, and half a rewrite - one name moved, the
+                # other left - is worse than none, because the slot would then describe a
+                # release that never existed. Nothing at all is written, here or in the
+                # feeds below.
+                case "${_name}" in
+                    kernel) _packages_fail "multiple-kernel-pins" ;;
+                    *) _packages_fail "multiple-base-pins" ;;
+                esac
                 return 1
             fi
+        done
+        # A base that pins nothing this library owns has nothing to compare against, and a
+        # world that pins one of them while the base says nothing cannot be moved: the two
+        # cases are told apart by whether the base carries a world at all.
+        if [ -z "${_want_kernel}" ] && [ -n "$(_packages_pin_lines "${_world}" kernel)" ]; then
+            _packages_fail "kernel-unknown"
+            return 1
         fi
-        if [ -n "${_pins}" ]; then
-            if [ -z "${_kernel}" ]; then
-                _packages_fail "kernel-unknown"
+        _need_rewrite=0
+        _pins_moved=""
+        for _name in ${AB_PACKAGES_PINS}; do
+            _have=$(_packages_pin_lines "${_world}" "${_name}")
+            [ -n "${_have}" ] || continue
+            _want=$(_packages_base_pin "${_sys}" "${_name}")
+            # The base does not pin this name: the pin is the user's, and the base has no
+            # opinion about it. Moving it would replace a constraint with a guess.
+            [ -n "${_want}" ] || continue
+            _pins_want="${_pins_want} ${_want}"
+            if [ "${_have}" != "${_want}" ]; then
+                _need_rewrite=1
+                _pins_moved="${_pins_moved} ${_name}"
+            fi
+        done
+        if [ "${_need_rewrite}" = "1" ]; then
+            if ! _packages_rewrite "${_world}" '
+                    {
+                        if (kw != "" && $0 ~ /^kernel=/) { print kw; next }
+                        if (bw != "" && $0 ~ /^base-files=/) { print bw; next }
+                        if (lw != "" && $0 ~ /^libc=/) { print lw; next }
+                        print
+                    }' -v kw="${_want_kernel}" -v bw="${_want_base}" -v lw="${_want_libc}"; then
+                _packages_fail "world-unwritable"
                 return 1
             fi
-            if [ "${_pins}" != "${_kernel}" ]; then
-                if ! _packages_rewrite "${_world}" '{ if (/^kernel=/) { print want; next } print }' \
-                    -v want="${_kernel}"; then
-                    _packages_fail "world-unwritable"
-                    return 1
-                fi
-                _world_changed=1
-            fi
+            _world_changed=1
         fi
     fi
-    AB_PACKAGES_KERNEL="${_kernel:-unknown}"
 
     # 3. the feeds that are actually read. The file names come from the *base*, not from a
     #    list in this file: on the measured image apk reads /etc/apk/repositories.d/*.list
@@ -364,7 +460,8 @@ FEEDS
     #    rewrite that did not land is exactly the silent failure this whole task is about,
     #    and a rewrite that landed *wrong* (say, an `&` expanded inside the replacement) is
     #    worse than one that did not land, so the original comes back.
-    if [ "${_world_changed}" = "1" ] && _packages_world_mismatch "${_world}" "${_kernel}"; then
+    # shellcheck disable=SC2086  # one `name=version` pair per word by construction
+    if [ "${_world_changed}" = "1" ] && _packages_world_mismatch "${_world}" ${_pins_want}; then
         _packages_restore "${_world}"
         _packages_fail "world-not-verified"
         return 1
@@ -395,7 +492,7 @@ FEEDS
     rm -f "${_upper}/etc/apk/repositories.ab-align.bak" 2>/dev/null || true
 
     _packages_log="packages: ${_target} on ${_version}"
-    [ "${_world_changed}" = "1" ] && _packages_log="${_packages_log}, world pinned to ${_kernel}"
+    [ "${_world_changed}" = "1" ] && _packages_log="${_packages_log}, world pinned${_pins_moved} to this base"
     [ "${_feeds_shadow}" -gt 0 ] && _packages_log="${_packages_log}, ${_feeds_shadow} shadowed feed file(s) dropped"
     [ "${_feeds_rewritten}" -gt 0 ] && _packages_log="${_packages_log}, ${_feeds_rewritten} edited feed file(s) moved to ${_version}"
     [ "${_world_changed}" = "0" ] && [ "${_feeds_shadow}" = "0" ] && [ "${_feeds_rewritten}" = "0" ] \
@@ -411,6 +508,12 @@ FEEDS
     else
         AB_PACKAGES_ALIGN_NOTE=""
     fi
+    # The metadata of this slot describes the new base now; its packages do not. The follow
+    # state and the command that retries it travel to the caller, which publishes them in the
+    # same line as the verdict: `packages=aligned` with no `follow=` would read as "the
+    # packages moved", and that claim is the one this whole change exists to stop making.
+    AB_PACKAGES_FOLLOW="pending"
+    AB_PACKAGES_HINT="ab-packages update"
     printf '%s\n' "${_packages_log}" >&2
     return 0
 }
@@ -948,6 +1051,17 @@ ab_packages_prune() {
     return 0
 }
 
+# SUPERSEDED. ab_packages_follow (further down) is the follow engine now: it gates the
+# world on the target tree, prefetches the moving set, applies the prefetched bodies as files
+# with no network at all, and writes the follow record from the transaction's own output.
+#
+# This function is kept because tests/modules/upgrade/test_packages_refresh.sh asserts its
+# exact command lines, and it must not be reachable from the boot path: it decides by exit
+# status, and the transaction it runs (`apk add --force-reinstall`) is the measured no-op -
+# rc=0, `[APK unavailable, skipped]` per package, nothing moved. Retire it together with
+# that test. Until ab-boot asks for ab_packages_follow_if_ready instead of this, a first boot
+# still takes this path - that switch is the boot hook's own change, not this library's.
+#
 # ab_packages_refresh <target-dir>: make the installed packages belong to the base the
 # machine now runs. Returns 0 when the whole world was reinstalled, 1 when the result is
 # limited (degraded, stale feeds, unwritable record), 2 when the feed did not answer, 3
@@ -1081,6 +1195,1224 @@ ab_packages_refresh() {
     printf 'packages: the kernel/ABI subset failed too (%s)\n' "${_reason}" >&2
     _packages_refresh_publish "limited" "${_reason}" "${_version}" "${_dropped}" "${_dropped_list}" || :
     return 1
+}
+
+# --------------------------------------------------------------------------- #
+# The follow record: one line, one writer, and only facts this engine established
+#
+# Shape (design.md §2):
+#
+#   packages=<aligned|followed|limited> reason=<token> follow=<state>
+#            upgraded=<n> kept=<n> skipped=<kind:name,...> cache=<bytes>
+#            dropped=<names> version=<base> kernel=<pin> slot=<a|b> hint=<command>
+#
+# Four rules that are not style:
+#
+#   * `reason=` stays the second field. `ab-slot status` reads the state and the reason with
+#     one regex each, and a field in front of it silently turns the reason into the state;
+#   * `hint=` is last because its value is a command with a space in it
+#     (`ab-packages update`). Every field before it is a single word, which is what makes the
+#     rest of the line splittable;
+#   * a field this engine did not establish is carried over from the previous line, never
+#     invented. version= / kernel= / slot= were established by the aligner, and an engine that
+#     rewrote them would be a second author of facts it never measured;
+#   * a line the format does not understand is replaced, not extended: an unrelated file glued
+#     to this verdict is a record no reader can take apart.
+# --------------------------------------------------------------------------- #
+
+# Read by the caller after a publish, so a ring log can name what was recorded. These are the
+# names the boot hook already reads (`stage=packages-refresh ... result=<state> reason=<token>
+# version=<base>`); AB_PACKAGES_FOLLOW above is a different thing - the state a successful
+# *alignment* hands over, before any follow has run.
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW_STATE=""
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW_REASON=""
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW_VERSION=""
+
+# _packages_record_get <key>: one field of the record, or empty. Only the last line is read:
+# the record is one line, and a file that grew a second one was appended to by something that
+# does not know the format.
+_packages_record_get() {
+    _rg_file=$(_packages_refresh_record_file)
+    [ -r "${_rg_file}" ] || return 0
+    tail -n 1 "${_rg_file}" 2>/dev/null | awk -v k="$1" '
+        {
+            for (i = 1; i <= NF; i++) {
+                if (index($i, k "=") == 1) { print substr($i, length(k) + 2); exit }
+            }
+        }'
+}
+
+# _packages_record_state: the packages= verdict, `unknown` when the record carries none this
+# library can name.
+_packages_record_state() {
+    _rst=$(_packages_record_get packages)
+    case "${_rst}" in
+        aligned | followed | limited) printf '%s' "${_rst}" ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+# _packages_record_state_keep <fallback>: the verdict already in the record when it is one this
+# library can stand behind, else the fallback. A follow that could not run must not downgrade a
+# verdict it did not re-measure, and a base nobody has followed yet starts from the fallback.
+_packages_record_state_keep() {
+    _rsk=$(_packages_record_state)
+    case "${_rsk}" in
+        unknown) printf '%s' "$1" ;;
+        *) printf '%s' "${_rsk}" ;;
+    esac
+}
+
+# _packages_reason_carry <fallback>: the reason a new line keeps when this engine has nothing
+# new to say. A reason that describes a *transient* failure (this attempt found no network,
+# this transaction failed) must not survive into the next line, or the machine keeps reporting
+# a reason for an attempt that is over. `feeds-rewritten` is the opposite case: it is a fact
+# about the user's own file, and it stays true until the next alignment.
+_packages_reason_carry() {
+    _rc_prev=$(_packages_record_get reason)
+    case "${_rc_prev}" in
+        '' | network | no-evidence | timeout | apk-* | declined | no-world | no-packages | no-apk)
+            printf '%s' "$1"
+            ;;
+        *) printf '%s' "${_rc_prev}" ;;
+    esac
+}
+
+# _packages_record_publish <state> <reason> <follow> <facts> <hint>: write the record.
+#
+# <facts> is a space separated `key=value` list appended after follow= (upgraded=, kept=,
+# skipped=, cache=, dropped=) and may be empty. Returns 1 when the line could not be written or
+# did not read back: a record that landed *wrong* is a verdict nobody wrote.
+_packages_record_publish() {
+    _pp_state=$1
+    _pp_reason=$2
+    _pp_follow=$3
+    _pp_facts=${4:-}
+    _pp_hint=${5:-none}
+    _pp_file=$(_packages_refresh_record_file)
+    _pp_dir=$(dirname "${_pp_file}")
+    mkdir -p "${_pp_dir}" 2>/dev/null || {
+        printf 'packages: cannot create %s, the follow stays unrecorded\n' "${_pp_dir}" >&2
+        return 1
+    }
+    _pp_old=""
+    [ -r "${_pp_file}" ] && _pp_old=$(tail -n 1 "${_pp_file}" 2>/dev/null)
+    case "${_pp_old}" in
+        packages=*) ;;
+        *) _pp_old="" ;;
+    esac
+    # `hint=` is the last field and its value holds one space, so everything from it on is
+    # dropped rather than carried word by word - the second word of a command is not a field.
+    _pp_old=${_pp_old%% hint=*}
+    _pp_line="packages=${_pp_state} reason=${_pp_reason} follow=${_pp_follow}"
+    # shellcheck disable=SC2086  # the fact list is single words by construction
+    for _pp_kv in ${_pp_facts}; do
+        _pp_line="${_pp_line} ${_pp_kv}"
+    done
+    # shellcheck disable=SC2086  # the fields of a one-line record are single words by construction
+    for _pp_kv in ${_pp_old}; do
+        case "${_pp_kv}" in
+            packages=* | reason=* | follow=* | upgraded=* | kept=* | skipped=* | cache=* \
+                | dropped=* | world_dropped=* | hint=* | refresh=*)
+                continue
+                ;;
+        esac
+        _pp_line="${_pp_line} ${_pp_kv}"
+    done
+    _pp_line="${_pp_line} hint=${_pp_hint}"
+    _pp_tmp="${_pp_file}.tmp.$$"
+    if ! printf '%s\n' "${_pp_line}" >"${_pp_tmp}" 2>/dev/null; then
+        rm -f "${_pp_tmp}" 2>/dev/null || true
+        printf 'packages: cannot write %s\n' "${_pp_tmp}" >&2
+        return 1
+    fi
+    sync 2>/dev/null || true
+    if ! mv "${_pp_tmp}" "${_pp_file}" 2>/dev/null; then
+        rm -f "${_pp_tmp}" 2>/dev/null || true
+        printf 'packages: cannot publish %s\n' "${_pp_file}" >&2
+        return 1
+    fi
+    sync 2>/dev/null || true
+    if [ "$(tail -n 1 "${_pp_file}" 2>/dev/null)" != "${_pp_line}" ]; then
+        printf 'packages: %s did not read back\n' "${_pp_file}" >&2
+        return 1
+    fi
+    AB_PACKAGES_FOLLOW_STATE=${_pp_follow}
+    AB_PACKAGES_FOLLOW_REASON=${_pp_reason}
+    # The base the line describes, so a ring log can say which one it followed without reading
+    # the record again. `unknown` when the aligner never published a version.
+    AB_PACKAGES_FOLLOW_VERSION=$(_packages_record_get version)
+    [ -n "${AB_PACKAGES_FOLLOW_VERSION}" ] || AB_PACKAGES_FOLLOW_VERSION="unknown"
+    return 0
+}
+
+# ab_packages_record_follow_fields: what a caller appends to the align verdict so the record
+# says a follow is still owed. Printed as `follow=pending hint=ab-packages update`, and empty
+# when the alignment did not succeed - a failed alignment must not promise a follow.
+ab_packages_record_follow_fields() {
+    [ -n "${AB_PACKAGES_FOLLOW}" ] || return 0
+    printf 'follow=%s hint=%s' "${AB_PACKAGES_FOLLOW}" "${AB_PACKAGES_HINT:-none}"
+}
+
+# ab_packages_follow_pending [reason]: publish the align-time verdict. `follow=pending` is the
+# one field that makes a boot worker run at all, and `packages=` stays whatever the aligner
+# established: the metadata is aligned, the packages have not moved.
+ab_packages_follow_pending() {
+    _fpd_reason=${1:-}
+    [ -n "${_fpd_reason}" ] || _fpd_reason=$(_packages_reason_carry none)
+    # The publish below owns packages=, reason=, follow= and hint=; everything the prefetch
+    # established has to be handed over as a fact or the carry-over rules drop it, and the
+    # first boot would then not know which entries were held back or what it has on disk.
+    _fpd_facts=""
+    for _fpd_key in upgraded kept skipped cache dropped; do
+        _fpd_val=$(_packages_record_get "${_fpd_key}")
+        [ -n "${_fpd_val}" ] && _fpd_facts="${_fpd_facts} ${_fpd_key}=${_fpd_val}"
+    done
+    _packages_record_publish "$(_packages_record_state_keep aligned)" "${_fpd_reason}" \
+        pending "${_fpd_facts}" "ab-packages update"
+}
+
+# ab_packages_follow_never: the user chose to replace the system only. No state machine and no
+# hint: there is nothing left to run, and saying `ab-packages update` would be a loop.
+ab_packages_follow_never() {
+    _packages_record_publish "$(_packages_record_state_keep aligned)" \
+        "$(_packages_reason_carry none)" never "" "none"
+}
+
+# ab_packages_follow_abandoned: the network fallback ran out (W3, 24 hours). The packages stay
+# where they are and the reason stays `network`, so a later reader can still explain it.
+ab_packages_follow_abandoned() {
+    _packages_record_publish "$(_packages_record_state_keep aligned)" network abandoned "" \
+        "ab-packages update"
+}
+
+# _packages_follow_publish_pending <reason>: the follow could not run this time.
+_packages_follow_publish_pending() {
+    _fpp_reason=$1
+    _packages_record_publish "$(_packages_record_state_keep aligned)" "${_fpp_reason}" \
+        pending "" "ab-packages update" || :
+    AB_PACKAGES_FOLLOW_REASON=${_fpp_reason}
+}
+
+# --------------------------------------------------------------------------- #
+# The gate: three propositions, judged on the target tree, writing only /tmp
+#
+# design.md §5, and the reason each one is asked before the switch rather than after:
+#
+#   P  pin agreement - two file reads. A world that pins another release's kernel/base-files/
+#      libc cannot follow this base, and no index fetch would change that answer.
+#   S  solvability   - `apk --root <target> ... update` then `--simulate upgrade`. This is the
+#      transaction the first boot would run, so an entry it cannot select is the failure the
+#      machine would hit - not a second opinion about it.
+#   L  local packages - `apk policy` names the sources a package comes from; one that only the
+#      installed database answers for is a local .apk, and whether it can be replayed on this
+#      base depends on a body being kept and on the kernel it was built against.
+#
+# Everything is measured, and nothing is written outside the gate's own /tmp directory: the
+# index goes to --cache-dir there, the feed set to --repositories-file there, so an `update`
+# cannot leave a cache inside the tree it is judging and a failed judgement leaves the target
+# byte for byte as it was (ac-5).
+#
+# Results (read by the caller and by the plan renderer):
+#   AB_PACKAGES_GATE_STATE    ok | blocked | gap
+#   AB_PACKAGES_GATE_REASON   none | pin-mismatch | unsolvable | unreachable | no-world |
+#                             no-apk | no-feeds | no-tmp
+#   AB_PACKAGES_GATE_S/_P/_L  ok | blocked | gap | skipped
+#   AB_PACKAGES_GATE_SKIPPED  `kind:name,...`, the attribution tokens of design.md §3
+#   AB_PACKAGES_GATE_BLOCKED  the world entries apk could not select, space separated
+#   AB_PACKAGES_GATE_INDEX    ok | failed - the index refresh, reported and not decisive
+#   AB_PACKAGES_GATE_WORLD    upper | base - which world file the pins were read from
+# --------------------------------------------------------------------------- #
+
+AB_PACKAGES_GATE_TIMEOUT="${AB_PACKAGES_GATE_TIMEOUT:-60}"
+
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_STATE=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_REASON=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_S=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_P=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_L=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_INDEX=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_BLOCKED=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_SKIPPED=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_WORLD=""
+# shellcheck disable=SC2034
+AB_PACKAGES_GATE_PIN_DETAIL=""
+AB_PACKAGES_GATE_TMPDIR=""
+
+# _packages_gate_token_add <kind:name>: record one attribution, once.
+_packages_gate_token_add() {
+    case ",${AB_PACKAGES_GATE_SKIPPED}," in
+        *",$1,"*) return 0 ;;
+    esac
+    if [ -n "${AB_PACKAGES_GATE_SKIPPED}" ]; then
+        AB_PACKAGES_GATE_SKIPPED="${AB_PACKAGES_GATE_SKIPPED},$1"
+    else
+        AB_PACKAGES_GATE_SKIPPED="$1"
+    fi
+}
+
+# _packages_gate_apk <root> <cache-dir> <repositories-file> <apk args...>: one apk command
+# against the target tree, under the wall-clock cap. Both the index cache and the feed set are
+# the gate's own copies in /tmp; --root is what makes the answer describe the target and not
+# the machine that is running the gate.
+_packages_gate_apk() {
+    _ga_root=$1
+    _ga_cache=$2
+    _ga_repos=$3
+    shift 3
+    _packages_refresh_bounded "${AB_PACKAGES_GATE_TIMEOUT}" \
+        apk --root "${_ga_root}" --cache-dir "${_ga_cache}" \
+        --repositories-file "${_ga_repos}" "$@"
+}
+
+# _packages_gate_repos <root> <out-file>: the feeds the target will read, concatenated, or 1
+# when the root ships none.
+#
+# One file would be the wrong question: passing only the base's distfeeds makes the user's own
+# feeds invisible, so every package installed from a third-party source would look like one no
+# source offers. The concatenation in apk's own order is the set apk reads on the booted
+# machine, which is what a prediction has to describe.
+_packages_gate_repos() {
+    _gr_root=$1
+    _gr_out=$2
+    : >"${_gr_out}" 2>/dev/null || return 1
+    while IFS= read -r _gr_rel; do
+        [ -n "${_gr_rel}" ] || continue
+        cat "${_gr_root}/${_gr_rel}" >>"${_gr_out}" 2>/dev/null || :
+    done <<FILES
+$(_packages_feed_files "${_gr_root}")
+FILES
+    [ -s "${_gr_out}" ]
+}
+
+# _packages_gate_pins <target-root> <sys-root>: P. Returns 0 when they agree, 1 when a pin
+# names another release, 2 when there is no world to read.
+#
+# "Before and after the aligner" is decided as "the world the machine will boot with against
+# the world the base ships": the aligner reads its own rewrite back before it reports success,
+# so a rewrite that landed wrong is already `world-not-verified` and never reaches here.
+_packages_gate_pins() {
+    _gp_target=$1
+    _gp_sys=$2
+    _gp_world="${_gp_target}/etc/apk/world"
+    AB_PACKAGES_GATE_WORLD="upper"
+    if [ ! -s "${_gp_world}" ]; then
+        _gp_world="${_gp_sys}/etc/apk/world"
+        AB_PACKAGES_GATE_WORLD="base"
+    fi
+    [ -s "${_gp_world}" ] || return 2
+    # shellcheck disable=SC2086  # a space separated list of names by construction
+    for _gp_name in ${AB_PACKAGES_PINS}; do
+        _gp_have=$(_packages_pin_lines "${_gp_world}" "${_gp_name}")
+        [ -n "${_gp_have}" ] || continue
+        if [ "$(_packages_pin_versions "${_gp_world}" "${_gp_name}" | grep -c . || true)" -gt 1 ]; then
+            AB_PACKAGES_GATE_PIN_DETAIL="${_gp_name}: two pins"
+            return 1
+        fi
+        _gp_want=$(_packages_base_pin "${_gp_sys}" "${_gp_name}")
+        [ -n "${_gp_want}" ] || continue
+        if [ "${_gp_have}" != "${_gp_want}" ]; then
+            AB_PACKAGES_GATE_PIN_DETAIL="${_gp_name} ${_gp_have} vs ${_gp_want}"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# _packages_gate_solve <root> <cache> <repos>: S. Returns 0 when apk can solve the world.
+#
+# The second call is the answer and the first one only fills the index: a machine that left
+# /var on tmpfs has no cache at all, and a cache that already carries the index still answers
+# after an `update` that failed. AB_PACKAGES_GATE_INDEX says which of the two happened, so a
+# mirror problem is visible without being mistaken for an unsolvable world.
+_packages_gate_solve() {
+    _gs_root=$1
+    _gs_cache=$2
+    _gs_repos=$3
+    if _gs_idx=$(_packages_gate_apk "${_gs_root}" "${_gs_cache}" "${_gs_repos}" update 2>&1); then
+        AB_PACKAGES_GATE_INDEX="ok"
+    else
+        AB_PACKAGES_GATE_INDEX="failed"
+    fi
+    _gs_out=$(_packages_gate_apk "${_gs_root}" "${_gs_cache}" "${_gs_repos}" --simulate upgrade 2>&1)
+    _gs_rc=$?
+    [ "${_gs_rc}" -eq 0 ] && return 0
+    # Two failures apk names differently, and they carry different tokens:
+    #   `  name (no such package):`  - no source offers it at all            -> DROPPED
+    #   `    breaks: world[name=v]`  - the version the world pins is gone    -> PINNED
+    _gs_gone=$(printf '%s\n' "${_gs_out}" \
+        | sed -n 's/^  \([^ ][^ ]*\) (no such package):$/\1/p' | sed 's/[=<>~].*//' | sort -u)
+    _gs_pinned=$(printf '%s\n' "${_gs_out}" \
+        | sed -n 's/^ *breaks: world\[\([^]]*\)\].*$/\1/p' | sed 's/[=<>~].*//' | sort -u)
+    _gs_names=$(printf '%s\n%s\n' "${_gs_gone}" "${_gs_pinned}" | grep . | sort -u)
+    while IFS= read -r _gs_name; do
+        [ -n "${_gs_name}" ] || continue
+        case " $(printf '%s' "${_gs_gone}" | tr '\n' ' ') " in
+            *" ${_gs_name} "*) _packages_gate_token_add "gone:${_gs_name}" ;;
+            *) _packages_gate_token_add "pinned:${_gs_name}" ;;
+        esac
+    done <<NAMES
+${_gs_names}
+NAMES
+    AB_PACKAGES_GATE_BLOCKED=$(printf '%s\n' "${_gs_names}" \
+        | awk 'NF { printf "%s%s", sep, $0; sep = " " }')
+    if [ -n "${_gs_names}" ]; then
+        AB_PACKAGES_GATE_REASON="unsolvable"
+        printf 'packages: gate blocked, apk cannot select:\n' >&2
+        printf '%s\n' "${_gs_names}" | head -n 5 | sed 's/^/packages:   /' >&2
+        return 1
+    fi
+    if [ "${AB_PACKAGES_GATE_INDEX}" = "failed" ]; then
+        AB_PACKAGES_GATE_REASON="unreachable"
+        printf 'packages: gate blocked, the index refresh did not answer:\n' >&2
+        printf '%s\n' "${_gs_idx}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+        printf '%s\n' "${_gs_out}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+        return 1
+    fi
+    AB_PACKAGES_GATE_REASON="unsolvable"
+    printf 'packages: gate blocked, apk refused the transaction:\n' >&2
+    printf '%s\n' "${_gs_out}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+    return 1
+}
+
+# _packages_db_depends <installed-db> <package>: the dependency list apk recorded for one
+# package, or empty. The database is a blank-line separated block format and `D:` belongs to
+# the block whose `P:` precedes it.
+_packages_db_depends() {
+    [ -f "$1" ] || return 0
+    awk -v want="$2" '
+        /^P:/ { pkg = substr($0, 3); next }
+        pkg == want && /^D:/ { print substr($0, 3); exit }
+    ' "$1" 2>/dev/null
+}
+
+# _packages_gate_local <root> <sys> <cache> <repos>: L. Returns 0 when every local package was
+# classified, 1 when apk could not answer.
+#
+# A local package is replayed from a body kept in /etc/apk/ab/local (design.md §10); without a
+# body it is `local:` (NO COPY) - the installed files stay, nothing is reinstalled, and the
+# record says what the operator has to do. A body that was built against another kernel is
+# `stale-abi:`: replaying it would install a module that cannot load, which is worse than
+# keeping the one that is already there.
+_packages_gate_local() {
+    _gl_root=$1
+    _gl_sys=$2
+    _gl_cache=$3
+    _gl_repos=$4
+    _gl_world="${_gl_root}/etc/apk/world"
+    [ -s "${_gl_world}" ] || _gl_world="${_gl_sys}/etc/apk/world"
+    _gl_db="${_gl_root}/lib/apk/db/installed"
+    [ -f "${_gl_db}" ] || _gl_db="${_gl_sys}/lib/apk/db/installed"
+    _gl_assets="${_gl_root}/etc/apk/ab/local"
+    _gl_kernel=$(_packages_base_pin "${_gl_sys}" kernel)
+    _gl_kernel=${_gl_kernel#kernel=}
+    _gl_names=$(_packages_refresh_world "${_gl_world}" full \
+        | awk '{ name = $0; sub(/[=<>~].*/, "", name); print name }')
+    # shellcheck disable=SC2086  # one package name per line by construction
+    for _gl_name in ${_gl_names}; do
+        if ! _gl_out=$(_packages_gate_apk "${_gl_root}" "${_gl_cache}" "${_gl_repos}" policy "${_gl_name}" 2>/dev/null); then
+            return 1
+        fi
+        # An answer with no sources in it is not "local", it is an answer this gate cannot read;
+        # treating it as local would attribute a hole to a package nobody looked at.
+        if [ -z "$(printf '%s' "${_gl_out}" | tr -d ' \t\n')" ]; then
+            return 1
+        fi
+        # Every non-header line of `apk policy` names a source. The installed database is the
+        # one source that needs no feed; anything else means a repository offers the package,
+        # and a repository package is not this proposition's business.
+        _gl_src=$(printf '%s\n' "${_gl_out}" | sed 's/^[ \t]*//' | grep -v '^$' \
+            | grep -v ':$' | grep -vx 'lib/apk/db/installed')
+        [ -z "${_gl_src}" ] || continue
+        _gl_body=$(ls "${_gl_assets}/${_gl_name}-"*.apk 2>/dev/null | head -n 1)
+        if [ -z "${_gl_body}" ]; then
+            _packages_gate_token_add "local:${_gl_name}"
+            continue
+        fi
+        _gl_need=$(_packages_db_depends "${_gl_db}" "${_gl_name}" \
+            | tr ' ' '\n' | sed -n 's/^kernel=//p' | head -n 1)
+        [ -n "${_gl_need}" ] || continue
+        if [ -n "${_gl_kernel}" ] && [ "${_gl_need}" != "${_gl_kernel}" ]; then
+            _packages_gate_token_add "stale-abi:${_gl_name}"
+        fi
+    done
+    return 0
+}
+
+# _packages_gate_body <target-root> <sys-root>: the propositions, in the order that spends the
+# least to learn the most.
+_packages_gate_body() {
+    _gt_target=$1
+    _gt_sys=$2
+    _gt_world_file="${_gt_target}/etc/apk/world"
+    if [ ! -s "${_gt_world_file}" ]; then
+        _gt_world_file="${_gt_sys}/etc/apk/world"
+    fi
+    if [ ! -s "${_gt_world_file}" ]; then
+        AB_PACKAGES_GATE_STATE="gap"
+        AB_PACKAGES_GATE_REASON="no-world"
+        return 2
+    fi
+
+    _packages_gate_pins "${_gt_target}" "${_gt_sys}"
+    case $? in
+        0) AB_PACKAGES_GATE_P="ok" ;;
+        *)
+            AB_PACKAGES_GATE_P="blocked"
+            AB_PACKAGES_GATE_STATE="blocked"
+            AB_PACKAGES_GATE_REASON="pin-mismatch"
+            printf 'packages: gate blocked, the world pins another release than this base (%s)\n' \
+                "${AB_PACKAGES_GATE_PIN_DETAIL}" >&2
+            return 1
+            ;;
+    esac
+
+    if ! command -v apk >/dev/null 2>&1; then
+        AB_PACKAGES_GATE_S="gap"
+        AB_PACKAGES_GATE_L="gap"
+        AB_PACKAGES_GATE_STATE="gap"
+        AB_PACKAGES_GATE_REASON="no-apk"
+        return 2
+    fi
+
+    AB_PACKAGES_GATE_TMPDIR="${AB_PACKAGES_GATE_TMP:-${TMPDIR:-/tmp}}/ab-gate.$$"
+    if ! mkdir -p "${AB_PACKAGES_GATE_TMPDIR}/cache" 2>/dev/null; then
+        AB_PACKAGES_GATE_S="gap"
+        AB_PACKAGES_GATE_L="gap"
+        AB_PACKAGES_GATE_STATE="gap"
+        AB_PACKAGES_GATE_REASON="no-tmp"
+        return 2
+    fi
+    _gt_repos="${AB_PACKAGES_GATE_TMPDIR}/repositories"
+    if ! _packages_gate_repos "${_gt_target}" "${_gt_repos}" \
+        && ! _packages_gate_repos "${_gt_sys}" "${_gt_repos}"; then
+        AB_PACKAGES_GATE_S="gap"
+        AB_PACKAGES_GATE_L="gap"
+        AB_PACKAGES_GATE_STATE="gap"
+        AB_PACKAGES_GATE_REASON="no-feeds"
+        return 2
+    fi
+
+    _packages_gate_solve "${_gt_target}" "${AB_PACKAGES_GATE_TMPDIR}/cache" "${_gt_repos}"
+    case $? in
+        0) AB_PACKAGES_GATE_S="ok" ;;
+        *)
+            AB_PACKAGES_GATE_S="blocked"
+            AB_PACKAGES_GATE_STATE="blocked"
+            return 1
+            ;;
+    esac
+
+    if ! _packages_gate_local "${_gt_target}" "${_gt_sys}" \
+        "${AB_PACKAGES_GATE_TMPDIR}/cache" "${_gt_repos}"; then
+        AB_PACKAGES_GATE_L="gap"
+        AB_PACKAGES_GATE_STATE="gap"
+        AB_PACKAGES_GATE_REASON="no-apk"
+        return 2
+    fi
+    AB_PACKAGES_GATE_L="ok"
+    # `gap` is not a failure of a proposition: it is a hole in what can be followed. The three
+    # states then mean "everything the world names can follow", "something cannot and that
+    # blocks the follow", and "the follow can run but this much of it cannot move".
+    if [ -n "${AB_PACKAGES_GATE_SKIPPED}" ]; then
+        AB_PACKAGES_GATE_STATE="gap"
+        AB_PACKAGES_GATE_REASON="none"
+        return 2
+    fi
+    AB_PACKAGES_GATE_STATE="ok"
+    AB_PACKAGES_GATE_REASON="none"
+    return 0
+}
+
+# ab_packages_gate <target-root> [<sys-root>]: the three propositions of design.md §5.
+#
+# Returns 0 (ok), 1 (blocked) or 2 (gap). Nothing outside the gate's /tmp directory is written,
+# on any path: the scratch directory is removed before the answer is returned, so a caller can
+# compare the target tree byte for byte afterwards.
+ab_packages_gate() {
+    _gate_target=${1:?ab_packages_gate needs the target tree}
+    _gate_sys=${2:-$1}
+    while [ "${#_gate_target}" -gt 1 ] && [ "${_gate_target%/}" != "${_gate_target}" ]; do
+        _gate_target=${_gate_target%/}
+    done
+    while [ "${#_gate_sys}" -gt 1 ] && [ "${_gate_sys%/}" != "${_gate_sys}" ]; do
+        _gate_sys=${_gate_sys%/}
+    done
+    AB_PACKAGES_GATE_STATE=""
+    AB_PACKAGES_GATE_REASON="none"
+    AB_PACKAGES_GATE_S="skipped"
+    AB_PACKAGES_GATE_P="skipped"
+    AB_PACKAGES_GATE_L="skipped"
+    AB_PACKAGES_GATE_INDEX=""
+    AB_PACKAGES_GATE_BLOCKED=""
+    AB_PACKAGES_GATE_SKIPPED=""
+    AB_PACKAGES_GATE_WORLD=""
+    AB_PACKAGES_GATE_PIN_DETAIL=""
+    AB_PACKAGES_GATE_TMPDIR=""
+
+    _packages_gate_body "${_gate_target}" "${_gate_sys}"
+    _gate_rc=$?
+    if [ -n "${AB_PACKAGES_GATE_TMPDIR}" ]; then
+        rm -rf "${AB_PACKAGES_GATE_TMPDIR}" 2>/dev/null || :
+        AB_PACKAGES_GATE_TMPDIR=""
+    fi
+    return "${_gate_rc}"
+}
+
+# _packages_transaction_names <world-file> [full|subset]: the package *names* a follow may
+# move, one per line, without the world's operators.
+#
+# Measured 2026-11-18 on the device (apk-tools 3.0.5): `apk upgrade base-files=1950~0c4...`
+# answers "Package 'base-files=1950~0c4...' not found" and exits 1 for *every* version
+# qualified spec - including one whose version the feeds carry - while `apk upgrade base-files`
+# resolves. The plan believed the opposite (`apk add name=version` still resolves, which is
+# true, so the world's lines were passed through verbatim). The pins are not lost by dropping
+# the operator here: apk reads them from the world file itself, which is exactly where a pin
+# belongs, and the solver still refuses a transaction the pins forbid.
+_packages_transaction_names() {
+    _ptn_world=$1
+    _packages_refresh_world "${_ptn_world}" "${2:-full}" \
+        | awk '{ name = $0; sub(/[=<>~].*/, "", name); print name }'
+}
+
+# --------------------------------------------------------------------------- #
+# Prefetch: the bodies and the index, downloaded before the switch
+#
+# Measured 2026-11-18 on the device (apk-tools 3.0.5, ImmortalWrt 25.12.2) - and this is the
+# second correction of what the plan believed:
+#
+#   * a follow to the feed's latest is 3,445,041 bytes over 39 packages (3.3 MiB), which is
+#     the *moving set*, not the world: `apk fetch --recursive` over the world downloads 316
+#     bodies and 105 MB. So the prefetch asks the solver what it would move (`upgrade
+#     --simulate`) and fetches exactly that, which is also why `cache=` in the record can be
+#     compared with the 3.3 MiB the design promises;
+#   * `apk --network=0` does not exist in this apk: the boolean parser rejects `0` (and
+#     `false`), accepts `no`/`yes`, and `--network=no` makes apk answer "nothing to do" for a
+#     transaction whose bodies are on disk - it disables the repositories, so it cannot be the
+#     offline switch. What works with the network actually unreachable is installing the
+#     prefetched files themselves: `apk add --virtual <name> --allow-untrusted
+#     --force-non-repository --cache-dir <cache> --cache-max-age <large> <bodies>` moves 39
+#     packages with zero network attempts (measured with blackholed routes), and
+#     `apk del <name>` puts the world back byte for byte;
+#   * a body fetched by `apk fetch` carries no signature of its own (the repository's index is
+#     what is signed), so installing it as a file needs `--allow-untrusted` - the same
+#     primitive platform/lib/ab-pkgs-assets.sh already replays a kept local body with.
+#
+# So the download can happen while the machine still runs a slot that works, and the first
+# boot of the new one needs no network at all - which is what takes captive portals and home
+# outages off the critical path (design.md §8).
+#
+# A prefetch that fails is not an upgrade that fails. The record falls back to
+# `follow=pending reason=network` and the network fallback picks it up (design.md §9).
+# --------------------------------------------------------------------------- #
+
+AB_PACKAGES_PREFETCH_TIMEOUT="${AB_PACKAGES_PREFETCH_TIMEOUT:-300}"
+
+# shellcheck disable=SC2034
+AB_PACKAGES_PREFETCH_STATE=""
+# shellcheck disable=SC2034
+AB_PACKAGES_PREFETCH_REASON=""
+# shellcheck disable=SC2034
+AB_PACKAGES_PREFETCH_COUNT=0
+# shellcheck disable=SC2034
+AB_PACKAGES_PREFETCH_CACHE=0
+
+# _packages_cache_dir <target-root>: where the bodies for the first boot go. design.md §10 puts
+# it next to world and db on the writable layer: it rides the generation snapshot, needs no new
+# subvolume and no initramfs change, and never touches /data.
+_packages_cache_dir() {
+    printf '%s/etc/apk/ab/cache' "$1"
+}
+
+# _packages_cache_files <dir>: the bodies in a cache directory, one per line.
+_packages_cache_files() {
+    [ -d "$1" ] || return 0
+    for _cf in "$1"/*.apk; do
+        [ -f "${_cf}" ] || continue
+        printf '%s\n' "${_cf}"
+    done
+}
+
+# _packages_cache_bytes <dir>: how many bytes the bodies in a cache directory are, summed from
+# the files themselves. `du` would answer in blocks (the busybox one in KiB) and the record
+# wants bytes a reader can compare with the 3.3 MiB a follow is expected to cost.
+_packages_cache_bytes() {
+    _cb_total=0
+    while IFS= read -r _cb_file; do
+        [ -n "${_cb_file}" ] || continue
+        _cb_size=$(wc -c <"${_cb_file}" 2>/dev/null | tr -d ' ')
+        case "${_cb_size}" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        _cb_total=$((_cb_total + _cb_size))
+    done <<FILES
+$(_packages_cache_files "$1")
+FILES
+    printf '%s' "${_cb_total}"
+}
+
+# _packages_prefetch_apk <root> <cache> <apk args...>: one apk command whose index cache is the
+# same directory the bodies go to. The first boot reads the same directory: the index and the
+# bodies travel together, which is what lets the apply run with no network at all.
+_packages_prefetch_apk() {
+    _pa_root=$1
+    _pa_cache=$2
+    shift 2
+    _packages_refresh_bounded "${AB_PACKAGES_PREFETCH_TIMEOUT}" \
+        apk --root "${_pa_root}" --cache-dir "${_pa_cache}" \
+        --timeout "${AB_PACKAGES_PREFETCH_TIMEOUT}" "$@"
+}
+
+# _packages_moving_names <apk-simulate-output>: the packages a simulated transaction would
+# install, upgrade or downgrade, one name per line.
+#
+# Measured 2026-11-18 on apk-tools 3.0.5: a transaction that moves packages prints
+# `( 1/39) Upgrading libopenssl3 (3.5.7-r1 -> 3.5.9-r1)` and `( 2/39) Installing usign (...)`,
+# and one with nothing to do prints only `OK: 282.0 MiB in 316 packages`. The name is what
+# `apk fetch` takes; the version is not passed on purpose - a version qualified spec is what
+# `apk upgrade` refuses (- see _packages_transaction_names).
+_packages_moving_names() {
+    # One -e per verb, not an alternation: BSD sed (the host the tests run on) has no `\|`,
+    # and a parser that silently matches nothing would report "the world is current" for every
+    # transaction - the exact class of lie this task removes.
+    printf '%s\n' "$1" \
+        | sed -n -e 's/.*Upgrading \([^ ][^ ]*\) (.*/\1/p' \
+            -e 's/.*Downgrading \([^ ][^ ]*\) (.*/\1/p' \
+            -e 's/.*Reinstalling \([^ ][^ ]*\) (.*/\1/p' \
+            -e 's/.*Installing \([^ ][^ ]*\) (.*/\1/p' \
+        | sort -u
+}
+
+# ab_packages_prefetch <target-root> [<skipped-list>]: fetch every body the follow will need.
+#
+# Returns 0 when the cache is populated, 1 when it is not (and the upgrade is still fine), 3
+# when there is nothing to fetch. Sets AB_PACKAGES_PREFETCH_{STATE,REASON,COUNT,CACHE}. The
+# skipped list a gate produced is written into the record here because this is the first moment
+# after the confirmation where the record may be written at all.
+ab_packages_prefetch() {
+    _pf_target=$1
+    while [ "${#_pf_target}" -gt 1 ] && [ "${_pf_target%/}" != "${_pf_target}" ]; do
+        _pf_target=${_pf_target%/}
+    done
+    _pf_skipped=${2:-}
+    AB_PACKAGES_PREFETCH_STATE=""
+    AB_PACKAGES_PREFETCH_REASON=""
+    AB_PACKAGES_PREFETCH_COUNT=0
+    AB_PACKAGES_PREFETCH_CACHE=0
+
+    _pf_world="${_pf_target}/etc/apk/world"
+    if [ ! -s "${_pf_world}" ]; then
+        AB_PACKAGES_PREFETCH_STATE="empty"
+        AB_PACKAGES_PREFETCH_REASON="no-world"
+        return 3
+    fi
+    _pf_want=$(_packages_transaction_names "${_pf_world}" full)
+    if [ -z "${_pf_want}" ]; then
+        AB_PACKAGES_PREFETCH_STATE="empty"
+        AB_PACKAGES_PREFETCH_REASON="no-packages"
+        return 3
+    fi
+    _pf_cache=$(_packages_cache_dir "${_pf_target}")
+    if ! mkdir -p "${_pf_cache}" 2>/dev/null; then
+        AB_PACKAGES_PREFETCH_STATE="failed"
+        AB_PACKAGES_PREFETCH_REASON="cache-unwritable"
+        _packages_follow_publish_pending "network"
+        return 1
+    fi
+    # Nothing from an earlier attempt is counted: the number in the record describes this
+    # download, and a leftover body would make it describe two.
+    rm -f "${_pf_cache}"/*.apk 2>/dev/null || :
+    if ! command -v apk >/dev/null 2>&1; then
+        AB_PACKAGES_PREFETCH_STATE="failed"
+        AB_PACKAGES_PREFETCH_REASON="no-apk"
+        _packages_follow_publish_pending "network"
+        return 1
+    fi
+    if ! _pf_idx=$(_packages_prefetch_apk "${_pf_target}" "${_pf_cache}" update 2>&1); then
+        printf 'packages: prefetch: the index did not answer, the follow stays pending\n' >&2
+        AB_PACKAGES_PREFETCH_STATE="failed"
+        AB_PACKAGES_PREFETCH_REASON="network"
+        _packages_follow_publish_pending "network"
+        return 1
+    fi
+    # What to download is the solver's answer, not the world: measured 2026-11-18, one follow
+    # moves 39 of 316 installed packages and `apk fetch --recursive` over the world pulls 105 MB
+    # instead of 3.3 MiB. A world that is already current is a prefetch with nothing to do, and
+    # that is a fact the record can carry (`upgraded=0 kept=<n>` at first boot), not a failure.
+    # shellcheck disable=SC2086  # one word per world name by construction
+    if ! _pf_sim=$(_packages_prefetch_apk "${_pf_target}" "${_pf_cache}" \
+        upgrade --simulate ${_pf_want} 2>&1); then
+        printf 'packages: prefetch: apk cannot solve the world, the follow stays pending\n' >&2
+        printf '%s\n' "${_pf_sim}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+        AB_PACKAGES_PREFETCH_STATE="failed"
+        AB_PACKAGES_PREFETCH_REASON="unsolvable"
+        _packages_follow_publish_pending "network"
+        return 1
+    fi
+    _pf_moving=$(_packages_moving_names "${_pf_sim}")
+    if [ -z "${_pf_moving}" ]; then
+        # Nothing moves: the bodies the first boot would need are already on the disk (the
+        # installed ones). The record still says pending, because the follow itself has not
+        # run; the first boot then reports `upgraded=0 kept=<n>`, which is the measured shape
+        # of an already current world.
+        _pf_skipped_fact=""
+        [ -n "${_pf_skipped}" ] && _pf_skipped_fact="skipped=${_pf_skipped} "
+        _packages_record_publish "$(_packages_record_state_keep aligned)" \
+            "$(_packages_reason_carry none)" pending "${_pf_skipped_fact}cache=0" \
+            "ab-packages update" || :
+        AB_PACKAGES_PREFETCH_STATE="ok"
+        AB_PACKAGES_PREFETCH_REASON="nothing-to-move"
+        AB_PACKAGES_PREFETCH_COUNT=0
+        AB_PACKAGES_PREFETCH_CACHE=0
+        printf 'packages: prefetch: the world is already current, nothing to download\n' >&2
+        return 0
+    fi
+    # shellcheck disable=SC2086  # one body name per word by construction
+    _pf_out=$(_packages_prefetch_apk "${_pf_target}" "${_pf_cache}" fetch \
+        -o "${_pf_cache}" ${_pf_moving} 2>&1)
+    _pf_rc=$?
+    _pf_n=$(printf '%s\n' "$(_packages_cache_files "${_pf_cache}")" | grep -c . || true)
+    _pf_n=${_pf_n:-0}
+    if [ "${_pf_rc}" -ne 0 ] || [ "${_pf_n}" -eq 0 ]; then
+        # The count is the evidence, not the status: `apk fetch` that selected nothing exits 0.
+        case "${_pf_rc}" in
+            0) AB_PACKAGES_PREFETCH_REASON="no-evidence" ;;
+            124) AB_PACKAGES_PREFETCH_REASON="timeout" ;;
+            *) AB_PACKAGES_PREFETCH_REASON="apk-${_pf_rc}" ;;
+        esac
+        printf 'packages: prefetch: fetch %s left %s bodies, the follow stays pending\n' \
+            "${AB_PACKAGES_PREFETCH_REASON}" "${_pf_n}" >&2
+        printf '%s\n' "${_pf_out}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+        # Half a download is worse than none: the first boot would see bodies, take the offline
+        # path with an incomplete set, fail the transaction and have no retry. Dropping what was
+        # fetched keeps the first boot on the network fallback, where it belongs.
+        rm -f "${_pf_cache}"/*.apk 2>/dev/null || :
+        AB_PACKAGES_PREFETCH_STATE="failed"
+        # The record's token is the design's one word for "the bodies could not be fetched";
+        # the precise reason above is for the ring log.
+        _packages_follow_publish_pending "network"
+        return 1
+    fi
+    AB_PACKAGES_PREFETCH_STATE="ok"
+    AB_PACKAGES_PREFETCH_REASON="none"
+    AB_PACKAGES_PREFETCH_COUNT=${_pf_n}
+    AB_PACKAGES_PREFETCH_CACHE=$(_packages_cache_bytes "${_pf_cache}")
+    _pf_facts="cache=${AB_PACKAGES_PREFETCH_CACHE}"
+    [ -n "${_pf_skipped}" ] && _pf_facts="skipped=${_pf_skipped} ${_pf_facts}"
+    _packages_record_publish "$(_packages_record_state_keep aligned)" \
+        "$(_packages_reason_carry none)" pending "${_pf_facts}" "ab-packages update" || :
+    printf 'packages: prefetched %s bodies (%s bytes) for the first boot\n' \
+        "${_pf_n}" "${AB_PACKAGES_PREFETCH_CACHE}" >&2
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
+# Follow: apk upgrade on the first boot of a new base, judged by what it printed
+#
+# The primitive is `apk upgrade` over the world's own constraints minus the kernel. Measured
+# 2026-11-18:
+#
+#   * `apk upgrade dnsmasq-full` moves 2.93-r1 -> 2.93-r2 and keeps a user-edited
+#     /etc/config/dhcp byte for byte, writing the package's copy to dhcp.apk-new;
+#   * `apk add --force-reinstall` pins the *installed* version, so when the index no longer
+#     carries it apk prints `[APK unavailable, skipped]` and exits 0 - which is how the previous
+#     implementation published `packages=aligned` for a transaction that never ran.
+#
+# So the verdict comes from the output: `Upgrading <name> (<old> -> <new>)` per package moved,
+# `[APK unavailable, skipped]` as the signature of the no-op. A run that printed nothing but
+# `OK:` next to a skipped line did nothing and is recorded as `follow=failed
+# reason=no-evidence`; a run with no upgrade and no skip is a world that was already current.
+# --------------------------------------------------------------------------- #
+
+AB_PACKAGES_FOLLOW_TIMEOUT="${AB_PACKAGES_FOLLOW_TIMEOUT:-300}"
+
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW_MODE=""
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW_UPGRADED=0
+# shellcheck disable=SC2034
+AB_PACKAGES_FOLLOW_KEPT=0
+
+# _packages_follow_apk <root> <apk args...>: one apk command against the machine that will run
+# the packages. "/" is apk's own default and gets no --root, so a boot worker never passes a
+# flag that would make apk treat the running root as a sandbox.
+_packages_follow_apk() {
+    _fk_root=$1
+    shift
+    if [ -z "${_fk_root}" ] || [ "${_fk_root}" = "/" ]; then
+        _packages_refresh_bounded "${AB_PACKAGES_FOLLOW_TIMEOUT}" \
+            apk --timeout "${AB_PACKAGES_FOLLOW_TIMEOUT}" "$@"
+    else
+        _packages_refresh_bounded "${AB_PACKAGES_FOLLOW_TIMEOUT}" \
+            apk --root "${_fk_root}" --timeout "${AB_PACKAGES_FOLLOW_TIMEOUT}" "$@"
+    fi
+}
+
+# _packages_follow_kept <constraints> <moved names>: how many world entries this transaction did
+# not move. A package apk left alone is kept, and saying how many is what makes `upgraded=39`
+# readable next to a 236-entry world.
+_packages_follow_kept() {
+    _fkept_kept=0
+    _fkept_moved=" $(printf '%s' "$2" | tr '\n' ' ') "
+    while IFS= read -r _fkept_line; do
+        [ -n "${_fkept_line}" ] || continue
+        _fkept_name=${_fkept_line%%[=<>~]*}
+        case "${_fkept_moved}" in
+            *" ${_fkept_name} "*) ;;
+            *) _fkept_kept=$((_fkept_kept + 1)) ;;
+        esac
+    done <<LIST
+$1
+LIST
+    printf '%s' "${_fkept_kept}"
+}
+
+# AB_PACKAGES_FOLLOW_OFFLINE_OUT: the transaction's output, kept in a file rather than a
+# variable: an apk with 300 packages prints a line per package, and the callers in the boot
+# hook run under `sh` on a tmpfs machine.
+AB_PACKAGES_FOLLOW_VIRTUAL="${AB_PACKAGES_FOLLOW_VIRTUAL:-.ab-follow}"
+
+# _packages_follow_cached_bodies <cache>: the prefetched bodies, one per line. Only a file that
+# follows apk's `<name>-<version>.apk` naming is passed back to apk: a body with any other name
+# is refused by apk with a message about packages nobody asked for, and one refused file fails
+# the whole transaction.
+_packages_follow_cached_bodies() {
+    _fcb_dir=$1
+    while IFS= read -r _fcb_file; do
+        [ -n "${_fcb_file}" ] || continue
+        _fcb_name=${_fcb_file##*/}
+        case "${_fcb_name}" in
+            *[!A-Za-z0-9._~+-]*) continue ;;
+        esac
+        printf '%s\n' "${_fcb_file}"
+    done <<FILES
+$(_packages_cache_files "${_fcb_dir}")
+FILES
+}
+
+# _packages_follow_offline: apply the bodies the prefetch left, with no network.
+#
+# Returns apk's own status; AB_PACKAGES_FOLLOW_OFFLINE_OUT carries the output. The virtual
+# package is the mechanism: `apk add <files>` alone would persist the bodies in the world
+# (measured: "You tried to add a non-repository package to system, but it would be lost on next
+# reboot"), and a world nobody wrote by hand must not gain entries. `apk del <virtual>` restores
+# the world byte for byte (measured) and does not remove anything it pulled in, because every
+# body installed is already in the world by its own name.
+#
+# The cache arguments are not decoration: with `--network=no` apk stops reading the repositories
+# and answers "no jobs", so the offline run keeps the network on and the bodies are what makes
+# it need nothing from it. The measured run with blackholed routes made zero network attempts.
+_packages_follow_offline() {
+    AB_PACKAGES_FOLLOW_OFFLINE_OUT=""
+    _pfo_bodies=$(_packages_follow_cached_bodies "${_fo_cache}")
+    if [ -z "${_pfo_bodies}" ]; then
+        printf 'packages: the cache holds no body to apply offline\n' >&2
+        return 1
+    fi
+    # 1. the virtual entry is added only around the transaction and never published.
+    # shellcheck disable=SC2086  # one body path per word by construction
+    AB_PACKAGES_FOLLOW_OFFLINE_OUT=$(_packages_follow_apk "${_fo_target}" \
+        --cache-dir "${_fo_cache}" --cache-max-age 100000 \
+        add --virtual "${AB_PACKAGES_FOLLOW_VIRTUAL}" --allow-untrusted --force-non-repository \
+        ${_pfo_bodies} 2>&1)
+    _pfo_rc=$?
+    # 2. the world is put back whether the transaction worked or not. A failure that leaves the
+    #    virtual entry behind would make the next attempt's `apk add` answer "already
+    #    satisfied" and hide what is missing.
+    _pfo_del=$(_packages_follow_apk "${_fo_target}" del "${AB_PACKAGES_FOLLOW_VIRTUAL}" 2>&1) || :
+    printf '%s\n' "${_pfo_del}" | grep -v '^$' | sed 's/^/packages: /' >&2
+    return "${_pfo_rc}"
+}
+
+# _packages_follow_established_facts: the facts the prefetch or the gate already established,
+# as record word pairs.
+#
+# A failed attempt must not drop them: measured 2026-11-18 on the device, two early `ifup` rungs
+# published `follow=failed` with an empty fact list, and the `cache=3867245` the prefetch had
+# written was gone from the record the successful rung then read - so the record that finally
+# said `follow=followed` carried no `cache=` at all, which is exactly the ac-6 field a reader
+# checks. Whatever a run couldn't measure stays what the run before it established.
+_packages_follow_established_facts() {
+    _fef_facts=""
+    for _fef_key in upgraded kept skipped cache dropped; do
+        _fef_val=$(_packages_record_get "${_fef_key}")
+        [ -n "${_fef_val}" ] && _fef_facts="${_fef_facts} ${_fef_key}=${_fef_val}"
+    done
+    printf '%s' "${_fef_facts# }"
+}
+
+# ab_packages_follow_can_offline <target-root>: 0 when the prefetched bodies are already on the
+# disk, so the follow needs no network at all.
+#
+# Measured 2026-11-18: the first boot asked the network probe before it ever asked this library,
+# so a machine whose bodies were prefetched still waited four rungs for a feed that was not
+# needed (ring log: probe=offline result=pending, then the apply only happened on an ifup). The
+# prefetch exists precisely so the network question is not on the path; this is the predicate
+# that lets the worker skip it.
+ab_packages_follow_can_offline() {
+    _co_root=${1:-${AB_PACKAGES_TARGET:-/}}
+    while [ "${#_co_root}" -gt 1 ] && [ "${_co_root%/}" != "${_co_root}" ]; do
+        _co_root=${_co_root%/}
+    done
+    [ -n "$(_packages_cache_files "$(_packages_cache_dir "${_co_root}")" 2>/dev/null)" ]
+}
+
+# ab_packages_follow <target-root>: make the installed packages belong to the base the machine
+# now runs.
+#
+# Returns 0 when the follow completed (including "there was nothing to move"), 1 when it did
+# not, 3 when there is nothing to work with. Sets AB_PACKAGES_FOLLOW_STATE/_REASON/_VERSION and the
+# counters; the record itself is published here, because the transaction is the only thing that
+# knows what happened.
+ab_packages_follow() {
+    _fo_target=${1:-/}
+    while [ "${#_fo_target}" -gt 1 ] && [ "${_fo_target%/}" != "${_fo_target}" ]; do
+        _fo_target=${_fo_target%/}
+    done
+    AB_PACKAGES_FOLLOW_MODE=""
+    AB_PACKAGES_FOLLOW_UPGRADED=0
+    AB_PACKAGES_FOLLOW_KEPT=0
+    AB_PACKAGES_FOLLOW_STATE=""
+    AB_PACKAGES_FOLLOW_REASON=""
+    AB_PACKAGES_FOLLOW_VERSION=""
+
+    _fo_world="${_fo_target}/etc/apk/world"
+    if [ ! -s "${_fo_world}" ]; then
+        printf 'packages: no world at %s, nothing to follow\n' "${_fo_world}" >&2
+        _packages_follow_publish_pending "no-world"
+        return 3
+    fi
+    _fo_want=$(_packages_transaction_names "${_fo_world}" full)
+    if [ -z "${_fo_want}" ]; then
+        printf 'packages: the world holds nothing but entries this library does not own\n' >&2
+        _packages_follow_publish_pending "no-packages"
+        return 0
+    fi
+    if ! command -v apk >/dev/null 2>&1; then
+        _packages_follow_publish_pending "no-apk"
+        return 1
+    fi
+
+    _fo_cache=$(_packages_cache_dir "${_fo_target}")
+    if [ -n "$(_packages_cache_files "${_fo_cache}")" ]; then
+        AB_PACKAGES_FOLLOW_MODE="offline"
+    else
+        AB_PACKAGES_FOLLOW_MODE="online"
+    fi
+
+    # 1. no usable prefetch: the network has to be there, and the probe on this platform knows
+    #    how to tell a captive portal from a mirror. It lives in its own file (design.md §9), so
+    #    a library without it simply tries the transaction.
+    if [ "${AB_PACKAGES_FOLLOW_MODE}" = "online" ] && command -v ab_net_probe >/dev/null 2>&1; then
+        if ! ab_net_probe; then
+            printf 'packages: no usable network, the follow stays pending\n' >&2
+            _packages_follow_publish_pending "network"
+            return 1
+        fi
+    fi
+
+    # 2. the transaction: the world's package names, minus the kernel entry this library never
+    #    touches, and with no network at all when the bodies are already on the disk.
+    #
+    # Measured 2026-11-18 (apk-tools 3.0.5): `apk upgrade <name>=<version>` answers
+    # "Package '...' not found" for every version qualified spec, so the world's operators are
+    # stripped here (`_packages_transaction_names`) - the pins stay in the world file, where the
+    # solver reads them anyway. The offline branch installs the prefetched *files*:
+    # `apk add --virtual <name> --allow-untrusted --force-non-repository --cache-dir <cache>
+    # --cache-max-age <large> <bodies>`, which moved 39 packages with blackholed routes and zero
+    # network attempts. Its one addition to the world is the virtual entry, removed again by
+    # `apk del` before anything is published; `--network=no` was tried first and is not an
+    # offline switch at all (it disables the repositories and reports "nothing to do").
+    if [ "${AB_PACKAGES_FOLLOW_MODE}" = "offline" ]; then
+        _packages_follow_offline
+        _fo_rc=$?
+        _fo_out="${AB_PACKAGES_FOLLOW_OFFLINE_OUT:-}"
+    else
+        if ! _fo_out=$(_packages_follow_apk "${_fo_target}" update 2>&1); then
+            printf 'packages: apk update failed, the follow stays pending (network)\n' >&2
+            _packages_follow_publish_pending "network"
+            return 1
+        fi
+        # 2b. A world entry this base's own feeds no longer offer poisons every later apk
+        #     transaction on the slot, including the one below: apk refuses the whole set for
+        #     one name it cannot find. Dropping the entry keeps the installed package and its
+        #     configuration, and the record says which entries went. This is the only place
+        #     that still runs, so the judgement the retired refresh made has to live here -
+        #     without it a downgrade ends in `follow=failed` for good (measured on the plan:
+        #     the gate blocks, nothing is prefetched, and every retry hits the same orphan).
+        if [ "${AB_PACKAGES_PRUNE_INDEX_OK:-0}" != "0" ] || command -v ab_packages_prune >/dev/null 2>&1; then
+            AB_PACKAGES_PRUNE_INDEX_OK=1
+            if ab_packages_prune "${_fo_target}" && [ "${AB_PACKAGES_PRUNE_COUNT:-0}" -gt 0 ]; then
+                _fo_dropped="${AB_PACKAGES_PRUNE_LIST:-}"
+                printf 'packages: dropped %s world entr(y|ies) this base does not offer: %s\n' \
+                    "${AB_PACKAGES_PRUNE_COUNT}" "${_fo_dropped}" >&2
+                # The transaction has to be built from the world as it is now.
+                _fo_want=$(_packages_transaction_names "${_fo_world}" full)
+            fi
+        fi
+        # 2c. The online transaction gets the same evidence check the offline one is held to:
+        #     the solver says which packages would move, and a transaction that moves none of
+        #     them is not a follow. It is also what makes a world that is already current a
+        #     real answer (`upgraded=0 kept=<n>`) instead of a silence that reads like success.
+        #     A simulate that cannot solve is not decided here: the transaction below runs and
+        #     its own failure is what gets recorded.
+        # shellcheck disable=SC2086  # one word per world name by construction
+        if _fo_sim=$(_packages_follow_apk "${_fo_target}" upgrade --simulate ${_fo_want} 2>&1); then
+            _fo_expected=$(_packages_moving_names "${_fo_sim}")
+            if [ -z "${_fo_expected}" ]; then
+                _fo_kept=$(_packages_follow_kept "${_fo_want}" "")
+                AB_PACKAGES_FOLLOW_UPGRADED=0
+                AB_PACKAGES_FOLLOW_KEPT=${_fo_kept}
+                _fo_facts="upgraded=0 kept=${_fo_kept}"
+                _fo_skip_list=$(_packages_record_get skipped)
+                [ -n "${_fo_skip_list}" ] && _fo_facts="${_fo_facts} skipped=${_fo_skip_list}"
+                _packages_record_publish "followed" "none" "followed" "${_fo_facts}" "none" || return 1
+                printf 'packages: followed 0 package(s) (%s kept) in %s mode, the world is current\n' \
+                    "${_fo_kept}" "${AB_PACKAGES_FOLLOW_MODE}" >&2
+                rm -f "${_fo_cache}"/* 2>/dev/null || :
+                return 0
+            fi
+        fi
+        # shellcheck disable=SC2086  # one word per world name by construction
+        _fo_out=$(_packages_follow_apk "${_fo_target}" upgrade ${_fo_want} 2>&1)
+        _fo_rc=$?
+    fi
+
+    # 3. what the transaction says it did.
+    # Lines that name an upgrade apk did *not* do are dropped first: the measured no-op prints
+    # `(1/1) [APK unavailable, skipped] Upgrading htop (3.3.0-r1)`, which otherwise reads as a
+    # package that moved.
+    # The four verbs apk-tools 3.0.5 uses for a package it does something to (measured on the
+    # device 2026-11-18 by reading the strings out of /usr/bin/apk and watching a downgrade):
+    # `Upgrading` and `Downgrading` move a package to the base's version, `Installing` adds one
+    # the world asked for, and `Replacing` reinstalls the version already there. The first
+    # three are what `upgraded=` counts; `Replacing` is evidence the transaction ran but is not
+    # a package that followed, so it is parsed on its own - it used to be invisible, and a
+    # downgrade of 25.12.2-built packages onto 25.12.1 reported `upgraded=0` for a move that
+    # really happened.
+    _fo_did=$(printf '%s\n' "${_fo_out}" | grep -v 'APK unavailable, skipped' || :)
+    _fo_up=$(printf '%s\n' "${_fo_did}" \
+        | sed -n -e 's/.*Upgrading \([^ ][^ ]*\) .*/\1/p' -e 's/.*Downgrading \([^ ][^ ]*\) .*/\1/p' \
+        | sort -u)
+    # The offline path installs its virtual entry in the same transaction; it is not a package
+    # that followed anything.
+    _fo_new=$(printf '%s\n' "${_fo_did}" | sed -n 's/.*Installing \([^ ][^ ]*\) .*/\1/p' \
+        | grep -vx "${AB_PACKAGES_FOLLOW_VIRTUAL}" | sort -u)
+    _fo_repl=$(printf '%s\n' "${_fo_did}" | sed -n 's/.*Replacing \([^ ][^ ]*\) .*/\1/p' | sort -u)
+    _fo_moved=$(printf '%s\n%s\n' "${_fo_up}" "${_fo_new}" | grep . | sort -u)
+    _fo_n=$(printf '%s\n' "${_fo_moved}" | grep -c . || true)
+    _fo_n=${_fo_n:-0}
+    _fo_skipped_n=$(printf '%s\n' "${_fo_out}" | grep -c 'APK unavailable, skipped' || true)
+    _fo_skipped_n=${_fo_skipped_n:-0}
+
+    if [ "${_fo_rc}" -ne 0 ]; then
+        case "${_fo_rc}" in
+            124) _fo_reason="timeout" ;;
+            *) _fo_reason="apk-${_fo_rc}" ;;
+        esac
+        printf 'packages: the follow transaction failed (%s)\n' "${_fo_reason}" >&2
+        printf '%s\n' "${_fo_out}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+        _packages_record_publish "$(_packages_record_state_keep aligned)" "${_fo_reason}" \
+            failed "$(_packages_follow_established_facts)" "ab-packages update" || :
+        AB_PACKAGES_FOLLOW_REASON=${_fo_reason}
+        return 1
+    fi
+    if [ "${AB_PACKAGES_FOLLOW_MODE}" = "offline" ] && [ "${_fo_rc}" -eq 0 ] \
+        && [ "${_fo_n}" -eq 0 ] && [ -z "${_fo_repl}" ]; then
+        # The prefetch promised bodies for this base; a transaction that applied none of them
+        # did not follow anything. Saying `followed` here is the lie this task exists to
+        # remove, so it is recorded as what it is and the network fallback gets its turn. A
+        # transaction that only replaced same-version bodies did run (its output names them),
+        # and that is `upgraded=0 kept=<n>` - the world needed no move.
+        printf 'packages: the offline transaction applied nothing the prefetch downloaded\n' >&2
+        _packages_record_publish "$(_packages_record_state_keep aligned)" "no-evidence" \
+            failed "$(_packages_follow_established_facts)" "ab-packages update" || :
+        AB_PACKAGES_FOLLOW_REASON="no-evidence"
+        return 1
+    fi
+    if [ "${_fo_n}" -eq 0 ] && [ -z "${_fo_new}" ] && [ "${_fo_skipped_n}" -gt 0 ]; then
+        # The measured no-op: exit 0, `[APK unavailable, skipped]` per package, nothing moved.
+        printf 'packages: the transaction skipped everything it was asked for, nothing moved\n' >&2
+        _packages_record_publish "$(_packages_record_state_keep aligned)" "no-evidence" \
+            failed "$(_packages_follow_established_facts)" "ab-packages update" || :
+        AB_PACKAGES_FOLLOW_REASON="no-evidence"
+        return 1
+    fi
+
+    _fo_kept=$(_packages_follow_kept "${_fo_want}" "${_fo_moved}")
+    AB_PACKAGES_FOLLOW_UPGRADED=${_fo_n}
+    AB_PACKAGES_FOLLOW_KEPT=${_fo_kept}
+    # The two facts a follow cannot measure stay what the prefetch and the gate established: the
+    # attribution list and the size of what was downloaded. Recomputing them here would mean
+    # asking the network a question this run may not be able to (the offline path has none).
+    _fo_facts="upgraded=${_fo_n} kept=${_fo_kept}"
+    _fo_skip_list=$(_packages_record_get skipped)
+    [ -n "${_fo_skip_list}" ] && _fo_facts="${_fo_facts} skipped=${_fo_skip_list}"
+    _fo_cache_bytes=$(_packages_record_get cache)
+    if [ -z "${_fo_cache_bytes}" ] && [ "${AB_PACKAGES_FOLLOW_MODE}" = "offline" ]; then
+        # The prefetch is the source of this number, but an earlier failed rung may have dropped
+        # it (see _packages_follow_established_facts). The bodies are still on the disk at this
+        # point - they are deleted below - so the transaction can measure what it applied.
+        _fo_cache_bytes=$(_packages_cache_bytes "${_fo_cache}")
+    fi
+    [ -n "${_fo_cache_bytes}" ] && _fo_facts="${_fo_facts} cache=${_fo_cache_bytes}"
+    _packages_record_publish "followed" "none" "followed" "${_fo_facts}" "none" || return 1
+    printf 'packages: followed %s package(s) (%s kept) in %s mode\n' \
+        "${_fo_n}" "${_fo_kept}" "${AB_PACKAGES_FOLLOW_MODE}" >&2
+    # The cache is a consumable (design.md §10): its bodies are in the apk database now and its
+    # size lives in the record, so keeping the files would only cost the writable layer. The
+    # index files go with them: they name the release the slot just left, so the next follow
+    # would fetch its own anyway (measured 2026-11-18: 14 APKINDEX files stayed behind after a
+    # follow of 128 packages, in the layer that has to stay small).
+    rm -f "${_fo_cache}"/* 2>/dev/null || :
+    return 0
+}
+
+# ab_packages_follow_due [slot]: 0 when the record says this base still owes a follow.
+#
+# The read-only question a boot hook asks before it starts a worker. `follow=pending` is the
+# due flag; a record written before the field existed (an upgrade by the previous platform
+# version) counts as due once, because nothing ever followed it, while `followed`, `failed`,
+# `abandoned` and `never` are answers that only a human or `ab-packages update` changes.
+ab_packages_follow_due() {
+    _fd_slot=${1:-}
+    _fd_file=$(_packages_refresh_record_file)
+    [ -r "${_fd_file}" ] || return 1
+    case "$(_packages_record_state)" in
+        aligned | followed | limited) ;;
+        *) return 1 ;;
+    esac
+    if [ -n "${_fd_slot}" ]; then
+        _fd_rec_slot=$(_packages_record_get slot)
+        [ -z "${_fd_rec_slot}" ] || [ "${_fd_rec_slot}" = "${_fd_slot}" ] || return 1
+    fi
+    case "$(_packages_record_get follow)" in
+        pending) return 0 ;;
+        '') return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ab_packages_follow_if_ready [target-root] [slot]: the boot worker's single entry point. Runs
+# the follow when the record is due and does nothing at all when it is not, so a hook can call
+# it unconditionally. The single-instance lock belongs to the caller (design.md §9): this
+# function is one transaction, not a scheduler.
+ab_packages_follow_if_ready() {
+    _fri_slot=${2:-}
+    ab_packages_follow_due "${_fri_slot}" || return 0
+    ab_packages_follow "${1:-${AB_PACKAGES_TARGET:-/}}"
 }
 
 # --------------------------------------------------------------------------- #

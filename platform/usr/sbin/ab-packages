@@ -1,0 +1,829 @@
+#!/bin/sh
+# ab-packages - the package side of an upgrade: what the record says, where a package comes
+# from, retry the follow, replay a kept body, and the cache.
+#
+# A system update replaces a slot; packages are a second transaction with its own way back.
+# This command is the human entry point to that second transaction. It owns no state of its
+# own: the facts live in
+#
+#   /boot/ab/packages                  the one-line record (platform/lib/upgrade/packages.sh)
+#   /etc/apk/ab/local/<name>-<ver>.apk  bodies kept for a replay (platform/lib/ab-pkgs-assets.sh)
+#   /etc/apk/ab/cache/                  one follow's downloads (consumed when it ends)
+#
+# and every subcommand reads or writes exactly one of them. Two rules hold everywhere:
+#
+#   * `status`, `sources` and `cache status` write nothing. A question must be answerable on a
+#     machine whose upgrade is broken.
+#   * nothing that changes the machine runs before a 0 from ab-plan: the plan block is printed,
+#     the question is asked, and only a `y` (or `--yes`) starts a transaction. Before that
+#     point the only writes are in /tmp, which is why a decline leaves no trace at all.
+#
+# Subcommands:
+#   status                      the record, the gaps it names and how old the last attempt is.
+#                               One line of key=value facts on stdout, the explanation on stderr.
+#                               It reports the record as written, including the slot it names;
+#                               whether that record speaks for *this* boot is `ab-slot status`'s
+#                               question, and answering it twice would be two answers.
+#   sources [<name>...]         every feed this machine reads, or - for a name - every source
+#                               that offers it: `feed`, `customfeeds` or `installed` (a local
+#                               package). This is where the full URLs are, because the plan
+#                               block truncates them.
+#   update [--yes] [--only <name>]
+#                               retry the follow. Without --only: judge the tree (the gate),
+#                               show the plan, ask, then run one `apk upgrade` over the world
+#                               and publish the record. With --only: retry that one package with
+#                               `apk upgrade <name>`, measure whether it moved, and leave the
+#                               record alone - the record describes the whole world, and a
+#                               partial transaction must not publish a verdict for it.
+#   replay [--yes] [<file.apk>...]
+#                               install kept bodies again with `apk add --allow-untrusted`.
+#                               With no argument: every kept body. With a file: keep that body
+#                               and install it - this is how a local package's body is kept,
+#                               because apk keeps nothing by itself (/var is a tmpfs).
+#   cache status | cache clean  the follow cache: what is in it, or empty it (kept bodies stay).
+#   --version, -V               the identity this machine was built as, from
+#                               /etc/platform-release. Answered before anything else is read.
+#
+# Environment:
+#   AB_ESP              ESP mount point                      (default /boot)
+#   AB_PACKAGES_FILE    the published record                 (default $AB_ESP/ab/packages)
+#   AB_PACKAGES_ROOT    the tree to read and install into     (default /; a test passes a
+#                       fixture so that nothing is installed into the machine running it)
+#   AB_PACKAGES_LIB     the record/gate/follow library        (default /lib/upgrade/packages.sh)
+#   AB_PKGS_ASSETS_LIB  the kept-body library                 (default /lib/ab-pkgs-assets.sh)
+#   AB_PLAN_LIB         the plan block and the one question   (default /lib/ab-plan.sh)
+#   AB_VERSION_LIB      version identity                      (default /lib/ab-version.sh)
+#   AB_PKGS_CACHE_MAX   the store bound, in bytes             (default 268435456, 256 MiB)
+#
+# Exit status: 0 done or nothing to do - a declined question is not a failure and writes nothing,
+# which is the same answer ab-upgrade gives; 1 a transaction failed or a question could not be
+# answered; 2 usage; 74 refused before anything was written. The refusals name their token on one
+# line, `ab-packages: refused, reason=<token>`, like ab-slot and ab-upgrade do.
+
+set -u
+# Keep whatever PATH we were given in front: a chroot or a test supplies its own tools, and the
+# system directories are appended so the real ones are still found behind any prefix.
+PATH="${PATH:+${PATH}:}/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+AB_ESP="${AB_ESP:-/boot}"
+AB_PACKAGES_FILE="${AB_PACKAGES_FILE:-${AB_ESP}/ab/packages}"
+AB_PACKAGES_ROOT="${AB_PACKAGES_ROOT:-/}"
+AB_PACKAGES_LIB="${AB_PACKAGES_LIB:-/lib/upgrade/packages.sh}"
+AB_PKGS_ASSETS_LIB="${AB_PKGS_ASSETS_LIB:-/lib/ab-pkgs-assets.sh}"
+AB_PLAN_LIB="${AB_PLAN_LIB:-/lib/ab-plan.sh}"
+AB_VERSION_LIB="${AB_VERSION_LIB:-/lib/ab-version.sh}"
+
+say() {
+    printf '%s\n' "$*" >&2
+}
+
+die() {
+    say "ab-packages: $*"
+    exit 1
+}
+
+# refuse <token> [<line>...]: the same shape ab-slot uses - one machine-readable line, then the
+# sentences a person needs. 74 means "nothing was written", which is true of every caller.
+refuse() {
+    say "ab-packages: refused, reason=$1"
+    shift
+    for _rf_line in "$@"; do
+        say "  ${_rf_line}"
+    done
+    exit 74
+}
+
+usage() {
+    say "usage: ab-packages status|sources [<name>...]|update [--yes] [--only <name>]|replay [--yes] [<file.apk>...]|cache status|clean|--version|-V"
+    exit 2
+}
+
+# lib_path <configured-path>: the installed path when it exists, otherwise the copy that ships
+# beside this tool inside the platform layer. A tool run from a checkout, a mounted image or a
+# fixture has to work where it is, and no caller should have to know the layout.
+lib_path() {
+    _lp_base="$(basename "$1")"
+    _lp_self="$(dirname "$0")"
+    for _lp_candidate in "$1" \
+        "${_lp_self}/../../lib/${_lp_base}" \
+        "${_lp_self}/../lib/${_lp_base}" \
+        "${_lp_self}/../../lib/upgrade/${_lp_base}"; do
+        [ -f "${_lp_candidate}" ] || continue
+        printf '%s' "${_lp_candidate}"
+        return 0
+    done
+    return 1
+}
+
+# --- the record -------------------------------------------------------------
+
+# _record_field <key>: one single-word field of the published record, or empty. `hint=` is not
+# read here: its value holds a space and it is the last field, so it has a reader of its own.
+_record_field() {
+    [ -r "${AB_PACKAGES_FILE}" ] || return 0
+    # Field by field, not by regex: `packages=` is the first field and has no space in front of
+    # it, and `reason=` must not be found inside `packages_reason=` of some other writer's line.
+    tail -n 1 "${AB_PACKAGES_FILE}" 2>/dev/null | awk -v k="$1" '
+        {
+            for (i = 1; i <= NF; i++) {
+                if (index($i, k "=") == 1) { print substr($i, length(k) + 2); exit }
+            }
+        }'
+}
+
+_record_hint() {
+    [ -r "${AB_PACKAGES_FILE}" ] || return 0
+    tail -n 1 "${AB_PACKAGES_FILE}" 2>/dev/null | sed -n 's/^.* hint=//p'
+}
+
+# _record_age: how long ago the record was last written, in seconds.
+#
+# The record has no timestamp field and it must not grow one: its vocabulary belongs to the
+# library that writes it (design.md §2), and "when did we last try" is a property of the file,
+# which every file system keeps. A vfat timestamp is coarse (2 s) and that is fine for a
+# question about minutes and hours.
+_record_age() {
+    _ra_mtime=$(stat -c %Y "${AB_PACKAGES_FILE}" 2>/dev/null) \
+        || _ra_mtime=$(stat -f %m "${AB_PACKAGES_FILE}" 2>/dev/null) \
+        || _ra_mtime=""
+    case "${_ra_mtime}" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "${_ra_mtime}" -gt 0 ] || return 1
+    _ra_now=$(date -u +%s 2>/dev/null) || return 1
+    case "${_ra_now}" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    _ra_age=$((_ra_now - _ra_mtime))
+    [ "${_ra_age}" -lt 0 ] && _ra_age=0
+    printf '%s %s\n' "${_ra_mtime}" "${_ra_age}"
+}
+
+# _human_age <seconds>: the same number a person can read at a glance.
+_human_age() {
+    _ha=$1
+    if [ "${_ha}" -lt 90 ]; then
+        printf '%ss' "${_ha}"
+    elif [ "${_ha}" -lt 5400 ]; then
+        printf '%sm' "$((_ha / 60))"
+    elif [ "${_ha}" -lt 172800 ]; then
+        printf '%sh' "$((_ha / 3600))"
+    else
+        printf '%sd' "$((_ha / 86400))"
+    fi
+}
+
+# _iso_utc <epoch>: the moment as a time a log or a bug report can carry.
+_iso_utc() {
+    date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || printf 'epoch=%s' "$1"
+}
+
+# --- status -----------------------------------------------------------------
+
+# _gap_detail <token> <name>: what one attribution token means for the person reading it. The
+# tokens are the record's vocabulary (design.md §3), not a second one invented here.
+_gap_detail() {
+    case "$1" in
+        local)
+            say "ab-packages:   ${2}: no body was kept, so it cannot be replayed; it stays installed at its version"
+            say "ab-packages:     keep it next time: ab-packages replay <file.apk> installs the file and keeps the body"
+            ;;
+        stale-abi)
+            say "ab-packages:   ${2}: built against another kernel; replaying it would install a module that cannot load"
+            ;;
+        unreachable)
+            say "ab-packages:   ${2}: its source did not answer; the world entry is kept for the next attempt"
+            ;;
+        pinned)
+            say "ab-packages:   ${2}: pinned in the world with =, so it is left alone on purpose"
+            ;;
+        gone)
+            say "ab-packages:   ${2}: no source offers it any more; the world entry was removed, the package stays installed"
+            ;;
+        *)
+            say "ab-packages:   ${2}: held back (${1})"
+            ;;
+    esac
+}
+
+cmd_status() {
+    _st_packages="unknown"
+    # `unknown`, not empty: the record is the only place a follow state can come from, and a
+    # machine without one has not "no follow" - it has an answer nobody can give.
+    _st_follow="unknown"
+    _st_reason="unknown"
+    _st_skipped=""
+    _st_dropped=""
+    _st_upgraded=""
+    _st_kept=""
+    _st_cache=""
+    _st_hint=""
+    _st_version=""
+    _st_kernel=""
+    _st_slot=""
+    _st_attempt="unknown"
+    if [ -r "${AB_PACKAGES_FILE}" ]; then
+        _st_packages="$(_record_field packages)"
+        [ -n "${_st_packages}" ] || _st_packages="unknown"
+        _st_follow="$(_record_field follow)"
+        _st_reason="$(_record_field reason)"
+        [ -n "${_st_reason}" ] || _st_reason="unknown"
+        _st_skipped="$(_record_field skipped)"
+        _st_dropped="$(_record_field dropped)"
+        _st_upgraded="$(_record_field upgraded)"
+        _st_kept="$(_record_field kept)"
+        _st_cache="$(_record_field cache)"
+        _st_hint="$(_record_hint)"
+        _st_version="$(_record_field version)"
+        _st_kernel="$(_record_field kernel)"
+        _st_slot="$(_record_field slot)"
+        # The record exists but says nothing about a follow: a record written before the field
+        # existed. Saying `follow=` nothing would read as "no follow needed"; `unknown` is the
+        # honest answer, and a boot worker treats it as due exactly once.
+        [ -n "${_st_follow}" ] || _st_follow="unknown"
+        if _st_age=$(_record_age); then
+            _st_attempt=${_st_age%% *}
+            _st_age_secs=${_st_age#* }
+        else
+            _st_age_secs=""
+        fi
+    fi
+
+    # The store and the cache are facts of their own: a record can be days old and the bodies it
+    # never knew about can still be there.
+    _st_assets_line="$(ab_pkgs_assets_report "${AB_PACKAGES_ROOT}")"
+    _st_cache_line="$(ab_pkgs_cache_report "${AB_PACKAGES_ROOT}")"
+    printf 'packages=%s follow=%s reason=%s upgraded=%s kept=%s skipped=%s cache=%s hint=%s last-attempt=%s\n' \
+        "${_st_packages}" "${_st_follow}" "${_st_reason}" "${_st_upgraded:-0}" \
+        "${_st_kept:-0}" "${_st_skipped:-none}" "${_st_cache:-0}" "${_st_hint:-none}" \
+        "${_st_attempt}"
+    printf '%s %s\n' "${_st_assets_line}" "${_st_cache_line}"
+
+    say "ab-packages: record ${AB_PACKAGES_FILE}"
+    if [ -r "${AB_PACKAGES_FILE}" ]; then
+        say "ab-packages: packages ${_st_packages}, follow ${_st_follow}, reason ${_st_reason} (slot ${_st_slot:-unknown}, base ${_st_version:-unknown}, kernel ${_st_kernel:-unknown})"
+    else
+        say "ab-packages: no record: nothing here proves a follow was ever attempted (unknown is never aligned)"
+    fi
+    if [ -n "${_st_skipped}" ] && [ "${_st_skipped}" != "none" ]; then
+        say "ab-packages: held back by the last follow (${_st_skipped}):"
+        # The list is `kind:name,...`; the kind decides what the person has to do.
+        _st_rest=${_st_skipped}
+        while :; do
+            case "${_st_rest}" in
+                *,*) _st_item=${_st_rest%%,*}; _st_rest=${_st_rest#*,} ;;
+                *) _st_item=${_st_rest}; _st_rest="" ;;
+            esac
+            [ -n "${_st_item}" ] || break
+            _gap_detail "${_st_item%%:*}" "${_st_item#*:}"
+            [ -n "${_st_rest}" ] || break
+        done
+    elif [ "${_st_packages}" = "unknown" ]; then
+        :
+    else
+        say "ab-packages: the last follow held nothing back"
+    fi
+    if [ -n "${_st_dropped}" ] && [ "${_st_dropped}" != "none" ]; then
+        say "ab-packages: dropped from the world by the prune (${_st_dropped}); the packages stay installed"
+    fi
+    # A body a feed took back over is no longer in the store, so the journal is the only place
+    # its deletion can still be read. Printing it here is what keeps "this package stopped being
+    # replayable from a kept body" from becoming a silent narrowing of what the machine can do.
+    _st_journal="$(ab_pkgs_assets_dir "${AB_PACKAGES_ROOT}")/superseded"
+    if [ -r "${_st_journal}" ]; then
+        while IFS= read -r _st_entry; do
+            [ -n "${_st_entry}" ] || continue
+            say "ab-packages: ${_st_entry} (a feed owns this name now; the kept body is gone)"
+        done <"${_st_journal}"
+    fi
+    if [ -n "${_st_age_secs:-}" ]; then
+        say "ab-packages: last attempt $(_human_age "${_st_age_secs}") ago, at $(_iso_utc "${_st_attempt}")"
+    else
+        say "ab-packages: the last attempt's time is unknown (the record could not be dated)"
+    fi
+    say "ab-packages: kept bodies: ${_st_assets_line}"
+    say "ab-packages: follow cache: ${_st_cache_line}"
+    case "${_st_follow}" in
+        pending | failed | abandoned)
+            say "ab-packages: still owed - retry with: ${_st_hint:-ab-packages update}"
+            ;;
+        never)
+            say "ab-packages: left alone on purpose (follow=never): the last upgrade replaced the system only"
+            ;;
+    esac
+    return 0
+}
+
+# --- sources ----------------------------------------------------------------
+
+# _feed_files: every feed file this machine reads, in the order apk reads them.
+# `repositories.d/*.list` is the layout of this image; `distfeeds.list` directly under
+# /etc/apk is the older one, and a machine upgraded across that change still has it.
+_feed_files() {
+    _ff_root=$(_root_prefix)
+    for _ff_dir in "${_ff_root}/etc/apk/repositories.d" "${_ff_root}/etc/apk"; do
+        [ -d "${_ff_dir}" ] || continue
+        for _ff_file in "${_ff_dir}"/*.list; do
+            [ -f "${_ff_file}" ] || continue
+            printf '%s\n' "${_ff_file}"
+        done
+    done
+}
+
+_root_prefix() {
+    _rp_root=${AB_PACKAGES_ROOT:-/}
+    while [ "${#_rp_root}" -gt 1 ] && [ "${_rp_root%/}" != "${_rp_root}" ]; do
+        _rp_root=${_rp_root%/}
+    done
+    [ "${_rp_root}" = "/" ] && _rp_root=""
+    printf '%s' "${_rp_root}"
+}
+
+cmd_sources() {
+    if [ "$#" -eq 0 ]; then
+        _so_any=0
+        while IFS= read -r _so_file; do
+            [ -n "${_so_file}" ] || continue
+            _so_kind=${_so_file##*/}
+            _so_kind=${_so_kind%.list}
+            while IFS= read -r _so_line; do
+                case "${_so_line}" in
+                    '' | '#'*) continue ;;
+                esac
+                printf 'feed=%s url=%s\n' "${_so_kind}" "${_so_line}"
+                _so_any=1
+            done <<FEED
+$(sed 's/[[:space:]]*$//' "${_so_file}" 2>/dev/null)
+FEED
+        done <<FILES
+$(_feed_files)
+FILES
+        if [ "${_so_any}" -eq 0 ]; then
+            printf 'feed=none reason=no-repositories\n'
+            say "ab-packages: no feed file on this machine; a package that is not kept locally cannot follow the base"
+        fi
+        return 0
+    fi
+    _so_rc=0
+    for _so_name in "$@"; do
+        if ! _so_src=$(ab_pkgs_policy_sources "${AB_PACKAGES_ROOT}" "${_so_name}"); then
+            printf 'package=%s source=unknown reason=no-answer\n' "${_so_name}"
+            _so_rc=1
+            continue
+        fi
+        _so_n=0
+        while IFS= read -r _so_url; do
+            [ -n "${_so_url}" ] || continue
+            _so_n=$((_so_n + 1))
+            if [ "${_so_url}" = "lib/apk/db/installed" ]; then
+                printf 'package=%s source=installed\n' "${_so_name}"
+            else
+                printf 'package=%s source=%s url=%s\n' "${_so_name}" \
+                    "$(_feed_kind "${_so_url}")" "${_so_url}"
+            fi
+        done <<SOURCES
+${_so_src}
+SOURCES
+        [ "${_so_n}" -gt 0 ] || {
+            printf 'package=%s source=unknown reason=no-answer\n' "${_so_name}"
+            _so_rc=1
+        }
+    done
+    return "${_so_rc}"
+}
+
+# _feed_kind <url>: which feed list a URL came from, so `sources` can say whether a package comes
+# from the release's own feed or from the user's custom one. The distinction matters: the first
+# follows the base, the second is somebody's own build.
+_feed_kind() {
+    while IFS= read -r _fx_file; do
+        [ -n "${_fx_file}" ] || continue
+        grep -qxF "$1" "${_fx_file}" 2>/dev/null || continue
+        _fx_base=${_fx_file##*/}
+        printf '%s' "${_fx_base%.list}"
+        return 0
+    done <<FILES
+$(_feed_files)
+FILES
+    printf 'feed'
+}
+
+# --- the plan block ---------------------------------------------------------
+
+# _world_entries <root>: the world entries a follow would ask apk for, one per line.
+#
+# These are the same rules the follow primitive applies (packages.sh `_packages_refresh_world`):
+# comments, `@tag` lines and `!constraints` are not packages, and the kernel belongs to ab-slot.
+# They are repeated here because the question's number has to describe the transaction, and the
+# number is all this file needs - it never builds the transaction itself.
+_world_entries() {
+    _we_root=$(_root_prefix)
+    _we_world="${_we_root}/etc/apk/world"
+    [ -f "${_we_world}" ] || return 1
+    awk '
+        {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            sub(/[ \t]+$/, "", line)
+            if (line == "" || substr(line, 1, 1) == "#") next
+            if (substr(line, 1, 1) == "!" || substr(line, 1, 1) == "@") next
+            name = line
+            sub(/[=<>~].*/, "", name)
+            if (name == "kernel") next
+            print line
+        }
+    ' "${_we_world}"
+}
+
+# _plan_write <file> <gate-state> <gate-reason> <scope> <gate-skipped>: the plan record
+# ab-plan.sh renders.
+#
+# The block is a prediction and it says so: it is built from the gate (what apk answered about
+# the tree this machine runs) and from the record (what the last follow held back). The record
+# is the fact; this is the offer.
+_plan_write() {
+    _pw_file=$1
+    _pw_state=$2
+    _pw_reason=$3
+    _pw_scope=$4
+    _pw_gate_skipped=${5:-}
+    _pw_total=0
+    _pw_gaps=0
+    _pw_members=""
+    _pw_names=""
+    if _pw_world=$(_world_entries); then
+        _pw_total=$(printf '%s\n' "${_pw_world}" | grep -c . || true)
+        _pw_total=${_pw_total:-0}
+    fi
+    {
+        printf 'section Packages\n'
+        printf 'row base %s\n' "$(_record_field version)"
+        printf 'row kernel %s\n' "$(_record_field kernel)"
+        if [ -n "${_pw_scope}" ]; then
+            printf 'row retry %s only\n' "${_pw_scope}"
+        fi
+        printf 'row judgement %s%s\n' "${_pw_state}" \
+            "$([ "${_pw_reason}" = "none" ] && printf '' || printf ' (%s)' "${_pw_reason}")"
+        printf 'row world %s entries\n' "${_pw_total}"
+    } >"${_pw_file}"
+    # The gaps are the attribution of what was held back: the record says what the last follow
+    # could not move, and the gate says what it can see about the tree now (a local package
+    # installed since the last follow is only in the gate's answer). Both spell the same tokens
+    # (design.md §3), so the two lists are merged rather than printed as two groups - and the
+    # count the question uses is the world minus what the merged list holds back, never a number
+    # that promises more than the block just showed.
+    _pw_skipped="$(_record_field skipped)"
+    case "${_pw_skipped}" in
+        '' | none) _pw_skipped=${_pw_gate_skipped} ;;
+        *) [ -z "${_pw_gate_skipped}" ] || _pw_skipped="${_pw_skipped},${_pw_gate_skipped}" ;;
+    esac
+    if [ -n "${_pw_skipped}" ] && [ "${_pw_skipped}" != "none" ]; then
+        _pw_rest=${_pw_skipped}
+        while :; do
+            case "${_pw_rest}" in
+                *,*) _pw_item=${_pw_rest%%,*}; _pw_rest=${_pw_rest#*,} ;;
+                *) _pw_item=${_pw_rest}; _pw_rest="" ;;
+            esac
+            [ -n "${_pw_item}" ] || break
+            # A package can be in both lists; it is one member and one line, so the second
+            # sighting is skipped without skipping the rest of the list.
+            case " ${_pw_names} " in
+                *" ${_pw_item} "*)
+                    [ -n "${_pw_rest}" ] || break
+                    continue
+                    ;;
+            esac
+            _pw_names="${_pw_names} ${_pw_item}"
+            _pw_kind=${_pw_item%%:*}
+            _pw_name=${_pw_item#*:}
+            # One group per kind: ab-plan prints a header per `gap` record, so the kind is
+            # opened once and the members are appended under it.
+            case " ${_pw_members} " in
+                *" ${_pw_kind} "*) ;;
+                *)
+                    printf 'gap %s held back by the last follow\n' "${_pw_kind}" >>"${_pw_file}"
+                    printf 'effect these keep the version they have; the record names why\n' >>"${_pw_file}"
+                    _pw_members="${_pw_members} ${_pw_kind}"
+                    ;;
+            esac
+            printf 'member %s\n' "${_pw_name}" >>"${_pw_file}"
+            _pw_gaps=$((_pw_gaps + 1))
+            [ -n "${_pw_rest}" ] || break
+        done
+    fi
+    _pw_follow=$((_pw_total - _pw_gaps))
+    [ "${_pw_follow}" -lt 0 ] && _pw_follow=0
+    {
+        printf 'count %s\n' "${_pw_follow}"
+        printf 'note this is a prediction: the record is what actually happened\n'
+        if [ "${_pw_gaps}" -gt 0 ]; then
+            printf 'warn %s package(s) keep their current version; the record will name them\n' "${_pw_gaps}"
+        fi
+    } >>"${_pw_file}"
+}
+
+# cmd_update_plan <scope>: the gate, the block, the question. Returns 0 to go ahead.
+cmd_update_plan() {
+    _up_scope=${1:-}
+    _up_state="ok"
+    _up_reason="none"
+    if ab_packages_gate "${AB_PACKAGES_ROOT}"; then
+        _up_state="ok"
+    else
+        case $? in
+            1)
+                _up_state="${AB_PACKAGES_GATE_STATE}"
+                _up_reason="${AB_PACKAGES_GATE_REASON}"
+                # A blocked gate is not a warning: the transaction the first boot would run
+                # cannot be solved, so this machine's follow cannot run either. The entries apk
+                # named are the whole point of the refusal.
+                say "ab-packages: the gate is blocked (reason=${_up_reason})"
+                for _up_entry in ${AB_PACKAGES_GATE_BLOCKED}; do
+                    say "  could not select: ${_up_entry}"
+                done
+                refuse "gate-${_up_reason}" \
+                    "The packages cannot be resolved against the world this machine runs." \
+                    "Next: ab-slot status | grep packages=    then re-run the upgrade that aligned it"
+                ;;
+            *)
+                _up_state="${AB_PACKAGES_GATE_STATE}"
+                _up_reason="${AB_PACKAGES_GATE_REASON}"
+                ;;
+        esac
+    fi
+    _up_plan="${TMPDIR:-/tmp}/ab-packages-plan.$$"
+    _plan_write "${_up_plan}" "${_up_state}" "${_up_reason}" "${_up_scope}" \
+        "${AB_PACKAGES_GATE_SKIPPED:-}"
+    _up_mode="follow"
+    [ "${AB_PACKAGES_ASSUME_YES:-0}" = "1" ] && _up_mode="yes"
+    # Rendered straight to stdout, never captured: the block is what the person answers about,
+    # and a block swallowed into a variable would leave the question without its context.
+    ab_plan_present "${_up_plan}" "${_up_mode}"
+    _up_rc=$?
+    rm -f "${_up_plan}" 2>/dev/null || :
+    return "${_up_rc}"
+}
+
+# --- subcommands that change the machine ------------------------------------
+
+cmd_update() {
+    _ud_only=""
+    AB_PACKAGES_ASSUME_YES=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --yes) AB_PACKAGES_ASSUME_YES=1; shift ;;
+            --only) _ud_only=${2:?--only needs a package name}; shift 2 ;;
+            -*) say "ab-packages update: unknown option $1"; usage ;;
+            *) say "ab-packages update: unexpected argument $1"; usage ;;
+        esac
+    done
+
+    if [ -n "${_ud_only}" ]; then
+        cmd_update_only "${_ud_only}"
+        return $?
+    fi
+
+    cmd_update_plan ""
+    case $? in
+        0) : ;;
+        10)
+            say "ab-packages: declined, nothing was written reason=declined"
+            return 0
+            ;;
+        74) refuse noninteractive "no terminal to ask on; pass --yes to accept" ;;
+        *) die "plan-unusable (the block could not be rendered)" ;;
+    esac
+    # The transaction. `ab_packages_follow` publishes the record from what apk printed and
+    # clears the cache; this command only reports it.
+    if ab_packages_follow "${AB_PACKAGES_ROOT}"; then
+        _ud_state=${AB_PACKAGES_FOLLOW_STATE:-ok}
+    else
+        _ud_state=${AB_PACKAGES_FOLLOW_STATE:-failed}
+    fi
+    say "ab-packages: follow=${_ud_state} upgraded=${AB_PACKAGES_FOLLOW_UPGRADED:-0} kept=${AB_PACKAGES_FOLLOW_KEPT:-0} mode=${AB_PACKAGES_FOLLOW_MODE:-unknown}"
+    # The store is tidied after the transaction, not before: a body a feed took over in the same
+    # minute should not be replayed by the plan that is still running.
+    ab_pkgs_assets_maintain "${AB_PACKAGES_ROOT}" || :
+    if [ -n "${AB_PKGS_ASSETS_SUPERSEDED}" ]; then
+        say "ab-packages: superseded by a feed, bodies removed:${AB_PKGS_ASSETS_SUPERSEDED}"
+    fi
+    [ -z "${AB_PKGS_ASSETS_PRUNED}" ] \
+        || say "ab-packages: pruned:${AB_PKGS_ASSETS_PRUNED} (${AB_PKGS_ASSETS_REASON:-older-version})"
+    {
+        printf 'follow=%s upgraded=%s kept=%s assets=%s\n' "${_ud_state}" \
+            "${AB_PACKAGES_FOLLOW_UPGRADED:-0}" "${AB_PACKAGES_FOLLOW_KEPT:-0}" \
+            "${AB_PKGS_ASSETS_BYTES:-0}"
+    }
+    [ "${_ud_state}" = "followed" ] && return 0
+    _record_reason=$(_record_field reason)
+    say "ab-packages: the follow did not complete (reason=${_record_reason:-unknown}); the record says what was attempted"
+    return 1
+}
+
+# cmd_update_only <name>: retry one package.
+#
+# This is a narrower transaction than the follow (`apk upgrade <name>`, measured working on the
+# device), and it deliberately does not touch the record: the record is one line about the whole
+# world, and a single package that moved says nothing about the others. What moved is measured
+# from apk's own database before and after, so a transaction that printed something and changed
+# nothing cannot be reported as a success.
+cmd_update_only() {
+    _uo_name=$1
+    if ! _uo_before=$(_installed_version "${_uo_name}"); then
+        refuse "${_uo_name}-not-installed" \
+            "These packages are a follow of what is installed; ${_uo_name} is not." \
+            "Next: ab-packages status    to see what the world holds"
+    fi
+    _uo_mode="follow"
+    [ "${AB_PACKAGES_ASSUME_YES:-0}" = "1" ] && _uo_mode="yes"
+    _uo_plan="${TMPDIR:-/tmp}/ab-packages-only.$$"
+    {
+        printf 'section Packages\n'
+        printf 'row retry %s\n' "${_uo_name}"
+        printf 'row installed %s\n' "${_uo_before}"
+        printf 'count 1\n'
+        printf 'note one package only: the record still describes the whole world\n'
+    } >"${_uo_plan}"
+    ab_plan_present "${_uo_plan}" "${_uo_mode}"
+    _uo_rc=$?
+    rm -f "${_uo_plan}" 2>/dev/null || :
+    case "${_uo_rc}" in
+        0) : ;;
+        10)
+            say "ab-packages: declined, nothing was written reason=declined"
+            return 0
+            ;;
+        74) refuse noninteractive "no terminal to ask on; pass --yes to accept" ;;
+        *) die "plan-unusable" ;;
+    esac
+    _uo_root=$(_root_prefix)
+    if [ -z "${_uo_root}" ]; then
+        _uo_out=$(apk upgrade "${_uo_name}" 2>&1) || _uo_apk_rc=$?
+    else
+        _uo_out=$(apk --root "${_uo_root}" upgrade "${_uo_name}" 2>&1) || _uo_apk_rc=$?
+    fi
+    _uo_apk_rc=${_uo_apk_rc:-0}
+    printf '%s\n' "${_uo_out:-}" | grep . | head -n 5 | sed 's/^/ab-packages:   /' >&2
+    _uo_after=$(_installed_version "${_uo_name}") || _uo_after=""
+    if [ "${_uo_apk_rc}" -ne 0 ]; then
+        printf 'retry name=%s result=failed reason=apk-%s\n' "${_uo_name}" "${_uo_apk_rc}"
+        return 1
+    fi
+    if [ "${_uo_before}" = "${_uo_after}" ]; then
+        printf 'retry name=%s result=unchanged version=%s\n' "${_uo_name}" "${_uo_before}"
+        say "ab-packages: nothing moved; apk had no candidate for it (the feed may not carry a newer build)"
+        return 0
+    fi
+    printf 'retry name=%s result=ok version=%s->%s\n' "${_uo_name}" "${_uo_before}" "${_uo_after}"
+    return 0
+}
+
+# _installed_version <name>: the version apk's database records, asked of the database so the
+# answer works in a fixture tree and needs no apk binary.
+_installed_version() {
+    _iv_root=$(_root_prefix)
+    _iv_db="${_iv_root}/lib/apk/db/installed"
+    [ -f "${_iv_db}" ] || return 1
+    _iv_ver=$(awk -v want="$1" '
+        /^P:/ { pkg = substr($0, 3); next }
+        pkg == want && /^V:/ { print substr($0, 3); exit }
+    ' "${_iv_db}" 2>/dev/null)
+    [ -n "${_iv_ver}" ] || return 1
+    printf '%s' "${_iv_ver}"
+}
+
+cmd_replay() {
+    _re_mode="follow"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --yes) _re_mode="yes"; shift ;;
+            -*) say "ab-packages replay: unknown option $1"; usage ;;
+            *) break ;;
+        esac
+    done
+    # A file argument is the moment a local package's body is kept: the file is captured first,
+    # so an install that fails still leaves the body behind for the next attempt.
+    if [ "$#" -gt 0 ]; then
+        if ! ab_pkgs_assets_capture "${AB_PACKAGES_ROOT}" "$@"; then
+            refuse "${AB_PKGS_ASSETS_REASON:-asset-unidentified}" \
+                "One of those files is not a package this tool can name." \
+                "A name is read from apk's own <name>-<version>.apk form or from the package's .PKGINFO."
+        fi
+        say "ab-packages: kept${AB_PKGS_ASSETS_CAPTURED:- nothing}"
+        # The captured bodies are replayed by name, not by `name-version`: the replay asks the
+        # store for the highest body of a name, which is the one just captured when it is the
+        # only one, and the newest one when the store already held another version.
+        set --
+        for _re_item in ${AB_PKGS_ASSETS_CAPTURED}; do
+            # shellcheck disable=SC2086  # one name per body, by construction
+            _re_id=$(ab_pkgs_asset_split "${_re_item}.apk") || continue
+            set -- "$@" "${_re_id%% *}"
+        done
+    fi
+    _re_count=$(ab_pkgs_assets_list "${AB_PACKAGES_ROOT}" | grep -c . || true)
+    _re_count=${_re_count:-0}
+    if [ "${_re_count}" -eq 0 ]; then
+        printf 'replay result=empty bodies=0\n'
+        say "ab-packages: no kept body to replay; a local package keeps its body only when it is installed through ab-packages replay"
+        return 0
+    fi
+    _re_plan="${TMPDIR:-/tmp}/ab-packages-replay.$$"
+    {
+        printf 'section Packages\n'
+        printf 'row replay %s kept bodies\n' "${_re_count}"
+        printf 'row trust the file itself (apk add --allow-untrusted)\n'
+        printf 'count %s\n' "${_re_count}"
+        printf 'note a config file you edited is kept; the package copy lands as *.apk-new\n'
+    } >"${_re_plan}"
+    ab_plan_present "${_re_plan}" "${_re_mode}"
+    _re_rc=$?
+    rm -f "${_re_plan}" 2>/dev/null || :
+    case "${_re_rc}" in
+        0) : ;;
+        10)
+            say "ab-packages: declined, nothing was written reason=declined"
+            return 0
+            ;;
+        74) refuse noninteractive "no terminal to ask on; pass --yes to accept" ;;
+        *) die "plan-unusable" ;;
+    esac
+    ab_pkgs_assets_replay "${AB_PACKAGES_ROOT}" "$@" || :
+    ab_pkgs_assets_maintain "${AB_PACKAGES_ROOT}" || :
+    printf 'replay result=%s ok=%s unchanged=%s failed=%s\n' "${AB_PKGS_REPLAY_STATE:-unknown}" \
+        "${AB_PKGS_REPLAY_OK}" "${AB_PKGS_REPLAY_UNCHANGED}" "${AB_PKGS_REPLAY_FAILED}"
+    case "${AB_PKGS_REPLAY_STATE}" in
+        fail) return 1 ;;
+        partial) say "ab-packages: some bodies did not install; the lines above name them"; return 0 ;;
+    esac
+    return 0
+}
+
+cmd_cache() {
+    _ca_sub=${1:-status}
+    [ "$#" -gt 0 ] && shift
+    case "${_ca_sub}" in
+        status)
+            printf '%s\n%s\n' "$(ab_pkgs_cache_report "${AB_PACKAGES_ROOT}")" \
+                "$(ab_pkgs_assets_report "${AB_PACKAGES_ROOT}")"
+            say "ab-packages: the cache is one follow's downloads and is emptied when it ends; kept bodies live in $(ab_pkgs_assets_dir "${AB_PACKAGES_ROOT}")"
+            ;;
+        clean)
+            ab_pkgs_cache_clean "${AB_PACKAGES_ROOT}"
+            ;;
+        *) say "ab-packages cache: unknown subcommand ${_ca_sub}"; usage ;;
+    esac
+}
+
+main() {
+    [ "$#" -ge 1 ] || usage
+    # Identity is answered before any library is loaded: a machine whose package state is a mess
+    # can still say which version it is, and `ab-slot --version` prints the same three lines.
+    case "$1" in
+        -V | --version)
+            if _mn_lib=$(lib_path "${AB_VERSION_LIB}"); then
+                # shellcheck source=platform/lib/ab-version.sh
+                . "${_mn_lib}"
+                ab_version_identity
+                return 0
+            fi
+            die "no version library at ${AB_VERSION_LIB}"
+            ;;
+    esac
+
+    if ! _mn_packages=$(lib_path "${AB_PACKAGES_LIB}"); then
+        refuse packages-lib-missing \
+            "The package library is not on this machine: ${AB_PACKAGES_LIB}" \
+            "Nothing was changed. Next: re-run the upgrade that installs the platform layer"
+    fi
+    # shellcheck source=platform/lib/upgrade/packages.sh
+    . "${_mn_packages}"
+    if ! _mn_assets=$(lib_path "${AB_PKGS_ASSETS_LIB}"); then
+        refuse assets-lib-missing \
+            "The kept-body library is not on this machine: ${AB_PKGS_ASSETS_LIB}"
+    fi
+    # shellcheck source=platform/lib/ab-pkgs-assets.sh
+    . "${_mn_assets}"
+    if ! _mn_plan=$(lib_path "${AB_PLAN_LIB}"); then
+        refuse plan-lib-missing \
+            "The plan library is not on this machine: ${AB_PLAN_LIB}"
+    fi
+    # shellcheck source=platform/lib/ab-plan.sh
+    . "${_mn_plan}"
+
+    _mn_cmd=$1
+    shift
+    case "${_mn_cmd}" in
+        status) cmd_status "$@" ;;
+        sources) cmd_sources "$@" ;;
+        update) cmd_update "$@" ;;
+        replay) cmd_replay "$@" ;;
+        cache) cmd_cache "$@" ;;
+        -h | --help | help) usage ;;
+        *) say "ab-packages: unknown command ${_mn_cmd}"; usage ;;
+    esac
+}
+
+main "$@"

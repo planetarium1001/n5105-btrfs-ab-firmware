@@ -46,6 +46,10 @@ last=""
 for a in "$@"; do last=$a; done
 state=${STUB_STATE:?stub needs STUB_STATE}
 pending=$(cat "$state/pending" 2>/dev/null || printf 'none')
+# The driver installs with `ab-upgrade --yes` (no terminal exists on the far end), so the
+# command the stub judges is the one without the flag: every assertion below is about what
+# the driver asked for, and the flag is asserted separately in the probe's own test.
+last=$(printf '%s' "${last}" | sed 's/^ab-upgrade --yes /ab-upgrade /')
 case "${last}" in
     'ab-slot status')
         printf 'slot=a upper=@overlay-25.12.2 generation=1 committed=a pending=%s p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partname boot=ok esp=ok packages=aligned packages_reason=none\n' \
@@ -121,8 +125,8 @@ assert_contains "$out" "laying the candidate down with --force" \
     "ac-11 the driver says why it is reinstalling instead of stopping"
 assert_contains "$out" "ok [R1] candidate installed into slot b with --force" \
     "ac-11 the forced install is asserted, and it names the slot it went into"
-assert_contains "$(cat "$calls")" "ab-upgrade --force /tmp/ab-recovery-candidate.tar" \
-    "ac-11 the second attempt is ab-upgrade --force, the flag the refusal names"
+assert_contains "$(cat "$calls")" "ab-upgrade --yes --force /tmp/ab-recovery-candidate.tar" \
+    "ac-11 the second attempt is ab-upgrade --force, the flag the refusal names, and --yes because no terminal answers the plan block"
 assert_eq "$(printf '%s\n' "$out" | grep -c 'not ac-11' || true)" "0" \
     "ac-11 the already-installed refusal is not reported as matrix.sh M7's path"
 assert_eq "$(awk -F'\t' '{ print $1, $2 }' "$rows")" "R1 GAP" \

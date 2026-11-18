@@ -79,8 +79,14 @@ Ask the update source:
   --direct                      with --feed: install the newest release in one step
   --stepwise                    with --feed: install the next release only
 
+Packages:
+  --system-only, --no-follow    replace the system only, follow no package
+  --prefetch                    download the follow before the switch (default)
+  --no-prefetch                 let the first boot use the network instead
+
 Other:
   --yes                         accept the confirmation without a terminal
+  --dry-run                     the same as --check
   --pin <version>               hold this machine at or below <version>
   --unpin                       remove the pin
   --version                     print PLATFORM_VERSION, UPSTREAM_VERSION, PLATFORM_STAGE
@@ -512,9 +518,17 @@ release_repo_override=""
 release_base_override=""
 pin_version=""
 unpin_mode=0
+# The package plan answers one question and has three exits, so the flags that skip the
+# question are the ones the plan block has to name when it holds a package back
+# (design.md §5/§7, docs/update.md).
+system_only_mode=0
+prefetch_mode=1
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --check) check_mode=1; shift ;;
+        --check | --dry-run) check_mode=1; shift ;;
+        --system-only | --no-follow) system_only_mode=1; shift ;;
+        --prefetch) prefetch_mode=1; shift ;;
+        --no-prefetch) prefetch_mode=0; shift ;;
         --feed-check) feed_check=1; shift ;;
         --feed) feed_mode=1; shift ;;
         --direct) route="direct"; shift ;;
@@ -1116,6 +1130,206 @@ if [ "${check_mode}" = "1" ]; then
     fi
     say "ab-upgrade: check only, nothing written"
     exit 0
+fi
+
+# --------------------------------------------------------------------------- #
+# 5b. The package plan: predict, ask once, prefetch (design.md §5-§8)
+# --------------------------------------------------------------------------- #
+# This sits between the conflict report and the first write, and the order is the point: the
+# gate, the block and the question are predictions made in /tmp, and the slot is written only
+# after a 0 comes back. `apk --root` answers about a tree rather than about the machine
+# running the gate, so the tree that will be booted is staged from what already exists:
+# the payload's own /etc/apk (the base's pins and feeds), the user's writable layer (their
+# world, their custom feeds, their installed database) and the payload's own aligner, which
+# pins that copy to this base exactly as the install is about to. Staging costs neither a
+# mount nor a slot write, which is what "nothing before the answer" needs.
+pkg_question_mode="follow"
+if [ "${system_only_mode}" = "1" ]; then
+    pkg_question_mode="system-only"
+elif [ "${yes_mode}" = "1" ]; then
+    pkg_question_mode="yes"
+fi
+
+# Every prediction in this section is built here and dropped at exit: staging is a tree that
+# never touches a slot, which is what lets the answer come before the first write. The
+# override exists for the same reason ${work} has one: a test that must inspect the staging
+# tree cannot do it from /tmp/ab-upgrade.$$ after the process has gone.
+pkg_stage="${pkg_stage:-${work}/pkgplan}"
+# `--system-only` is the exit the plan block has to name when a package is held back, so it
+# is decided here and read by platform.sh when it writes the record: a switch the user asked
+# to be system-only must not leave `follow=pending` behind it. It is decided before the
+# engine check because an older payload carries no plan engine and still has to honour it.
+AB_PACKAGES_PLAN_MODE="${pkg_question_mode}"
+export AB_PACKAGES_PLAN_MODE
+pkg_engine=""
+if [ -n "${platform_member}" ] && [ -f "${work}/${platform_member}" ]; then
+    rm -rf "${work}/pkgplan-lib" 2>/dev/null || :
+    if mkdir -p "${work}/pkgplan-lib" 2>/dev/null &&
+        tar -xf "${work}/${platform_member}" -C "${work}/pkgplan-lib" 2>/dev/null &&
+        [ -f "${work}/pkgplan-lib/lib/upgrade/packages.sh" ] &&
+        [ -f "${work}/pkgplan-lib/lib/ab-plan.sh" ]; then
+        pkg_engine="${work}/pkgplan-lib"
+    fi
+fi
+
+if [ -z "${pkg_engine}" ]; then
+    # A payload built before this release has no plan engine. Rendering a block whose counts
+    # nobody computed would be the kind of guess this project keeps paying for, so it says so
+    # and leaves the follow to the first boot, which reads the record the install writes.
+    say "ab-upgrade: this payload carries no package plan; the packages are left to the first boot"
+else
+    # shellcheck source=/dev/null
+    . "${pkg_engine}/lib/upgrade/packages.sh"
+    # shellcheck source=/dev/null
+    . "${pkg_engine}/lib/ab-plan.sh"
+    # The existing switch for tests that answer a question without a terminal; ab-plan.sh
+    # spells it with its own name so it can be asked for one block at a time.
+    AB_PLAN_ASSUME_TTY="${AB_UPGRADE_ASSUME_TTY:-}"
+    export AB_PLAN_ASSUME_TTY
+
+    pkg_sys="${pkg_stage}/sys"
+    pkg_layer="${pkg_stage}/layer"
+    pkg_target="${pkg_stage}/target"
+    pkg_upper="${AB_P4}/${running_layer}/upper"
+    rm -rf "${pkg_stage}" 2>/dev/null || :
+    mkdir -p "${pkg_sys}/etc/apk" "${pkg_layer}/etc/apk" "${pkg_target}/etc/apk" "${pkg_target}/lib/apk" ||
+        refuse "plan-stage-failed"
+    cp -a "${work}/rootfs-tree/etc/apk/." "${pkg_sys}/etc/apk/" 2>/dev/null || refuse "plan-stage-failed"
+    cp -a "${pkg_upper}/etc/apk/." "${pkg_layer}/etc/apk/" 2>/dev/null || :
+    cp -a "${pkg_upper}/lib/apk/." "${pkg_target}/lib/apk/" 2>/dev/null || :
+    # The same aligner, on a copy: a staging world pinned any other way would predict a
+    # different transaction than the one the first boot runs.
+    if ! ab_packages_align "${work}" "${other}" "${pkg_sys}" "${pkg_layer}" >/dev/null 2>&1; then
+        say "ab-upgrade: the plan cannot align the staging copy (${AB_PACKAGES_REASON:-failed}); the plan is a system-only switch"
+    fi
+    cp -a "${work}/rootfs-tree/etc/apk/." "${pkg_target}/etc/apk/" 2>/dev/null || refuse "plan-stage-failed"
+    cp -a "${pkg_layer}/etc/apk/." "${pkg_target}/etc/apk/" 2>/dev/null || :
+
+    ab_packages_gate "${pkg_target}" "${pkg_sys}"
+    pkg_gate_rc=$?
+
+    # Counts for the block. Held back are the entries the gate could name a reason for; the
+    # rest of the world is what the question offers to follow, and the local ones among the
+    # held back are the replay candidates (design.md §6).
+    pkg_held=0
+    pkg_replay=0
+    for pkg_item in ${AB_PACKAGES_GATE_SKIPPED:-}; do
+        pkg_held=$((pkg_held + 1))
+        case "${pkg_item}" in
+            local:*) pkg_replay=$((pkg_replay + 1)) ;;
+        esac
+    done
+    # The count the question offers is the set the follow will actually move: the same rule the
+    # follow uses, so the number on the block and the work the first boot does cannot differ by
+    # the pins, the negations and the tagged entries that are never followed.
+    pkg_world_n=$(grep -v '^[[:space:]]*$' "${pkg_target}/etc/apk/world" 2>/dev/null |
+        grep -v '^[[:space:]]*[!@]' |
+        grep -vc '^kernel=') || pkg_world_n=0
+    case "${pkg_world_n}" in
+        '' | *[!0-9]*) pkg_world_n=0 ;;
+    esac
+    pkg_follow_n=$((pkg_world_n - pkg_held))
+    [ "${pkg_follow_n}" -ge 0 ] || pkg_follow_n=0
+    [ "${pkg_gate_rc}" = "1" ] && pkg_follow_n=0
+
+    pkg_gate_line="feeds answer, every constraint solves"
+    case "${AB_PACKAGES_GATE_STATE}" in
+        gap) pkg_gate_line="${pkg_held} of ${pkg_world_n} entries are held back; the rest can follow" ;;
+        blocked) pkg_gate_line="the follow cannot run: ${AB_PACKAGES_GATE_REASON}" ;;
+    esac
+
+    pkg_plan_file="${work}/package-plan.txt"
+    {
+        printf 'section Update\n'
+        printf 'row base %s -> %s\n' "${installed}" "${rootfs_version}"
+        printf 'row platform %s -> %s\n' \
+            "$(platform_release_value PLATFORM_VERSION 2>/dev/null || echo unknown)" "${platform_version:-unknown}"
+        printf 'section Packages\n'
+        printf 'row follow %s to follow, %s held back, %s replay from local copies\n' \
+            "${pkg_follow_n}" "${pkg_held}" "${pkg_replay}"
+        printf 'row gate %s\n' "${pkg_gate_line}"
+        # One group per attribution token, in the order design.md §3 names them rather than
+        # the order the gate happened to find them. `unreachable` has no per-package token -
+        # apk never says which source failed - so its group is whatever apk named as
+        # unsolvable, and it is empty unless the gate is blocked.
+        for pkg_gap in pinned gone no-copy stale-abi unreachable; do
+            case "${pkg_gap}" in
+                no-copy) pkg_token="local" ;;
+                unreachable) pkg_token="" ;;
+                *) pkg_token="${pkg_gap}" ;;
+            esac
+            pkg_members=""
+            if [ -n "${pkg_token}" ]; then
+                for pkg_item in ${AB_PACKAGES_GATE_SKIPPED:-}; do
+                    case "${pkg_item}" in
+                        "${pkg_token}":*) pkg_members="${pkg_members} ${pkg_item#*:}" ;;
+                    esac
+                done
+            else
+                pkg_members="${AB_PACKAGES_GATE_BLOCKED:-}"
+            fi
+            [ -n "$(printf '%s' "${pkg_members}" | tr -d ' ')" ] || continue
+            case "${pkg_gap}" in
+                pinned)
+                    pkg_cause="version held by world"
+                    pkg_effect="no action; a base switch rewrites it from the new base"
+                    ;;
+                gone)
+                    pkg_cause="no source offers it for ${rootfs_version}"
+                    pkg_effect="world entry removed; the package stays installed"
+                    ;;
+                no-copy)
+                    pkg_cause="local packages with no .apk kept"
+                    pkg_effect="kept as installed; reinstall one to keep a copy for replay"
+                    ;;
+                stale-abi)
+                    pkg_cause="built for another kernel than this base"
+                    pkg_effect="not replayed; the installed module stays"
+                    ;;
+                unreachable)
+                    pkg_cause="the feed did not answer"
+                    pkg_effect="kept as installed; the follow retries them when the feed is back"
+                    ;;
+            esac
+            printf 'gap %s %s\n' "${pkg_gap}" "${pkg_cause}"
+            for pkg_name in ${pkg_members}; do
+                printf 'member %s\n' "${pkg_name}"
+            done
+            printf 'effect %s\n' "${pkg_effect}"
+        done
+        printf 'section Config\n'
+        printf 'row files %s files differ from their package\n' "${conflicts}"
+        printf 'row keep apk keeps your file and writes the package copy as *.apk-new\n'
+        printf 'note apk keeps your configuration; only the package copy changes.\n'
+        if [ "${pkg_held}" -gt 0 ]; then
+            printf 'warn %s packages keep their current version: --system-only replaces the system alone, --no-follow does the same, and --yes answers this question.\n' \
+                "${pkg_held}"
+        fi
+        printf 'count %s\n' "${pkg_follow_n}"
+    } >"${pkg_plan_file}" || refuse "plan-data-failed"
+
+    ab_plan_present "${pkg_plan_file}" "${pkg_question_mode}"
+    pkg_plan_rc=$?
+    rm -f "${pkg_plan_file}" 2>/dev/null || :
+    case "${pkg_plan_rc}" in
+        0) : ;;
+        # A refusal is exit 0 and no write, because "no" is not a failure of the machine.
+        10) say "ab-upgrade: declined, nothing was written"; exit 0 ;;
+        74) refuse "noninteractive" ;;
+        *) fail "plan-render" ;;
+    esac
+
+    # The download happens now, after the answer, into the staging tree: it is the only way
+    # the first boot can apply the follow with `apk --network=0`, which is what takes captive
+    # portals and home outages off the critical path. A prefetch that fails is not an upgrade
+    # that fails - the record falls back to the network fallback at first boot.
+    if [ "${pkg_question_mode}" != "system-only" ] && [ "${pkg_gate_rc}" != "1" ] && [ "${prefetch_mode}" = "1" ]; then
+        if ab_packages_prefetch "${pkg_target}" "${AB_PACKAGES_GATE_SKIPPED:-}"; then
+            say "ab-upgrade: prefetched ${AB_PACKAGES_PREFETCH_COUNT} package(s), ${AB_PACKAGES_PREFETCH_CACHE} bytes, for the first boot"
+        else
+            say "ab-upgrade: prefetch ${AB_PACKAGES_PREFETCH_STATE:-skipped} (${AB_PACKAGES_PREFETCH_REASON:-unknown}); the first boot will use the network"
+        fi
+    fi
 fi
 
 # --------------------------------------------------------------------------- #

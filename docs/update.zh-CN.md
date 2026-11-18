@@ -208,6 +208,11 @@ Proceed? [y/N]
 标记，例如 `[recommended]`。建议备份的级别在 `Risk` 之后多一行 `Backup`；不选路线就不
 能继续时才有 `Route` 行。
 
+这一块描述的是系统更新本身。0.0.13 起，payload 里带计划引擎的安装会在它后面再打一个
+`Packages` 块和一个 `Config` 块，并用 `Proceed and follow N packages? [y/N] ` 问包跟随的事
+——一次提问同时回答「换不换系统」和「包跟不跟着走」，因为它本来就是同一个决定。这两块里有什么，
+见 [包怎么跟随一个基底](#包怎么跟随一个基底)。
+
 ## 风险级别与各自的确认强度
 
 级别说的是**测试覆盖**，不是改动大小，而且只由 `base` 算出。它改变的是你被要求做什么，
@@ -338,8 +343,9 @@ pin 的效果：
 
 ## 包更新
 
-系统更新换的是一个槽；包是另一个事务，也有自己的回退方式。两者都落在可写层，而且都不是自动的：
-你要求它才发生。
+系统更新换的是一个槽；包是另一个事务，也有自己的回退方式。两者都落在可写层。让包跟上一个新基底
+是升级的一部分，只问一次（见 [包怎么跟随一个基底](#包怎么跟随一个基底)）；下面这些命令是手动的
+那一半——快照，以及你点名要求的版本。
 
 ```sh
 ab-slot packages list            # 本层已有的快照，新的在前
@@ -348,9 +354,9 @@ ab-slot packages upgrade         # 先快照，再 apk update && apk upgrade
 ab-slot packages revert          # 按最新一份快照回放版本
 ```
 
-`upgrade` 只有在 `ab-slot status` 报 `packages=aligned` 时才肯跑：这个字段表示可写层的 `world`
-钉着本槽正在跑的内核、`distfeeds` 指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核
-装模块。
+`upgrade` 只有在 `ab-slot status` 报 `packages=aligned`（或 `packages=followed`，那是跟随事务
+跑过之后的同一份元数据）时才肯跑：这个字段表示可写层的 `world` 钉着本槽正在跑的内核、`distfeeds`
+指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核装模块。
 
 
 `packages=` 是对当前槽元数据的判定，因此也可能是 `unknown`；旁边的 `packages_reason=` 说明原因：
@@ -444,11 +450,196 @@ apk-tools 3 不接受 `apk fetch` 的版本钉子（报 `unable to select packag
 
 两者都写 `upgrade.log`；都不会自己跑。
 
+## 包怎么跟随一个基底
+
+一次更新是两个动作，两者故意分开：
+
+| 层 | 什么时候跑 | 做什么 | 失败代价 |
+| --- | --- | --- | --- |
+| 机械对齐 | 每次 `ab-upgrade`，一定跑 | 写入新基底、把 `world` 与 feed 列表指向它、判定目标树、预取 | 没有：它是文件操作，而且永不阻断启动 |
+| 包跟随 | 默认，在 `y` 之后与首次启动时 | 对 world 跑一次 `apk upgrade`，让为旧基底构建的包搬到新基底上 | 只影响包：机器照常启动、照常运行 |
+
+跟随是自动的，但不是无条件的。在写槽之前，`ab-upgrade` 会在「即将被引导的那棵树」上判定三个命题
+——钉住的版本与基底一致、apk 能解出这次事务、每个本地包都被归类——然后把结果打成一块计划块：
+
+```
+Packages
+  - follow     39 to follow, 2 held back, 1 replay from local copies
+  - gate       2 of 41 entries are held back; the rest can follow
+```
+
+**计划块是预测，记录才是事实。** 它是按暂存树上 `apk --simulate` 的结果渲染的，而从提问到启动之间
+feed 可能已经变了。真正发生了什么，看之后的 `/boot/ab/packages`；下面所有判定都从那个文件读，
+从不从计划块读。
+
+越过这个问题恰好有三个出口，有包被按住时计划块会把它们写出来：
+
+| 回答 | 发生什么 |
+| --- | --- |
+| `y`（或 `--yes`） | 换基底，包跟着走 |
+| `--system-only` / `--no-follow` | 换基底，一个包都不动，记录写 `follow=never` |
+| `n`（以及任何不算回答的输入） | 一个字节都不写：`ab-upgrade: declined, nothing was written`，退出码 `0` |
+
+`--dry-run`（等于 `--check`）停在第一次写入之前；没有终端又没有 `--yes` 时，它以
+`reason=noninteractive`、退出码 `74` 拒绝，而不是挂在那里。和其它地方一样，回车不算回答。
+
+机器随后报告的事实放在一行里，`/boot/ab/packages`：
+
+```
+packages=aligned reason=network follow=pending upgraded=0 kept=24 skipped=local:htop cache=0 version=25.12.2 kernel=kernel=6.12.103 slot=b hint=ab-packages update
+```
+
+`reason=` 是第二个字段，`hint=` 是最后一个、值里带一个空格（`ab-packages update`），所以脚本读这两个
+都不用解析中间。`follow=` 是跟随自己的状态：
+
+| `follow=` | 含义 | 谁来改变它 |
+| --- | --- | --- |
+| `pending` | 这个基底还欠一次跟随：没有预取，或者事务还没跑 | 首次启动，或 `ab-packages update` |
+| `followed` | 包已经搬到这个基底上 | - |
+| `failed` | 事务跑了但失败，或者什么都没动；是哪种由 `reason=` 说 | `ab-packages update` |
+| `abandoned` | 网络兜底用完了时间（24 小时） | `ab-packages update` |
+| `never` | 用户选了只升系统 | 下一次升级 |
+
+`ab-slot status` 会把这一对一起打出来——`packages=followed packages_reason=none follow=followed
+reason=none hint=none`——而在还欠一次跟随时，再补两句人话：
+
+```
+ab-slot: packages were not followed: no usable network
+ab-slot: retry when it is back: ab-packages update
+```
+
+这一对才是重点：单独的 `packages=aligned` 读起来像「一切正常」，而它只表示元数据与基底相符；
+包是另一个问题的答案。
+
+## 预取，以及一次不需要网络的首启
+
+下载发生在换基底之前、机器还在跑一个能用的槽的时候。回答 `y` 之后，`ab-upgrade` 先问求解器这个事务
+会动哪些包，再对**这一集**跑 `apk fetch`，取进新槽自己的缓存（`/etc/apk/ab/cache/`，就在将要被引导
+的那一层里）。在这块板子上实测一次跟随是 3,445,041 字节、39 个包——是"要动的集"，不是 316 个包的
+world（对 world 直接 `apk fetch` 要拉约 105 MB）。首次启动随后用完全不需要网络的方式安装已取回的
+本体：
+
+```sh
+apk --cache-dir /etc/apk/ab/cache --cache-max-age 100000 \
+    add --virtual .ab-follow --allow-untrusted --force-non-repository \
+    /etc/apk/ab/cache/*.apk
+apk del .ab-follow
+```
+
+仓库提供的本体由仓库索引签名、而不是逐文件签名，所以按文件安装需要 `--allow-untrusted`；它们本来就是
+这样下来的。虚拟条目只存在于事务期间：`apk del` 把 world 逐字恢复，用户没要求过的 world 永远不会多
+一行。认证页、被劫持的 DNS 回答、重启期间的家里断网因此都没有可破坏的东西——实测的离线运行零次网络
+尝试。`--no-prefetch` 跳过下载，
+让首次启动改用网络；预取失败不是升级失败——记录会回落到 `packages=aligned reason=network
+follow=pending`，由网络兜底接手。
+
+兜底只在没有预取时用。它先问探针，探针读目标索引的前四个字节给出三种答案：认证页伪造不出 apk 索引
+开头的 `ADBd` 魔数，所以 `ok`、`portal`、`offline` 是靠证据分开的，不是靠一个成功的 HTTP 状态码。
+只有 `ok` 才让事务跑，其它两种等待并重试：
+
+| 档位 | 什么时候重试 |
+| --- | --- |
+| W1 | 立刻，然后 15、30、60、120 秒后（五分钟内六次） |
+| W2 | 每次 `ifup` 事件一次，所以插上网线或 VPN 起来不会被忽略 |
+| W3 | 每 30 分钟一次，直到启动后 24 小时；之后记录写 `follow=abandoned` |
+
+同一时刻只有一个 worker 在跑（`/var/lock/ab-packages-follow.lock`），两个 apk 事务因此不会交错；
+每次尝试都往 ring log（`ab-slot log`）写一行 `stage=packages-refresh`。启动从不等待这些。
+
+## 某个包为什么没动
+
+每个留在原地的包都有五个原因之一，而且原因是写下来的，不是猜的。包的来源问 apk（`apk policy`）：
+答案里带 feed 的是 feed 包，答案只有已装数据库的是本地包。
+
+| token | 计划块 | 含义 | 机器怎么做 | 写在哪 |
+| --- | --- | --- | --- | --- |
+| `unreachable` | `UNREACHABLE` | 包来自某个源，而那个源没回答 | 保持已装版本与 world 条目，继续重试 | `reason=network`、`follow=pending` |
+| `local` | `NO COPY` | 本地包，而且没有留存本体 | 保持已装版本；重装一次即可留本体 | `skipped=local:<name>` |
+| `stale-abi` | `ABI STALE` | 本地本体是为另一个内核构建的，或依赖那个内核 | 不重放：装一个加载不了的模块比旧模块更糟 | `skipped=stale-abi:<name>` |
+| `gone` | `DROPPED` | 已经没有任何源提供它，而且它不是本地包 | 摘掉 world 条目，包保持已装 | `dropped=<name>` |
+| `pinned` | `PINNED` | 在 `world` 里用 `=` 钉住 | 无论源怎么说都不动 | `skipped=pinned:<name>` |
+
+计划块按这个顺序把这些词用作分组标题，记录使用同一套词汇，所以日志里的一行和计划块里的一个分组
+是同一件事。`ab-packages status` 会把它们展开成句子：
+
+```
+ab-packages: held back by the last follow (local:htop,stale-abi:luci-app-x):
+ab-packages:   htop: no body was kept, so it cannot be replayed; it stays installed at its version
+ab-packages:   luci-app-x: built against another kernel; replaying it would install a module that cannot load
+```
+
+`ab-packages sources <name>` 回答相邻的那个问题——本机的哪个 feed 提供某个包，附完整 URL（计划块
+放不下时会截断它）。既没有源提供、也没有留本体的包是 `DROPPED`：`world` 条目被摘掉，磁盘上的文件
+留着，下一次 `ab-upgrade` 不再试图跟随它。
+
+## 把本地包的本体留住
+
+从本地 `.apk` 文件装上的包没有源。apk 只记下它已安装，从不记它从哪来；而在这台机器上，事务一结束
+本体就没了：`/var` 是 tmpfs，默认的包缓存随重启消失（2026-11-18 实测：一台装了四个本地包的机器上
+`find / -name '*.apk'` 什么都没找到）。所以换过基底的机器无法把这种包装回去，记录会写
+`skipped=local:<name>`，而不是假装可以。
+
+0.0.13 起，平台会按需留住本体：
+
+```sh
+ab-packages replay /tmp/htop-3.3.0-r1.apk    # 装它，并在同一步留住本体
+ab-packages replay                           # 把所有已留的本体重新装一遍
+```
+
+留住的包体放在 `/etc/apk/ab/local/<name>-<version>.apk`——在可写层上，与 `world` 和 apk 数据库
+同域，因此随 generation 快照走，也永不碰 `/data`。同一个名字只留一个本体（最高版本），这也正是
+闸门问「本地包能不能重放」时所要找的文件名。
+
+三条规则给这个store定界：
+
+* 某个名字一旦有源开始提供，它的本体就是 `superseded`：先写进 `/etc/apk/ab/local/superseded`
+  这份 journal，再删除本体。源是更好的来源——有人维护、跟着基底走——而 `ab-packages status` 会继续
+  打印那行 journal，所以删除不是静默的；
+* store 受 `AB_PKGS_CACHE_MAX`（默认 256 MiB）约束。超限时先删最旧的、不是当前安装版本的那些本体：
+  机器正在跑的那个版本，才是重放会想要的；
+* 认不出名字的本体（既不是 `<name>-<version>.apk`，里面也没有 `.PKGINFO`）会被拒绝，而不是按猜的
+  名字归档。
+
+重放就是 `apk add --allow-untrusted <本体>`，没有别的：没有 `--force-*`，没有 `--overwrite`。
+信任来自你留住的那个文件，因为本地归档没有 keyring；包快照里的摘要清单是另一套机制、另一件事。
+接下来由 apk 的保护路径完成对人最重要的那部分：你改过的 `/etc/config/*` 保持原样，包里的副本落在
+它旁边成为 `*.apk-new`（2026-11-18 实测：`apk upgrade dnsmasq-full` 把改过的 `/etc/config/dhcp`
+原样保留，并写出 `dhcp.apk-new`）。这些文件没有人替你合并——见
+[known-limitations.zh-CN.md](known-limitations.zh-CN.md)。
+
+不在范围内的是：为另一个内核构建的本体（重放它会装上加载不了的模块，所以它是 `stale-abi`，
+保持旧版本已装），以及跨基底——留住的体会重放回它为它构建的那个基底。`/etc/apk/ab/cache/` 是另一个
+目录：它装一次跟随下载的本体，跟随结束时清空。
+
+## 包域的命令
+
+| 命令 | 做什么 | 写什么 |
+| --- | --- | --- |
+| `ab-packages status` | 记录、缺口清单、上次尝试过了多久 | 什么都不写 |
+| `ab-packages sources [<name>...]` | 本机所有 feed，或某个包的所有来源（`feed`、`customfeeds`、`installed`） | 什么都不写 |
+| `ab-packages update` | 重试跟随：闸门、计划块、一次提问、一次 `apk upgrade`，然后记录 | 记录与 `/boot/ab/log/upgrade.log` |
+| `ab-packages update --only <name>` | 用 `apk upgrade <name>` 重试单个包，并测量它到底有没有动；记录不动，因为记录描述整个 world | 不改记录 |
+| `ab-packages replay [--yes] [<file.apk>...]` | 重新安装已留的本体；给它文件时，留住本体并安装它 | `/etc/apk/ab/local/` |
+| `ab-packages cache status` / `cache clean` | 一次跟随留下了什么，或清空它（已留的本体不受影响） | 缓存 |
+
+`ab-packages status` 刻意是离线且只读的：它不问包管理器、不需要网络，因为被问的机器可能正是包坏掉
+的那台。第一行是脚本可读的事实，第二行是 store 与缓存，后面全是解释。上次尝试的时间就是记录文件
+自己的写入时间——记录格式没有时间戳字段，也不该为一件文件系统已经记着的事实长出一个字段。
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 完成，或无事可做——包括在问题上回答 `n`，那也是一个字节都没写 |
+| `1` | 某个事务失败，或某个包的来源问不出答案；上面几行会说清是哪种 |
+| `2` | 用法错误 |
+| `74` | 在写任何东西之前拒绝（一行 `reason=<token>`） |
+
 ## 确认提示
 
-工具提的每个问题都是同一个形状：`Proceed? [y/N] `。回车、`n`、`N`、`no` 都是不确认，
-而不确认不是错误——它打一行 `ab-upgrade: declined, nothing was written reason=declined` 并以 `0` 退出。
-只有 `y`、`Y`、`yes`、`YES` 才算同意。按一下回车就开始写固件是 bug，所以安全答案才是默认；
+工具提的每个问题都是同一个形状：`Proceed? [y/N] `，包的计划块也这么问，只是把数目写在前面：
+`Proceed and follow N packages? [y/N] `。回车、`n`、`N`、`no` 都是不确认，而不确认不是错误——
+它打一行 `ab-upgrade: declined, nothing was written reason=declined`（包域命令是
+`ab-packages: declined, ...`）并以 `0` 退出。只有 `y`、`Y`、`yes`、`YES` 才算同意；其它任何不算
+回答的输入只是把同一行再打一遍，原地不动。按一下回车就开始写固件是 bug，所以安全答案才是默认；
 脚本要同意就传 `--yes`，不要塞一个 `y` 进管道。
 
 `AB_UPGRADE_ASSUME_TTY=1` 只给测试套件用（它没有终端）：让提示把 stdin 当作终端来读。

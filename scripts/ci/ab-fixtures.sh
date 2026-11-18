@@ -278,7 +278,10 @@ install_auto_upgrade() {
 # the next boot, this time with the payload already installed.
 rm -f /etc/rc.local
 echo "ab-upgrade-test: starting" >/dev/console
-ab-upgrade /payload.tar
+# --yes: the install runs from rc.local, where there is no terminal to answer the package
+# plan; without it the plan block refuses with exit 74 and nothing is written (measured
+# 2026-11-18). The plan itself is still printed to the console.
+ab-upgrade --yes /payload.tar
 echo "ab-upgrade: exit=$?" >/dev/console
 ab-slot status >/dev/console 2>&1
 echo "S5-UPGRADE-DONE" >/dev/console

@@ -375,7 +375,7 @@ out="$(env PATH="$bin:$PATH" AB_ESP="$esp" AB_P4="$p4" AB_LIB="$platform_sh" \
 assert_eq "$?" "0" "ac-5 the install with an aligner in the payload succeeds"
 assert_contains "$out" "package meta aligned" "ac-5 the install reports an aligned result"
 assert_contains "$(cat "$esp/ab/packages")" \
-  "packages=aligned reason=none version=25.12.0 kernel=kernel=6.12.87~bd81971a8c-r1" \
+  "packages=aligned reason=none follow=pending version=25.12.0 kernel=kernel=6.12.87~bd81971a8c-r1" \
   "ac-5 the published verdict names the target kernel"
 assert_contains "$(cat "$esp/ab/packages")" "slot=b" \
   "ac-5 the verdict names the slot it was written for"
