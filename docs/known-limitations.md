@@ -269,3 +269,78 @@ and the `/dev/tty` line; the second pair prints `/dev/pts/0`, a non-zero `tty_nr
 The `</dev/null` in the first block is the anti-pattern this note is about, written out once so
 it is recognisable; it is not a form to copy into a probe. Every interactive check in this
 repository goes through `dev_ssh_tty`, which never redirects stdin away from the keeper.
+
+## Historical package feeds and the kernel ABI
+
+An official mirror keeps the release directory of every version it has published, so a stepped
+upgrade or a downgrade can still name an older release. The kernel does not travel with it: the
+kmod feed is filed under the kernel segment, and the segment changes with every kernel bump.
+
+| Release | kmods segment | `kmod-usb-storage` | user-space index |
+|---|---|---|---|
+| 25.12.0 | `6.12.87` | `6.12.87-r1` | same bytes as 25.12.2 |
+| 25.12.1 | `6.12.94` | `6.12.94-r1` | same bytes as 25.12.2 |
+| 25.12.2 | `6.12.103` | `6.12.103-r1` | same bytes as 25.12.0 |
+
+Measured 2026-11-19 against `https://downloads.immortalwrt.org`. The user-space index of the
+three releases is the same file, and `targets/x86/64/kmods/<segment>/` exists only in the
+release whose kernel it was built against.
+
+- **Symptom.** A feed line taken from an older release offers the user-space packages and none of
+  the kmods. `htop` is in that release's index, `kmod-usb-storage` is not, and the kmod directory
+  for the running kernel's segment answers 404 under that release.
+- **Cause.** kmods are filed by kernel build, not by release. The aligner touches both halves of
+  a feed URL:
+  - every `/releases/<x>/` and every `/kmods/<segment>/` is rewritten to the values of the
+    release the slot now runs (`platform/lib/upgrade/packages.sh:243-270`).
+  - the segment is read from the target base's own feed file rather than guessed
+    (`platform/lib/upgrade/packages.sh:228-241`).
+- **Scope.** Only the kmod feed needs a historical directory, because the user-space index of the
+  three releases is byte-identical. A feed that still names another release makes the follow
+  record `packages=limited packages_reason=feeds-stale` (`packages.sh:1109-1118`). `distfeeds.list`
+  and `repositories.d/*.list` are the files the aligner aligns, so a historical release named
+  there is moved to the running release at the next hop.
+- **Workaround.**
+  - Put a historical feed in `/etc/apk/repositories.d/customfeeds.list`. The aligner and the
+    follow's feed probe both skip that file (`packages.sh:442-446`, `packages.sh:701-708`,
+    `platform/lib/ab-net-probe.sh:296-305`).
+  - Take kmods by segment, and let each package version follow the segment the base runs.
+  - When a segment is no longer served, mirror its index, its `.sig` and its apks into a local
+    HTTPS feed and keep the signature, then point `customfeeds.list` at it
+    ([update.md](update.md#build-your-own-feed)).
+  - `ab-packages sources <name>` names the source that offers a package, with the full URL
+    ([update.md](update.md#the-package-commands)).
+
+## Packages that the target release does not publish
+
+A move between releases can leave the `world` file naming a package the target release never
+built. One such name makes every later apk transaction fail to solve, so the follow drops it from
+`world` before the transaction runs. Nothing is uninstalled and no configuration is touched.
+
+- **Symptom.** The follow logs the count and the names it dropped:
+  `packages: dropped 1 world entr(y|ies) this base does not offer: <names>`
+  (`platform/lib/upgrade/packages.sh:2258-2260`). In the same boot, `ab-slot status` keeps
+  printing the `packages=` and `packages_reason=` pair
+  ([install.md](install.md#reading-packages-and-packages_reason)). A world left with nothing
+  this release publishes is recorded as `packages=limited packages_reason=pruned`
+  (`packages.sh:1151-1154`).
+- **Cause.** `world` outlives the release that supplied its entries. apk refuses a whole set for
+  one name it cannot select, so the follow transaction, `ab-packages update` and a hand
+  `apk add kmod-x` all fail on the same entry (`packages.sh:963-983`, `packages.sh:2248-2254`).
+- **Scope.** The prune rewrites `/etc/apk/world` and nothing else (`packages.sh:877-921`). It
+  does not uninstall the package: its files and its `/etc/config` stay (`packages.sh:972-975`),
+  and `/data` is not involved. A pin whose version is gone is kept, because the index still
+  offers the name (`packages.sh:856-875`, `packages.sh:1034-1038`). Two gates hold it back:
+  - an index that answers nothing for any name is not evidence that the release offers nothing,
+    so nothing is dropped (`packages.sh:924-961`, `packages.sh:1026-1031`, reason
+    `index-unusable`).
+  - a caller whose index refresh failed says so, and nothing is dropped
+    (`packages.sh:1018-1025`, reason `index-stale`).
+- **Workaround.**
+  - Read `packages=` and `packages_reason=` before a downgrade, and again after its first boot
+    ([install.md](install.md#reading-packages-and-packages_reason)).
+  - Take `ab-slot packages snapshot` before the hop, so the installed version of every package is
+    recorded and can be replayed ([update.md](update.md#package-updates)).
+  - A package the target does not publish keeps running at its version. Moving it needs a feed
+    that carries it, or a body kept from the install
+    ([update.md](update.md#keeping-a-local-package-body)).

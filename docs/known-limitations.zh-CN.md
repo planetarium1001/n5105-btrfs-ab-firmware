@@ -225,3 +225,65 @@ sleep 8 | ssh -tt $K root@192.168.2.49
 
 第一段里的 `</dev/null` 就是这篇文档要说明的反面形态，只写一次好让人认得出来；它不是可以抄进探针的写法。
 本仓库里所有交互判定都走 `dev_ssh_tty`，它从不把 stdin 从看守进程那里挪走。
+
+## 历史版本的包 feed 与内核 ABI
+
+官方镜像保留它发布过的每个版本的 release 目录，所以逐级升级或降级仍能指到一个更老的版本。内核不跟着走：
+kmod feed 按内核段（kernel segment）归档，而内核段随每次内核升级改变。
+
+| 版本 | kmods 段 | `kmod-usb-storage` | 用户态索引 |
+|---|---|---|---|
+| 25.12.0 | `6.12.87` | `6.12.87-r1` | 与 25.12.2 逐字节相同 |
+| 25.12.1 | `6.12.94` | `6.12.94-r1` | 与 25.12.2 逐字节相同 |
+| 25.12.2 | `6.12.103` | `6.12.103-r1` | 与 25.12.0 逐字节相同 |
+
+2026-11-19 实测（`https://downloads.immortalwrt.org`）。三个版本的纯用户态索引是同一个文件，而
+`targets/x86/64/kmods/<内核段>/` 只存在于它自己内核所对应的那个版本里。
+
+- **现象。** 从更老版本抄来的 feed 行提供纯用户态包，却一个 kmod 都不提供。那个版本的索引里有 `htop`，
+  没有 `kmod-usb-storage`，而正在运行的内核段对应的 kmod 目录在它下面回 404。
+- **成因。** kmod 按内核构建归档，不按版本归档。对齐器会动一条 feed URL 的两半：
+  - 它把每个 `/releases/<x>/` 与每个 `/kmods/<内核段>/` 改写成这个槽当前所跑版本的值
+    （`platform/lib/upgrade/packages.sh:243-270`）。
+  - 内核段取自目标基底自带的 feed 文件，而不是猜一个内核构建 hash
+    （`platform/lib/upgrade/packages.sh:228-241`）。
+- **影响面。** 只有 kmod feed 需要历史目录，因为三个版本的纯用户态索引逐字节相同。仍指向别的版本的 feed 会让
+  跟随记录成 `packages=limited packages_reason=feeds-stale`（`packages.sh:1109-1118`）。
+  `distfeeds.list` 与 `repositories.d/*.list` 正是对齐器要动的文件，写在那里的历史 release 会在下一跳被搬到
+  正在运行的版本上。
+- **规避。**
+  - 把历史 feed 放进 `/etc/apk/repositories.d/customfeeds.list`。对齐器与跟随的 feed 探测都跳过这个文件
+    （`packages.sh:442-446`、`packages.sh:701-708`、`platform/lib/ab-net-probe.sh:296-305`）。
+  - 按内核段取 kmod，让每个包的版本跟着基底所跑的内核段走。
+  - 某个内核段不再提供时，把它的索引、`.sig` 与 apk 镜像到本地 HTTPS feed 并保住签名，再让
+    `customfeeds.list` 指向它（[update.zh-CN.md](update.zh-CN.md#自建-feed)）。
+  - `ab-packages sources <name>` 给出某个包的来源与完整 URL
+    （[update.zh-CN.md](update.zh-CN.md#包域的命令)）。
+
+## 目标 release 不发布的包
+
+跨版本迁移可能让 `world` 文件里留着目标 release 从未构建过的包名。这样一个名字会让之后每一次 apk 事务都
+解不出来，所以跟随会在事务之前把它从 `world` 里摘掉。不卸载任何东西，也不碰任何配置。
+
+- **现象。** 跟随会打出摘掉的条数与包名：
+  `packages: dropped 1 world entr(y|ies) this base does not offer: <names>`
+  （`platform/lib/upgrade/packages.sh:2258-2260`）。同一次启动里，`ab-slot status` 照旧打印 `packages=` 与
+  `packages_reason=` 这一对（[install.zh-CN.md](install.zh-CN.md#怎么读-packages-与-packages_reason)）。
+  如果剪完之后 world 里不剩这个 release 发布的任何包，记录写成 `packages=limited packages_reason=pruned`
+  （`packages.sh:1151-1154`）。
+- **成因。** `world` 的寿命比供给它条目的那个 release 长。apk 会为一个选不出来的名字拒绝整个集合，于是跟随事务、
+  `ab-packages update` 与手敲的 `apk add kmod-x` 都栽在同一个条目上（`packages.sh:963-983`、
+  `packages.sh:2248-2254`）。
+- **影响面。** 剪枝只重写 `/etc/apk/world`，别的都不写（`packages.sh:877-921`）。它不卸载包：包的文件与
+  `/etc/config` 原样留着（`packages.sh:972-975`），`/data` 不参与。版本已经消失的 pin 会被保留，因为索引仍然
+  提供这个名字（`packages.sh:856-875`、`packages.sh:1034-1038`）。两道闸门拦着它：
+  - 索引对任何名字都答不上来时，不能当作这个 release 什么都不提供的证据，因此一条都不剪
+    （`packages.sh:924-961`、`packages.sh:1026-1031`，原因 `index-unusable`）。
+  - 调用方知道索引刷新失败时会如实上报，同样一条都不剪（`packages.sh:1018-1025`，原因 `index-stale`）。
+- **规避。**
+  - 降级前读一次 `packages=` 与 `packages_reason=`，首次启动之后再读一次
+    （[install.zh-CN.md](install.zh-CN.md#怎么读-packages-与-packages_reason)）。
+  - 跳变前先跑 `ab-slot packages snapshot`，把每个包当前的已装版本记下来，之后可以重放
+    （[update.zh-CN.md](update.zh-CN.md#包更新)）。
+  - 目标 release 不发布的包会以现有版本继续运行。要推动它，需要一个提供它的 feed，或一份装机时留住的本体
+    （[update.zh-CN.md](update.zh-CN.md#把本地包的本体留住)）。

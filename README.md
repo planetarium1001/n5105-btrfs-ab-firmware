@@ -155,8 +155,18 @@ never hides another.
 
 ## Documentation
 
+Start with the two pages written for the preview:
+
+- [docs/quickstart.md](docs/quickstart.md) — the shortest path: write, boot, install one
+  package, upgrade once, roll back once
+- [docs/update-mechanism.md](docs/update-mechanism.md) — every status field, its values, and
+  the command that checks it
+
+Then the reference:
+
 - [docs/](docs/README.md) — design documents
 - [docs/backup.md](docs/backup.md) — backup and restore contract: the three products, what each one can be restored to, and the restore decision tree
+- [docs/known-limitations.md](docs/known-limitations.md) — what does not work, and what to do instead
 
 ## Status
 

@@ -140,8 +140,18 @@ uci commit firewall
 
 ## 文档
 
+先读为预览期写的两篇：
+
+- [docs/quickstart.zh-CN.md](docs/quickstart.zh-CN.md) —— 最短路径：写盘、启动、装一个包、
+  升级一次、回退一次
+- [docs/update-mechanism.zh-CN.md](docs/update-mechanism.zh-CN.md) —— 每个状态字段、它的取值，
+  以及验证它的命令
+
+然后是参考：
+
 - [docs/](docs/README.zh-CN.md) —— 设计文档
 - [docs/backup.zh-CN.md](docs/backup.zh-CN.md) —— 备份与恢复契约：三种产物、各自能恢复到多大的盘、恢复决策树
+- [docs/known-limitations.zh-CN.md](docs/known-limitations.zh-CN.md) —— 不能工作的部分，以及替代做法
 
 ## 状态
 
