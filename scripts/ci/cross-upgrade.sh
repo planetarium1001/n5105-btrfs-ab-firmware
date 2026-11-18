@@ -238,11 +238,21 @@ grade() {
 # The cross gate keeps the bare command. Its old image runs a different base (measured 25.12.1
 # against 25.12.2), the guard never fires, and leaving it alone keeps the stronger claim that a
 # payload installs without any escape hatch.
+#
+# `--yes` is not an escape hatch here, it is the only way this stage can install anything since
+# 0.0.13: the package plan asks `Proceed and follow N packages? [y/N]` and refuses with exit 74
+# when nothing can answer it, and this fixture has no terminal - it is a line in the guest's
+# /etc/rc.local. Measured on the v0.0.13 release run (44364963148): without the flag the install
+# wrote nothing, `pending` stayed `none`, and the stage reported
+# `cross-upgrade=fail reason=pending-already-none` - a red release gate whose cause was the
+# fixture, not the release. `--yes` answers the question the same way the device drivers do
+# (scripts/device/lib.sh, matrix-round2.sh, recovery-probe.sh, ab-fixtures.sh all pass it for
+# the same reason).
 cross_fixture_install_cmd() {
     if [ "${1:-}" = "1" ]; then
-        printf 'ab-upgrade --force /payload.tar'
+        printf 'ab-upgrade --yes --force /payload.tar'
     else
-        printf 'ab-upgrade /payload.tar'
+        printf 'ab-upgrade --yes /payload.tar'
     fi
 }
 

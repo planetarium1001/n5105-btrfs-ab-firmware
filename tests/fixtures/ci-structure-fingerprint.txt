@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: the rc.local fixture installs with ab-upgrade --yes: the package plan refuses (exit 74) when no terminal answers it
+# reason: the cross-upgrade fixture answers the package plan: ab-upgrade has asked a [y/N] question since 0.0.13 and refuses with exit 74 when the guest's rc.local cannot answer it, so the install line gains --yes (release run 44364963148 failed reason=pending-already-none without it)
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -72,6 +72,7 @@ sh-flag scripts/ci/cross-upgrade.sh --same-base
 sh-flag scripts/ci/cross-upgrade.sh --serial
 sh-flag scripts/ci/cross-upgrade.sh --show
 sh-flag scripts/ci/cross-upgrade.sh --src
+sh-flag scripts/ci/cross-upgrade.sh --yes
 sh-flag scripts/ci/derive-variant.sh --find
 sh-flag scripts/ci/derive-variant.sh --help
 sh-flag scripts/ci/derive-variant.sh --image

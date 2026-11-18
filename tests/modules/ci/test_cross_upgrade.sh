@@ -516,17 +516,25 @@ assert_contains "$(CI_TMP_ROOT="$tmp/no-facts-ci" bash "$script" run \
 # a different base, the guard never fires, and the stronger claim should stay tested.
 fixture_same_base="$(bash "$script" fixture --same-base 2>&1)"
 fixture_cross="$(bash "$script" fixture 2>&1)"
-assert_contains "$fixture_same_base" "ab-upgrade --force /payload.tar" \
-  "ac-8 the same-base fixture installs with --force"
-assert_contains "$fixture_cross" "ab-upgrade /payload.tar" \
-  "ac-8 the cross fixture installs without a flag"
+#
+# `--yes` is in BOTH fixtures and is asserted apart from `--force`: the package plan asks a
+# question, the fixture runs from /etc/rc.local with no terminal, and a install that cannot
+# answer it writes nothing (exit 74). The v0.0.13 release run (44364963148) proved what happens
+# without it - `cross-upgrade=fail reason=pending-already-none`, a red release gate caused by
+# the fixture. `--force` stays the same-base gate's own flag.
+assert_contains "$fixture_same_base" "ab-upgrade --yes --force /payload.tar" \
+  "ac-8 the same-base fixture answers the plan and forces the same-base reinstall"
+assert_contains "$fixture_cross" "ab-upgrade --yes /payload.tar" \
+  "ac-8 the cross fixture answers the plan without any other flag"
 assert_eq "$(printf '%s\n' "$fixture_cross" | grep -c '^  ab-upgrade --force')" "0" \
   "ac-8 the cross fixture never gains --force"
+assert_eq "$(printf '%s\n' "$fixture_cross" | grep -c '^  ab-upgrade --yes')" "1" \
+  "ac-8 and it never loses --yes: without it the install writes nothing at all"
 assert_eq "$(printf '%s\n' "$fixture_same_base" | grep -c '^  ab-upgrade')" "1" \
   "ac-8 the fixture installs exactly once"
 # Everything except that one word is the same script in both modes: the install line is the
 # only thing the gates may disagree about.
-assert_eq "$(printf '%s\n' "$fixture_same_base" | sed 's/ab-upgrade --force \/payload.tar/ab-upgrade \/payload.tar/')" \
+assert_eq "$(printf '%s\n' "$fixture_same_base" | sed 's/ab-upgrade --yes --force \/payload.tar/ab-upgrade --yes \/payload.tar/')" \
   "$fixture_cross" "ac-8 the two fixtures differ only in the flag"
 
 # --- ac-8b the flag is carried from the CLI all the way to the fixture -------
