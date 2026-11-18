@@ -35,8 +35,13 @@ trap 'rm -rf "$tmp"' EXIT
 # the coverage of this test. The round-2 phases sit between the docker windows and the
 # package phase: the samples are installed on the release the jumps landed on, the bad
 # configurations are injected once those samples own /etc/config/<app>, and matrix2 is the
-# chain that then carries both across the base down/up hops.
-phase_list="preflight probes feed-install docker follow matrix scenarios docker-after software badconfig matrix2 package-revert recovery power-cut release audit"
+# chain that then carries both across the base down/up hops. The three chains this round
+# added keep their own neighbours: feed-history is asked before any hop because it describes
+# the feeds the hops will read, rise follows matrix because both carry the samples across a
+# hop, package-classes follows software because the three origins are installed on the same
+# release the samples landed on, and platform-chain sits last of the jumps because what it
+# asserts is that the base did NOT move.
+phase_list="preflight probes feed-install docker follow feed-history matrix rise scenarios docker-after software package-classes badconfig matrix2 platform-chain package-revert recovery power-cut release audit"
 # shellcheck disable=SC2086
 set -- ${phase_list}
 phase_count=$#
@@ -125,7 +130,7 @@ assert_contains "$out" "usage: full-test.sh" "ac-7 --help prints the usage"
 assert_contains "$out" "verdict: PASS" "ac-7 --help states the verdict rule"
 assert_contains "$out" "scenarios docker-after" \
     "ac-7 --help lists the phase order it runs"
-assert_contains "$out" "docker follow matrix scenarios" \
+assert_contains "$out" "docker follow feed-history matrix rise" \
     "ac-7 --help lists the round-2 phases where they run"
 assert_contains "$out" "package-revert recovery power-cut release audit" \
     "ac-7 --help ends the order with the package, recovery, power-cut, release and audit phases"
@@ -590,7 +595,7 @@ assert_contains "$out" "cases=D2,D3" "ac-7 docker-after asks for D2 and D3 and n
 # docker-after and release are not in it: D1 writes /data and @docker and no slot, D2/D3 only
 # read, and the release phase never reaches a machine.
 destructive_set=$(sed -n 's/^DESTRUCTIVE_PHASES="\(.*\)"$/\1/p' "$ft")
-assert_eq "$destructive_set" "matrix matrix2 recovery power-cut" \
+assert_eq "$destructive_set" "matrix rise matrix2 platform-chain recovery power-cut" \
     "ac-7 only the phases that write a slot, matrix2 included, are destructive"
 for not_destructive in docker docker-after release; do
     case " $destructive_set " in
@@ -818,7 +823,11 @@ hx2="$tmp/hx2/scripts/device"
 mkdir -p "$hx2"
 cp "$ft" "$hx2/full-test.sh"
 cp "$root/scripts/device/lib.sh" "$hx2/lib.sh"
-for round2_driver in software-probe.sh:SW1 follow-baseline.sh:FB1 matrix-round2.sh:T1 badconfig-probe.sh:BC1; do
+# package-classes.sh is in this set for the same reason the other three are: it stands
+# between software and badconfig in the phase order, so a window that spans those two runs
+# it, and a harness without its driver would report a GAP that says nothing about the phase
+# under test.
+for round2_driver in software-probe.sh:SW1 follow-baseline.sh:FB1 matrix-round2.sh:T1 package-classes.sh:PC1 badconfig-probe.sh:BC1; do
     driver=${round2_driver%%:*}
     case_name=${round2_driver##*:}
     cat >"$hx2/$driver" <<STUB
