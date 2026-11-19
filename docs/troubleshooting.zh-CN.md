@@ -183,11 +183,13 @@ worker 里。这个事务在整段运行期间持有 apk 数据库锁——参�
 `procd_set_param respawn`，所以那次启动里没有任何东西重试它。等更久也没用，因为实例从未被
 respawn。
 
-机器现在的做法：跟随安定之后，一个分离的首启 worker 向 procd 询问它启动过又丢失了哪些服务，
-并各给一次新的启动。环形日志记录
+机器现在的做法：跟随安定之后，**完成跟随的那条路径**向 procd 询问它启动过又丢失了哪些服务，
+并各给一次新的启动。两条路径都做——分离的首启 worker，以及把首启因缺网络而推迟的跟随真正完成
+的那个网络接口事件。环形日志记录
 `stage=services-reconciled slot=<a|b> result=ok started=<n> failed=none down=<names>`；
 `result=partial` 点名脚本自己拒绝的服务，`result=skipped
-reason=follow-unsettled|boot-not-settled|no-procd-query` 说明没有尝试修复。判据是 procd 的
+reason=follow-unsettled|boot-not-settled|no-procd-query` 说明没有尝试修复，
+`reason=already-reconciled` 说明本次启动已经修复过一遍。判据是 procd 的
 实例记录——实例存在、未运行且以非零退出——而不是"已启用但没在跑"：一次健康的启动有七个这类
 服务（一次性脚本、按需重放状态的程序、被禁用的守护进程），它们绝不能被启动。
 

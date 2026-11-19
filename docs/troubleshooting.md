@@ -207,12 +207,14 @@ procd starts a service once: `dockerd`'s init script sets no `procd_set_param re
 nothing retried it in that boot. A longer wait does not help, because the instance is never
 respawned.
 
-What the machine does now: after the follow settles, a detached first-boot worker asks procd
-which services it started and lost, and gives each one new start. The ring log carries
+What the machine does now: after the follow settles, whichever path completed it asks procd
+which services it started and lost, and gives each one new start. Both paths do this - the
+detached first-boot worker, and an interface event that completes a follow the first boot had
+deferred for want of a network. The ring log carries
 `stage=services-reconciled slot=<a|b> result=ok started=<n> failed=none down=<names>`;
 `result=partial` names the services whose own script refused, and
 `result=skipped reason=follow-unsettled|boot-not-settled|no-procd-query` says the repair was
-not attempted. The criterion is procd's instance record - an instance that exists, is not
+not attempted, and `reason=already-reconciled` says this boot has repaired them once already. The criterion is procd's instance record - an instance that exists, is not
 running and exited non-zero - not "enabled and not running": a healthy boot has seven such
 services (one-shot scripts, on-demand re-appliers, a disabled daemon) that must not be started.
 
