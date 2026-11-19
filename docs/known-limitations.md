@@ -141,6 +141,77 @@ What this still does not cover:
   that promised 39 packages and a record that says 37 is not a contradiction, it is a prediction
   and a measurement.
 
+## A daemon can be left down by the first boot of a new base
+
+The first boot after an upgrade moves the package set: one measured boot upgraded 128 packages
+and kept 138, and the third-round matrix measured 168 and 97. procd starts the boot scripts
+inside that window, so a daemon that initialises while the kernel modules are being replaced
+can fail, and nothing tries it again in that boot. `dockerd`'s own words from the controlled
+hop of 2026-11-19:
+
+```
+failed to start daemon: Error initializing network controller: error obtaining controller
+instance: failed to register "bridge" driver: failed to add jump rules to ipv4 NAT table:
+... Warning: Extension addrtype revision 0 not supported, missing kernel module?
+```
+
+It stayed down for the whole boot. Measured on the same machine earlier that day: `dockerd`
+was down from 03:59Z to 05:20Z through more than 15 machine restarts, while the machine's own
+record said the client was present and the daemon was not.
+
+Why a longer wait does not help: procd starts a service once. `dockerd`'s init script sets no
+`procd_set_param respawn`, so procd never retried it, never logged a crash loop, and had no
+budget to exhaust. A retry loop around a health probe cannot reach an instance that was never
+respawned, which is why this project did not lengthen the probe's retries.
+
+What the machine does now: the detached first-boot worker, once the package follow has
+settled and the boot has finished walking its scripts, asks procd which services it started
+and lost, and gives each of them one new start. The ring log carries the outcome:
+
+```
+stage=services-reconciled slot=a result=ok started=1 failed=none down=dockerd
+```
+
+`result=partial` with `failed=<csv>` means the service was started and its own script refused;
+`result=skipped reason=follow-unsettled|boot-not-settled|no-procd-query` means the repair was
+not attempted, and the reason says which fact was missing. The pass is best effort by design:
+it never decides whether the follow succeeded, and it never blocks the boot.
+
+### The criterion is procd's record, not "not running"
+
+The repair deliberately does not start every enabled service that is not running. A healthy
+boot of the reference machine has seven such services, and not one of them is broken:
+
+| service | what its procd record says | why it must not be started |
+|---|---|---|
+| `system`, `ucitrack`, `gpio_switch` | no instance record | one-shot boot scripts that already ran |
+| `firewall`, `packet_steering` | no instance record | re-apply state on demand, not daemons |
+| `cron` | no instance record | `start_service` returns early: no crontabs on this machine |
+| `openclash` | no instance record | the machine's own configuration says no |
+| `urandom_seed` | instance, `running=false`, `exit_code=0` | it finished its job |
+
+A rule keyed on "enabled and not running" would re-run boot scripts out of procd's order,
+start a service the user turned off in its own configuration, and report `result=partial` on a
+machine where nothing is wrong, which destroys the one signal the line exists to carry.
+
+The rule that is used instead is procd's own instance record: an instance that exists, is not
+running, and exited non-zero. On the measured broken boot that set was `dockerd`
+(`running=false`, `exit_code=1`) and nothing else. The same rule covers a service procd did
+respawn into a crash loop, because such an instance also ends non-zero.
+
+What it does not cover:
+
+* **A daemon that procd accepted and that then died again** after the reconcile. procd owns
+  the instance by then, and the ring log only says the second start was given.
+* **A daemon whose configuration is the reason it is down.** That is not a lost instance, and
+  the reconcile leaves it alone on purpose.
+* **A follow that never settled.** Nothing was replaced, so nothing needs the repair.
+
+If a daemon is still down after such a boot, restart the machine once. That is the behaviour
+this entry exists to make rare rather than to deny, and it is also the measurement that proves
+the difference: a restart clears the whole boot, a reconcile only clears the services procd
+lost.
+
 ## `*.apk-new` files are not merged for you
 
 apk protects a configuration file it finds edited: the user's file keeps its bytes, and the

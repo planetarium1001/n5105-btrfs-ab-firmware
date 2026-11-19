@@ -61,7 +61,10 @@ mkdir -p "$bin" "$payloads" "$fake"
 # fails the read, so one byte that is not a tar header reads as "not a tar" everywhere. The
 # driver reads the payload's own platform.tar only when it is a real tar, so a placeholder
 # also exercises the "which tools does this payload carry is unknown" branch.
-for p in payload-0.0.11.tar payload-0.0.12.tar payload-0.0.13.tar payload-25.12.2.tar; do
+# payload-0.0.10.tar is the chain start's own platform, which is the payload the positioning
+# move installs when the machine was left somewhere else. It is not a hop payload: no case of
+# this chain installs it, and a chain that never needs positioning never touches it.
+for p in payload-0.0.10.tar payload-0.0.11.tar payload-0.0.12.tar payload-0.0.13.tar payload-25.12.2.tar; do
     printf 'placeholder, not a tar\n' >"$payloads/$p"
 done
 
@@ -200,6 +203,20 @@ case "${last}" in
     'cat /etc/apk/world') cat "$root/etc/apk/world" ;;
     'apk list --installed'*) cat "$root/apk-list.txt" ;;
     'ab-upgrade --check '*)
+        # The positioning payload is the base the machine already runs, so a release whose
+        # platform-only guard compares the base alone refuses it with exit 74
+        # payload-already-installed. STUB_POSITION_74 names the reason that refusal carries:
+        # payload-already-installed is the one the driver may spend --force on, and any other
+        # reason is an unexplained refusal the driver must not force past.
+        case "${last}" in
+            *payload-0.0.10.tar)
+                if [ -n "${STUB_POSITION_74:-}" ]; then
+                    printf 'ab-upgrade: refused, reason=%s\n' "${STUB_POSITION_74}"
+                    printf 'Next: install the platform layer the payload carries\n'
+                    exit 74
+                fi
+                ;;
+        esac
         if [ -n "${STUB_CHECK_REFUSE:-}" ]; then
             printf 'ab-upgrade: refused, reason=%s\n' "${STUB_CHECK_REFUSE}"
             printf 'Next: install the platform layer the payload carries\n'
@@ -211,7 +228,19 @@ case "${last}" in
         fi
         exit 0
         ;;
-    'ab-upgrade --yes '*) install_payload "${last##* }" ;;
+    'ab-upgrade --yes '*)
+        # A positioning install that does not write the slot: the chain must stop and say so
+        # instead of walking its first hop on a machine that never reached the chain's line.
+        case "${last}" in
+            *payload-0.0.10.tar)
+                if [ "${STUB_POSITION_INSTALL_FAIL:-0}" = "1" ]; then
+                    printf 'ab-upgrade: the platform layer could not be written\n'
+                    exit 1
+                fi
+                ;;
+        esac
+        install_payload "${last##* }"
+        ;;
     'sync; reboot') commit_boot ;;
     'cat > '*) cat >/dev/null ;;
     'cat '*)
@@ -294,6 +323,9 @@ rows() { cut -f1 "$results" 2>/dev/null | tr '\n' ' '; }
 verdicts() { cut -f2 "$results" 2>/dev/null | tr '\n' ' '; }
 note_of() { awk -F'\t' -v c="$1" '$1 == c { print $4 }' "$results" 2>/dev/null; }
 installs() { grep -oE 'ab-upgrade --yes /tmp/payload-[0-9.]+\.tar' "$calls" 2>/dev/null | sed 's#.*/##' | tr '\n' ' '; }
+# A forced install is a different fact from an ordinary one, so it is counted apart: the
+# driver may spend --force only on the refusal that names payload-already-installed.
+forced_installs() { grep -oE 'ab-upgrade --yes --force /tmp/payload-[0-9.]+\.tar' "$calls" 2>/dev/null | sed 's#.*/##' | tr '\n' ' '; }
 checks() { grep -c 'ab-upgrade --check' "$calls" 2>/dev/null || true; }
 ssh_calls() { wc -l <"$calls" | tr -d ' '; }
 
@@ -328,6 +360,13 @@ assert_contains "$out" "never a forced install" \
     "ac-10 the plan says a refusal is a GAP, not something to force past"
 assert_contains "$out" "the stable fields did not move" \
     "ac-10 the plan reuses lib.sh's STABLE group"
+# The positioning move is part of the plan even though the plan cannot know the running
+# platform without an ssh call: the operator has to see that the chain may move the machine
+# before it walks any hop.
+assert_contains "$out" "# position start: if the machine is not on platform 0.0.10" \
+    "ac-10 the plan says the chain may position the machine before its first hop"
+assert_contains "$out" "payloads/payload-0.0.10.tar" \
+    "ac-10 the plan names the payload the positioning move would install"
 
 # --- ac-10: one continuous chain on one base -------------------------------- #
 reset_machine 0.0.10 25.12.2
@@ -498,14 +537,94 @@ rc=$?
 assert_eq "$rc" "0" "ac-10 a chain that already ended exits zero instead of walking backwards"
 assert_eq "$(ssh_calls)" "0" "ac-10 nothing to walk touches nothing"
 
-# A machine that is not where the hop starts is a chain that began in the wrong place.
+# --- ac-10: the chain start's positioning move ----------------------------- #
+# full-test runs matrix, matrix-rise and scenarios before this chain, so the machine is
+# wherever their last hop left it: round 3 measured this chain starting at platform 0.0.13
+# while P11 declares 0.0.10, and the row said "chain broken" instead of naming the missing
+# step. A chain that declares its starting platform now gets onto it first, and the run has
+# to say so: the move rides on the first row and on the baseline evidence, never silent.
 reset_machine 0.0.12 25.12.2
 out=$(drv --payload-dir "$payloads")
 rc=$?
-assert_eq "$rc" "1" "ac-10 a hop that starts from the wrong platform fails"
-assert_contains "$(note_of P11)" "chain broken" "ac-10 the row says the chain is in the wrong place"
-assert_contains "$(note_of P11)" "--from-version 0.0.12" \
-    "ac-10 the row gives the flag that starts from where the machine is"
+assert_eq "$rc" "0" "ac-10 a machine on another platform is positioned, then the chain walks"
+assert_eq "$(verdicts)" "PASS PASS PASS " "ac-10 every hop passes after the positioning move"
+assert_contains "$(note_of P11)" "positioned=0.0.12->0.0.10" \
+    "ac-10 the first row carries the platform the machine was moved from and to"
+# The row may not claim --force on a move that did not need it: a suffix that always appears
+# is the same as no suffix, and a reader could no longer tell an ordinary positioning move
+# from one the running release refused. The evidence line is judged as well as the row,
+# because the two are written from different expressions and only one of them is in the row.
+assert_eq "$(printf '%s' "$(note_of P11)" | grep -c 'force=used' || true)" "0" \
+    "ac-10 a positioning move that was not refused does not claim --force"
+assert_eq "$(grep -c 'positioned: 0.0.12 -> 0.0.10.*force=used' \
+    "$evidence/platform-chain/00-baseline.log" 2>/dev/null || true)" "0" \
+    "ac-10 the evidence line does not claim --force either"
+assert_eq "$(installs)" \
+    "payload-0.0.10.tar payload-0.0.11.tar payload-0.0.12.tar payload-0.0.13.tar " \
+    "ac-10 the positioning payload is installed once, before the chain's own payloads"
+assert_contains "$(cat "$evidence/platform-chain/00-baseline.log")" \
+    "positioning: 0.0.12 -> 0.0.10" \
+    "ac-10 the baseline evidence names the positioning move, so it is never silent"
+
+# The shape round 3 measured: the machine was left on platform 0.0.13, which is above the
+# platform the chain starts from, so the positioning move is a downgrade. A move that only
+# worked upwards would leave the measured case failing.
+reset_machine 0.0.13 25.12.2
+out=$(drv --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-10 a machine left above the chain start is positioned down to it"
+assert_eq "$(verdicts)" "PASS PASS PASS " "ac-10 every hop passes after a positioning downgrade"
+assert_contains "$(note_of P11)" "positioned=0.0.13->0.0.10" \
+    "ac-10 the row names the measured round-3 starting platform and the chain's own"
+
+# The same move on a release whose platform-only guard compares the base alone: the payload
+# carries the base the machine already runs, so --check answers exit 74
+# payload-already-installed. That is the one refusal the driver may spend --force on, and
+# the row says the flag was spent rather than hiding it behind the positioning move.
+reset_machine 0.0.12 25.12.2
+out=$(STUB_POSITION_74=payload-already-installed drv --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-10 payload-already-installed is the refusal the positioning move forces past"
+assert_contains "$(note_of P11)" "positioned=0.0.12->0.0.10 force=used" \
+    "ac-10 the row says --force was spent on the positioning payload"
+assert_eq "$(forced_installs)" "payload-0.0.10.tar " \
+    "ac-10 --force is spent on the positioning payload and on nothing else"
+
+# The counter-example that keeps the force honest: a refusal for another reason is not
+# something to walk past. Forcing an unexplained refusal would hide the disagreement between
+# the payload and this machine, which is the one thing the chain exists to find.
+reset_machine 0.0.12 25.12.2
+out=$(STUB_POSITION_74=payload-incompatible drv --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "1" "ac-10 a positioning refusal for another reason is a FAIL"
+assert_contains "$(note_of P11)" "positioning to platform 0.0.10 failed" \
+    "ac-10 the row says the chain never started"
+assert_eq "$(forced_installs)" "" "ac-10 an unexplained refusal is never forced past"
+
+# A positioning payload that is not there is a state of the run, named as such: the chain
+# must not walk a single hop from a line the machine never reached.
+mkdir -p "$tmp/no-position"
+cp "$payloads"/payload-0.0.1[123].tar "$tmp/no-position/"
+reset_machine 0.0.12 25.12.2
+out=$(drv --payload-dir "$tmp/no-position")
+rc=$?
+assert_eq "$rc" "4" "ac-10 a missing positioning payload is an environment gap"
+assert_eq "$(verdicts)" "GAP " "ac-10 the run records the gap on the hop it could not start"
+assert_contains "$(note_of P11)" "no positioning payload at" \
+    "ac-10 the gap says what kind of step was missing"
+assert_contains "$(note_of P11)" "payload-0.0.10.tar" \
+    "ac-10 the gap names the file it wanted"
+assert_eq "$(installs)" "" "ac-10 nothing is installed when the positioning payload is absent"
+
+# An install that does not write the slot is a FAIL too: the machine is not on the chain's
+# line, and every row after it would describe a machine that never existed.
+reset_machine 0.0.12 25.12.2
+out=$(STUB_POSITION_INSTALL_FAIL=1 drv --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "1" "ac-10 a positioning install that does not land fails the run"
+assert_contains "$(note_of P11)" "positioning to platform 0.0.10 failed" \
+    "ac-10 the row says the chain never started"
+assert_eq "$(rows)" "P11 " "ac-10 no hop is walked after a failed positioning move"
 
 # --resume skips what already passed, and only that.
 reset_machine 0.0.11 25.12.2

@@ -28,11 +28,17 @@ ab_upgrade="$root/platform/usr/sbin/ab-upgrade"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# align <sys> <upper> <payload>: run the aligner the device runs, in its own shell so the
-# library's variables cannot leak between cases.
-align() {
+# align_with <library> <sys> <upper>: run an aligner in its own shell, so the library's
+# variables cannot leak between cases. The library is a parameter because one case below
+# drives the read-back with a copy of it (see (e)).
+align_with() {
   sh -c '. "$1"; ab_packages_align "$2" "$3" "$4" "$5"; rc=$?; printf "rc=%s reason=%s kernel=%s\n" "$rc" "${AB_PACKAGES_REASON}" "${AB_PACKAGES_KERNEL}"' \
-    _ "$packages_lib" "$tmp/payload" b "$1" "$2"
+    _ "$1" "$tmp/payload" b "$2" "$3"
+}
+
+# align <sys> <upper>: run the aligner the device runs.
+align() {
+  align_with "$packages_lib" "$1" "$2"
 }
 
 mkpayload() { # <version>
@@ -146,6 +152,75 @@ assert_eq "$([ -e "$upper/etc/apk/repositories" ] && echo present || echo absent
   "ac-2 no feed file is created out of thin air"
 assert_eq "$([ -e "$upper/etc/apk/distfeeds.list.ab-align.bak" ] && echo leftover || echo clean)" "clean" \
   "ac-2 and no pre-rewrite copy appears for a file that was not touched"
+
+# (d) customfeeds.list is the user's own feed list by definition, so the align step never
+#     rewrites it; the read-back must not ask it to name the target release either. A base
+#     that ships the template plus a writable layer a feed step left naming the release the
+#     machine came from is exactly that state - and it used to be reported as a failure of
+#     the whole alignment (`distfeeds-not-verified`), with the correct skip in hand.
+cf_sys="$tmp/cf-sys"
+cf_upper="$tmp/cf-upper"
+mkdir -p "$cf_sys/etc/apk/repositories.d" "$cf_upper/etc/apk/repositories.d"
+printf 'busybox\nkernel=6.12.87~bd81971a8c-r1\n' >"$cf_sys/etc/apk/world"
+printf 'busybox\nkernel=6.12.103~ff11223344-r1\n' >"$cf_upper/etc/apk/world"
+cat >"$cf_sys/etc/apk/repositories.d/distfeeds.list" <<'FEEDS'
+https://downloads.immortalwrt.org/releases/25.12.0/targets/x86/64/packages/packages.adb
+FEEDS
+cat >"$cf_sys/etc/apk/repositories.d/customfeeds.list" <<'FEEDS'
+# add your custom package feeds here
+# https://example.net/immortalwrt/releases/<version>/packages/<arch>/base/packages.adb
+# https://example.net/immortalwrt/releases/<version>/targets/<target>/kmods/<kernel>/packages.adb
+FEEDS
+cat >"$cf_upper/etc/apk/repositories.d/customfeeds.list" <<'FEEDS'
+# my own feeds, added while the machine ran 25.12.2
+https://mirror.example.net/immortalwrt/releases/25.12.2/packages/x86_64/base/packages.adb
+https://mirror.example.net/immortalwrt/releases/25.12.2/targets/x86/64/kmods/6.12.103-1-ff11/packages.adb
+FEEDS
+cp "$cf_upper/etc/apk/repositories.d/customfeeds.list" "$tmp/cf-user-content"
+out="$(align "$cf_sys" "$cf_upper")"
+assert_contains "$out" "rc=0" \
+  "ac-2 a customfeeds.list that still names the old release does not fail the alignment"
+assert_eq "$(cmp -s "$tmp/cf-user-content" "$cf_upper/etc/apk/repositories.d/customfeeds.list" \
+  && echo same || echo changed)" "same" \
+  "ac-2 the user's customfeeds.list is kept byte for byte"
+assert_eq "$(grep -c 'releases/25.12.2/' "$cf_upper/etc/apk/repositories.d/customfeeds.list")" "2" \
+  "ac-2 none of its old release references is rewritten"
+assert_eq "$(grep -c 'releases/25.12.0/' "$cf_upper/etc/apk/repositories.d/customfeeds.list")" "0" \
+  "ac-2 and the target release is not pasted into it either"
+assert_eq "$([ -e "$cf_upper/etc/apk/repositories.d/customfeeds.list.ab-align.bak" ] && echo leftover || echo clean)" "clean" \
+  "ac-2 a file that is never written leaves no pre-rewrite copy behind"
+assert_eq "$(grep '^kernel=' "$cf_upper/etc/apk/world")" "kernel=6.12.87~bd81971a8c-r1" \
+  "ac-2 the rest of the alignment still did its work"
+
+# (e) the exemption is customfeeds.list and nothing else. With today's align step the read-back
+#     cannot be reached with a stale distfeeds.list - every feed file it owns is rewritten or
+#     dropped, so a file that survives already names the target - and that is exactly why the
+#     guard needs a case that drives it directly. The library copy below overrides the one
+#     function that would otherwise fix the file, leaving the read-back as the only thing that
+#     can notice a stale release. If the skip were written as "skip feed files", or moved up
+#     over the whole loop, this case is what fails.
+# The state is set up rather than inherited from (d): this case is about the customfeeds file
+# and nothing else, so the upper carries no other feed file that could fail the read-back.
+rm -f "$cf_upper/etc/apk/repositories.d/distfeeds.list"
+inj_lib="$tmp/packages-readback-only.sh"
+cp "$packages_lib" "$inj_lib"
+cat >>"$inj_lib" <<'SHIM'
+
+# Test shim: pretend the align step owns no feed file at all, so the read-back decides alone.
+_packages_feed_align_one() {
+    _packages_feed_result="none"
+    return 0
+}
+SHIM
+out="$(align_with "$inj_lib" "$cf_sys" "$cf_upper")"
+assert_contains "$out" "rc=0" \
+  "ac-2 the read-back alone accepts a stale customfeeds.list"
+printf 'https://downloads.immortalwrt.org/releases/25.12.2/targets/x86/64/packages/packages.adb\n' \
+  >"$cf_upper/etc/apk/repositories.d/distfeeds.list"
+out="$(align_with "$inj_lib" "$cf_sys" "$cf_upper")"
+assert_contains "$out" "rc=1" "ac-2 a stale distfeeds.list is still a failure, not a skipped file"
+assert_contains "$out" "reason=distfeeds-not-verified" \
+  "ac-2 and the reason names the read-back that caught it"
 
 # =========================================================================== #
 # ac-3: nothing to do is not a failure

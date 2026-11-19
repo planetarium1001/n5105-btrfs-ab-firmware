@@ -468,6 +468,15 @@ FEEDS
     fi
     while IFS= read -r _rel; do
         [ -n "${_rel}" ] || continue
+        # customfeeds.list belongs to the user by definition, so the align loop above never
+        # rewrites it. Reading it back here would demand that it name the target release and
+        # would therefore report the skip itself as a failure: a base that ships the template
+        # plus a writable layer that still names the old release - which is exactly what a
+        # feed step leaves behind - would fail the whole alignment with a correct result in
+        # hand. The two places have to agree on which files this library owns.
+        case "${_rel}" in
+            */customfeeds.list) continue ;;
+        esac
         _feeds="${_upper}/${_rel}"
         [ -f "${_feeds}" ] || continue
         if _packages_feeds_mismatch "${_feeds}" "${_version}" "${_kmods}"; then

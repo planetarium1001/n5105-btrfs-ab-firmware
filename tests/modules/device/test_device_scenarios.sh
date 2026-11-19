@@ -147,6 +147,10 @@ case "${last}" in
         printf '%s' "${FAKE_BOOT_AFTER:-ok}" >"$dev/boot"
         swap_after_boot kver
         swap_after_boot installed
+        # The aligner's answer after a hop, which is judged on `packages_reason` and can be
+        # moved by a test through packages-reason-after. A hop that carries no such file
+        # lands in whatever reason the machine had, which is `none` on a healthy one.
+        swap_after_boot packages-reason
         if [ -f "$dev/distfeeds-after" ]; then cp "$dev/distfeeds-after" "$dev/distfeeds.list"; fi
         ;;
     "ab-upgrade --check "*)
@@ -1491,6 +1495,59 @@ assert_eq "$(cat "$FAKE_DEV/_etc_apk_repositories.d_distfeeds.list.bak")" \
 assert_contains "$s7log" "feeds restored: /etc/apk/repositories.d/distfeeds.list is byte-identical" \
     "the restore is a byte comparison, and it is in the evidence"
 
+# --- ac-4: the one reason S7 may land in, and the reasons it may not ------- #
+# S7 moves the feed list itself, so the aligner's honest answer after this case's own hop can
+# be `network`: it recorded the index refresh it could not do, and the list it could not
+# refresh is the one this case wrote. Round 3 judged that as a product defect on a hop that
+# had committed, switched slots and aligned its packages. The allowance is this case's path
+# and exactly one extra token, so the row still has to say which reason it accepted and why.
+setup_s7_device
+printf 'network' >"$FAKE_DEV/packages-reason-after"
+out=$(run_scen_payloads "$payloads_s7" "$tmp/r-s7-netreason" --case S7)
+rc=$?
+assert_eq "$rc" "0" "S7 accepts packages_reason=network on the hop that moved its own feed list"
+assert_eq "$(verdict_of "$tmp/r-s7-netreason")" "PASS" \
+    "the hop that moved the feed list is not read as a defect"
+assert_contains "$(note_of "$tmp/r-s7-netreason")" \
+    "packages_reason=network (feed was moved by this case)" \
+    "the row says which reason it accepted and why, so PASS is not silent about it"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s7-netreason" s7)")" \
+    "packages_reason=network (feed was moved by this case)" \
+    "the evidence carries the same distinction as the row"
+
+# The counter-example that keeps the allowance narrow: `limited` says the metadata is partial
+# and nothing installs for this kernel, which is not something this case's feed edit explains.
+setup_s7_device
+printf 'limited' >"$FAKE_DEV/packages-reason-after"
+out=$(run_scen_payloads "$payloads_s7" "$tmp/r-s7-limited" --case S7)
+rc=$?
+assert_eq "$rc" "1" "S7 still fails a hop that lands packages_reason=limited"
+assert_contains "$out" "assert_field packages_reason: expected=none got=limited" \
+    "the failure names the reason that is not allowed on this path"
+# The row must not say the jump did not commit: this jump committed, switched slots and
+# aligned its packages, and only one judged field disagreed. Round 3 read "did not commit"
+# on exactly this shape and went looking for a broken jump instead of the reason field.
+assert_contains "$(note_of "$tmp/r-s7-limited")" "was judged red" \
+    "the row says the hop was judged red, not that the jump did not commit"
+assert_eq "$(printf '%s' "$(note_of "$tmp/r-s7-limited")" | grep -c 'did not commit' || true)" "0" \
+    "the row does not claim a jump that committed did not commit"
+
+setup_s7_device
+printf 'unknown' >"$FAKE_DEV/packages-reason-after"
+out=$(run_scen_payloads "$payloads_s7" "$tmp/r-s7-unknown" --case S7)
+assert_contains "$out" "assert_field packages_reason: expected=none got=unknown" \
+    "a hop that wrote no record at all is red on S7's path too"
+
+# And the allowance belongs to S7 alone: the same reason on S3's hop is still a failure,
+# because S3 never touched the feed list and `network` there is the machine's own problem.
+setup_fake_world 25.12.0
+printf 'network' >"$FAKE_DEV/packages-reason-after"
+out=$(run_scen "$tmp/r-s3-netreason" --case S3)
+rc=$?
+assert_eq "$rc" "1" "packages_reason=network is not accepted on S3's path"
+assert_contains "$out" "assert_field packages_reason: expected=none got=network" \
+    "the allowance is one case's, not every hop's"
+
 # The other half of the rule: a feed that is aligned and still installs nothing is a FAIL,
 # because that is the one outcome which says the source is not what is wrong.
 setup_s7_device
@@ -1923,6 +1980,12 @@ assert_eq "$(printf '%s\n' "$out" | awk '$1 == "S7" && $2 == "feeds" {print $4}'
     "every URL comes out of the release itself, the kmods directory included"
 assert_contains "$out" "S7 5/6 read /etc/apk/repositories.d/distfeeds.list expect=equal to the 25.12.0 bytes -> FINDING" \
     "the plan states the feed-list rule before a machine is touched"
+# The plan has to print the packages_reason allowance it will apply: a judgement the plan
+# does not state is one the operator cannot check before the machine is touched.
+assert_contains "$out" "S7 3/6 hop-packages assert packages=aligned packages_reason=none|network" \
+    "the plan states that this case may land in packages_reason=network"
+assert_contains "$out" "limited, unknown and every other token are still judged red" \
+    "the plan says the allowance is exactly one token, not a class of reasons"
 assert_contains "$out" "S7 6/6 align the 25.12.2 feeds" \
     "the plan says the aligned feed is what has to install something"
 assert_eq "$(wc -l <"$STUB_CALLS" | tr -d ' ')" "$calls_before" "planning S7 reaches no machine"

@@ -113,6 +113,66 @@ argon（连同 `luci-app-argon-config` 与中文包）由 `scripts/device/bench-
 * **预测可能不准。** 计划块是按暂存树上 `apk --simulate` 的结果渲染的，而从提问到启动之间 feed 可能
   已经变了。记录才是事实；计划块许诺 39 个包、记录说 37 个，这不是矛盾，而是一次预测和一次测量。
 
+## 新基底的首次启动可能把某个守护进程留在 down 状态
+
+升级后的首次启动会搬动整套包：实测有一次启动升级了 128 个包、保留了 138 个，第三轮矩阵实测是 168 和
+97。procd 正在这个窗口里启动 boot 脚本，所以一个在内核模块正被替换时初始化的守护进程会失败，而本次 boot
+内没有别的东西再试它。2026-11-19 受控跳变中 `dockerd` 自己说的话：
+
+```
+failed to start daemon: Error initializing network controller: error obtaining controller
+instance: failed to register "bridge" driver: failed to add jump rules to ipv4 NAT table:
+... Warning: Extension addrtype revision 0 not supported, missing kernel module?
+```
+
+它整个 boot 都 down 着。同一天更早在同一台机器上实测：`dockerd` 从 03:59Z 一直 down 到 05:20Z，跨 15 次
+以上机器重启，而机器自己的记录写的是 client 在、daemon 不在。
+
+为什么「等久一点」不管用：procd 只启动服务一次。`dockerd` 的 init 脚本没有设
+`procd_set_param respawn`，所以 procd 从未重试它、从未记下 crash loop、也没有任何预算可耗尽。围着健康探针
+加的重试循环够不到一个从未被 respawn 的实例——这正是本项目没有去放宽探针重试次数的原因。
+
+机器现在的行为：首启的分离 worker 在包跟随落定、且 boot 已经走完自己的脚本之后，问 procd 它启动了哪些
+服务又丢了哪些，然后对每一个各做一次新的 start。ring log 记录结果：
+
+```
+stage=services-reconciled slot=a result=ok started=1 failed=none down=dockerd
+```
+
+`result=partial` 配 `failed=<csv>` 表示服务被 start 了但它自己的脚本拒绝了；`result=skipped
+reason=follow-unsettled|boot-not-settled|no-procd-query` 表示这次修复没有尝试，reason 说明缺的是
+哪个事实。这一步按设计是 best-effort：它不决定跟随是否成功，也从不阻塞启动。
+
+### 判据是 procd 的记录，不是「没在跑」
+
+这次修复**刻意不**去启动所有「已 enable 但没在跑」的服务。参考机健康启动时有七个这样的服务，没有一个是
+坏的：
+
+| 服务 | procd 的记录 | 为什么不能启动它 |
+|---|---|---|
+| `system`、`ucitrack`、`gpio_switch` | 没有实例记录 | 已经跑完的一次性 boot 脚本 |
+| `firewall`、`packet_steering` | 没有实例记录 | 按需重放状态，不是常驻守护进程 |
+| `cron` | 没有实例记录 | `start_service` 提前返回：本机没有 crontab |
+| `openclash` | 没有实例记录 | 机器自己的配置写着关 |
+| `urandom_seed` | 有实例，`running=false`，`exit_code=0` | 它已经完成了自己的任务 |
+
+按「已 enable 且没在跑」这条更宽的规则实现，会打乱 procd 的启动顺序重跑 boot 脚本、启动用户在配置里明确
+关掉的服务、并在一台一切正常的机器上报 `result=partial`——把这个日志行唯一的价值毁掉。
+
+实际使用的规则是 procd 自己的实例记录：实例存在、没在跑、且以非零退出。实测那次坏掉的 boot 里这个集合只有
+`dockerd`（`running=false`、`exit_code=1`），别无其他。同一条规则也覆盖 procd 确实 respawn 到 crash
+loop 的服务，因为那样的实例同样以非零结束。
+
+它覆盖不到的情况：
+
+* **procd 接受了、随后又自己死掉的守护进程**（在对账之后）。那时实例已经归 procd 管，ring log 只能说明
+  第二次机会已经给过。
+* **因为自身配置就是 down 的守护进程。** 那不是「丢掉的实例」，对账刻意不动它。
+* **从未落定的跟随。** 什么都没被替换，所以也不需要这次修复。
+
+如果这样一次启动之后某个守护进程仍然 down，重启机器一次。这条限制存在的意义是让那种情况变罕见，而不是
+否认它；这也正是能证明差别的那个测量：重启清掉整个 boot，对账只清掉 procd 丢掉的那些服务。
+
 ## `*.apk-new` 没有人替你合并
 
 apk 会保护它发现被改过的配置文件：用户的文件保持原样，包里的副本写在旁边成为 `<文件>.apk-new`。

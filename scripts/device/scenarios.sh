@@ -2200,6 +2200,45 @@ v_platform() {
 # The hop (S3/S4): the same skeleton matrix.sh walks
 # --------------------------------------------------------------------------- #
 
+# hop_packages_reasons <case>: the `packages_reason` values this case's hop may land in.
+#
+# `none` is the healthy answer on every hop: the aligner wrote its record and had nothing to
+# report. S7 is the one case that moves the feed list itself, so on that case's path the
+# aligner's honest answer is `network`: it recorded the index refresh it could not do, and
+# the list it could not refresh is the one S7 wrote a moment earlier. Round 3 measured this
+# and the row read as a product defect on a hop that had committed, switched slots and
+# aligned its packages. The allowance is exactly one extra token on one case's path, never a
+# class of reasons: `limited` (the metadata is partial, so nothing installs for this kernel),
+# `unknown` (no record was written at all) and every other token stay red, because each of
+# them says something about the machine that this case does not own.
+hop_packages_reasons() {
+    case "${1:-}" in
+        S7) printf 'none network\n' ;;
+        *) printf 'none\n' ;;
+    esac
+}
+
+# hop_packages_reason <case> <status line>: judge the reason the hop landed in.
+# Returns 1 when it is not one this case may land in, having printed the FAIL line.
+hop_packages_reason() {
+    _hpr_case=${1:?hop_packages_reason needs a case}
+    _hpr_reason=$(status_field "${2:-}" packages_reason) || _hpr_reason=""
+    for _hpr_allowed in $(hop_packages_reasons "${_hpr_case}"); do
+        if [ "${_hpr_reason}" = "${_hpr_allowed}" ]; then
+            # An accepted reason that is not `none` is still something the reader has to be
+            # able to tell apart from a clean hop, so it is named in the evidence and in the
+            # row's note. Without this the row would say PASS beside a reason the plan does
+            # not promise, which is the same silent loosening this file avoids elsewhere.
+            if [ "${_hpr_reason}" != "none" ]; then
+                _finding "packages_reason=${_hpr_reason} (feed was moved by this case): the aligner recorded the index refresh it could not do, and the feed list it could not refresh is this case's own edit, so this is not a defect"
+            fi
+            return 0
+        fi
+    done
+    _dev_assert_fail "${_hpr_case}" "assert_field packages_reason: expected=none got=${_hpr_reason:-none-absent}"
+    return 1
+}
+
 # scen_hop <case> <version> <phase>
 #   phase=position  bring the machine to the version the case starts in; not a result
 #   phase=ladder    the step under test
@@ -2293,8 +2332,11 @@ scen_hop() {
     # the strongest possible outcome of a jump read as a failure (round 2: S3/S4/S7 red on a
     # hop that had done exactly what ac-3 asks for). `limited` and `unknown` still fail: the
     # first cannot install anything for its own kernel, the second is no record at all.
+    # The reason the hop lands in is judged by hop_packages_reason, which is `none` on every
+    # case but S7: S7 moved the feed list itself, so `network` is its own edit reported back
+    # and not a defect, while every other reason stays red there too.
     _check assert_field packages aligned "${_case}"
-    _check assert_field packages_reason none "${_case}"
+    _check hop_packages_reason "${_case}" "${_booted}"
     [ "${CASE_FAILED}" -eq 0 ] || return 1
     ev "hop ${_phase}: ${_version} committed on slot ${_target}, generation $((_gen + 1))"
     return 0
@@ -3083,7 +3125,12 @@ run_s7() {
             return 1
             ;;
         *)
-            CASE_NOTE="the jump to ${_to} did not commit; the feed list was put back"
+            # scen_hop has already named the step that failed, and its wording is kept: this
+            # branch catches a jump that really did not commit *and* a jump that committed
+            # with one judged field disagreeing. Writing "did not commit" for both made round
+            # 3 read a hop that had committed, switched slots and aligned its packages as a
+            # broken jump, which sent the diagnosis after the wrong defect.
+            CASE_NOTE="the jump to ${_to} was judged red (${CASE_NOTE:-scen_hop recorded no reason}); the feed list was put back"
             _fail "${_case}" "${CASE_NOTE}"
             s7_restore_or_warn "${_bakf}"
             return 1
@@ -4124,6 +4171,10 @@ plan_case() {
             printf '%s 2/6 snapshot A expect=apk list --installed plus the version of every package and the kernel dependency (apk info -R) of every kmod\n' "${_case}"
             printf '%s 3/6 hop %s -> %s expect=committed on the other slot, generation+1, upper=@overlay-%s (scen_hop'"'"'s own rule)\n' \
                 "${_case}" "${_s7_from}" "${_s7_to}" "${_s7_to}"
+            # The plan has to print what the hop is judged on, including the one allowance
+            # this case's path makes: this case moved the feed list itself, so the aligner
+            # reporting `network` afterwards is this case's own edit coming back, not a defect.
+            printf '%s 3/6 hop-packages assert packages=aligned packages_reason=none|network expect=PASS; network is accepted on this case alone because this case moved the feed list, and it is named in the note as the case'"'"'s own edit. limited, unknown and every other token are still judged red\n' "${_case}"
             printf '%s 3/6 snapshot B expect=the same two files on the version now running\n' "${_case}"
             printf '%s 4/6 diff A vs B expect=one row per package (version-changed|disappeared|new|same) and each kmod with the kernel dependency it carries against the running kernel\n' "${_case}"
             printf '%s 5/6 read %s expect=equal to the %s bytes -> FINDING: the package source did not follow the version (never FAIL); equal to the %s bytes -> recorded, no finding\n' \
