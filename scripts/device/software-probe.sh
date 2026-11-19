@@ -77,10 +77,21 @@ EVIDENCE_DIR=${AB_EVIDENCE_DIR:-}
 # "changes outside task scope" - a driver's working file refusing a commit it has nothing to
 # do with. RESULTS is the row channel full-test.sh already hands over, so its directory is
 # the one that is guaranteed to be the round's own.
+# ${RESULTS%/*} on a bare filename strips nothing and on a path with no slash yields the
+# filename itself, so the directory has to be asked for rather than derived by trimming: a
+# caller that passes --results results.tsv would otherwise get results.tsv/software-state,
+# which mkdir turns into a directory named after the file.
+_results_dir() {
+    case "${1:-}" in
+        "") printf '' ;;
+        */*) printf '%s' "${1%/*}" ;;
+        *) printf '.' ;;
+    esac
+}
 if [ -n "${AB_SWPROBE_STATE:-}" ]; then
     STATE_DIR=${AB_SWPROBE_STATE}
-elif [ -n "${RESULTS:-}" ]; then
-    STATE_DIR=${RESULTS%/*}/software-state
+elif _sd=$(_results_dir "${RESULTS}") && [ -n "${_sd}" ]; then
+    STATE_DIR=${_sd}/software-state
 else
     STATE_DIR=software-probe-state
 fi
