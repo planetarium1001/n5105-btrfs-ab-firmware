@@ -646,8 +646,16 @@ _add_sources() {
         >>"${STATE_DIR}/sources.tsv"
     # apk needs its index refreshed before a feed it has not seen can answer. A failure here
     # is not fatal: a sample that then cannot be found is already a GAP with its own command.
-    devcfg_exec 'apk update' >/dev/null 2>&1 ||
-        _log "${_as_ev}" "apk update failed after the source was written"
+    # Same lock as an install takes: the index refresh is another apk transaction, and the
+    # machine's own follow may still hold the database right after a hop. Not fatal either way,
+    # so a machine that is still busy is recorded as skipped, not as a feed that failed.
+    if _as_lock=$(dev_wait_apk_lock); then
+        devcfg_exec 'apk update' >/dev/null 2>&1 ||
+            _log "${_as_ev}" "apk update failed after the source was written"
+        _log "${_as_ev}" "apk-lock: ${_as_lock}"
+    else
+        _log "${_as_ev}" "apk update skipped, the machine was still locked: ${_as_lock}"
+    fi
     _log "${_as_ev}" "source=${SOURCES_PATH} had_original=${_as_had}" "urls:" "${THIRD_PARTY_URLS}"
     _record "SW-sources" PASS "${_as_ev}" "path=${SOURCES_PATH} had_original=${_as_had}"
     return 0
@@ -798,7 +806,18 @@ _install_sample() {
             ;;
     esac
 
-    _log "${_is_ev}" "sample=${_is_name} kind=${_is_kind} url=${_is_url}"
+    # The machine holds the apk database lock while its own package follow moves the installed
+    # set onto a new base (minutes after a hop), so an install that starts in that window
+    # fails with `Unable to lock database` and the sample would be filed as a broken feed.
+    # Wait, bounded; a machine still locked at the bound is its own reason token.
+    if ! _is_lock=$(dev_wait_apk_lock); then
+        _log "${_is_ev}" "sample=${_is_name} kind=${_is_kind} url=${_is_url}" "apk-lock: ${_is_lock}"
+        _record "${_is_case}" GAP "${_is_ev}" \
+            "reason=apk-locked ${_is_lock} cmd=\"apk add ${_is_name}\" rerun=\"sh scripts/device/software-probe.sh --sample ${_is_name}\""
+        return 0
+    fi
+    _log "${_is_ev}" "sample=${_is_name} kind=${_is_kind} url=${_is_url}" \
+        "apk-lock: ${_is_lock}"
     _is_rc=0
     case "${_is_url}" in
         *.apk)

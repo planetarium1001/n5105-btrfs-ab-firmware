@@ -58,6 +58,17 @@ case "${last}" in
     *"cat >"*)
         cat >"${STUB_PUSH_DEST:?stub needs STUB_PUSH_DEST}"
         ;;
+    # dev_apk_lock_state decides on the machine and prints one word. STUB_LOCK_HELD is how
+    # many probes answer `held` before the stub releases the lock: a machine that is moving
+    # its packages for a few polls and then finishes.
+    *"flock -n "*)
+        n=$(( $(cat "${STUB_LOCK_COUNTER:?stub needs STUB_LOCK_COUNTER}" 2>/dev/null || echo 0) + 1 ))
+        printf '%s\n' "$n" >"${STUB_LOCK_COUNTER}"
+        if [ "$n" -le "${STUB_LOCK_HELD:-0}" ]; then printf 'held\n'; else printf 'free\n'; fi
+        ;;
+    *"ps w"*)
+        printf '%s\n' "${STUB_LOCK_WHO:-}"
+        ;;
     *)
         exit 0
         ;;
@@ -76,7 +87,9 @@ STUB_UP_COUNTER="$tmp/up.counter"
 STUB_PUSH_DEST="$tmp/pushed.bin"
 STUB_PUSH_CMD_FILE="$tmp/push-cmd.txt"
 STUB_STATE_FILE="$tmp/state.json"
+STUB_LOCK_COUNTER="$tmp/lock.counter"
 export STUB_CALLS STUB_STATUS_FILE STUB_UP_COUNTER STUB_PUSH_DEST STUB_STATE_FILE
+export STUB_LOCK_COUNTER
 export PATH="$stub_bin:$PATH"
 
 # One healthy machine, in the shape ab-slot status really prints: one line on stdout,
@@ -188,6 +201,58 @@ out=$(dev_wait_settled 10 2>&1)
 assert_eq "$?" "1" "settle fails when no status line can be read at all"
 export STUB_STATUS_FILE="$tmp/status.txt"
 unset STUB_STATUS_QUEUE
+
+# --- ac-7: the apk database lock is waited for, and the wait is bounded ------ #
+# The product's own package follow holds the apk lock for minutes after a hop, and a driver
+# that calls apk in that window gets `Unable to lock database`. The three facts a row needs:
+# a busy machine is waited for, the seconds are printed so the row can say them, and a machine
+# that never lets go is a failure after the bound - never an endless wait, and never a forced
+# transaction. The stub `sleep` above is a no-op, so the waits cost no wall clock here.
+AB_APK_LOCK_POLL=1
+printf '0\n' >"$STUB_LOCK_COUNTER"
+STUB_LOCK_HELD=3
+export STUB_LOCK_HELD
+out=$(dev_wait_apk_lock 30)
+assert_eq "$?" "0" "a machine that releases the lock is waited for, and the call proceeds"
+assert_eq "$out" "apk-lock-waited=3s state=free" "the wait reports the seconds it spent and that apk may run now"
+assert_eq "$(cat "$STUB_LOCK_COUNTER")" "4" "three held probes plus the one that found it free: the loop stops on the first free answer"
+
+printf '0\n' >"$STUB_LOCK_COUNTER"
+STUB_LOCK_HELD=99
+out=$(dev_wait_apk_lock 4)
+assert_eq "$?" "1" "a machine that is still locked at the bound fails instead of waiting forever"
+assert_eq "$out" "apk-lock-waited=4s state=held" "the failure names the bound it hit, so the case can report the seconds"
+assert_eq "$(cat "$STUB_LOCK_COUNTER")" "5" "the bound buys four polls (1 s apart) after the first look, not an endless loop"
+
+printf '0\n' >"$STUB_LOCK_COUNTER"
+STUB_LOCK_HELD=0
+out=$(dev_wait_apk_lock 30)
+assert_eq "$?" "0" "a free machine is not slept on at all"
+assert_eq "$out" "apk-lock-waited=0s state=free" "nothing was waited for, and the row says zero rather than leaving it out"
+assert_eq "$(cat "$STUB_LOCK_COUNTER")" "1" "one probe is enough when the lock is free"
+
+# A machine that cannot answer the probe must not be reported as free: "unknown" and
+# "noflock" are carried through to the row, and apk's own answer decides the verdict.
+saved_path="$PATH"
+mkdir -p "$tmp/silent" "$tmp/unreachable"
+# A stub that answers nothing (an older guest, a shell that ate the command) and one that
+# fails the way ssh does when the machine is down.
+printf '#!/bin/sh\nexit 0\n' >"$tmp/silent/ssh"
+printf '#!/bin/sh\nexit 255\n' >"$tmp/unreachable/ssh"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/silent/sleep"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/unreachable/sleep"
+chmod +x "$tmp/silent/ssh" "$tmp/unreachable/ssh" "$tmp/silent/sleep" "$tmp/unreachable/sleep"
+PATH="$tmp/silent:$saved_path"
+out=$(dev_wait_apk_lock 5)
+assert_eq "$?" "0" "a probe that answers nothing does not fail the step: the apk call itself can still speak"
+assert_eq "$out" "apk-lock-waited=0s state=unknown" "an unheard probe is named unknown, never reported as free"
+PATH="$tmp/unreachable:$saved_path"
+out=$(dev_wait_apk_lock 5)
+assert_eq "$?" "0" "an unreachable machine does not turn the wait into the verdict by itself"
+assert_eq "$out" "apk-lock-waited=0s state=unknown" "an unreachable machine is unknown too, and is not waited on"
+PATH="$saved_path"
+STUB_LOCK_HELD=0
+export STUB_LOCK_HELD
 
 # --- ac-3: push over a stdin pipe ------------------------------------------ #
 printf 'PAYLOAD-BYTES-25.12.1' >"$tmp/payload-25.12.1.tar"

@@ -192,6 +192,11 @@ FEED_KMODS=""
 FEED_INDEX=""
 FEED_URLS=""
 FEED_NOTE=""
+# Seconds this run spent waiting for the machine's apk database lock, summed over every index
+# refresh it asked for (a hop resolves a feed for the version it leaves and the one it lands
+# on). Zero is the normal case and is left out of the row; a number is what explains a run that
+# took a minute longer than the one before it with nothing else different.
+FEED_LOCK_WAITED=0
 FEED_RESOLVED_FOR=""
 FEED_VERSION=""
 FEED_PRE_RC=0
@@ -900,6 +905,23 @@ feed_point() {
     # minutes after a base hop (measured 2026-11-19: apk --timeout 300 upgrade still running
     # while this leg asked). The two are told apart in the note so a reader does not go
     # looking for a broken mirror.
+    #
+    # Waiting first is what makes that distinction cheap: the follow finishes and the refresh
+    # runs, instead of the leg being given up on. The wait is bounded (lib.sh:
+    # dev_wait_apk_lock), and a machine still locked at the bound is a GAP naming the seconds.
+    if ! _fp_lock=$(dev_wait_apk_lock); then
+        FEED_NOTE="the apk database lock was still held after ${AB_APK_LOCK_WAIT}s (${_fp_lock}) after ${_fp_v}'s feed was written: the machine is moving its installed packages onto the base it booted, so the feed leg was not measured"
+        ev "feed ${_fp_label}: rc=4 ${FEED_NOTE}"
+        return 4
+    fi
+    ev "feed ${_fp_label}: apk-lock ${_fp_lock}"
+    # The token is parsed rather than read from AB_APK_LOCK_WAITED: the wait above runs inside
+    # a command substitution, so the variable it sets there belongs to that subshell.
+    _fp_waited=$(printf '%s' "${_fp_lock}" | sed -n 's/^apk-lock-waited=\([0-9][0-9]*\)s .*/\1/p')
+    case "${_fp_waited}" in
+        '' | 0) : ;;
+        *) FEED_LOCK_WAITED=$((FEED_LOCK_WAITED + _fp_waited)) ;;
+    esac
     if ! _out=$(dev_ssh 'apk update' 2>&1); then
         case "${_out}" in
             *'Unable to lock database'*)
@@ -1131,6 +1153,7 @@ _check() { "$@" || HOP_FAILED=1; }
 hop_run() {
     _case=${1:?hop_run needs a case}
     CASE_NOTE=""
+    FEED_LOCK_WAITED=0
     SAMPLES_MODE=""
     SAMPLES_VERDICT=""
     SAMPLES_GAP=0
@@ -1389,6 +1412,7 @@ feed_fact() {
     [ -n "${FEED_ROOT}" ] && _ff="${_ff} root=${FEED_ROOT}"
     [ -n "${FEED_KMODS}" ] && _ff="${_ff} kmods=${FEED_KMODS}"
     [ -n "${FEED_INDEX}" ] && _ff="${_ff} index=${FEED_INDEX}"
+    [ "${FEED_LOCK_WAITED:-0}" -gt 0 ] && _ff="${_ff} apk-lock-waited=${FEED_LOCK_WAITED}s"
     printf '%s\n' "${_ff}"
 }
 

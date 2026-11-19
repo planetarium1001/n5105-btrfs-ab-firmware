@@ -257,6 +257,9 @@ CASE_NOTE=""
 CASE_FINDINGS=""
 CASE_FAILED=0
 STATUS_LINE=""
+# The apk-lock token of the last need_apk_lock call: what the row says about a machine that
+# was still moving its packages when the case asked it to install something.
+APK_LOCK_NOTE=""
 SCEN_CMD=""
 # The UTC instant this case is named after (2026-11-16T19-33-22Z). It names the evidence log
 # and every backup the case takes, so one string answers "which run left this behind". The
@@ -526,6 +529,47 @@ _finding() {
         CASE_FINDINGS="${CASE_FINDINGS}; FINDING: ${1}"
     fi
     ev "FINDING: ${1}"
+}
+
+# need_apk_lock <what>: wait, bounded, for the machine's apk database lock before a step that
+# runs apk, and turn a timeout into this case's own GAP note.
+#
+# The product moves the installed packages onto a new base with one `apk upgrade` in a
+# background worker right after a hop, and that transaction holds the apk database lock for
+# minutes. A driver that calls apk in that window gets `ERROR: Unable to lock database` and
+# nothing about the package was measured - which is how one locked database turned S1 into a
+# GAP and S3/S4/S5 into "run --case S1 first" (round 7, 2026-11-19). Waiting is what the user
+# does too; forcing or deleting the lock would hide the machine's real state.
+#
+# Returns 0 when apk can run now (or when nobody can tell, so apk's own answer decides), and
+# 2 when the lock was still held at the bound: the caller returns 2 as well, so the case lands
+# as GAP naming the seconds instead of as "the feed is broken". The seconds also go into the
+# note of a case that waited successfully, because "this run spent 40 s waiting for the
+# machine" is what tells a reader the hop was still following packages.
+need_apk_lock() {
+    _nl_what=${1:-apk}
+    if _nl=$(dev_wait_apk_lock); then
+        # The wait runs in a subshell here, so the token is what carries the number back.
+        APK_LOCK_NOTE=${_nl}
+        ev "apk-lock ${_nl_what}: ${_nl}"
+        return 0
+    fi
+    APK_LOCK_NOTE=${_nl}
+    CASE_NOTE="the apk database lock was still held after ${AB_APK_LOCK_WAIT}s (bounded wait, ${_nl}), so ${_nl_what} could not run and nothing about the packages was measured: the machine is moving its installed packages onto the base it booted"
+    ev "${CASE_NOTE}"
+    return 2
+}
+
+# apk_lock_suffix: the waited tokens for a case note, empty when the lock was free.
+# A zero-second wait is left out on purpose - most cases have nothing to wait for, and a row
+# that always ends in `apk-lock-waited=0s` teaches a reader to skip the token that matters on
+# the run where the machine was busy for a minute.
+apk_lock_suffix() {
+    _kls=$(printf '%s' "${APK_LOCK_NOTE:-}" | sed -n 's/^apk-lock-waited=\([0-9][0-9]*\)s .*/\1/p')
+    case "${_kls}" in
+        '' | 0) return 0 ;;
+    esac
+    printf ', %s' "${APK_LOCK_NOTE}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -1609,6 +1653,11 @@ run_s1() {
         ev "${CASE_NOTE}"
         return 2
     fi
+    # The machine may still be moving its own packages onto the base it booted, and that
+    # transaction holds the apk database lock for minutes: the first apk call of this case is
+    # where a locked database used to cost the whole round (S1 GAP, then S3/S4/S5 "run S1
+    # first"). The wait is bounded and its number lands in the row.
+    need_apk_lock "the S1 package batch" || return 2
 
     _kver=$(kv "${PROBE}" kver)
     _stamp=${SCEN_STAMP}
@@ -1763,7 +1812,7 @@ run_s1() {
     pull "${SCEN_EVIDENCE}/packages.tsv" || { _fail "${_case}" "${SCEN_EVIDENCE}/packages.tsv is not readable after the write"; return 1; }
 
     [ "${CASE_FAILED}" -eq 0 ] || return 1
-    CASE_NOTE="installed ${_ok}/$(printf '%s' "${SCEN_PKGS}" | wc -w | tr -d ' ') (${_pkgs_ok} package(s), ${_kmod_ok} kmod), snapshot ${_snap_n:-0} rows, install-then-remove ${_cy_outcome:-not measured}"
+    CASE_NOTE="installed ${_ok}/$(printf '%s' "${SCEN_PKGS}" | wc -w | tr -d ' ') (${_pkgs_ok} package(s), ${_kmod_ok} kmod), snapshot ${_snap_n:-0} rows, install-then-remove ${_cy_outcome:-not measured}$(apk_lock_suffix)"
     [ "${_bad}" -eq 0 ] || CASE_NOTE="${CASE_NOTE}, unavailable: ${_unavailable}"
     return 0
 }
@@ -3062,6 +3111,13 @@ run_s7() {
         return 1
     fi
     ev "feeds now ${_from}'s: ${_w}"
+    # The same lock as S1: the hop that positioned this machine may still be following
+    # packages. The refresh is what the case is about, so a machine that is still locked is a
+    # GAP naming the seconds -- not "this machine cannot reach its own feeds".
+    if ! need_apk_lock "the ${_from} feed refresh"; then
+        s7_restore_or_warn "${_bakf}"
+        return 2
+    fi
     _upd=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
     if [ "$(kv "${_upd}" rc)" != "0" ]; then
         CASE_NOTE="apk update failed on ${_from}'s own feeds (rc=$(kv "${_upd}" rc): $(printf '%s' "${_upd}" | sed -n 's/.* out=//p')): this machine cannot reach its release feeds, so the package source cannot be judged"
@@ -3232,6 +3288,12 @@ run_s7() {
         return 1
     fi
     ev "feeds now ${_to}'s: ${_w}"
+    # Same lock, second time: step 6 runs right after the jump. A feed that could not be
+    # refreshed because the machine was busy says so in a GAP instead of failing the case.
+    if ! need_apk_lock "the ${_to} feed refresh"; then
+        s7_restore_or_warn "${_bakf}"
+        return 2
+    fi
     _upd=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
     if [ "$(kv "${_upd}" rc)" != "0" ]; then
         CASE_NOTE="apk update failed on ${_to}'s own feeds (rc=$(kv "${_upd}" rc)): the aligned feed could not be refreshed"
@@ -3292,7 +3354,7 @@ run_s7() {
     fi
 
     [ "${CASE_FAILED}" -eq 0 ] || return 1
-    CASE_NOTE="${_from}->${_to}: A ${_n_a} / B ${_n_b} installed package(s), diff ${_n_chg} version change(s), ${_n_gone} disappeared, ${_n_new} new (${_n_unchanged:-0} unchanged), kernel ${_kver_a:-?}->${_kver_b:-?}; feeds after the jump ${_feeds_state}; aligned ${_to} feeds install ${_proved} (${_proved_ver:-unknown}); ${SCEN_S7_FEEDS} restored"
+    CASE_NOTE="${_from}->${_to}: A ${_n_a} / B ${_n_b} installed package(s), diff ${_n_chg} version change(s), ${_n_gone} disappeared, ${_n_new} new (${_n_unchanged:-0} unchanged), kernel ${_kver_a:-?}->${_kver_b:-?}; feeds after the jump ${_feeds_state}; aligned ${_to} feeds install ${_proved} (${_proved_ver:-unknown}); ${SCEN_S7_FEEDS} restored$(apk_lock_suffix)"
     return 0
 }
 
@@ -3811,6 +3873,14 @@ s8_apk() {
         *write_rc=0*) ev "S8 apk: 404 feed list written -- ${_bad}" ;;
         *) _fail "${_case}" "apk: the 404 feed list could not be written (${_bad:-no answer})" ;;
     esac
+    # A lock error here would read as "the 404 was witnessed", which is the one thing this
+    # class must not get wrong, so the machine is waited for first and a machine that stays
+    # locked is reported as not judged.
+    if ! need_apk_lock "the 404 feed refresh"; then
+        s8_notjudged "${_cls}" "${_bak}" "${CASE_NOTE}" "host (cp from the backup)"
+        s8_restore_ok "${SCEN_S7_FEEDS}" "${_bak}/$(printf '%s' "${SCEN_S7_FEEDS}" | sed -e 's|^/|_|' -e 's|/|_|g').bak" "${_orig}" || true
+        return 2
+    fi
     _upd=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
     _badfeed_failed=no
     if [ "$(kv "${_upd}" rc)" = "0" ]; then
@@ -3832,6 +3902,10 @@ s8_apk() {
     else
         _fail "${_case}" "apk: ${SCEN_S7_FEEDS} is not byte-identical to the backup after the restore"
         _s8_outcome="apk: the restore is not byte-identical to ${_bak}"
+    fi
+    if ! need_apk_lock "the restored-feed refresh"; then
+        s8_notjudged "${_cls}" "${_bak}" "${CASE_NOTE}" "host (cp from the backup)"
+        return 2
     fi
     _upd2=$(scen exec apk update 2>/dev/null | grep '^cmd=' | head -n 1)
     if [ "$(kv "${_upd2}" rc)" = "0" ]; then
@@ -3966,6 +4040,7 @@ scen_case() {
     CASE_NOTE=""
     CASE_FINDINGS=""
     CASE_FAILED=0
+    APK_LOCK_NOTE=""
     mkdir -p "${EVIDENCE_DIR}" || { CASE_NOTE="cannot create ${EVIDENCE_DIR}"; return 1; }
     # One stamp per case, to the second: the log name and this case's backup directory names
     # are derived from the same instant, so a re-run later the same day cannot collide with

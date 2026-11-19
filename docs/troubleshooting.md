@@ -162,6 +162,43 @@ never rolls back a system update that passed its checks. What that does not cove
   a block that promised 39 packages and a record that says 37 is a prediction and a
   measurement, not a contradiction.
 
+## apk says the database is locked
+
+Symptom: `apk add`, `apk del` or `apk update`, run in the first minutes after an upgrade, fails:
+
+```
+ERROR: Unable to lock database: Resource temporarily unavailable
+ERROR: Failed to open apk database: Resource temporarily unavailable
+```
+
+Cause: the first boot of a new base moves the installed packages onto it with one `apk upgrade`
+over the whole world, in a background worker. That transaction holds the apk database lock for
+its whole run - 168 packages on the reference machine - so any other apk transaction started in
+that window cannot open the database. No package is broken and nothing is lost: the same command
+works once the worker has finished.
+
+Handling:
+
+- Wait for the worker, then run the command again.
+- `ab-slot status` reports the state: `packages=aligned` (the packages have not moved yet),
+  `packages=followed` (they are on the new base) or `packages=limited` (partial metadata, and
+  `packages_reason=` names why). `follow=pending` means the move is still owed,
+  `follow=followed` that it is done, `follow=never` that there was nothing to move, and
+  `follow=failed` or `follow=abandoned` that it did not run; `ab-packages update` retries it on
+  demand.
+- `ab-slot log` carries one `stage=packages-refresh slot=<a|b> result=<state> reason=<token>
+  version=<base>` line per attempt, and `ps w | grep apk` shows the transaction that holds the
+  lock.
+- The worker's own output is in `/tmp/ab-packages-follow.log`.
+
+Do not:
+
+- delete `/lib/apk/db/lock` - the lock is what keeps two transactions from rewriting the same
+  database, and a database left half-written is worse than a wait;
+- kill the apk process that holds it - that leaves the same half-written database, on a machine
+  that is otherwise working;
+- pass a force flag to push the transaction past the lock.
+
 ## Services can be left down by the first boot of a new base
 
 The first boot after an upgrade moves the package set, and procd starts boot scripts inside

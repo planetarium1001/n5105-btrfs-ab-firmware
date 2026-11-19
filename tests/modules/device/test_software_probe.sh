@@ -144,6 +144,12 @@ case "$cmd" in
     'apk update')
         exit 0
         ;;
+    # The apk-lock probe (scripts/device/lib.sh:dev_apk_lock_state) is one command that
+    # decides on the machine and prints one word. STUB_APK_LOCK=held makes the stub machine
+    # look busy, which is how the waiting paths are exercised without a device.
+    'if [ ! -e '*'lock ]; then printf '*)
+        printf '%s\n' "${STUB_APK_LOCK:-free}"
+        ;;
     'curl '*127.0.0.1/*)
         [ "${STUB_NO_CURL:-0}" = "1" ] && exit 127
         printf '%s' "${STUB_UI:-200}"

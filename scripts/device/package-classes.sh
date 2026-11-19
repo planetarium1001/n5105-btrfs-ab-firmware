@@ -1298,6 +1298,17 @@ ensure_baseline() {
     fi
     LOCAL_REMOTE_BODY=${_eb_local_file}
     ev "baseline: installing the three classes (distfeeds=${DIST_PKG} customfeeds=${CUSTOM_PKG} local=${LOCAL_PKG}, local-body=${_eb_local_state}, local-body-source=${LOCAL_BODY_SOURCE:-kept})"
+    # The baseline installs three packages and refreshes an index, and the machine's own
+    # package follow may still be holding the apk database lock after the hop that brought it
+    # here (minutes, 168 packages). Waiting is bounded; a machine still locked at the bound is
+    # a GAP with its own reason instead of an install that "failed".
+    if ! _eb_lock=$(dev_wait_apk_lock); then
+        printf 'baseline: %s\n' "${_eb_lock}" >&2
+        ev "baseline: ${_eb_lock}; the classes were not installed"
+        BASELINE_REASON="baseline:apk-locked"
+        return 2
+    fi
+    ev "baseline: apk-lock ${_eb_lock}"
     if ! _ask baseline; then
         BASELINE_REASON="baseline:no-answer"
         return 2
@@ -1771,6 +1782,13 @@ hop_run() {
     fi
     printf '%s\n' "${_probe_answer}" | sed 's/^/  probe: /' | tr '\t' ' '
     ev "probe: $(printf '%s' "${_probe_answer}" | tr '\n' '|' | cut -c1-4000)"
+    # The refresh is the part that writes: apk fetch, apk add and apk del. Same lock, same wait.
+    if ! _pc_lock=$(dev_wait_apk_lock); then
+        CASE_NOTE="the apk database lock was still held after ${AB_APK_LOCK_WAIT}s (${_pc_lock}), so the new package and the replay were not measured: the machine is moving its installed packages onto the base it booted"
+        ev "${CASE_NOTE}"
+        return 2
+    fi
+    ev "refresh: apk-lock ${_pc_lock}"
     if ! _ask refresh; then
         CASE_NOTE="the refresh script did not answer (the new package and the replay were not measured)"
         ev "${CASE_NOTE}"

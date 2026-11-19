@@ -609,6 +609,30 @@ case "${last}" in
                 ;;
         esac
         ;;
+    "if [ ! -e /lib/apk/db/lock ]"*)
+        # The apk-lock probe of scripts/device/lib.sh: a machine that is still moving its own
+        # packages answers `held` for every look. $dev/apklock is how a test makes it busy.
+        if [ -f "$dev/apklock" ]; then
+            if [ -f "$dev/apklock-clears" ]; then
+                n=$(( $(cat "$dev/apklock-clears") - 1 ))
+                if [ "$n" -le 0 ]; then
+                    rm -f "$dev/apklock" "$dev/apklock-clears"
+                    printf 'free\n'
+                else
+                    printf '%s\n' "$n" >"$dev/apklock-clears"
+                    printf 'held\n'
+                fi
+            else
+                printf 'held\n'
+            fi
+        else
+            printf 'free\n'
+        fi
+        ;;
+    "ps w"*)
+        [ -f "$dev/apklock" ] && printf ' 1234 root     apk upgrade --no-progress --no-cache\n'
+        exit 0
+        ;;
     *)
         exit 0
         ;;
@@ -664,7 +688,7 @@ HASH
     # refuses nothing.
     : >"$FAKE_DEV/pkginstalled"
     : >"$FAKE_DEV/pkgcycle-unavailable"
-    rm -f "$FAKE_DEV/packages" "$FAKE_DEV/packages-reason" "$FAKE_DEV/sshdead"
+    rm -f "$FAKE_DEV/packages" "$FAKE_DEV/packages-reason" "$FAKE_DEV/sshdead" "$FAKE_DEV/apklock"
     : >"$STUB_CALLS"
 }
 
@@ -758,6 +782,55 @@ printf 'no' >"$FAKE_DEV/apk"
 out=$(run_scen "$tmp/r-s1-noapk" --case S1)
 assert_eq "$?" "4" "a machine without apk is a gap for the preinstall case"
 assert_contains "$(note_of "$tmp/r-s1-noapk")" "no apk on this image" "the gap names the reason"
+
+# The machine is still moving its own packages onto the base it booted, so the apk database is
+# locked. That is not a broken feed and not a broken machine: the driver waits, the wait is
+# bounded, and the case lands as a GAP that names the seconds. Both halves matter - a driver
+# that forced the transaction would hide the machine's state, and one that reported
+# "package unavailable" would lose the case for a reason the user cannot act on. Round 7 lost
+# S1 this way, and S3, S4, S5 and R2 with it (2026-11-19).
+setup_fake_device 25.12.2
+: >"$FAKE_DEV/apklock"
+AB_APK_LOCK_WAIT=2
+AB_APK_LOCK_POLL=1
+export AB_APK_LOCK_WAIT AB_APK_LOCK_POLL
+out=$(run_scen "$tmp/r-s1-locked" --case S1)
+rc=$?
+unset AB_APK_LOCK_WAIT AB_APK_LOCK_POLL
+assert_eq "$rc" "4" "a machine whose apk database is locked at the bound is a GAP, not a FAIL"
+assert_eq "$(verdict_of "$tmp/r-s1-locked")" "GAP" "the locked database is a gap in the world, not a red machine"
+assert_contains "$(note_of "$tmp/r-s1-locked")" "apk database lock was still held after 2s" \
+    "the row names the lock and the seconds the driver waited for it"
+assert_contains "$(note_of "$tmp/r-s1-locked")" "moving its installed packages onto the base it booted" \
+    "the row says what the machine was doing, which is the fact the user needs"
+assert_eq "$(grep -c 'pkginstall' "$STUB_CALLS" || true)" "0" \
+    "no package was attempted while the lock was held: nothing was forced through it"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s1-locked" s1)")" "apk-lock: held (" \
+    "the evidence says who was inside the transaction, for a reader with one machine"
+
+# The same machine, but the lock is released on the first look: the case runs, and the row
+# says the wait cost nothing, so a reader can tell a busy machine from an idle one.
+setup_fake_device 25.12.2
+out=$(run_scen "$tmp/r-s1-unlocked" --case S1)
+assert_eq "$?" "0" "an unlocked machine runs S1 normally"
+assert_contains "$(cat "$(evidence_of "$tmp/r-s1-unlocked" s1)")" "apk-lock-waited=0s state=free" \
+    "the wait is recorded with zero seconds when there was nothing to wait for"
+
+# A lock that is released while the driver is waiting: the case proceeds, and the row carries
+# the seconds. $dev/apklock-clears is the number of looks that answer `held` before the file
+# is removed, which is a machine that finishes its follow mid-wait.
+setup_fake_device 25.12.2
+: >"$FAKE_DEV/apklock"
+printf '2\n' >"$FAKE_DEV/apklock-clears"
+AB_APK_LOCK_WAIT=30
+AB_APK_LOCK_POLL=1
+export AB_APK_LOCK_WAIT AB_APK_LOCK_POLL
+out=$(run_scen "$tmp/r-s1-lockreleased" --case S1)
+rc=$?
+unset AB_APK_LOCK_WAIT AB_APK_LOCK_POLL
+assert_eq "$rc" "0" "a lock that is released during the wait does not cost the case"
+assert_contains "$(note_of "$tmp/r-s1-lockreleased")" "apk-lock-waited=" \
+    "the row says how long the machine was busy"
 
 # --- ac-4 (R5): install, run once, remove, and nothing left behind --------- #
 # The first package of the cycle is installed, run, listed and removed. All three witnesses

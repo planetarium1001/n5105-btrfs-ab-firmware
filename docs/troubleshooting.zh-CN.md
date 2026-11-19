@@ -144,6 +144,38 @@ sleep 8 | ssh -tt -i <key> root@<host>
 - **预测可能不准。** 计划块是对暂存副本跑 `apk --simulate` 渲染的，feed 可能在提问与启动之间
   变化。记录才是事实；块承诺 39 个而记录说 37 个，不是矛盾，而是预测与实测。
 
+## apk 说数据库被锁定
+
+现象：升级后的头几分钟里执行 `apk add`、`apk del` 或 `apk update`，得到：
+
+```
+ERROR: Unable to lock database: Resource temporarily unavailable
+ERROR: Failed to open apk database: Resource temporarily unavailable
+```
+
+原因：新 base 的首启用一次覆盖整个 world 的 `apk upgrade` 把已安装的包搬过去，跑在后台
+worker 里。这个事务在整段运行期间持有 apk 数据库锁——参考机器上是 168 个包——因此在这个窗口
+里启动的任何其他 apk 事务都打不开数据库。没有包损坏，也没有东西丢失：worker 结束后同一条命令
+即可正常执行。
+
+处理：
+
+- 等 worker 结束，再执行一次命令。
+- `ab-slot status` 报告状态：`packages=aligned`（包还没搬）、`packages=followed`（已经在新 base
+  上）或 `packages=limited`（元数据不全，`packages_reason=` 说明原因）。`follow=pending` 表示
+  搬动仍待执行，`follow=followed` 表示已完成，`follow=never` 表示没有需要搬的，`follow=failed` 或
+  `follow=abandoned` 表示没有跑成；`ab-packages update` 可按需重试。
+- `ab-slot log` 每次尝试留一行 `stage=packages-refresh slot=<a|b> result=<state>
+  reason=<token> version=<base>`，`ps w | grep apk` 显示持有锁的事务。
+- worker 自己的输出在 `/tmp/ab-packages-follow.log`。
+
+不要：
+
+- 删除 `/lib/apk/db/lock`——这把锁的作用就是不让两个事务同时改写同一个数据库，写坏的数据库
+  比等待更糟；
+- 杀掉持有锁的 apk 进程——同样会留下写坏的数据库，而且是在一台本来还能用的机器上；
+- 用强制参数把事务推过锁。
+
 ## 新 base 的首启可能让服务留在停止状态
 
 升级后的首次启动会搬动软件包集合，procd 就在这个窗口里启动引导脚本。在内核模块正被替换时

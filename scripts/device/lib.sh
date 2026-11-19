@@ -7,6 +7,7 @@
 #   . scripts/device/lib.sh
 #   dev_status                                 # one machine readable line
 #   dev_ssh_tty 8 'readlink /proc/$$/fd/0'     # interactive: pty, stdin kept open
+#   dev_wait_apk_lock 300                      # bounded wait for apk's database lock
 #   dev_push payload.tar /tmp/payload.tar      # stdin pipe, the guest has no sftp
 #   dev_install /tmp/payload.tar               # ab-upgrade
 #   dev_reboot; dev_wait_up_after after-install
@@ -341,6 +342,122 @@ dev_wait_settled() {
     done
     [ -n "${_line}" ] || return 1
     printf '%s\n' "${_line}"
+}
+
+# --------------------------------------------------------------------------- #
+# The apk database lock
+#
+# Every apk transaction holds an exclusive lock on <dbdir>/lock for its whole duration
+# (apk-tools 3.0.5: a 0-byte, mode 0600 file, taken with flock(2)). The product moves the
+# installed packages onto a new base with one `apk upgrade` over the world, in a background
+# worker that starts right after the hop, and that transaction holds the lock while it moves
+# 168 packages on the reference machine: minutes, not seconds (measured on the first boot of
+# a new base, 2026-11-19 and again on 2026-11-20). A driver that calls apk immediately after
+# a hop therefore races the machine's own work and gets
+#
+#   ERROR: Unable to lock database: Resource temporarily unavailable
+#
+# which is the user's problem as well: somebody running `apk add` in the first minutes after
+# an upgrade sees exactly this. The answer for a driver is to wait for the machine, bounded,
+# and to say in the row how long it waited - not to force the transaction through.
+#
+# Why flock(2) on that file is the probe, measured on the reference machine 2026-11-20:
+# with `flock /lib/apk/db/lock sleep 10` holding the file, `flock -n /lib/apk/db/lock true`
+# answers 1 and `apk update --no-network` answers the two ERROR lines above; with nobody
+# holding it the same flock answers 0. `apk add --simulate` does not take the lock at all
+# (rc=0, no error while the lock was held), so it cannot be the probe: a probe that never
+# contradicts the lock would report every busy machine as free.
+#
+# Three answers are kept apart, because "cannot tell" must never be read as "free":
+#   free      take the lock now; apk can run
+#   held      somebody (the follow, most likely) is inside a transaction
+#   noflock   the guest has no `flock` applet, so nothing here can tell; run and let apk say
+#   unknown   ssh answered nothing useful (dry run, unreachable machine); same as noflock
+# A missing <dbdir>/lock is free: apk has never taken that lock on this boot.
+# --------------------------------------------------------------------------- #
+
+AB_APK_DB_LOCK=${AB_APK_DB_LOCK:-/lib/apk/db/lock}
+# The bound on the wait. 300 s is the measured window of a first boot's follow with room to
+# spare, and it is a ceiling, not a schedule: a case that hits it is reported as a GAP naming
+# the seconds, because a machine that is still locked after five minutes is no longer "just
+# busy" and its state is the fact, not something a driver may override.
+AB_APK_LOCK_WAIT=${AB_APK_LOCK_WAIT:-300}
+AB_APK_LOCK_POLL=${AB_APK_LOCK_POLL:-5}
+# What the last wait in *this* shell spent, in seconds. A caller that captures the printed
+# token (the usual form, `if s=$(dev_wait_apk_lock)`) reads the token instead: the assignment
+# inside this file happens in the subshell of that capture and is gone afterwards.
+AB_APK_LOCK_WAITED=0
+
+# dev_apk_lock_state: free | held | noflock | unknown, in one ssh call and one token.
+# The remote side decides, so the driver does not have to guess at eval, quoting or the
+# shape of a busybox `flock` error: each branch prints exactly one word and nothing else.
+dev_apk_lock_state() {
+    if [ "${AB_DRY_RUN:-0}" = "1" ]; then
+        printf 'free\n'
+        return 0
+    fi
+    _als=$(dev_ssh "if [ ! -e ${AB_APK_DB_LOCK} ]; then printf 'free\n'
+elif ! command -v flock >/dev/null 2>&1; then printf 'noflock\n'
+elif flock -n ${AB_APK_DB_LOCK} true 2>/dev/null; then printf 'free\n'
+else printf 'held\n'
+fi" 2>/dev/null | head -n 1)
+    case "${_als}" in
+        free | held | noflock) printf '%s\n' "${_als}" ;;
+        *) printf 'unknown\n' ;;
+    esac
+}
+
+# dev_apk_lock_holder: what is inside a transaction, for the evidence beside a wait.
+# Busybox `ps w` and a truncated line: this is a hint for a reader, never a judgement, and a
+# machine that answers nothing prints nothing.
+dev_apk_lock_holder() {
+    dev_ssh 'ps w 2>/dev/null | grep "[a]pk" | head -n 3 | cut -c1-120' 2>/dev/null | tr '\n' ' '
+}
+
+# dev_wait_apk_lock [timeout_s]: wait, bounded, until apk can take its database lock.
+#
+#   if _lock=$(dev_wait_apk_lock); then ev "apk-lock ${_lock}"
+#   else CASE_NOTE="the lock was still held: ${_lock}"; return 2      # GAP
+#   fi
+#
+# Prints exactly one token line - `apk-lock-waited=<n>s state=<free|held|noflock|unknown>` -
+# which is what goes into a result row, so a reader can tell "the machine was busy for 42 s"
+# from "the machine had nothing to wait for". Exit 0 means apk may run now; exit 1 means the
+# lock was still held when the bound ran out, and the caller turns that into a GAP instead of
+# running a transaction that would fail on the lock anyway.
+#
+# What this deliberately does not do: delete /lib/apk/db/lock, kill the process holding it,
+# pass --force, or wait without a bound. The lock is the machine rewriting its own package
+# database; removing it or forcing past it hides the state the row exists to report, and the
+# unbounded version turns a driver that should give up into one that hangs.
+dev_wait_apk_lock() {
+    _wl_timeout=${1:-${AB_APK_LOCK_WAIT}}
+    case "${_wl_timeout}" in
+        '' | *[!0-9]*) _wl_timeout=${AB_APK_LOCK_WAIT} ;;
+    esac
+    _wl_poll=${AB_APK_LOCK_POLL}
+    case "${_wl_poll}" in
+        '' | *[!0-9]* | 0) _wl_poll=1 ;;
+    esac
+    _wl_state=$(dev_apk_lock_state)
+    _wl_waited=0
+    if [ "${_wl_state}" = "held" ]; then
+        _wl_who=$(dev_apk_lock_holder)
+        ev "apk-lock: held (${_wl_who:-no apk process visible}); waiting up to ${_wl_timeout}s"
+    fi
+    while [ "${_wl_state}" = "held" ] && [ "${_wl_waited}" -lt "${_wl_timeout}" ]; do
+        sleep "${_wl_poll}"
+        _wl_waited=$((_wl_waited + _wl_poll))
+        [ "${_wl_waited}" -le "${_wl_timeout}" ] || _wl_waited=${_wl_timeout}
+        _wl_state=$(dev_apk_lock_state)
+    done
+    AB_APK_LOCK_WAITED=${_wl_waited}
+    if [ "${_wl_state}" = "held" ]; then
+        printf 'apk-lock-waited=%ss state=held\n' "${_wl_waited}"
+        return 1
+    fi
+    printf 'apk-lock-waited=%ss state=%s\n' "${_wl_waited}" "${_wl_state}"
+    return 0
 }
 
 # --------------------------------------------------------------------------- #

@@ -283,6 +283,16 @@ case "${cmd}" in
         # line, exactly as ssh would hand both to the machine's shell.
         sh -c "${cmd}"
         ;;
+    'if [ ! -e /lib/apk/db/lock ]'*)
+        # The apk-lock probe (scripts/device/lib.sh:dev_apk_lock_state). STUB_APK_LOCK_HELD=n
+        # makes the machine answer `held` for the first n looks: a follow that finishes while
+        # the driver is waiting for it.
+        n=$(cat "${STUB_LOCK_COUNTER:?}" 2>/dev/null || printf '0')
+        n=$((n + 1))
+        printf '%s\n' "$n" >"${STUB_LOCK_COUNTER}"
+        if [ "$n" -le "${STUB_APK_LOCK_HELD:-0}" ]; then printf 'held\n'; else printf 'free\n'; fi
+        ;;
+    'ps w'*) printf ' 4242 root     apk upgrade --no-progress\n' ;;
     'apk update')
         case "${STUB_APK_UPDATE_LOCKED:-0}" in
             1)
@@ -348,10 +358,13 @@ reset_machine() { # [<running rootfs>]
 }
 
 # drv [args...]: the driver against the stub machine, budgets cut to seconds.
+lock_counter="$tmp/apk-lock.counter"
+: >"$lock_counter"
+
 drv() {
     PATH="$bin:$PATH" STUB_CALLS="$calls" STUB_STATE="$state" STUB_ROOT="$fake" \
-        STUB_TOOL_LOG="$tool_log" AB_KEY="$tmp/key" AB_HOST=root@stub \
-        AB_RESULTS="${RESULTS:-$results}" AB_POLL_INTERVAL=1 AB_WAIT_UP=1 \
+        STUB_TOOL_LOG="$tool_log" STUB_LOCK_COUNTER="$lock_counter" AB_KEY="$tmp/key" AB_HOST=root@stub \
+        AB_RESULTS="${RESULTS:-$results}" AB_POLL_INTERVAL=1 AB_WAIT_UP=1 AB_APK_LOCK_POLL=1 \
         AB_WAIT_UP_FIRST=1 AB_WAIT_UP_HARD=2 \
         AB_FOLLOW_STATE="${FOLLOW_STATE:-$follow_state}" \
         AB_FOLLOW_PROBE="$tmp/tools-follow-probe.sh" \
@@ -563,6 +576,18 @@ assert_contains "$(note_of R1)" "not measured" \
     "ac-8 ... and that the feed leg was therefore not measured"
 assert_eq "$(cat "$customfeeds")" "https://example.invalid/operator-own.list" \
     "ac-8 a run that could not refresh the index still removes the block it wrote"
+
+# The same machine, but the hold ends while the driver is waiting for it. Waiting bounded is
+# what turns round 7's R2 GAP into a measured feed leg, and the row has to say how long it
+# waited: a run that took a minute longer for this reason reads as a slow mirror otherwise.
+reset_machine
+printf '0\n' >"$lock_counter"
+out=$(STUB_APK_LOCK_HELD=2 drv --payload-dir "$payloads")
+assert_eq "$?" "0" "ac-8 a lock released during the bounded wait is measured, not given up on"
+assert_contains "$(note_of R1)" "apk-lock-waited=2s" \
+    "ac-8 the row says how long it waited for the machine's own apk transaction"
+assert_eq "$(cat "$customfeeds")" "https://example.invalid/operator-own.list" \
+    "ac-8 the block this run wrote is still removed again after a wait"
 
 # --feed off walks the chain without the leg, and every row says the leg was off, so a run
 # that skipped it cannot be read as one that measured it.
