@@ -844,6 +844,7 @@ verify_samples() {
     _case=${1:?verify_samples needs a case}
     SAMPLES_VERDICT=""
     SAMPLES_GAP=0
+    SAMPLES_REASON=""
     if [ ! -f "${FOLLOW_STATE}" ]; then
         SAMPLES_VERDICT=none
         printf 'samples [%s]: no baseline at %s, so nothing was judged\n' "${_case}" "${FOLLOW_STATE}"
@@ -872,6 +873,12 @@ verify_samples() {
     SAMPLES_GAP=$(printf '%s\n' "${_out}" | sed -n 's/.*action=verify .*gap=\([0-9][0-9]*\).*/\1/p' | tail -n 1)
     [ -n "${SAMPLES_GAP}" ] || SAMPLES_GAP=0
     ev "samples ${_case}: follow-probe --verify rc=${_rc} gap=${SAMPLES_GAP}"
+    # A verdict is not a single bit. The probe distinguishes a sample that was already
+    # unusable when the baseline was taken from one this hop broke, and a criterion that is
+    # wrong on the machine before any hop must not be read as a regression of this hop - the
+    # first full round lost six cases to exactly that, with a criterion that named a binary
+    # path the machine never had. matrix.sh grades the same way; the two drivers have to
+    # agree, or the same machine answers differently depending on which chain asks.
     case "${_rc}" in
         0)
             SAMPLES_VERDICT=pass
@@ -883,7 +890,21 @@ verify_samples() {
             printf 'GAP [%s] samples: a sample the feed does not offer (see the rows above)\n' "${_case}"
             return 0
             ;;
+        3)
+            # Every sample was skipped: the machine did not answer the question. "It did not
+            # answer" and "the answer is bad" must not look the same in the record.
+            SAMPLES_VERDICT=gap
+            SAMPLES_REASON="the machine did not answer"
+            printf 'GAP [%s] samples: the machine did not answer (see the rows above)\n' "${_case}"
+            return 0
+            ;;
         *)
+            if printf '%s\n' "${_out}" | grep -q 'reason=baseline-unusable'; then
+                SAMPLES_VERDICT=gap
+                SAMPLES_REASON="unusable before this hop, not a regression"
+                printf 'GAP [%s] samples: unusable before this hop, not a regression (see the rows above)\n' "${_case}"
+                return 0
+            fi
             SAMPLES_VERDICT=fail
             printf 'FAIL [%s] samples: see the rows above\n' "${_case}"
             return 1
@@ -959,6 +980,7 @@ hop_run() {
     SAMPLES_MODE=""
     SAMPLES_VERDICT=""
     SAMPLES_GAP=0
+    SAMPLES_REASON=""
     FEED_PRE_RC=0
     FEED_POST_RC=0
     AB_EVIDENCE_LOG="${EVIDENCE_DIR}/${_case}.log"
@@ -1149,6 +1171,10 @@ hop_run() {
     [ "${FIRST_HOP}" = "1" ] && _start_fact="start=${START_VERSION}; "
     _samples_fact="samples=${SAMPLES_VERDICT:-unknown}"
     [ "${SAMPLES_GAP}" = "0" ] || _samples_fact="${_samples_fact} gap=${SAMPLES_GAP}"
+    # Why a gap is a gap belongs in the row, not only in the driver's stdout: "the feed does
+    # not offer it", "it was already unusable before this hop" and "the machine did not
+    # answer" are three different findings about three different owners.
+    [ -n "${SAMPLES_REASON:-}" ] && _samples_fact="${_samples_fact} (${SAMPLES_REASON})"
     _base_fact="base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}"
     _tail_fact="$(feed_fact); ${_samples_fact}; config-drift=${DRIFT_CFG}"
 

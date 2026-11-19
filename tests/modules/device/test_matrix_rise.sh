@@ -104,6 +104,17 @@ case "${rc}" in
         printf 'probe=istore status=gap ac=3 reason=install-gap rerun="sh scripts/device/follow-probe.sh --install --sample istore"\n'
         printf 'follow-probe summary action=%s rows=1 pass=0 fail=0 gap=1 skip=0\n' "${action}"
         ;;
+    3)
+        printf 'probe=htop status=skip ac=2 reason=no-machine\n'
+        printf 'follow-probe summary action=%s rows=1 pass=0 fail=0 gap=0 skip=1\n' "${action}"
+        ;;
+    baseline)
+        # The machine already could not use this sample when the baseline was taken, so this
+        # hop did not break it. follow-probe.sh says so with reason=baseline-unusable.
+        printf 'probe=ttyd status=fail ac=2 reason=baseline-unusable expect="^bin=yes" check="bin=no" baseline_check="bin=no"\n'
+        printf 'follow-probe summary action=%s rows=1 pass=0 fail=1 gap=0 skip=0\n' "${action}"
+        exit 1
+        ;;
     *)
         printf 'probe=htop status=fail ac=2 reason=unusable expect="^3[.]" check="htop: not found"\n'
         printf 'follow-probe summary action=%s rows=1 pass=0 fail=1 gap=0 skip=0\n' "${action}"
@@ -464,6 +475,24 @@ out=$(STUB_FOLLOW_RC=1 drv --payload-dir "$payloads")
 assert_eq "$?" "1" "ac-8 a sample that is no longer usable fails the hop"
 assert_eq "$(verdicts)" "FAIL " "ac-8 and stops the chain there"
 assert_contains "$(note_of R1)" "did not survive" "ac-8 the row says the samples did not survive"
+
+# A sample that was ALREADY unusable when the baseline was taken is not a regression of this
+# hop. The first full round lost six cases to a criterion that named a binary path the machine
+# never had: the sample could never pass, so every hop that asked about it looked broken. The
+# hop is not green - the sample is still unusable - but the record has to say "unusable before
+# this hop" rather than "this hop broke it".
+reset_machine
+out=$(STUB_FOLLOW_RC=baseline drv --payload-dir "$payloads")
+assert_eq "$?" "0" "ac-8 a sample unusable before the hop does not fail it"
+assert_contains "$(note_of R1)" "samples=gap" "ac-8 and the row records a gap, not a pass"
+assert_contains "$(note_of R1)" "not a regression" "ac-8 the row says the sample was already unusable"
+
+# A machine that does not answer is a gap too: "we did not ask" and "the answer is bad" must
+# not look the same in the record.
+reset_machine
+out=$(STUB_FOLLOW_RC=3 drv --payload-dir "$payloads")
+assert_eq "$?" "0" "ac-8 a machine that did not answer does not fail the hop"
+assert_contains "$(note_of R1)" "did not answer" "ac-8 the row says the machine did not answer"
 
 # A sample the feed does not offer is a GAP and not a failure: it is a finding about the
 # feed, and PRD risk 3 says it may never be reported as a red hop.
