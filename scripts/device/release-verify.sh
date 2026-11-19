@@ -49,9 +49,18 @@
 # Exit status:
 #   0  every check passed
 #   1  at least one check failed: this release is not the one ac-1 describes
-#   2  usage error
+#   2  usage error, including a tag that cannot be a release of this repository at all
 #   3  no verdict: the assets could not be obtained (no network, no gh, download failed,
 #      or AB_DRY_RUN=1 without a --dir to look at)
+#
+# Why a wrong tag is exit 2 and not exit 1. A caller that derives the tag from the wrong
+# variable asks about a release that never existed, and the answer comes back as
+# `reason=no-such-release` - an ac-1 failure against a release nobody published, which
+# reads as a product defect when it is a caller defect. The full round of 2026-11-19 did
+# exactly that: it passed the upstream base (v25.12.2 where the repository's VERSION line
+# is 0.0.x) and the phase recorded a red release row. A tag whose version belongs to
+# another version line is therefore refused before anything is downloaded, with the two
+# versions named.
 #
 # AB_DRY_RUN=1 sends no packet: with --dir the local copy is verified as usual, without
 # one the script says what it would fetch and exits 3.
@@ -82,7 +91,8 @@ usage: release-verify.sh [--tag <tag>] [--dir <path>] [--repo <owner/name>]
   --work-dir   where the download lands (default: a fresh temporary directory)
   --keep       keep the downloaded assets
 
-Exit: 0 every check passed, 1 at least one failed, 2 usage, 3 no verdict (no assets).
+Exit: 0 every check passed, 1 at least one failed, 2 usage (including a tag from another
+      version line), 3 no verdict (no assets).
 USAGE
 }
 
@@ -118,6 +128,46 @@ if [ -z "${tag}" ]; then
         exit 2
     fi
     tag="v$(tr -d '[:space:]' <"${AB_REPO_ROOT}/VERSION")"
+fi
+
+# rv_line_of <version>: the major.minor of a version, or empty when it is not x.y.z.
+rv_line_of() {
+    printf '%s\n' "$1" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*$/\1/p'
+}
+
+# A tag this repository could not have produced is a caller defect, not a release defect.
+#
+# This project's release tags are `v` + the VERSION line. An upstream base is a different
+# number on a different line, and reading it back as a tag asks the forge about a release
+# that was never published; the answer, `reason=no-such-release`, lands in the round as an
+# ac-1 failure and was read as a product defect on 2026-11-19. The two versions are
+# therefore compared before anything is downloaded, and a tag from another line is refused
+# with both of them named.
+#
+# Two callers legitimately name an older release: a chain that walks earlier hops, and an
+# operator reading a published release back. Both state what the tag should carry with
+# --version, and that statement is the claim this script checks; without it, git is asked
+# which VERSION the tag itself carries, so an old tag still on another line is recognised
+# as ours instead of refused. A tag without the `v` prefix is left alone: the upstream line
+# tags its own bases in its own repository, and this script has nothing to compare there.
+if [ -z "${want_version}" ] && [ -f "${AB_REPO_ROOT}/VERSION" ]; then
+    repo_version=$(tr -d '[:space:]' <"${AB_REPO_ROOT}/VERSION")
+    tag_version=""
+    case "${tag}" in
+        v*) tag_version=${tag#v} ;;
+    esac
+    repo_line=$(rv_line_of "${repo_version}")
+    tag_line=$(rv_line_of "${tag_version}")
+    if [ -n "${repo_line}" ] && [ -n "${tag_line}" ] && [ "${repo_line}" != "${tag_line}" ] &&
+        ! git -C "${AB_REPO_ROOT}" show "${tag}:VERSION" >/dev/null 2>&1; then
+        printf 'release-verify: %s names version %s, while this repository is on the %s line (VERSION=%s)\n' \
+            "${tag}" "${tag_version}" "${repo_line}" "${repo_version}" >&2
+        printf 'release-verify: a release tag here is v + VERSION, so an upstream base is not a tag of this repository; pass --tag v%s, or --version %s when %s really is a release of an older line\n' \
+            "${repo_version}" "${tag_version}" "${tag}" >&2
+        printf 'release-verify result=none reason=tag-not-of-this-repository tag=%s tag-version=%s repo-version=%s\n' \
+            "${tag}" "${tag_version}" "${repo_version}"
+        exit 2
+    fi
 fi
 
 source_kind=release

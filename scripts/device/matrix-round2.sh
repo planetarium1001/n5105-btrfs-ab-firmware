@@ -19,7 +19,8 @@
 # Every hop is judged on the same six fields of `ab-slot status` - committed, generation,
 # pending, boot, esp, packages - plus the rootfs the machine reports and the layer it
 # records, plus the two switch groups lib.sh already defines (STABLE must not move,
-# IDENTITY must move). "It came back" is never a verdict.
+# IDENTITY must move), plus the community samples through follow-probe.sh. "It came back"
+# is never a verdict.
 #
 #   scripts/device/matrix-round2.sh                    # the whole chain
 #   scripts/device/matrix-round2.sh --only D1          # one hop
@@ -49,6 +50,20 @@
 # both drifts are written into the evidence and summarised in the row. They are recorded,
 # not judged: ac-6 is about the six fields, and a config that moves across a base change is
 # ac-4/ac-11's finding, not a reason to call a committed hop red.
+#
+# The community samples (assert_follow). A full run measured matrix red and matrix2 green on
+# the same hops, and the reason was not that matrix2 was steadier: matrix-round2.sh never
+# asked whether the samples still worked. The question is asked now, and it is graded the
+# way unit 08 settled it for matrix.sh:
+#   * a sample that passed before the chain and fails after a hop is a FAIL, because this
+#     hop is the only thing that changed between the two answers;
+#   * a sample that was already not passing before the chain is a GAP, because a hop cannot
+#     be blamed for a state it inherited;
+#   * a sample the feed does not offer is a GAP, which is PRD risk 3's finding about the
+#     feed and never a reason to call a committed hop red.
+# The comparison is against the baseline this run measured before its first hop, not against
+# an expectation written in the driver: the samples' own criteria belong to
+# tests/fixtures/follow-samples.json, and a second copy here would be a list that drifts.
 #
 # Exit status: 0 every selected case PASS, 1 a case FAIL, 2 bad usage, 3 the red line
 # stopped the run (no committed slot that booted and mounted the ESP cleanly), 4 a case
@@ -97,6 +112,21 @@ RELEASE_VERIFY=${AB_RELEASE_VERIFY:-${DEVICE_DIR}/release-verify.sh}
 # records, not an error: an app that is not installed owns no config.
 CONFIG_PATHS=${AB_R2_CONFIG_PATHS:-"/etc/config/system /etc/config/network /etc/config/firewall /etc/config/dhcp /etc/config/openclash /etc/config/dockerd"}
 PAYLOAD_SPECS=${AB_R2_PAYLOAD_SPECS:-}
+
+# The community samples. The baseline is the file the follow phase marks and matrix.sh reads
+# (full-test.sh exports AB_FOLLOW_STATE once), so "which file is the baseline" is one answer
+# for a run rather than one per driver. Nothing here re-marks it: re-marking after a hop
+# would re-baseline the very state the hop is measured against.
+FOLLOW_STATE=${AB_FOLLOW_STATE:-}
+FOLLOW_PROBE=${AB_FOLLOW_PROBE:-${DEVICE_DIR}/follow-probe.sh}
+# The rows of the pre-chain verify, in the `<sample>\t<status>` shape the per-hop comparison
+# reads; set once and never rewritten, because it is the only record of "before".
+FOLLOW_BASELINE_TSV=""
+# none, no-baseline, probe-missing, no-rows or ok. Kept as one word so the plan, the rows and
+# the evidence all say the same thing about whether the samples were asked at all.
+FOLLOW_PREFLIGHT="none"
+# One word the row carries: ok, gap(...), fail(...) or unjudged(...).
+FOLLOW_NOTE=""
 
 ONLY_CASE=""
 FROM_STEP=""
@@ -534,6 +564,161 @@ _drift() {
 }
 
 # --------------------------------------------------------------------------- #
+# The community samples across the chain
+#
+# The pre-chain pass and the per-hop assertion are one question asked twice: the first
+# answer is the baseline this hop is compared with, the second is the state the hop left
+# behind. Neither is compared with an expectation written here, because the samples' own
+# criteria live in tests/fixtures/follow-samples.json and follow-probe.sh reads them; a
+# second copy in this driver is how a driver starts disagreeing with the sample list.
+# --------------------------------------------------------------------------- #
+
+# _follow_verify <label> <rows-out>: one --verify pass, retried while the machine is still
+# coming up. The hop that just happened may still be finishing a first boot's package
+# refresh, and "no machine answered" is a reason to ask again, not a verdict.
+# Rows are written as `<sample> <status>`, one per line.
+_follow_verify() {
+    _fv_label=${1:?_follow_verify needs a label}
+    _fv_rows=${2:?_follow_verify needs a rows path}
+    _fv_attempt=0
+    while :; do
+        _fv_attempt=$((_fv_attempt + 1))
+        FOLLOW_RC=0
+        _fv_text=$(sh "${FOLLOW_PROBE}" --verify --state "${FOLLOW_STATE}" 2>&1) || FOLLOW_RC=$?
+        [ "${FOLLOW_RC}" -eq 3 ] && [ "${_fv_attempt}" -lt 4 ] || break
+        case "${_fv_text}" in
+            *no-machine*) sleep "${AB_POLL_INTERVAL}" ;;
+            *) break ;;
+        esac
+    done
+    printf '%s\n' "${_fv_text}" | sed 's/^/  /'
+    # awk and not sed: a row is `probe=<name> status=<status> <facts...>`, and the facts are
+    # optional, so the fields are read by position rather than by a pattern that has to
+    # match a trailing space.
+    printf '%s\n' "${_fv_text}" \
+        | awk '$1 ~ /^probe=/ { n = substr($1, 7); if ($2 ~ /^status=/) print n, substr($2, 8) }' \
+        >"${_fv_rows}"
+    # The facts a row carries (`config=unchanged`, `reason=config-changed`) say which witness
+    # moved, so they go into the evidence beside the status.
+    printf '%s\n' "${_fv_text}" \
+        | awk -v label="${_fv_label}" '$1 ~ /^probe=/ { print "follow " label " " $0 }' \
+        | while IFS= read -r _fv_line; do ev "${_fv_line}"; done
+    ev "follow ${_fv_label}: follow-probe --verify rc=${FOLLOW_RC} rows=$(wc -l <"${_fv_rows}" | tr -d ' ')"
+    return 0
+}
+
+# _follow_status <rows-file> <sample>: the status recorded for one sample, or empty.
+_follow_status() {
+    awk -v n="${2:-}" '$1 == n { print $2; exit }' "${1:?}" 2>/dev/null
+}
+
+# follow_preflight: measure the samples before the chain, so every hop is compared with a
+# state this run observed instead of with an absolute expectation. A run with no baseline
+# says so and does not judge; a run whose baseline exists but whose probe does not is a
+# broken checkout, and every hop reports it rather than passing quietly.
+follow_preflight() {
+    FOLLOW_BASELINE_TSV=""
+    FOLLOW_PREFLIGHT=none
+    if [ -z "${FOLLOW_STATE}" ] || [ ! -f "${FOLLOW_STATE}" ]; then
+        FOLLOW_PREFLIGHT=no-baseline
+        printf 'skip follow: no baseline at %s (run the follow phase before this chain)\n' \
+            "${FOLLOW_STATE:-<unset>}"
+        ev "follow: not judged on this chain (no baseline at ${FOLLOW_STATE:-<unset>})"
+        return 0
+    fi
+    if [ ! -f "${FOLLOW_PROBE}" ]; then
+        FOLLOW_PREFLIGHT=probe-missing
+        printf 'follow: a baseline exists at %s but %s is not there; every hop will report the samples as unjudged\n' \
+            "${FOLLOW_STATE}" "${FOLLOW_PROBE}"
+        ev "follow: not judged (no probe at ${FOLLOW_PROBE})"
+        return 0
+    fi
+    FOLLOW_BASELINE_TSV="${EVIDENCE_DIR}/follow-baseline.tsv"
+    _follow_verify baseline "${FOLLOW_BASELINE_TSV}"
+    if [ ! -s "${FOLLOW_BASELINE_TSV}" ]; then
+        FOLLOW_PREFLIGHT=no-rows
+        printf 'follow: follow-probe answered rc=%s without a per-sample row, so a hop has nothing to be compared with\n' \
+            "${FOLLOW_RC}"
+        ev "follow: not judged (no per-sample rows, rc=${FOLLOW_RC})"
+        return 0
+    fi
+    FOLLOW_PREFLIGHT=ok
+    _fp_pass=$(awk '$2 == "pass"' "${FOLLOW_BASELINE_TSV}" | wc -l | tr -d ' ')
+    _fp_rows=$(wc -l <"${FOLLOW_BASELINE_TSV}" | tr -d ' ')
+    printf 'follow baseline: %s of %s sample(s) pass before the chain; the others are compared with their own state\n' \
+        "${_fp_pass}" "${_fp_rows}"
+    ev "follow baseline: ${_fp_pass}/${_fp_rows} pass before the chain (state ${FOLLOW_STATE})"
+    return 0
+}
+
+# assert_follow <case>: the samples are still usable after this hop, and their fake config
+# and data marker still hash to the baseline's values.
+# FAIL only for a sample that passed before the chain and does not now; a sample that was
+# already not passing is a GAP, and so is one the feed no longer offers.
+assert_follow() {
+    _af_case=${1:?assert_follow needs a case}
+    FOLLOW_NOTE=""
+    case "${FOLLOW_PREFLIGHT}" in
+        no-baseline | no-rows)
+            FOLLOW_NOTE="unjudged(${FOLLOW_PREFLIGHT})"
+            ev "follow ${_af_case}: not judged (${FOLLOW_PREFLIGHT}); see the baseline lines above"
+            return 0
+            ;;
+        probe-missing)
+            FOLLOW_NOTE="fail(no-probe)"
+            _dev_assert_fail "${_af_case}" \
+                "follow: ${FOLLOW_STATE} holds a baseline and ${FOLLOW_PROBE} is not there, so the samples were not asked"
+            return 1
+            ;;
+    esac
+    _af_rows="${EVIDENCE_DIR}/${_af_case}.follow.tsv"
+    _follow_verify "${_af_case}" "${_af_rows}"
+    if [ ! -s "${_af_rows}" ]; then
+        FOLLOW_NOTE="fail(no-rows)"
+        _dev_assert_fail "${_af_case}" \
+            "follow: follow-probe --verify exited ${FOLLOW_RC} without a per-sample row"
+        return 1
+    fi
+    _af_bad=""
+    _af_gap=""
+    while IFS= read -r _af_row; do
+        [ -n "${_af_row}" ] || continue
+        _af_name=${_af_row%% *}
+        _af_state=${_af_row#* }
+        _af_base=$(_follow_status "${FOLLOW_BASELINE_TSV}" "${_af_name}")
+        [ -n "${_af_base}" ] || _af_base=unknown
+        case "${_af_state}" in
+            pass) : ;;
+            gap) _af_gap="${_af_gap}${_af_name}(not-offered) " ;;
+            *)
+                if [ "${_af_base}" = pass ]; then
+                    _af_bad="${_af_bad}${_af_name}(${_af_state}) "
+                else
+                    # Inherited, not caused: the sample was already not passing before the
+                    # chain started, so a red hop here would blame the wrong change.
+                    _af_gap="${_af_gap}${_af_name}(was-${_af_base}) "
+                fi
+                ;;
+        esac
+    done <"${_af_rows}"
+    _af_bad=${_af_bad% }
+    _af_gap=${_af_gap% }
+    [ -z "${_af_gap}" ] || ev "follow ${_af_case}: GAP ${_af_gap}"
+    if [ -n "${_af_bad}" ]; then
+        FOLLOW_NOTE="fail(broke: ${_af_bad})"
+        _dev_assert_fail "${_af_case}" "follow: usable before the hop and not after: ${_af_bad}"
+        return 1
+    fi
+    if [ -n "${_af_gap}" ]; then
+        FOLLOW_NOTE="gap(${_af_gap})"
+    else
+        FOLLOW_NOTE=ok
+        ev "follow ${_af_case}: every sample still usable, config and data unchanged"
+    fi
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
 # One hop
 # --------------------------------------------------------------------------- #
 
@@ -681,6 +866,9 @@ hop_run() {
     _check assert_value "$(direction_of "${_from}" "${_running_now}")" "${_dir}" "${_case}" direction
     _check assert_match "$(status_field "${_booted}" upper || printf '')" \
         "^@overlay-$(dev_version_re "${_to}")(-r[0-9]+)?\$" "${_case}" upper
+    # The samples are asked on every hop, red ones included: a hop that moved the base and
+    # then failed an assertion is exactly where "did the user's software survive" matters.
+    _check assert_follow "${_case}"
 
     # Drift is measured on every hop, including a red one: the two snapshots are the only
     # record of what the payload did to the config the user owns.
@@ -697,13 +885,13 @@ hop_run() {
     if [ "${HOP_FAILED}" -eq 0 ]; then
         _force_used=none
         [ "${_force}" = "1" ] && _force_used=used
-        CASE_NOTE="hop ok: platform $(case_from_platform "${_case}")->$(case_to_platform "${_case}"), base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}; regression=${CASE_REGRESSION:-none}, force=${_force_used}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}"
+        CASE_NOTE="hop ok: platform $(case_from_platform "${_case}")->$(case_to_platform "${_case}"), base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}; regression=${CASE_REGRESSION:-none}, force=${_force_used}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
         ev "${CASE_NOTE}"
         return 0
     fi
     # The evidence lines are timestamped, so the case name is matched anywhere in the line.
     _first_fail=$(grep -m 1 "FAIL ${_case} " "${AB_EVIDENCE_LOG}" 2>/dev/null) || _first_fail=""
-    CASE_NOTE="assertions failed on this hop: ${_first_fail#FAIL ${_case} }; the chain stops here; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}"
+    CASE_NOTE="assertions failed on this hop: ${_first_fail#FAIL ${_case} }; the chain stops here; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
     ev "${CASE_NOTE}"
     return 1
 }
@@ -817,6 +1005,15 @@ plan_case() {
     if [ ! -f "${_local}" ]; then
         printf '# warning: no payload at %s; the run would record GAP\n' "${_local}"
     fi
+    # The plan states whether the samples can be judged at all, so a run is not read as
+    # green on a question it was never able to ask.
+    if [ -z "${FOLLOW_STATE}" ] || [ ! -f "${FOLLOW_STATE}" ]; then
+        printf '# warning: no follow baseline at %s; the run would not judge the samples\n' \
+            "${FOLLOW_STATE:-<unset>}"
+    elif [ ! -f "${FOLLOW_PROBE}" ]; then
+        printf '# warning: %s is not there; a baseline exists and the hops would report the samples as unjudged\n' \
+            "${FOLLOW_PROBE}"
+    fi
     _to=$(case_to_rootfs "${_case}")
     printf '%s status (red line: a committed slot, boot=ok, esp=ok, pending=none)\n' "${_case}"
     printf '%s gc\n' "${_case}"
@@ -839,6 +1036,7 @@ plan_case() {
     printf '%s snapshot %s and diff against the previous boundary (config drift recorded, not judged)\n' \
         "${_case}" "${CONFIG_PATHS}"
     printf '%s snapshot apk list --installed and diff ditto (package drift recorded, not judged)\n' "${_case}"
+    printf '%s follow assert expect=every sample usable and its config/data sha256 unchanged against the pre-chain baseline: a sample that passed before the chain and fails now is a FAIL, one that was already not passing is a GAP\n' "${_case}"
     printf '%s record\n' "${_case}"
 }
 
@@ -926,6 +1124,10 @@ if [ -n "${_hops}" ]; then
     ev "baseline: ${STATUS_LINE}"
     ev "baseline: config paths ${CONFIG_PATHS}"
     _snapshot_boundary pre
+    # The samples are asked once before the first hop: that answer is the baseline every
+    # later hop is compared with, and without it a sample that was already broken would be
+    # read as a regression of whichever hop happens to run first.
+    follow_preflight
 
     for _case in ${_hops}; do
         printf '== %s %s\n' "${_case}" \

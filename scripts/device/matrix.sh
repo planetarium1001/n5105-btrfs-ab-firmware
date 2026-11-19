@@ -10,9 +10,11 @@
 #
 # Everything a hop asserts is mechanical: fields of `ab-slot status`, the breadcrumbs
 # the new boot wrote itself (searching the rotated ring log, not one fixed file), the
-# two markers the user's state lives in, and the layer invariant on the writable
-# partition (every slot's upper exists, no unreferenced @overlay-* survives). "It looks
-# like it came up" is never a verdict.
+# two markers the user's state lives in, the layer invariant on the writable
+# partition (every slot's upper exists, no unreferenced @overlay-* survives), and the
+# community samples through follow-probe.sh --verify. "It looks like it came up" is never
+# a verdict, and neither is a sample that could not be judged: that case is reported as a
+# GAP that names the sample rather than as a failure of the hop.
 #
 #   scripts/device/matrix.sh                       # M1..M7, all of them
 #   scripts/device/matrix.sh --case M3 --case M4   # two cases
@@ -46,6 +48,10 @@ CASES_ALL="M1 M2 M3 M4 M5 M6 M7"
 PAYLOAD_DIR=${AB_PAYLOAD_DIR:-payloads}
 RESULTS=${AB_RESULTS:-results.tsv}
 EVIDENCE_DIR=${AB_EVIDENCE_DIR:-}
+# The probe this driver asks about the community samples. A seam for the same reason
+# matrix-rise.sh has one: what is judged here is what this driver does with a verdict, and a
+# test can hand it a verdict without a machine.
+FOLLOW_PROBE=${AB_FOLLOW_PROBE:-${DEVICE_DIR}/follow-probe.sh}
 WANT_CASES=""
 RESUME=0
 DRY_RUN=0
@@ -245,12 +251,28 @@ assert_boot_health() {
 #
 # A run without that phase has no baseline, and this then says so instead of passing: "I
 # did not look" and "everything is fine" are the two answers this whole project keeps
-# having to tell apart. Exit 4 is the driver's "a sample the feed does not offer" - a
-# finding about the feed, recorded as GAP by PRD risk 3, never a failure of the A/B hop.
+# having to tell apart.
+#
+# The verdict this asserts is the one follow-probe.sh already made, and the rows are read
+# only to name what it judged. The case is red when a sample that was usable before the hop
+# stopped being usable (pass -> fail). It stays green when the probe reports a gap: a
+# package the feed does not offer is a finding about the feed (PRD risk 3), a setup that did
+# not run is a finding about the machine, and a criterion that already failed on the image
+# the chain started from is a finding about the manifest. Round 1 measured why that last
+# one matters: a single hard-coded ttyd path failed five cases and hid every real verdict
+# behind it. A probe that reached no machine (exit 3) is still a failure here: the hop's own
+# ssh worked seconds earlier, and a probe that measured nothing may not turn a case green.
 assert_follow() {
     _case=$1
     if [ -z "${AB_FOLLOW_STATE:-}" ] || [ ! -f "${AB_FOLLOW_STATE}" ]; then
         printf 'skip follow [%s]: no baseline (run scripts/device/follow-probe.sh --install, then --mark)\n' "${_case}" >&2
+        return 0
+    fi
+    if [ ! -f "${FOLLOW_PROBE}" ]; then
+        # Said separately from the missing baseline: one is a run that never marked, the
+        # other is an installation without the driver, and they send a reader to different
+        # places.
+        printf 'skip follow [%s]: no driver at %s\n' "${_case}" "${FOLLOW_PROBE}" >&2
         return 0
     fi
     # The hop that just happened may still be finishing: a first boot on a new base also
@@ -260,7 +282,7 @@ assert_follow() {
     while :; do
         _follow_attempt=$((_follow_attempt + 1))
         _follow_rc=0
-        _follow_out=$(sh "${DEVICE_DIR}/follow-probe.sh" --verify --state "${AB_FOLLOW_STATE}" 2>&1) || _follow_rc=$?
+        _follow_out=$(sh "${FOLLOW_PROBE}" --verify --state "${AB_FOLLOW_STATE}" 2>&1) || _follow_rc=$?
         [ "${_follow_rc}" -eq 3 ] && [ "${_follow_attempt}" -lt 4 ] || break
         case "${_follow_out}" in
             *no-machine*) sleep 30 ;;
@@ -268,21 +290,53 @@ assert_follow() {
         esac
     done
     printf '%s\n' "${_follow_out}" | sed 's/^/  /'
-    ev "follow ${_case} rc=${_follow_rc}"
+    ev "follow ${_case} rc=${_follow_rc} probe=${FOLLOW_PROBE}"
     case "${_follow_rc}" in
         0)
             printf 'ok   [%s] follow: samples usable, config and data unchanged\n' "${_case}"
             return 0
             ;;
-        4)
-            printf 'GAP  [%s] follow: a sample the feed does not offer (see the rows above)\n' "${_case}"
-            return 0
-            ;;
-        *)
-            printf 'FAIL [%s] follow: see the rows above\n' "${_case}"
+        3)
+            printf 'FAIL [%s] follow: the probe reached no machine, so nothing was judged\n' "${_case}"
             return 1
             ;;
     esac
+    _follow_bad=$(_follow_regressions)
+    if [ -n "${_follow_bad}" ]; then
+        printf 'FAIL [%s] follow: %s usable before the hop, not after it (see the rows above)\n' \
+            "${_case}" "${_follow_bad}"
+        return 1
+    fi
+    # No failing row names this hop: what is left is a sample that could not be judged.
+    # Naming it is the point - a case that says "GAP" without saying which sample invites
+    # the next run to assume it was the known one.
+    _follow_unjudged=$(_follow_unjudged_rows)
+    [ -n "${_follow_unjudged}" ] || _follow_unjudged="no row explained rc=${_follow_rc}"
+    printf 'GAP  [%s] follow: %s not judged (see the rows above)\n' "${_case}" "${_follow_unjudged}"
+    return 0
+}
+
+# _follow_regressions: the names of the rows that say a sample stopped working across this
+# hop. A row whose reason names the baseline (reason=baseline-unusable) is the one class that
+# must never be read as a regression: nothing about this hop follows from a criterion that
+# never matched on the image the chain started from. follow-probe.sh already reports that
+# class as a gap; this is what keeps a future change to its exit code from taking the matrix
+# with it, and it names the row rather than trusting the number.
+_follow_regressions() {
+    printf '%s\n' "${_follow_out}" |
+        awk '/^probe=/ && /status=fail/ && !/reason=baseline/ {
+                 sub(/^probe=/, ""); sub(/ .*/, ""); printf "%s ", $0 }' |
+        sed 's/ *$//'
+}
+
+# _follow_unjudged_rows: the "<name>(<reason>)" of every row that did not judge this hop - a
+# gap, or a failure whose reason says the criterion was already failing at baseline - so the
+# case line says which sample and why instead of a bare count.
+_follow_unjudged_rows() {
+    printf '%s\n' "${_follow_out}" |
+        sed -n -e 's/^probe=\([^ ]*\) status=gap .*reason=\([^ ]*\).*/\1(\2)/p' \
+            -e 's/^probe=\([^ ]*\) status=fail .*reason=\(baseline[^ ]*\).*/\1(\2)/p' |
+        tr '\n' ' ' | sed 's/ $//'
 }
 
 # assert_markers <case> <marker_before> <config_before>: user state survived the hop.

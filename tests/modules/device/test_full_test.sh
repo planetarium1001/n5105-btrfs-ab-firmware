@@ -89,6 +89,7 @@ chmod 600 "$AB_KEY"
 round_task="20261116-12-pre-release-acceptance-0-0-12"
 # The candidate the feed is expected to offer. The script must not know it on its own.
 round_expect="0.0.12"
+round_base_expect="25.12.2"
 
 stub_calls_count() {
     if [ -f "$stub_calls" ]; then
@@ -107,6 +108,31 @@ run_ft() {
     out=$(bash "$ft" "$@" </dev/null 2>&1)
     code=$?
     return 0
+}
+
+# The version this checkout declares, read from the same file the orchestrator reads. The
+# fixtures below are built from it rather than from a literal, so a version bump does not
+# turn the matching case into a mismatch behind the test's back.
+want_version=$(sed -n '1p' "$root/VERSION")
+
+# payload_tar <path> <platform> [rootfs]: a payload tar carrying the one member the
+# preflight reads. The members a device unpacks are not needed to decide which platform a
+# payload declares, and a fixture that shipped them would cost 23 MB per case.
+payload_tar() {
+    _pt_dir=$(mktemp -d "$tmp/payload.XXXXXX")
+    printf '{\n  "format": "ab-payload/1",\n  "platform": "%s",\n  "rootfs": "%s",\n  "members": {}\n}\n' \
+        "$2" "${3:-25.12.2}" >"$_pt_dir/manifest.json"
+    tar -cf "$1" -C "$_pt_dir" manifest.json
+    rm -rf "$_pt_dir"
+}
+
+# payload_tar_without_manifest <path>: a tar that is a payload by its name and carries no
+# manifest, so its platform cannot be read at all.
+payload_tar_without_manifest() {
+    _pwm_dir=$(mktemp -d "$tmp/payload.XXXXXX")
+    printf 'not a manifest\n' >"$_pwm_dir/kernel.bin"
+    tar -cf "$1" -C "$_pwm_dir" kernel.bin
+    rm -rf "$_pwm_dir"
 }
 
 # planned_phases: every `phase <name>:` line in $out, in the order it was printed. Skipped
@@ -180,13 +206,29 @@ assert_contains "$(plan_line docker-after)" "AB_RESULTS=$dry_results/docker-afte
     "ac-7 docker-after has a results file of its own"
 
 # The release phase reads the published release; it is handed the assets directory only
-# when the payload directory really holds release assets, and the tag only when --expect says
-# which release this round is about.
+# when the payload directory really holds release assets, and the tag always from the
+# checkout's own VERSION.
 assert_contains "$(plan_line release)" "--work-dir $dry_results/release" \
     "ac-7 the release phase keeps its downloaded assets beside the results"
-run_ft --dry-run --results "$dry_results" --expect "$round_expect"
-assert_contains "$(plan_line release)" "--tag v$round_expect" \
-    "ac-7 --expect names the release the release phase reads"
+assert_contains "$(plan_line release)" "--tag v$want_version" \
+    "ac-7 the release phase reads the release this checkout declares, v$want_version"
+# --expect names the candidate the feed offers and the payload R1 installs, which is the
+# upstream base, not this project's release. Measured 2026-11-19: the tag was derived from
+# it, the driver was asked for v25.12.2, answered no-such-release, and a healthy release was
+# recorded as a FAIL.
+run_ft --dry-run --results "$dry_results" --expect "$round_base_expect"
+assert_contains "$(plan_line release)" "--tag v$want_version" \
+    "ac-7 an upstream --expect does not move the release tag off this checkout's version"
+case "$(plan_line release)" in
+    *"--tag v$round_base_expect"*)
+        assert_eq "the upstream base leaked into the release tag" "the tag is v$want_version" \
+            "ac-7 --expect is not the release version"
+        ;;
+    *)
+        assert_eq "the tag is v$want_version" "the tag is v$want_version" \
+            "ac-7 --expect is not the release version"
+        ;;
+esac
 mkdir -p "$tmp/assets"
 : >"$tmp/assets/index.txt"
 : >"$tmp/assets/SHA256SUMS"
@@ -625,7 +667,7 @@ assert_contains "$(cat "$tmp/results-nokey/preflight.tsv")" "FAIL" "ac-7 the rec
 
 # --- ac-7: a healthy preflight passes and stops there ---------------------- #
 mkdir -p "$tmp/payloads"
-: >"$tmp/payloads/payload-25.12.2.tar"
+payload_tar "$tmp/payloads/payload-25.12.2.tar" "$want_version" 25.12.2
 : >"$stub_calls"
 run_ft --preflight-only --results "$tmp/results-pf" --payload-dir "$tmp/payloads"
 assert_eq "$code" 0 "ac-7 --preflight-only exits 0 on a healthy machine"
@@ -634,12 +676,77 @@ assert_contains "$out" "phase matrix: skipped" "ac-7 --preflight-only stops befo
 assert_contains "$(cat "$tmp/results-pf/preflight.tsv")" "preflight-ssh" "ac-7 every preflight question is a row"
 assert_file_exists "$tmp/results-pf/summary.txt" "ac-7 --preflight-only still writes a summary"
 assert_eq "$(tail -n 1 "$tmp/results-pf/summary.txt")" "verdict: PASS" "ac-7 a healthy preflight verdicts PASS"
+assert_contains "$out" "platforms=ok" "ac-8 a payload declaring this checkout's platform is reported as checked"
 
 # A payload directory with no payload-*.tar is refused before the run, not during it.
 mkdir -p "$tmp/empty-payloads"
 run_ft --preflight-only --results "$tmp/results-pf2" --payload-dir "$tmp/empty-payloads"
 assert_eq "$code" 1 "ac-7 an empty --payload-dir exits 1"
 assert_contains "$out" "payload-*.tar" "ac-7 the failure names what payload-dir is missing"
+
+# --- ac-8/ac-9: a payload built from older code refuses the run ------------- #
+# This is the failure the check exists for: the payloads of the 2026-11-19 round carried
+# platform 0.0.12 while the checkout was 0.0.13, so every jump installed the older layer,
+# nothing rewrote the feeds of the image it landed in, and the round failed at
+# `apk ... rc=99` in a way that read as a product defect.
+mkdir -p "$tmp/stale-payloads"
+payload_tar "$tmp/stale-payloads/payload-25.12.0.tar" "9.9.9" 25.12.0
+payload_tar "$tmp/stale-payloads/payload-25.12.1.tar" "9.9.9" 25.12.1
+: >"$stub_calls"
+run_ft --preflight-only --results "$tmp/results-stale" --payload-dir "$tmp/stale-payloads"
+assert_eq "$code" 1 "ac-8 a payload from an older platform refuses the run"
+assert_contains "$out" "preflight: FAIL" "ac-8 the stale payload is a preflight FAIL"
+assert_contains "$out" "payload-25.12.0.tar" "ac-8 the refusal names the first tar"
+assert_contains "$out" "payload-25.12.1.tar" "ac-8 the refusal names every offending tar, not only the first"
+assert_contains "$out" "declares platform 9.9.9" "ac-8 the refusal names the platform the payload declares"
+assert_contains "$out" "want $want_version" "ac-8 the refusal names the platform the checkout being accepted declares"
+assert_contains "$(cat "$tmp/results-stale/preflight.tsv")" "preflight-payload-platform" \
+    "ac-8 the refusal is its own preflight row"
+assert_eq "$(tail -n 1 "$tmp/results-stale/summary.txt")" "verdict: FAIL" \
+    "ac-8 the refusal is a FAIL, not a GAP"
+# The run stops at preflight, so no phase that writes a slot is ever planned. Asserted
+# against the phase names rather than against the whole line, because a run that refuses
+# at preflight still prints the preflight phase once more when it reports the verdict.
+case " $(planned_phases) " in
+    *" matrix "* | *" rise "* | *" matrix2 "* | *" platform-chain "* | *" recovery "* | *" power-cut "*)
+        assert_eq "a slot-writing phase is planned" "no slot-writing phase is planned" \
+            "ac-8 the refusal stops the run before any slot is written"
+        ;;
+    *)
+        assert_eq "no slot-writing phase is planned" "no slot-writing phase is planned" \
+            "ac-8 the refusal stops the run before any slot is written"
+        ;;
+esac
+
+# The directory a round uses also holds payloads of the other role: a platform chain step,
+# named after its own version, and the deliberately broken payload M7 hands the machine.
+# Refusing those would forbid two cases instead of checking one.
+mkdir -p "$tmp/mixed-payloads"
+payload_tar "$tmp/mixed-payloads/payload-25.12.2.tar" "$want_version" 25.12.2
+payload_tar "$tmp/mixed-payloads/payload-0.0.12.tar" "0.0.12" 25.12.2
+payload_tar "$tmp/mixed-payloads/payload-bad.tar" "0.0.12" 25.12.2
+run_ft --preflight-only --results "$tmp/results-mixed" --payload-dir "$tmp/mixed-payloads"
+assert_eq "$code" 0 \
+    "ac-8 a current base payload passes beside a platform chain step and the deliberately broken payload"
+
+# A platform payload that does not declare the version it is named for is the same defect
+# in the other role: the chain would install a layer nobody described.
+mkdir -p "$tmp/lying-platform"
+payload_tar "$tmp/lying-platform/payload-0.0.99.tar" "0.0.98" 25.12.2
+run_ft --preflight-only --results "$tmp/results-lying" --payload-dir "$tmp/lying-platform"
+assert_eq "$code" 1 "ac-8 a platform payload declaring another version refuses the run"
+assert_contains "$out" "payload-0.0.99.tar" "ac-8 the platform refusal names the tar"
+assert_contains "$out" "declares platform 0.0.98" "ac-8 the platform refusal names what it declares"
+assert_contains "$out" "want 0.0.99" "ac-8 the platform refusal names the version its name claims"
+
+# A payload whose platform cannot be read is refused as well: an unreadable manifest is not
+# evidence that the payload was built from this checkout.
+mkdir -p "$tmp/nomanifest-payloads"
+payload_tar_without_manifest "$tmp/nomanifest-payloads/payload-25.12.1.tar"
+run_ft --preflight-only --results "$tmp/results-nomanifest" --payload-dir "$tmp/nomanifest-payloads"
+assert_eq "$code" 1 "ac-8 a payload without a readable manifest refuses the run"
+assert_contains "$out" "payload-25.12.1.tar declares no readable manifest.platform" \
+    "ac-8 the refusal names the tar and what is missing"
 
 # --- ac-7: a destructive phase without --yes executes nothing ---------------- #
 # The window is narrowed to the matrix alone and no `yes` is typed, so the phase may not

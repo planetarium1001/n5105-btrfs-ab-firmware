@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "updated": "2026-11-18",
+  "updated": "2026-11-19",
   "version_line": "25.x",
   "purpose": "The eight community samples the package-follow probe carries across every base hop (task 20261118-01, D3). One row per sample: what to install, where its fake config and data marker live, and the single command that decides whether it is still USABLE - not merely still recorded as installed.",
-  "check_contract": "check.cmd runs on the machine, prints one line of fact=value fields; check.expect is the POSIX ERE that line has to match. The driver compares the two and has no per-package branch, so every criterion is reviewed here rather than read out of a shell nest. The remote preamble defines the helpers a command may use: _ver <pkg> (installed version or empty), _missing <pkg> (payload files the package record names but disk no longer has, etc/uci-defaults excluded because the base consumes those at first boot), _http <path> (status code from the machine's own web server over loopback), _svc <init> <proc> (running|stopped|expected-not-running|missing, without starting anything), _sha <path>.",
+  "check_contract": "check.cmd runs on the machine, prints one line of fact=value fields; check.expect is the POSIX ERE that line has to match. The driver compares the two and has no per-package branch, so every criterion is reviewed here rather than read out of a shell nest. The remote preamble defines the helpers a command may use: _ver <pkg> (installed version or empty), _missing <pkg> (payload files the package record names but disk no longer has, etc/uci-defaults excluded because the base consumes those at first boot), _http <path> (status code from the machine's own web server over loopback), _svc <init> <proc> (running|stopped|expected-not-running|missing, without starting anything), _bin <init> <name> (the daemon path the init script's own PROG names, else the one PATH resolves; never a hard-coded directory, because the directory is not the same on every base), _sha <path>. setup, when present, runs on the machine during --install, after apk add succeeds and before --mark records the baseline: it is the only place a sample may change the machine's running state, and the install row carries setup=ok|failed|skipped|absent so a setup that did not run is visible rather than implied.",
   "state_columns": [
     "pkg",
     "state",
@@ -12,7 +12,8 @@
     "config_sha256",
     "data_path",
     "data_sha256",
-    "note"
+    "note",
+    "check"
   ],
   "samples": [
     {
@@ -62,15 +63,15 @@
       "data_marker": "/data/ab-follow/luci-app-openclash.marker",
       "check": {
         "cmd": "e=no; [ -x /etc/init.d/openclash ] && sh -n /etc/init.d/openclash 2>/dev/null && e=yes; s=$(_svc /etc/init.d/openclash clash); m=$(_missing luci-app-openclash); echo \"init=$e svc=$s missing=$m\"",
-        "expect": "^init=yes svc=(running|stopped) missing=0$"
+        "expect": "^init=yes svc=(running|stopped|expected-not-running) missing=0$"
       },
       "needs": [
         "network",
         "luci",
         "kernel"
       ],
-      "why": "A proxy app is broken in the ways this criterion sees: its init entry gone or no longer parsable by this base's shell, its payload partly missing after the overlay merge, or enabled at boot but with no process (expected-not-running). It accepts 'stopped', because a probe may not start a proxy on a machine somebody else is using. Measured on the reference machine 2026-11-18: luci-app-openclash is in the luci feed and /dev/net/tun is absent until kmod-tun is installed, so the tun device is reported as a fact by the install step instead of being asserted here.",
-      "limits": "It does not start OpenClash: a start rewrites nftables and the machine's routing, which is not a probe's decision to make on a shared device."
+      "why": "A proxy app is broken in the ways this criterion sees: its init entry gone or no longer parsable by this base's shell, or its payload partly missing after the overlay merge. All three service states a non-started daemon can be in are accepted, because the probe deliberately does not start a proxy (see limits): 'expected-not-running' is what the package measures as on the reference machine 2026-11-19 without any hop, so treating it as broken made a steady state read as a regression and took five matrix cases with it. What separates the states is the baseline, not this ERE: the driver records the criterion's output at --mark, so a sample whose init or payload was sound before the hop and is not after it still fails, while a criterion that never matched before the hop is reported as a gap and named. Measured on the reference machine 2026-11-18: luci-app-openclash is in the luci feed and /dev/net/tun is absent until kmod-tun is installed, so the tun device is reported as a fact by the install step instead of being asserted here.",
+      "limits": "It does not start OpenClash: a start rewrites nftables and the machine's routing, which is not a probe's decision to make on a shared device. For the same reason a proxy that ran and then stopped is not visible here - the probe never made it run - so the row's meaning is 'the package's init, payload and boot enablement survived', not 'the tunnel is up'."
     },
     {
       "name": "luci-app-ttyd",
@@ -81,14 +82,14 @@
       "config_path": "/etc/config/luci-app-ttyd",
       "data_marker": "/data/ab-follow/luci-app-ttyd.marker",
       "check": {
-        "cmd": "e=no; [ -x /etc/init.d/ttyd ] && sh -n /etc/init.d/ttyd 2>/dev/null && e=yes; b=no; [ -x /usr/sbin/ttyd ] && b=yes; s=$(_svc /etc/init.d/ttyd ttyd); m=$(_missing luci-app-ttyd); echo \"init=$e bin=$b svc=$s missing=$m\"",
-        "expect": "^init=yes bin=yes svc=(running|stopped) missing=0$"
+        "cmd": "e=no; [ -x /etc/init.d/ttyd ] && sh -n /etc/init.d/ttyd 2>/dev/null && e=yes; b=$(_bin /etc/init.d/ttyd ttyd); s=$(_svc /etc/init.d/ttyd ttyd); m=$(_missing luci-app-ttyd); echo \"init=$e bin=${b:-none} svc=$s missing=$m\"",
+        "expect": "^init=yes bin=/[^ ]+ svc=(running|stopped) missing=0$"
       },
       "needs": [
         "luci",
         "service"
       ],
-      "why": "The official-feed control sample: it distinguishes 'the community package broke' from 'the whole feed/base broke'. Its init script must parse under the running base's shell, its daemon binary must still be there, its payload must be complete, and a service enabled at boot must actually run - the last one is the only state that separates 'installed' from 'works' for a daemon sample.",
+      "why": "The official-feed control sample: it distinguishes 'the community package broke' from 'the whole feed/base broke'. Its init script must parse under the running base's shell, its daemon binary must still be there, its payload must be complete, and a service enabled at boot must actually run - the last one is the only state that separates 'installed' from 'works' for a daemon sample. The binary is looked up through _bin, which asks the init script's own PROG and then PATH, and the row prints the path it found: the first version of this criterion hard-coded /usr/sbin/ttyd and failed a healthy machine, because on this image /etc/init.d/ttyd:8 sets PROG=/usr/bin/ttyd (measured 2026-11-19). The path stays a fact in the row rather than disappearing into a yes/no, so a base that moves the binary is visible in the row that judged it.",
       "limits": "Like OpenClash it does not start the daemon; the running-branch only applies to a machine where ttyd is already enabled."
     },
     {
@@ -125,9 +126,9 @@
         "network",
         "service"
       ],
-      "setup": "/etc/init.d/dockerd enable && /etc/init.d/dockerd start  # the daemon must be up before the probe: docker info is the criterion",
-      "why": "The kernel-facing sample: 'docker info' only answers when the client, the daemon and the kernel features the daemon needs (overlay2, cgroups, iptables) all agree on this base, so it fails for exactly the case this task exists for - a package that follows to a new kernel without its ABI following with it.",
-      "limits": "A stopped daemon reports daemon=no, which the row prints as-is: the operator starts dockerd before the run (setup) and a green row then means the daemon works on this base."
+      "setup": "/etc/init.d/dockerd enable && /etc/init.d/dockerd start",
+      "why": "The kernel-facing sample: 'docker info' only answers when the client, the daemon and the kernel features the daemon needs (overlay2, cgroups, iptables) all agree on this base, so it fails for exactly the case this task exists for - a package that follows to a new kernel without its ABI following with it. That answer needs a running daemon, so this is the one sample with a setup: --install runs it after apk add, and the enable half is what makes the daemon come back on its own after every hop (a hop reboots the machine; a daemon that was only started once would be gone at the next --verify). The install row carries setup=ok|failed|skipped|absent, so a setup that did not run is a fact in the report rather than an assumption.",
+      "limits": "The daemon is started on the machine, which is a change of running state that only --install makes and that --unmark does not undo: an operator who wants the machine quiet again stops dockerd by hand. A setup that fails (for instance dockerd cannot start on this base) makes the install row a GAP: the sample cannot be carried, and the row says so instead of reporting a green daemon that never existed."
     },
     {
       "name": "kmod-usb-storage",

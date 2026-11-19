@@ -221,6 +221,8 @@ reset_machine() { # [<running rootfs>] [<running platform>]
 root_apk_list="$fake/apk-list.txt"
 
 # drv [driver args...]: the driver against the stub machine, budgets cut to seconds.
+# The follow baseline and the probe are handed over only when a case sets them: a run
+# without a baseline is a state the driver has to report, not one to paper over.
 drv() {
     PATH="$bin:$PATH" STUB_CALLS="$calls" STUB_ACTIONS="$actions" \
         STUB_STATE="$state" STUB_ROOT="$fake" AB_KEY="$tmp/key" AB_HOST=root@stub \
@@ -228,6 +230,9 @@ drv() {
         AB_WAIT_UP_FIRST=1 AB_WAIT_UP_HARD=2 \
         AB_RELEASE_DIR="${RELEASE_DIR:-$tmp/release}" \
         AB_R2_CONFIG_PATHS="/etc/config/system /etc/config/dockerd" \
+        AB_FOLLOW_STATE="${FOLLOW_STATE:-}" \
+        AB_FOLLOW_PROBE="${FOLLOW_PROBE_STUB:-$root/scripts/device/follow-probe.sh}" \
+        FSTUB_DIR="${FSTUB_DIR:-}" \
         sh "$driver" "$@" 2>&1
 }
 
@@ -486,5 +491,148 @@ out=$(drv --only D1 --from 2)
 assert_eq "$?" "2" "ac-6 --only and --from are exclusive"
 out=$(drv --from 99)
 assert_eq "$?" "2" "ac-6 --from needs a step that exists"
+
+# --- ac-3/ac-6: the community samples across the chain ----------------------- #
+# The full run of 2026-11-19 measured matrix red and matrix2 green on the same hops, and the
+# cause was that this driver never asked whether the samples still worked. It asks now, and
+# the grading is the one unit 08 settled for matrix.sh: a sample that passed before the chain
+# and fails after a hop is a FAIL, because the hop is the only thing that changed between the
+# two answers; a sample that was already not passing before the chain is a GAP, because a hop
+# cannot be blamed for a state it inherited.
+#
+# The probe is a stub: what is under test is the driver's comparison, not follow-probe.sh's
+# own verdict ladder (that script has its own contract test). The stub answers the first
+# `--verify` with the pre-chain rows and every later one with the after rows.
+fstub="$tmp/follow-stub"
+mkdir -p "$fstub"
+fstate="$tmp/follow-state.tsv"
+printf '# follow-probe state schema=1 action=mark manifest=stub\n' >"$fstate"
+
+cat >"$fstub/follow-probe.sh" <<'FSTUB'
+#!/bin/sh
+# The machine-side half of the question, reduced to two answer sets: `--verify` is called
+# once before the chain to record the baseline and once per hop afterwards.
+dir=${FSTUB_DIR:?stub needs FSTUB_DIR}
+if [ ! -f "$dir/seen" ]; then
+    : >"$dir/seen"
+    rows="$dir/baseline.tsv"
+else
+    rows="$dir/after.tsv"
+fi
+fail=0
+gap=0
+n=0
+while read -r name status; do
+    [ -n "$name" ] || continue
+    n=$((n + 1))
+    printf 'probe=%s status=%s ac-2 usable=%s config=unchanged data=unchanged\n' \
+        "$name" "$status" "$([ "$status" = pass ] && printf yes || printf no)"
+    case "$status" in
+        pass) : ;;
+        gap) gap=$((gap + 1)) ;;
+        *) fail=$((fail + 1)) ;;
+    esac
+done <"$rows"
+printf 'follow-probe summary action=verify rows=%s pass=%s fail=%s gap=%s skip=0\n' \
+    "$n" "$((n - fail - gap))" "$fail" "$gap"
+[ "$fail" -eq 0 ] || exit 1
+[ "$gap" -eq 0 ] || exit 4
+exit 0
+FSTUB
+chmod +x "$fstub/follow-probe.sh"
+
+# drv_follow [driver args...]: the driver with the stub probe and a baseline in place.
+drv_follow() {
+    FSTUB_DIR="$fstub" FOLLOW_STATE="$fstate" \
+        FOLLOW_PROBE_STUB="$fstub/follow-probe.sh" drv "$@"
+}
+
+# follow_case <baseline rows> <after rows>: the two answer sets, space separated pairs.
+follow_case() {
+    printf '%s\n' "$1" | tr ' ' '\n' | paste - - >"$fstub/baseline.tsv" 2>/dev/null || :
+    printf '%s\n' "$2" | tr ' ' '\n' | paste - - >"$fstub/after.tsv" 2>/dev/null || :
+    rm -f "$fstub/seen"
+}
+
+# A sample that passed before the chain and does not after a hop: this hop is the only
+# change between the two answers, so the hop is red and the chain stops on it.
+reset_machine
+follow_case "luci-app-ttyd pass nano pass istore gap" "luci-app-ttyd fail nano pass istore gap"
+rm -f "$results"
+out=$(drv_follow --only D1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "1" "ac-3 a sample that was usable before the hop and is not after it fails the hop"
+assert_eq "$(verdicts)" "FAIL " "ac-3 the hop with a regressed sample is the FAIL row"
+assert_contains "$(note_of D1)" "follow=fail(broke: luci-app-ttyd(fail))" \
+    "ac-3 the row names the sample that broke, not just that something did"
+assert_contains "$(cat "$evidence/r2/D1.log")" "follow D1: follow-probe --verify rc=1 rows=3" \
+    "ac-3 the verify pass and its exit status are in the evidence"
+assert_contains "$(cat "$evidence/r2/follow-baseline.tsv")" "luci-app-ttyd pass" \
+    "ac-3 the pre-chain answer is kept as a file, so the comparison can be re-read"
+
+# The other direction: the sample was already failing before the chain, so the hop inherited
+# that state. A GAP is recorded and nothing is red -- a hop is not blamed for what it did not
+# do, and "I did not judge this" stays distinguishable from "this passed".
+reset_machine
+follow_case "luci-app-openclash fail nano pass" "luci-app-openclash fail nano pass"
+rm -f "$results"
+out=$(drv_follow --only D1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-3 a sample that was already failing before the chain does not fail the hop"
+assert_eq "$(verdicts)" "PASS " "ac-3 the inherited failure is not a red hop"
+assert_contains "$(note_of D1)" "follow=gap(luci-app-openclash(was-fail))" \
+    "ac-3 the row says the sample was already failing, so a reader can see it was not this hop"
+assert_contains "$(cat "$evidence/r2/D1.log")" "follow D1: GAP luci-app-openclash(was-fail)" \
+    "ac-3 the evidence names the inherited state with the hop that recorded it"
+
+# A sample the feed does not offer is a gap in both passes: PRD risk 3's finding about the
+# feed, never a reason to call a committed hop red.
+reset_machine
+follow_case "istore gap nano pass" "istore gap nano pass"
+rm -f "$results"
+out=$(drv_follow --only D1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-3 a sample the feed does not offer does not fail the hop"
+assert_contains "$(note_of D1)" "follow=gap(istore(not-offered))" \
+    "ac-3 the row names the sample the feed does not serve"
+
+# Every sample still passing: the row says the question was asked and answered, which is what
+# a green matrix2 row has to mean now.
+reset_machine
+follow_case "nano pass curl pass" "nano pass curl pass"
+rm -f "$results"
+out=$(drv_follow --only D1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-3 the hop passes when every sample that passed before still passes"
+assert_contains "$(note_of D1)" "follow=ok" "ac-3 the row states that the samples were asked"
+
+# A run with no baseline does not pass quietly: the row says the samples were not judged,
+# which is the difference this project keeps having to keep.
+reset_machine
+rm -f "$results"
+out=$(drv --only D1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-3 a run with no baseline still walks the hop"
+assert_contains "$(note_of D1)" "follow=unjudged(no-baseline)" \
+    "ac-3 the row says the samples were not judged rather than implying they were fine"
+
+# A baseline that exists while the probe does not is a broken checkout, not a state of the
+# machine: the hop reports it instead of passing on a question it could not ask.
+reset_machine
+rm -f "$results"
+out=$(FOLLOW_STATE="$fstate" FOLLOW_PROBE_STUB="$tmp/no-such-probe.sh" \
+    drv --only D1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "1" "ac-3 a baseline with no probe fails the hop that cannot ask"
+assert_contains "$(note_of D1)" "follow=fail(no-probe)" \
+    "ac-3 the row names the missing probe"
+
+# A dry run says whether the samples can be judged at all, without touching the machine.
+reset_machine
+out=$(drv --dry-run | grep '^# warning: no follow baseline')
+assert_contains "$out" "no follow baseline" "ac-3 the plan says when the samples would not be judged"
+out=$(drv_follow --dry-run)
+assert_eq "$(printf '%s\n' "$out" | grep -c 'follow assert')" "6" \
+    "ac-3 the plan states the sample assertion on every hop, the release case aside"
 
 finish

@@ -230,7 +230,12 @@ usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
                        docker snapshots, the release assets and the bad-config defect
                        list (badconfig-defects.tsv) go (default: results)
   --payload-dir DIR    directory holding payload-<version>.tar; preflight refuses to
-                       start when it is given and holds no payload-*.tar. matrix,
+                       start when it is given and holds no payload-*.tar, and when any
+                       payload declares a platform layer other than the one its role
+                       requires: a base payload must carry this checkout's VERSION, a
+                       platform payload (payload-0.0.NN.tar) the version in its name. A
+                       payload built from older code makes every jump measure the old code
+                       while the round reports on the new version. matrix,
                        scenarios and matrix2 jump from here, and the recovery phase takes
                        R1's candidate from here as payload-<VERSION>.tar
   --task ID            the task whose evidence the audit phase reads (also AB_TASK_ID).
@@ -409,6 +414,29 @@ _feed_case_args() {
     elif [ "${_fca_pin}" = 1 ]; then
         printf 'pin'
     fi
+}
+
+# _checkout_version: the version this checkout declares, empty when it declares none.
+# One reader for the two places that need it (the payload platform check and the release
+# tag), so "which version is this repository" cannot be answered two ways in one run.
+_checkout_version() {
+    _cv=$(sed -n '1p' "${AB_REPO_ROOT}/VERSION" 2>/dev/null)
+    _cv=$(printf '%s' "${_cv}" | sed 's/[[:space:]]*$//')
+    [ -n "${_cv}" ] || return 1
+    printf '%s\n' "${_cv}"
+}
+
+# _release_tag: the tag of the release this round accepts - `v` + the checkout's VERSION.
+#
+# The release phase reads a published release of this project, and the number that names it
+# is the checkout's own. It is deliberately not derived from --expect: that value is the
+# candidate the feed offers and the payload R1 installs, and a round that starts on the
+# upstream 25.12.2 base names it as 25.12.2 while the release under acceptance is v0.0.13.
+# Measured 2026-11-19: `v25.12.2` was asked for, the driver answered `no-such-release`, and
+# the row read as a defect of a release that had nothing wrong with it.
+_release_tag() {
+    _rt_version=$(_checkout_version) || return 1
+    printf 'v%s\n' "${_rt_version}"
 }
 
 # _release_staged_dir: the payload directory, when it is also a release asset directory.
@@ -621,11 +649,18 @@ _phase_args() {
             if [ -n "${_pa_dir}" ]; then
                 printf '%s %s ' "--dir" "${_pa_dir}"
             fi
-            # The release this round is accepting, when the caller named the candidate. With
-            # no --expect the driver falls back to `v` + the repository's VERSION, which is
-            # neutral and never a version baked into this script.
-            if [ -n "${EXPECT}" ]; then
-                printf '%s %s ' "--tag" "v${EXPECT}"
+            # The tag the release phase reads is this project's own release, and the only
+            # place that number is written is the checkout's VERSION: `v` + VERSION.
+            #
+            # --expect is NOT it. --expect is the candidate the feed offers and the payload
+            # R1 installs, which this round names as the upstream base (25.12.2), while the
+            # release being accepted is v0.0.13. Deriving the tag from --expect asked for
+            # `v25.12.2` and the driver answered `no-such-release`: a red row against a
+            # release nobody published, on a run where nothing was wrong with the release.
+            # The two numbers are different versions of different things and are kept apart.
+            _pa_tag=$(_release_tag) || _pa_tag=""
+            if [ -n "${_pa_tag}" ]; then
+                printf '%s %s ' "--tag" "${_pa_tag}"
             fi
             # Keep the downloaded assets beside the results: they are the evidence for ac-1,
             # and release-verify.sh removes a temporary work directory on exit.
@@ -702,9 +737,9 @@ _phase_plan() {
 # preflight
 # --------------------------------------------------------------------------- #
 
-# The five questions a run cannot answer for itself once it has written a slot. Each one
-# is a row of its own (`preflight-key`, `preflight-ssh`, ...) so a rerun that skips the
-# section on an all-PASS file has really asked all five.
+# The questions a run cannot answer for itself once it has written a slot. Each one is a row
+# of its own (`preflight-key`, `preflight-ssh`, ...) so a rerun that skips the section on an
+# all-PASS file has really asked every one of them.
 _preflight_pass() { # <check> <detail>
     printf 'preflight: ok %s %s\n' "${1}" "${2}"
     AB_RESULTS="${TSV}"
@@ -716,6 +751,84 @@ _preflight_fail() { # <check> <reason>
     AB_RESULTS="${TSV}"
     record "preflight-${1}" FAIL "${LOG}" "${2}"
     return 1
+}
+
+# _payload_platform <tar>: the platform version the payload's own manifest declares, empty
+# when the tar carries no readable one.
+#
+# The manifest is the only offline statement of which code layer a payload installs, and it
+# is what this check has to read: the slot is written later, on the machine, from bytes this
+# host has not unpacked yet. Both member spellings are tried because archives differ on
+# whether they store "manifest.json" or "./manifest.json", and reading the wrong spelling
+# would look like a payload without a manifest.
+_payload_platform() {
+    _plp_tar=${1:?}
+    _plp_doc=""
+    for _plp_member in manifest.json ./manifest.json; do
+        if _plp_doc=$(tar -xOf "${_plp_tar}" "${_plp_member}" 2>/dev/null); then
+            break
+        fi
+        _plp_doc=""
+    done
+    [ -n "${_plp_doc}" ] || return 0
+    printf '%s\n' "${_plp_doc}" \
+        | sed -n 's/^[[:space:]]*"platform":[[:space:]]*"\([^"]*\)".*$/\1/p' \
+        | head -n 1
+}
+
+# _payload_name_version <file>: the version the file name carries, empty when it carries
+# none. The same shape matrix-rise.sh reads a payload name for, so "which version is this
+# file" has one answer across the drivers.
+_payload_name_version() {
+    printf '%s\n' "${1##*/}" \
+        | sed -n 's/.*[^0-9]\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)[^0-9]*$/\1/p' \
+        | head -n 1
+}
+
+# _payload_platform_mismatches <dir> <checkout-version>: one clause per payload that does not
+# declare the platform its role requires, empty when every payload agrees.
+#
+# What this prevents: a payload built before the code under acceptance installs the old
+# platform layer, so the run measures the old code while reporting on the new version. The
+# symptoms are red rows that read as product defects - measured 2026-11-19, three payloads
+# carried platform 0.0.12 while the checkout was 0.0.13, the installed layer's aligner did
+# not know the feed layout of the image it was jumped into, no feed was rewritten, and every
+# jump ended in `apk ... rc=99`.
+#
+# The expected value depends on the payload's role, because the two roles have different
+# truths:
+#   * a base payload (payload-25.12.N.tar) is the product build installed into the slot, so
+#     it must carry this checkout's VERSION - that is the code being accepted;
+#   * a platform payload (payload-0.0.NN.tar) is one hop of the platform chain, whose point
+#     is to move an older layer forward, so it must carry the version its name claims.
+#     Requiring VERSION there would forbid the chain instead of checking it.
+# A payload whose name carries no version is not a candidate for either role - no driver
+# builds a payload name from a version, and payload-bad.tar exists to be refused by the
+# machine - so it is counted by the caller and not judged here.
+_payload_platform_mismatches() {
+    _ppm_dir=${1:?}
+    # Not `:?`: an empty expected version is answered by the caller before it gets here, and
+    # a `:?` inside a `$(...)` would only end the subshell, leaving an empty result that
+    # reads exactly like "every payload agrees".
+    _ppm_want=${2-}
+    _ppm_bad=""
+    for _ppm_f in "${_ppm_dir}"/payload-*.tar; do
+        [ -f "${_ppm_f}" ] || continue
+        _ppm_name=${_ppm_f##*/}
+        _ppm_named=$(_payload_name_version "${_ppm_f}")
+        [ -n "${_ppm_named}" ] || continue
+        _ppm_expect=${_ppm_want}
+        case "${_ppm_named}" in
+            0.*) _ppm_expect=${_ppm_named} ;;
+        esac
+        _ppm_declared=$(_payload_platform "${_ppm_f}")
+        if [ -z "${_ppm_declared}" ]; then
+            _ppm_bad="${_ppm_bad}${_ppm_bad:+; }${_ppm_name} declares no readable manifest.platform, want ${_ppm_expect}"
+        elif [ "${_ppm_declared}" != "${_ppm_expect}" ]; then
+            _ppm_bad="${_ppm_bad}${_ppm_bad:+; }${_ppm_name} declares platform ${_ppm_declared}, want ${_ppm_expect}"
+        fi
+    done
+    [ -z "${_ppm_bad}" ] || printf '%s\n' "${_ppm_bad}"
 }
 
 _preflight() {
@@ -775,25 +888,47 @@ _preflight() {
     done
     _preflight_pass disk "${_pf_free_report}"
 
-    # 5. the payloads, when the caller said where they are. Without --payload-dir the
-    #    phases fall back to their own default (payloads) and this question is not asked.
-    if [ -n "${PAYLOAD_DIR}" ]; then
-        if [ ! -d "${PAYLOAD_DIR}" ]; then
-            _preflight_fail payload "payload-dir does not exist: ${PAYLOAD_DIR}"
-            return 1
-        fi
-        _pf_n=0
-        for _pf_f in "${PAYLOAD_DIR}"/payload-*.tar; do
+    # 5. the payloads: where they are, and which platform each one declares.
+    #
+    #    Without --payload-dir the phases fall back to their own default (payloads), so the
+    #    directory judged here is the one they will read, not only the one that was named: a
+    #    gate that looked at an empty string while the matrix installed payloads/ would never
+    #    fire on the run it was written for.
+    if [ -n "${PAYLOAD_DIR}" ] && [ ! -d "${PAYLOAD_DIR}" ]; then
+        _preflight_fail payload "payload-dir does not exist: ${PAYLOAD_DIR}"
+        return 1
+    fi
+    _pf_dir=${PAYLOAD_DIR:-payloads}
+    _pf_n=0
+    if [ -d "${_pf_dir}" ]; then
+        for _pf_f in "${_pf_dir}"/payload-*.tar; do
             [ -f "${_pf_f}" ] || continue
             _pf_n=$((_pf_n + 1))
         done
-        if [ "${_pf_n}" -eq 0 ]; then
-            _preflight_fail payload "payload-dir holds no payload-*.tar: ${PAYLOAD_DIR}"
-            return 1
-        fi
-        _preflight_pass payload "payload-dir=${PAYLOAD_DIR} files=${_pf_n}"
+    fi
+    if [ -n "${PAYLOAD_DIR}" ] && [ "${_pf_n}" -eq 0 ]; then
+        _preflight_fail payload "payload-dir holds no payload-*.tar: ${PAYLOAD_DIR}"
+        return 1
+    fi
+    _pf_want=$(_checkout_version) || _pf_want=""
+    if [ "${_pf_n}" -gt 0 ] && [ -z "${_pf_want}" ]; then
+        _preflight_fail payload "the checkout declares no VERSION (${AB_REPO_ROOT}/VERSION), so no payload can be judged against the code under acceptance"
+        return 1
+    fi
+    _pf_plat_bad=""
+    _pf_plat_note=""
+    if [ "${_pf_n}" -gt 0 ]; then
+        _pf_plat_bad=$(_payload_platform_mismatches "${_pf_dir}" "${_pf_want}")
+        _pf_plat_note=" platforms=ok"
+    fi
+    if [ -n "${_pf_plat_bad}" ]; then
+        _preflight_fail payload-platform "${_pf_plat_bad}; rebuild the payload from this checkout (scripts/ci/assemble.sh) before accepting anything with it. A payload built from older code makes every jump measure the old code while the round reports on ${_pf_want}"
+        return 1
+    fi
+    if [ -n "${PAYLOAD_DIR}" ]; then
+        _preflight_pass payload "payload-dir=${PAYLOAD_DIR} files=${_pf_n}${_pf_plat_note}"
     else
-        _preflight_pass payload "no --payload-dir given; the phases use their own default (payloads)"
+        _preflight_pass payload "no --payload-dir given; the phases use their own default (payloads) files=${_pf_n}${_pf_plat_note}"
     fi
 
     printf 'preflight: ok\n'

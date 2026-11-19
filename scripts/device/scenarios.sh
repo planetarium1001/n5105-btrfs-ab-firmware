@@ -598,9 +598,28 @@ cmd_mkdirs() {
     done
 }
 
+# _apk_err_lines <prefix> <text>: apk's own explanation, one line at a time.
+# `apk add` answers a solver failure with `ERROR: unable to select packages:` on the first
+# line and the cause on the lines beneath it (`breaks: world[kernel=...]`, `required by:`).
+# A caller that keeps only the first line records "no" and throws the reason away, which is
+# how a gap stops being self-evident: an operator reading the evidence cannot tell a feed
+# that lacks the package from a world file pinned to a kernel the feeds do not serve. Every
+# line is therefore printed for the host to keep, capped because a solver failure on a large
+# world can run long.
+_apk_err_lines() {
+    printf '%s\n' "${2:-}" | tr -d '\r' | awk -v p="${1}" -v cap="${3:-20}" '
+        NF {
+            n++
+            if (n > cap) exit
+            printf "%s line=%d %s\n", p, n, substr($0, 1, 400)
+        }'
+}
+
 # cmd_pkginstall <pkg>: one package, one verdict. A package the repositories do not have
 # is reported as unavailable with its exit status and the first error line -- the user's
-# request is "record it and keep going", not "abort the batch".
+# request is "record it and keep going", not "abort the batch". Every further line apk
+# wrote follows as its own `pkgerr` record, because the first line names the failure and
+# the lines after it say why.
 cmd_pkginstall() {
     _pkg=$1
     _out=$(apk add --no-cache "${_pkg}" 2>&1)
@@ -611,6 +630,7 @@ cmd_pkginstall() {
     fi
     _first=$(printf '%s\n' "${_out}" | sed -n '1p' | tr -d '\r')
     say "pkg=${_pkg} state=unavailable rc=${_rc} err=${_first}"
+    _apk_err_lines "pkgerr pkg=${_pkg}" "${_out}"
     return 0
 }
 
@@ -699,6 +719,10 @@ cmd_pkgcycle() {
     say "pkgcycle pkg=${_cy_pkg} before=${_cy_before} add_rc=${_cy_add_rc} after_add=${_cy_mid} exec=${_cy_exe:-none} exec_rc=${_cy_exec} files=${_cy_files} del_rc=${_cy_del_rc} after_del=${_cy_after} files_left=${_cy_left} world_before=${_cy_world_before} world_after=${_cy_world_after} list=${_cy_list}"
     if [ "${_cy_add_rc}" -ne 0 ]; then
         say "pkgcycle_err=$(printf '%s\n' "${_cy_add}" | sed -n '1p' | tr -d '\r' | cut -c1-80)"
+        # Same reason as cmd_pkginstall: the first line names the failure, the lines below it
+        # name the cause. A cycle name the feeds cannot solve is measured as unavailable, and
+        # the evidence has to say which feed or pin refused it.
+        _apk_err_lines "pkgcycle_err_line pkg=${_cy_pkg}" "${_cy_add}"
     fi
 }
 
@@ -1389,6 +1413,31 @@ kv() {
     status_field "${1:-}" "${2:?kv needs a key}" 2>/dev/null
 }
 
+# pkg_apk_why <label> <helper output>: every line apk wrote about a package it refused,
+# copied into the evidence. The `pkg=` line carries the first line only, and on this image
+# the first line is `ERROR: unable to select packages:` with the cause (`breaks:
+# world[kernel=...]`, `required by:`) on the lines below it. Losing those lines is what
+# turned a stale-payload gap into an unexplainable one in the first full run: the record
+# said rc=99 and could not be shown to be the pin rather than a package that is not there.
+pkg_apk_why() {
+    _pw_label=${1:?pkg_apk_why needs a label}
+    printf '%s\n' "${2:-}" \
+        | sed -n -e "s/^pkgerr /pkg ${_pw_label}: /p" \
+            -e "s/^pkgcycle_err_line /pkgcycle ${_pw_label}: /p" \
+        | while IFS= read -r _pw_line; do
+            ev "${_pw_line}"
+        done
+}
+
+# pkg_apk_reason <helper output>: the line apk wrote that names the cause, for the row's
+# own note. Empty when apk did not write one, so a note falls back to the first line.
+pkg_apk_reason() {
+    printf '%s\n' "${1:-}" \
+        | sed -n -e 's/^pkgerr pkg=[^ ]* line=[0-9]* //p' \
+            -e 's/^pkgcycle_err_line pkg=[^ ]* line=[0-9]* //p' \
+        | grep -m 1 -E 'breaks:|required by:|conflict|not found' || :
+}
+
 push_helper() {
     scen_helper_render "${_tmp}/ab-scen-helper.sh" || return 1
     dev_ssh "mkdir -p $(dirname "${SCEN_HELPER}")" >/dev/null 2>&1
@@ -1578,11 +1627,16 @@ run_s1() {
     _bad=0
     _unavailable=""
     for _p in ${SCEN_PKGS}; do
-        _line=$(scen pkginstall "${_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
+        _pkg_out=$(scen pkginstall "${_p}" 2>/dev/null)
+        _line=$(printf '%s\n' "${_pkg_out}" | grep '^pkg=' | head -n 1)
         _state=$(kv "${_line}" state)
         _rc=$(printf '%s\n' "${_line}" | sed -n 's/.* rc=\([^ ]*\).*/\1/p')
         _ver=$(printf '%s\n' "${_line}" | sed -n 's/.* version=\([^ ]*\).*/\1/p')
         _err=$(printf '%s\n' "${_line}" | sed -n 's/.* err=\(.*\)$/\1/p' | cut -c1-60)
+        # The cause apk wrote below its first line, for the row's note: `rc=99` alone does
+        # not say whether the feed lacks the package or the world file pins a kernel the
+        # feed does not serve.
+        _why=$(pkg_apk_reason "${_pkg_out}" | cut -c1-160)
         case "${_state}" in
             installed)
                 _ok=$((_ok + 1))
@@ -1600,9 +1654,10 @@ run_s1() {
                 ;;
             *)
                 _bad=$((_bad + 1))
-                _unavailable="${_unavailable}${_p}(rc=${_rc:-?}:${_err:-no-error-line}) "
+                _unavailable="${_unavailable}${_p}(rc=${_rc:-?}:${_why:-${_err:-no-error-line}}) "
                 printf 'unavailable\t%s\t%s\t%s\n' "${_p}" "${_rc:-?}" "${_err:-no-error-line}" >>"${probefile}"
                 ev "preinstall ${_p}: unavailable rc=${_rc:-?} ${_err:-no error line}"
+                pkg_apk_why "${_p}" "${_pkg_out}"
                 ;;
         esac
     done
@@ -1627,17 +1682,20 @@ run_s1() {
     _cy_pkg=""
     _cy_line=""
     _cy_err=""
+    _cy_why=""
     for _p in ${SCEN_PKGCYCLE}; do
         _cy_out=$(scen pkgcycle "${_p}" "${SCEN_EVIDENCE}/pkgcycle-${_p}.list" 2>/dev/null)
         _line=$(printf '%s\n' "${_cy_out}" | grep '^pkgcycle ' | head -n 1)
         [ -n "${_line}" ] || continue
         _cy_err=$(printf '%s\n' "${_cy_out}" | sed -n 's/^pkgcycle_err=//p' | head -n 1)
+        _cy_why=$(pkg_apk_reason "${_cy_out}" | cut -c1-160)
         if [ "$(kv "${_line}" skipped)" = "yes" ]; then
             ev "pkgcycle ${_p}: already installed on this machine, so a cycle would not prove an uninstall; trying the next name"
             continue
         fi
         if [ "$(kv "${_line}" after_add)" != "yes" ]; then
-            ev "pkgcycle ${_p}: could not be installed (rc=$(kv "${_line}" add_rc): ${_cy_err:-no error line}), so it cannot prove an uninstall"
+            ev "pkgcycle ${_p}: could not be installed (rc=$(kv "${_line}" add_rc): ${_cy_why:-${_cy_err:-no error line}}), so it cannot prove an uninstall"
+            pkg_apk_why "${_p}" "${_cy_out}"
         fi
         _cy_pkg=${_p}
         _cy_line=${_line}
@@ -1654,7 +1712,7 @@ run_s1() {
         _cy_outcome="not measured"
         printf 'pkgcycle\tnone\tnot-installed\n' >>"${probefile}"
     elif [ "$(kv "${_cy_line}" after_add)" != "yes" ]; then
-        _finding "${_cy_pkg} could not be installed for the install-then-remove cycle (rc=$(kv "${_cy_line}" add_rc): ${_cy_err:-no error line}), so the uninstall half of R5 was not measured"
+        _finding "${_cy_pkg} could not be installed for the install-then-remove cycle (rc=$(kv "${_cy_line}" add_rc): ${_cy_why:-${_cy_err:-no error line}}), so the uninstall half of R5 was not measured"
         _cy_outcome="${_cy_pkg} unavailable"
         printf 'pkgcycle\t%s\tunavailable\n' "${_cy_pkg}" >>"${probefile}"
     else
@@ -2967,7 +3025,8 @@ run_s7() {
     _inst=0
     _unavail=""
     for _p in ${SCEN_PKGS}; do
-        _line=$(scen pkginstall "${_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
+        _pkg_out=$(scen pkginstall "${_p}" 2>/dev/null)
+        _line=$(printf '%s\n' "${_pkg_out}" | grep '^pkg=' | head -n 1)
         case "$(kv "${_line}" state)" in
             installed)
                 _inst=$((_inst + 1))
@@ -2975,8 +3034,10 @@ run_s7() {
                 ;;
             *)
                 _err=$(printf '%s' "${_line}" | sed -n 's/.* err=//p' | cut -c1-60)
-                _unavail="${_unavail}${_p}($(kv "${_line}" rc):${_err:-no-error-line}) "
+                _why=$(pkg_apk_reason "${_pkg_out}" | cut -c1-160)
+                _unavail="${_unavail}${_p}($(kv "${_line}" rc):${_why:-${_err:-no-error-line}}) "
                 ev "install ${_p}: unavailable $(kv "${_line}" rc) ${_err:-no error line}"
+                pkg_apk_why "${_p}" "${_pkg_out}"
                 ;;
         esac
     done
@@ -3089,7 +3150,14 @@ run_s7() {
     fi
     if cmp -s "${_after_feeds}" "${_feeds_from}"; then
         _feeds_state="still ${_from}'s"
-        _finding "the package source did not follow the version: after the jump to ${_to}, ${SCEN_S7_FEEDS} still names ${_from}'s feeds (ab-upgrade keeps it as user configuration), so the kmods index in use is $(s7_feed_of "${_after_feeds}" kmods) while the machine runs kernel ${_kver_b}"
+        # The cause is named as a candidate and not as a fact: since the platform layer
+        # reads /etc/apk/repositories.d/*.list and rewrites the kmods segment itself
+        # (platform/lib/upgrade/packages.sh), a list that did not move says the payload's
+        # platform layer did not rewrite it. The first full run read this finding on a
+        # payload built from the release before that change, and its wording - "ab-upgrade
+        # keeps it as user configuration" - described the old release, so it named a design
+        # that no longer exists and hid the real cause behind it.
+        _finding "the package source did not follow the version: after the jump to ${_to}, ${SCEN_S7_FEEDS} still names ${_from}'s feeds, so the kmods index in use is $(s7_feed_of "${_after_feeds}" kmods) while the machine runs kernel ${_kver_b}; a payload whose platform layer rewrites repositories.d would have moved it, so the payload or the layer it installed is what to look at"
     elif cmp -s "${_after_feeds}" "${_feeds_to}"; then
         _feeds_state="${_to}'s"
         ev "feeds after the jump: ${SCEN_S7_FEEDS} names ${_to}'s feeds"
@@ -3131,18 +3199,21 @@ run_s7() {
     _kmod_err=""
     for _p in ${_cands}; do
         _before=$(s7_installed_version "${_tmp}/s7-b.installed" "${_p}")
-        _line=$(scen pkginstall "${_p}" 2>/dev/null | grep '^pkg=' | head -n 1)
+        _pkg_out=$(scen pkginstall "${_p}" 2>/dev/null)
+        _line=$(printf '%s\n' "${_pkg_out}" | grep '^pkg=' | head -n 1)
         _state=$(kv "${_line}" state)
         _ver=$(kv "${_line}" version)
         _err=$(printf '%s' "${_line}" | sed -n 's/.* err=//p' | cut -c1-60)
+        _why=$(pkg_apk_reason "${_pkg_out}" | cut -c1-160)
         _changed=no
         if [ "${_state}" = "installed" ] && { [ -z "${_before}" ] || [ "${_before}" != "${_ver}" ]; }; then
             _changed=yes
         fi
         ev "aligned install ${_p}: state=${_state} before=${_before:-not-installed} after=${_ver:-none} changed=${_changed} ${_err}"
+        pkg_apk_why "${_p}" "${_pkg_out}"
         if [ "${_p}" = "${_kmod_first}" ]; then
             _kmod_state=${_state}
-            _kmod_err=${_err:-no-error-line}
+            _kmod_err=${_why:-${_err:-no-error-line}}
         fi
         if [ "${_changed}" = "yes" ]; then
             _proved=${_p}
@@ -3905,7 +3976,7 @@ plan_case() {
             printf '%s helper push %s -> %s\n' "${_case}" "ab-scen-helper.sh" "${SCEN_HELPER}"
             printf '%s probe expect=apk=yes (else GAP: not an apk system), data=mounted (else GAP)\n' "${_case}"
             for _p in ${SCEN_PKGS}; do
-                printf '%s pkg-install %s expect=installed|unavailable (unavailable is recorded with rc and the first error line, never a failure)\n' "${_case}" "${_p}"
+                printf '%s pkg-install %s expect=installed|unavailable (unavailable is recorded with rc, the first error line and every line apk wrote after it -- `breaks: world[kernel=...]` is what makes a gap self-evident -- never a failure)\n' "${_case}" "${_p}"
             done
             printf '%s pkg-snapshot %s/apk-snapshot-<stamp>.txt expect=count>0 (apk info -v, else apk list --installed)\n' "${_case}" "${SCEN_EVIDENCE}"
             printf '%s pkg-version <every installed package> -> %s/packages.tsv expect=one row per package and per kmod\n' "${_case}" "${SCEN_EVIDENCE}"

@@ -20,11 +20,33 @@
 #   pass  the sample's own criterion matched, and both sha256 values are what --mark saw
 #   fail  it did not: the row carries a reason token (not-installed, unusable,
 #         check-crashed, config-changed, data-lost, no-answer, no-baseline) and the facts
-#   gap   the sample could not be installed when --mark ran (reason=install-gap). This is
-#         the only GAP class the matrix accepts: a package the feed does not offer is a
-#         finding about the feed, not a defect of the A/B machinery (PRD risk 3, istore
-#         measured rc=1 in round 03)
+#   gap   the sample cannot speak about the hop: it could not be installed when --mark ran
+#         (reason=install-gap), its setup did not run (reason=setup-failed), or its own
+#         criterion was already failing on the baseline image (reason=baseline-unusable).
+#         A GAP is never a defect of the A/B machinery: a package the feed does not offer
+#         is a finding about the feed (PRD risk 3, istore measured rc=1 in round 03), and a
+#         criterion that never matched is a finding about the manifest (round 1: one
+#         hard-coded ttyd path read as a regression on five matrix cases)
 #   skip  no machine answered, or --dry-run asked for nothing: never a pass
+#
+# Why a failing criterion is only a regression when it passed before
+# -----------------------------------------------------------------
+# --mark runs each sample's criterion too and records what it printed in the state file.
+# --verify re-matches that recorded output against the same ERE before it decides: a
+# criterion that already failed on the image the chain started from says nothing about any
+# hop, so it is a GAP that names the sample. Only pass -> fail is a regression. The
+# criterion is re-matched and not stored as a verdict, so the manifest stays the single
+# place "usable" is defined: a fixture fixed between --mark and --verify is judged by the
+# fixed criterion.
+#
+# Setup: the one place a sample may change the machine's running state
+# -------------------------------------------------------------------
+# A sample's `setup` (docker's `enable && start`) runs during --install, after apk add
+# succeeded and before --mark records the baseline, and the install row carries
+# setup=ok|failed|skipped|absent. That is deliberate and it is the only action that does
+# it: docker's criterion is `docker info` answering, and a daemon that is only enabled at
+# boot comes back on its own after every hop. --mark, --verify and --unmark start nothing,
+# because they run while the machine is being measured.
 #
 # Exit status: 0 every sample passed, 1 at least one failed, 2 usage, 3 nothing failed but
 # at least one sample was skipped, 4 nothing failed but at least one sample is a gap.
@@ -41,7 +63,7 @@
 #
 # What is measured, and where
 # ---------------------------
-# --mark writes two markers and records three facts per sample:
+# --mark runs each sample's criterion and records four facts per sample:
 #   config   /etc/config/<name> gains `option ab_marker '<sha>'` under a
 #            `config marker 'ab_follow'` section (the sha is derived from the sample name,
 #            so a second --mark writes the same bytes - the baseline is idempotent)
@@ -49,8 +71,11 @@
 #            data partition, which is what proves the data half of the machine survived
 #   version  the installed apk version, recorded as a fact and NOT asserted later: a package
 #            that followed the new base has a new version and is still the same package
-# The baseline (version, config sha256, data sha256) lands in --state, on the operator's
-# machine, because /tmp on the device does not survive the hop it is there to measure.
+#   check    what the sample's criterion printed before the hop, which is what lets --verify
+#            tell "this criterion never matched here" from "this hop broke it"
+# The baseline (state, version, config sha256, data sha256, check) lands in --state, on the
+# operator's machine, because /tmp on the device does not survive the hop it is there to
+# measure.
 #
 # Hygiene on a machine somebody else is using
 # -------------------------------------------
@@ -58,7 +83,10 @@
 # <config><suffix> (.ab-follow-bak) and a file --mark had to create is recorded as an empty
 # backup, which is how --unmark knows whether to restore or delete. --unmark restores every
 # backup and removes the data markers. Nothing here starts a daemon, reboots or writes
-# outside /etc/config/<name>, /data/ab-follow and /tmp.
+# outside /etc/config/<name>, /data/ab-follow and /tmp - the one exception is a sample's own
+# `setup`, which only --install runs and which the install row reports. --unmark does not
+# undo it: the enable half is what carries the daemon across the next hop, so stopping it
+# would remove the evidence the next --verify is there to read.
 #
 # Environment: AB_HOST, AB_KEY, AB_FOLLOW_MANIFEST, AB_FOLLOW_STATE, AB_FOLLOW_MARKER_DIR,
 #              AB_FOLLOW_BAK_SUFFIX, AB_FOLLOW_INSTALL_TIMEOUT (180 s), AB_DRY_RUN.
@@ -97,18 +125,21 @@ _row_dat=""
 _row_cmd=""
 _row_exp=""
 _row_needs=""
+_row_setup=""
 
 usage() {
     cat <<'USAGE'
 usage: follow-probe.sh --install | --mark | --verify | --unmark
                        [--sample NAME]... [--state FILE] [--manifest FILE] [--dry-run]
 
-  --install   install the samples the manifest names; a sample that cannot be installed is
-              a GAP with the command to rerun, never a FAIL
-  --mark      write the fake config and the data marker, and record (version, config
-              sha256, data sha256) per sample in --state
+  --install   install the samples the manifest names and run the setup of the ones that
+              carry one; a sample that cannot be installed is a GAP with the command to
+              rerun, never a FAIL
+  --mark      write the fake config and the data marker, and record per sample (version,
+              config sha256, data sha256, criterion output) in --state
   --verify    read the baseline back and assert, per sample: still usable, config sha256
-              unchanged, data marker unchanged
+              unchanged, data marker unchanged; a criterion that already failed on the
+              baseline image is reported as a gap, not as a failure
   --unmark    restore the configs and remove the markers --mark left behind
   --sample NAME    repeatable; only this sample
   --state FILE     the baseline TSV (default /tmp/ab-follow-state.tsv)
@@ -231,7 +262,7 @@ _rerun() { # <action> <sample>: the command a reader pastes to repeat one sample
 
 # _manifest_dump <file>: the manifest as flat records, one per line:
 #   meta    <key>   <value>                    (schema, updated, version_line)
-#   sample  <name>  <packages>  <config_path>  <data_marker>  <cmd>  <expect>  <needs>
+#   sample  <name>  <packages>  <config_path>  <data_marker>  <cmd>  <expect>  <needs>  <setup>
 #
 # python3 and not awk: the descriptor holds a nested object (check) and an array
 # (packages), which a character scanner reads only by accident. The driver runs on the
@@ -270,9 +301,10 @@ for sample in samples:
     check = sample.get("check") or {}
     cmd = (check.get("cmd") or "").strip()
     expect = (check.get("expect") or "").strip() or "^ok"
+    setup = (sample.get("setup") or "").strip()
     if not cmd:
         sys.exit("follow-probe: %s: sample %s has no check command" % (path, name))
-    for value in (name, cmd, expect):
+    for value in (name, cmd, expect, setup):
         if "\n" in value or "\t" in value:
             sys.exit("follow-probe: %s: sample %s: a manifest string carries a newline or a tab"
                      % (path, name))
@@ -289,6 +321,7 @@ for sample in samples:
         cmd,
         expect,
         ",".join(sample.get("needs") or []),
+        setup,
     ]
     out.append("\t".join(fields))
 
@@ -338,6 +371,7 @@ _each_sample() {
         _row_cmd=${_f6}
         _row_exp=${_f7}
         _row_needs=${_f8}
+        _row_setup=${_f9}
         _want "${_row_name}" || continue
         "${1}"
     done <"${_records}"
@@ -387,6 +421,20 @@ _svc() {
     if "$1" enabled >/dev/null 2>&1; then echo expected-not-running; return 0; fi
     echo stopped
 }
+# Where the base keeps the binary an init script runs: the script's own PROG first, then
+# whatever PATH resolves. Not a fixed directory: on this image ttyd lives in /usr/bin and
+# the criterion that looked in /usr/sbin failed a healthy machine for five matrix cases
+# (measured 2026-11-19). The caller prints the path, so a base that moves the binary is
+# visible in the row instead of collapsing into a yes/no.
+_bin() {
+    _bd=""
+    if [ -x "$1" ]; then
+        _bd=$(sed -n 's/^PROG=//p' "$1" 2>/dev/null | head -1 | awk '{print $1}' | tr -d "\"'")
+    fi
+    if [ -n "$_bd" ] && [ -x "$_bd" ]; then printf '%s' "$_bd"; return 0; fi
+    command -v "$2" 2>/dev/null || true
+    return 0
+}
 REMOTE
 }
 
@@ -394,27 +442,56 @@ _inst_helpers() {
     printf 'SFX=%s\n' "$(_sq "${BAK_SUFFIX}")"
 }
 
-# One sample's install: apk add, the status, and the first 240 characters of what it said.
+# One sample's install: apk add, then the sample's setup when it declares one, and the
+# status of each. Five fields: name, apk rc, apk output, setup rc, setup output. The setup
+# status is a word rather than a number when there was nothing to run, so a row can tell
+# "this sample has no setup" from "the setup did not run".
 _remote_install_block() {
     [ -n "${_row_pkgs}" ] || return 0
+    printf ': >/tmp/ab-follow-setup.$$\n'
     printf '_to apk add %s >/tmp/ab-follow-inst.$$ 2>&1\n' "${_row_pkgs}"
     printf '_rc=$?\n'
-    printf 'printf "%%s\\t%%s\\t%%s\\n" %s "$_rc" "$(tr "\\n" " " </tmp/ab-follow-inst.$$ | cut -c1-240)"\n' \
-        "$(_sq "${_row_name}")"
-    printf 'rm -f /tmp/ab-follow-inst.$$\n'
+    if [ -n "${_row_setup}" ]; then
+        # Only after the packages are on the machine: a setup that ran against a half
+        # installed package would report the install's failure as the daemon's.
+        printf '_srt=skipped\n'
+        printf 'if [ "$_rc" = 0 ]; then\n'
+        printf '    _to sh -c %s >/tmp/ab-follow-setup.$$ 2>&1\n' "$(_sq "${_row_setup}")"
+        printf '    _srt=$?\n'
+        printf 'fi\n'
+    else
+        printf '_srt=absent\n'
+    fi
+    printf 'printf "%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n" %s "$_rc" \\\n' "$(_sq "${_row_name}")"
+    printf '    "$(tr "\\n" " " </tmp/ab-follow-inst.$$ | cut -c1-240)" "$_srt" \\\n'
+    printf '    "$(tr "\\n" " " </tmp/ab-follow-setup.$$ | cut -c1-200)"\n'
+    printf 'rm -f /tmp/ab-follow-inst.$$ /tmp/ab-follow-setup.$$\n'
 }
 
-# One sample's mark: the fake config, the data marker, and the three baseline facts.
+# One sample's mark: the criterion as the machine answers it now, the fake config, the data
+# marker, and the baseline facts.
+#
+# The criterion runs first and before anything is written, so what is recorded is the
+# machine as the hop is about to find it. Its output is what --verify compares against: a
+# criterion that already failed here cannot be evidence about any hop.
 _remote_mark_block() {
     printf 'name=%s\n' "$(_sq "${_row_name}")"
     printf 'cfg=%s\n' "$(_sq "${_row_cfg}")"
     printf 'dat=%s\n' "$(_sq "${_row_dat}")"
     printf 'pkg0=%s\n' "$(_sq "${_row_pkgs%% *}")"
+    # The criterion is asked once, and only of a sample that is on the machine: the answer
+    # for a package the feed does not offer is not a fact about the criterion.
+    printf 'v=$(_ver "$pkg0")\n'
+    printf '_mcr=0\n'
+    printf '_mco=""\n'
+    printf 'if [ -n "$v" ]; then\n'
+    printf '    _mco=$( { %s\n} 2>&1 ) || _mcr=$?\n' "${_row_cmd}"
+    printf 'fi\n'
+    printf '_mco=$(printf "%%s" "$_mco" | tr "\\n\\t" "  " | cut -c1-240)\n'
     cat <<'REMOTE'
 ms=$(printf 'ab-follow:%s:v1' "$name" | sha256sum | awk '{print $1}')
-v=$(_ver "$pkg0")
 if [ -z "$v" ] || [ -z "$cfg" ] || [ -z "$dat" ]; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" 0 "" "" "" not-installed
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" 0 "" "" "" not-installed "$_mcr" "$_mco"
 else
     _rc=0
     _d=marked
@@ -434,7 +511,8 @@ else
         printf 'pkg=%s\nmarker=%s\n' "$name" "$ms" >"$dat" 2>/dev/null ||
             { _rc=1; _d=data-write-failed; }
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$_rc" "$v" "$(_sha "$cfg")" "$(_sha "$dat")" "$_d"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$_rc" "$v" "$(_sha "$cfg")" \
+        "$(_sha "$dat")" "$_d" "$_mcr" "$_mco"
 fi
 REMOTE
 }
@@ -557,12 +635,17 @@ _row_skip() {
     _emit "${_row_name}" skip "${_skip_ac}" "reason=${_skip_reason}"
 }
 
-# One line per sample in a dry run: what would be installed and what the criterion needs
-# (network, service, http, kernel), so a reader can see the prerequisites before a run
-# touches the machine.
+# One line per sample in a dry run: what would be installed, what would be set up, and what
+# the criterion needs (network, service, http, kernel), so a reader can see the
+# prerequisites - and the one command that changes the machine - before a run touches it.
 _plan_row() {
-    printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s\n' \
-        "${_row_name}" "${_row_pkgs}" "${_row_needs:--}"
+    if [ -n "${_row_setup}" ]; then
+        printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s setup="%s"\n' \
+            "${_row_name}" "${_row_pkgs}" "${_row_needs:--}" "${_row_setup}"
+    else
+        printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s\n' \
+            "${_row_name}" "${_row_pkgs}" "${_row_needs:--}"
+    fi
 }
 
 # A TSV row is split with parameter expansion, not with `read`: IFS treats the tab as
@@ -583,7 +666,7 @@ _pop_field() {
     esac
 }
 
-_split_row() { # <line>: _f1 .. _f8, empty fields included
+_split_row() { # <line>: _f1 .. _f9, empty fields included
     _rest=${1}
     _pop_field
     _f1=${_pop}
@@ -601,6 +684,8 @@ _split_row() { # <line>: _f1 .. _f8, empty fields included
     _f7=${_pop}
     _pop_field
     _f8=${_pop}
+    _pop_field
+    _f9=${_pop}
 }
 
 _answer_row() { # <name>: 1 when the machine said nothing about this sample
@@ -647,12 +732,32 @@ _row_install() {
         return 0
     fi
     _rc=${_f2}
-    if [ "${_rc}" = "0" ]; then
-        _emit "${_row_name}" pass ac-2 "packages=${_row_pkgs}"
+    _detail=${_f3}
+    _srt=${_f4}
+    _sdetail=${_f5}
+    # A three-field answer comes from a remote half that predates setup, and a sample with
+    # no setup reports "absent" itself: neither is a failed step.
+    case "${_srt}" in
+        "") _srt=absent ;;
+    esac
+    if [ "${_rc}" != "0" ]; then
+        _emit "${_row_name}" gap ac-2 \
+            "reason=install-failed rc=${_rc} packages=${_row_pkgs} detail=$(_quoted "${_detail}") setup=skipped rerun=\"$(_rerun install "${_row_name}")\""
         return 0
     fi
-    _emit "${_row_name}" gap ac-2 \
-        "reason=install-failed rc=${_rc} packages=${_row_pkgs} detail=$(_quoted "${_f3}") rerun=\"$(_rerun install "${_row_name}")\""
+    if [ "${_srt}" != "0" ] && [ "${_srt}" != "absent" ]; then
+        # The sample is installed but its own setup did not run, so its criterion would
+        # measure a daemon that was never started. Reporting that as a pass would be a
+        # green row about nothing, and as a failure would blame the hop for the baseline.
+        _emit "${_row_name}" gap ac-2 \
+            "reason=setup-failed rc=${_srt} packages=${_row_pkgs} setup=$(_quoted "${_sdetail}") rerun=\"$(_rerun install "${_row_name}")\""
+        return 0
+    fi
+    if [ "${_srt}" = "absent" ]; then
+        _emit "${_row_name}" pass ac-2 "packages=${_row_pkgs} setup=absent"
+    else
+        _emit "${_row_name}" pass ac-2 "packages=${_row_pkgs} setup=ok"
+    fi
 }
 
 # --------------------------------------------------------------------------- #
@@ -669,8 +774,8 @@ _do_mark() {
         return 0
     fi
     _state_tmp=$(mktemp) || return 2
-    printf '# follow-probe state schema=1 action=mark manifest=%s columns=%s\n' \
-        "${MANIFEST}" "pkg,state,version,config_path,config_sha256,data_path,data_sha256,note" \
+    printf '# follow-probe state schema=2 action=mark manifest=%s columns=%s\n' \
+        "${MANIFEST}" "pkg,state,version,config_path,config_sha256,data_path,data_sha256,note,check" \
         >"${_state_tmp}"
     _each_sample _row_mark
     if ! mv "${_state_tmp}" "${STATE}" 2>/dev/null; then
@@ -691,6 +796,7 @@ _row_mark() {
     _cs=${_f4}
     _ds=${_f5}
     _detail=${_f6}
+    _bcheck=${_f8}
     if [ "${_rc}" != "0" ]; then
         _emit "${_row_name}" fail ac-3 "reason=mark-failed rc=${_rc} detail=$(_quoted "${_detail}")"
         return 0
@@ -698,16 +804,45 @@ _row_mark() {
     if [ -z "${_ver}" ]; then
         _emit "${_row_name}" gap ac-3 \
             "reason=install-gap rerun=\"$(_rerun install "${_row_name}")\""
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "${_row_name}" gap "" "${_row_cfg}" "" "${_row_dat}" "" \
-            "install-gap; rerun: $(_rerun install "${_row_name}")" >>"${_state_tmp}"
+            "install-gap; rerun: $(_rerun install "${_row_name}")" "" >>"${_state_tmp}"
         return 0
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "${_row_name}" pass "${_ver}" "${_row_cfg}" "${_cs}" "${_row_dat}" "${_ds}" "${_detail}" \
-        >>"${_state_tmp}"
-    _emit "${_row_name}" pass ac-3 \
-        "version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")"
+        "${_bcheck}" >>"${_state_tmp}"
+    # The baseline row reports whether the criterion held before the hop, because that is
+    # the difference between "this sample works here" and "this criterion never matched
+    # here". The second is not a failure of --mark: the samples still have to be carried.
+    _baseline_matched
+    case "$?" in
+        0)
+            _emit "${_row_name}" pass ac-3 \
+                "usable=yes version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")"
+            ;;
+        1)
+            _emit "${_row_name}" pass ac-3 \
+                "usable=no version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}") check=$(_quoted "${_bcheck}")"
+            ;;
+        *)
+            # The remote half answered without the criterion's output, which is the shape of
+            # a manifest or a driver that predates this column. Saying "usable=no" here
+            # would blame the sample for the answer nobody collected.
+            _emit "${_row_name}" pass ac-3 \
+                "usable=unknown version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")"
+            ;;
+    esac
+}
+
+# _baseline_matched: 0 when the criterion output the baseline recorded satisfies the ERE
+# --verify applies, 1 when it does not, 2 when the baseline predates this column.
+# The recorded output is re-matched rather than stored as a verdict, so the manifest stays
+# the single place "usable" is defined: a criterion fixed between --mark and --verify is
+# judged by the fixed one, and a baseline written by an older driver is still readable.
+_baseline_matched() {
+    [ -n "${_bcheck}" ] || return 2
+    printf '%s\n' "${_bcheck}" | grep -Eq "${_row_exp}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -739,6 +874,7 @@ _row_verify() {
     _bstate=${_f2}
     _bcs=${_f5}
     _bds=${_f7}
+    _bcheck=${_f9}
     if [ "${_bstate}" = "gap" ]; then
         _emit "${_row_name}" gap ac-3 \
             "reason=install-gap rerun=\"$(_rerun install "${_row_name}")\""
@@ -757,15 +893,10 @@ _row_verify() {
         _emit "${_row_name}" fail ac-2 "reason=not-installed"
         return 0
     fi
-    if [ "${_crc}" != "0" ]; then
-        _emit "${_row_name}" fail ac-2 "reason=check-crashed rc=${_crc} check=$(_quoted "${_cout}")"
-        return 0
-    fi
-    if ! printf '%s\n' "${_cout}" | grep -Eq "${_row_exp}"; then
-        _emit "${_row_name}" fail ac-2 \
-            "reason=unusable expect=\"${_row_exp}\" check=$(_quoted "${_cout}")"
-        return 0
-    fi
+    # Both survival checks come before the criterion's own verdict. They are hop-caused by
+    # construction - the two values were hashed on this machine at --mark - so they are
+    # reported as failures even for a sample whose criterion never matched: a broken
+    # criterion must not be able to hide a config or a data marker this hop destroyed.
     if [ "${_cs}" != "${_bcs}" ]; then
         _emit "${_row_name}" fail ac-3 \
             "reason=config-changed config=${_row_cfg} baseline=$(_short "${_bcs}") now=$(_short "${_cs}")"
@@ -774,6 +905,39 @@ _row_verify() {
     if [ "${_ds}" != "${_bds}" ]; then
         _emit "${_row_name}" fail ac-3 \
             "reason=data-lost marker=${_row_dat} baseline=$(_short "${_bds}") now=$(_short "${_ds}")"
+        return 0
+    fi
+    # The criterion's own verdict, in one place: 0 when the sample's own ERE matched.
+    _usable=yes
+    [ "${_crc}" = "0" ] || _usable=no
+    if [ "${_usable}" = "yes" ] && ! printf '%s\n' "${_cout}" | grep -Eq "${_row_exp}"; then
+        _usable=no
+    fi
+    if [ "${_usable}" = "no" ]; then
+        if [ "${_crc}" = "0" ]; then
+            _why="reason=unusable expect=\"${_row_exp}\""
+        else
+            _why="reason=check-crashed rc=${_crc}"
+        fi
+        _baseline_matched
+        case "$?" in
+            0)
+                _emit "${_row_name}" fail ac-2 "${_why} check=$(_quoted "${_cout}")"
+                ;;
+            1)
+                # The criterion was already failing on the baseline image: this hop is not
+                # what broke it, and letting it read as a failure is what turned one wrong
+                # path into five red matrix cases (round 1). The row names the sample and
+                # carries both answers so a reader can see it is the same defect.
+                _emit "${_row_name}" gap ac-2 \
+                    "reason=baseline-unusable baseline_check=$(_quoted "${_bcheck}") check=$(_quoted "${_cout}")"
+                ;;
+            *)
+                # A baseline written before the criterion output was recorded: the row
+                # cannot tell the two classes apart, so it stays a failure and says why.
+                _emit "${_row_name}" fail ac-2 "${_why} baseline=unrecorded check=$(_quoted "${_cout}")"
+                ;;
+        esac
         return 0
     fi
     _emit "${_row_name}" pass ac-2 \
