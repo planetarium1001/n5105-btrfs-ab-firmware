@@ -171,6 +171,13 @@ PROBE_NAMES="grow network wan22 key platform adapter initrd packages"
 
 RESULTS_DIR=${AB_FULLTEST_RESULTS:-results}
 PAYLOAD_DIR=${AB_FULLTEST_PAYLOAD_DIR:-}
+# --allow-stale-payload: go on even though a base payload's platform layer was built from
+# other code than this checkout. Preflight refuses that by default, because a payload built
+# before a fix was committed installs the old code and makes every jump measure it while the
+# round reports on the new version - the 2026-11-19 round lost a full run to exactly that and
+# read the result as "the fix did not work". The flag is for the one honest use, reproducing
+# what the stale payload does; a run that uses it says so in its preflight row.
+ALLOW_STALE_PAYLOAD=${AB_FULLTEST_ALLOW_STALE_PAYLOAD:-0}
 # The task this round's evidence is audited against: --task wins, AB_TASK_ID is the same
 # knob for a caller that assembles an environment. Empty is allowed and is not a fallback:
 # see the audit phase below.
@@ -230,8 +237,10 @@ usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
                        nothing is executed, no results directory is made and no machine
                        is contacted. This is also the answer to "which phases exist":
                        a phase missing from this list is not registered at all
-  --dry-run            print the plan for every phase and exit; nothing is executed and
-                       no file is written
+  --dry-run            print the plan for every phase and exit; nothing is executed
+                       against the machine and no results file is written. The payload
+                       content gate still reads the payloads' own bytes, through a
+                       temporary directory that it removes again
   --preflight-only     run preflight and stop there; its rows are the whole result
   --from PHASE         start at PHASE; every phase before it is skipped
   --only CASE          run only the phases that own CASE; repeatable
@@ -252,9 +261,19 @@ usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
                        requires: a base payload must carry this checkout's VERSION, a
                        platform payload (payload-0.0.NN.tar) the version in its name. A
                        payload built from older code makes every jump measure the old code
-                       while the round reports on the new version. matrix,
+                       while the round reports on the new version. The version alone is not
+                       enough: a payload built before a fix was committed declares the same
+                       version and carries the old file, so every base payload's platform
+                       layer is also compared file by file with this checkout's platform/
+                       tree, and a difference is a preflight FAIL. matrix,
                        scenarios and matrix2 jump from here, and the recovery phase takes
                        R1's candidate from here as payload-<VERSION>.tar
+  --allow-stale-payload
+                       go on when a base payload's platform layer was built from other code
+                       than this checkout. The preflight row that refuses such a payload is
+                       then a PASS that names the flag and the files that differ, so the
+                       round's own record says it measured other code than the one under
+                       acceptance. The version check is not relaxed by this flag
   --task ID            the task whose evidence the audit phase reads (also AB_TASK_ID).
                        Without one the audit is a GAP row: it will not read the previous
                        round's record just because that id is still around
@@ -779,8 +798,14 @@ _phase_env() {
 _phase_plan() {
     _pp_script=$(_phase_script "${1}")
     if [ "${1}" = "preflight" ]; then
-        printf 'internal: key file, ssh reachability, platform identity, free space on %s and /data, payload-dir contents' \
+        printf 'internal: key file, ssh reachability, platform identity, free space on %s and /data, payload-dir contents, payload content against the checkout' \
             "${AB_P4_MOUNT}"
+        # The content gate is answered here as well as in _preflight: it reads this host's
+        # files, so a plan can state its verdict without touching the machine, and a plan
+        # that stayed silent about it would hide the stale-payload case until after a slot
+        # was written.
+        _pp_gate=$(_payload_content_gate_plan)
+        [ -n "${_pp_gate}" ] && printf '%s' "${_pp_gate}"
         return 0
     fi
     # An audit with no task id is not a plan to audit anything: it would read the previous
@@ -906,6 +931,154 @@ _payload_platform_mismatches() {
     [ -z "${_ppm_bad}" ] || printf '%s\n' "${_ppm_bad}"
 }
 
+# _payload_layer_files <repo-root>: the platform source files a base payload must carry
+# unchanged, one path per line, relative to platform/.
+#
+# The list is derived from the checkout rather than written out here, so a file added to the
+# platform tree is covered by the gate the moment it exists. One path is excluded:
+# etc/platform-release, which assemble.sh renders at build time from VERSION, the upstream
+# label and the stage name. Comparing a rendered file would report a difference on every
+# payload, which is how a gate teaches its reader to ignore it. The other generated paths
+# (etc/net-defaults.conf, etc/ab/update.conf, the protected-path list, the etc/rc.d links)
+# are not in the source tree at all, so they never reach this list.
+_payload_layer_files() {
+    _plf_root=${1:?}
+    [ -d "${_plf_root}/platform" ] || return 0
+    ( cd "${_plf_root}/platform" && find . -type f | sed 's|^\./||' | sort ) \
+        | while IFS= read -r _plf_rel; do
+            case "${_plf_rel}" in
+                etc/platform-release) continue ;;
+            esac
+            printf '%s\n' "${_plf_rel}"
+        done
+}
+
+# _payload_platform_member <platform.tar> <rel>: one file out of a payload's platform layer.
+# Both member spellings are tried because an archive may store "etc/init.d/ab-boot" or
+# "./etc/init.d/ab-boot", and reading the wrong one would look like a file the payload does
+# not carry.
+_payload_platform_member() {
+    _ppmem_tar=${1:?}
+    _ppmem_rel=${2:?}
+    for _ppmem_member in "./${_ppmem_rel}" "${_ppmem_rel}"; do
+        if tar -xOf "${_ppmem_tar}" "${_ppmem_member}" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# _payload_content_mismatches <dir> <repo-root>: one clause per base payload whose platform
+# layer differs from this checkout's platform/ tree, empty when every base payload agrees.
+#
+# Why this exists beside _payload_platform_mismatches: the manifest's platform version is a
+# label, and a label can be right while the bytes behind it are old. Measured 2026-11-19:
+# three payloads declared platform 0.0.13 and the checkout was 0.0.13, so the version gate
+# passed them, but their platform.tar had been built at 07:06 while the two fixes the round
+# existed for were committed at 15:30. The round then measured the old code and reported the
+# fixed defects as still broken - the worst outcome this suite can produce, because it sends
+# someone to repair something that already works.
+#
+# Only base payloads are judged. A platform payload (payload-0.0.NN.tar) is one hop of the
+# chain whose whole point is to carry an older layer forward, so holding it to the current
+# tree would forbid the chain instead of checking it.
+#
+# The comparison is file by file over _payload_layer_files, not over the whole tar: the
+# build renders files and creates links, and a byte-for-byte tar comparison would report
+# those expected differences as staleness.
+_payload_content_mismatches() {
+    _pcm_dir=${1:?}
+    _pcm_root=${2:?}
+    _pcm_bad=""
+    # The path list goes through a file rather than a variable: `for p in ${list}` would
+    # split on IFS *and* glob-expand each word, so a file name containing a `*` would compare
+    # something other than the file it names. A `while read` over a file splits on newlines
+    # only and runs in this shell, so the differences it finds survive the loop.
+    _pcm_work=$(mktemp -d "${TMPDIR:-/tmp}/ab-fulltest-payload.XXXXXX" 2>/dev/null) || {
+        # Fail closed, not open: a gate that cannot read the payloads must not answer
+        # "every base payload agrees". The caller treats any output as a refusal, so this
+        # sentence is what the operator sees instead of a silent pass.
+        printf '%s\n' "the payload content gate could not run: cannot create a temporary directory under ${TMPDIR:-/tmp}, so the payloads' code cannot be compared with ${_pcm_root}/platform"
+        return 0
+    }
+    _payload_layer_files "${_pcm_root}" >"${_pcm_work}/files"
+    if [ ! -s "${_pcm_work}/files" ]; then
+        rm -rf "${_pcm_work}"
+        return 0
+    fi
+    for _pcm_f in "${_pcm_dir}"/payload-*.tar; do
+        [ -f "${_pcm_f}" ] || continue
+        _pcm_name=${_pcm_f##*/}
+        _pcm_named=$(_payload_name_version "${_pcm_f}")
+        [ -n "${_pcm_named}" ] || continue
+        case "${_pcm_named}" in
+            0.*) continue ;;
+        esac
+        if ! tar -xOf "${_pcm_f}" platform.tar >"${_pcm_work}/platform.tar" 2>/dev/null ||
+            [ ! -s "${_pcm_work}/platform.tar" ]; then
+            _pcm_bad="${_pcm_bad}${_pcm_bad:+; }${_pcm_name} carries no readable platform.tar, so the code it installs cannot be compared with ${_pcm_root}/platform"
+            continue
+        fi
+        _pcm_diff=""
+        while IFS= read -r _pcm_rel; do
+            [ -n "${_pcm_rel}" ] || continue
+            _pcm_repo="${_pcm_root}/platform/${_pcm_rel}"
+            [ -f "${_pcm_repo}" ] || continue
+            _pcm_bytes=$(wc -c <"${_pcm_repo}" | tr -d ' ')
+            if ! _payload_platform_member "${_pcm_work}/platform.tar" "${_pcm_rel}" \
+                >"${_pcm_work}/member" 2>/dev/null; then
+                _pcm_diff="${_pcm_diff}${_pcm_diff:+, }${_pcm_rel} (missing from the payload, checkout has ${_pcm_bytes} bytes)"
+                continue
+            fi
+            _pcm_seen=$(wc -c <"${_pcm_work}/member" | tr -d ' ')
+            if [ "${_pcm_seen}" = "${_pcm_bytes}" ] && cmp -s "${_pcm_work}/member" "${_pcm_repo}"; then
+                continue
+            fi
+            # The line where the two files part is what a reader needs to see that this is
+            # old code and not a different build of the same file. cmp states it for free,
+            # but it states "EOF on" instead when one file is a prefix of the other - which
+            # is the usual shape of a stale file, because a fix adds code to the end - so
+            # both answers are turned into a sentence.
+            _pcm_line=$(cmp "${_pcm_work}/member" "${_pcm_repo}" 2>&1 \
+                | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -n 1)
+            if [ -n "${_pcm_line}" ]; then
+                _pcm_where=", first difference at line ${_pcm_line}"
+            elif [ "${_pcm_seen}" -lt "${_pcm_bytes}" ]; then
+                _pcm_where=", the payload's copy ends before the checkout's goes on"
+            elif [ "${_pcm_seen}" -gt "${_pcm_bytes}" ]; then
+                _pcm_where=", the payload's copy goes on past the checkout's end"
+            else
+                _pcm_where=", same size, different bytes"
+            fi
+            _pcm_diff="${_pcm_diff}${_pcm_diff:+, }${_pcm_rel} (payload ${_pcm_seen} bytes, checkout ${_pcm_bytes} bytes${_pcm_where})"
+        done <"${_pcm_work}/files"
+        if [ -n "${_pcm_diff}" ]; then
+            _pcm_bad="${_pcm_bad}${_pcm_bad:+; }${_pcm_name} carries a platform layer built from other code: ${_pcm_diff}"
+        fi
+    done
+    rm -rf "${_pcm_work}"
+    [ -z "${_pcm_bad}" ] || printf '%s\n' "${_pcm_bad}"
+}
+
+# _payload_content_gate_plan: what the content gate would decide, for --dry-run.
+#
+# The gate is the one preflight question that reads this host's files instead of the
+# machine's, so a dry run can answer it without executing anything - and it must: a plan that
+# said only "payload-dir contents" would hide the exact stale-payload case the gate exists
+# for, and the operator would learn about it after the slots were written.
+_payload_content_gate_plan() {
+    _pcg_dir=${PAYLOAD_DIR:-payloads}
+    [ -d "${_pcg_dir}" ] || return 0
+    _pcg_bad=$(_payload_content_mismatches "${_pcg_dir}" "${AB_REPO_ROOT}")
+    if [ -z "${_pcg_bad}" ]; then
+        printf ' (payload content vs checkout: ok)'
+    elif [ "${ALLOW_STALE_PAYLOAD}" = "1" ]; then
+        printf ' (payload content vs checkout: STALE, allowed by --allow-stale-payload: %s)' "${_pcg_bad}"
+    else
+        printf ' (payload content vs checkout: STALE, preflight would FAIL: %s)' "${_pcg_bad}"
+    fi
+}
+
 _preflight() {
     # 1. the key. BatchMode=yes means a missing key is a wall, not a prompt, so it is
     #    answered here instead of as "the machine is down" three phases later.
@@ -1000,10 +1173,35 @@ _preflight() {
         _preflight_fail payload-platform "${_pf_plat_bad}; rebuild the payload from this checkout (scripts/ci/assemble.sh) before accepting anything with it. A payload built from older code makes every jump measure the old code while the round reports on ${_pf_want}"
         return 1
     fi
+
+    # 6. the payloads' content, not only the version they declare. The version gate above
+    #    cannot see a payload built before a fix was committed: the manifest still says the
+    #    right platform, and the tar still carries the old file. This compares the platform
+    #    layer inside every base payload with the checkout's own platform/ tree, and refuses
+    #    the run when they differ, because a round that installs other code than the one
+    #    under acceptance reports its red rows as product defects.
+    _pf_content_note=""
+    if [ "${_pf_n}" -gt 0 ]; then
+        _pf_content_bad=$(_payload_content_mismatches "${_pf_dir}" "${AB_REPO_ROOT}")
+        if [ -n "${_pf_content_bad}" ]; then
+            if [ "${ALLOW_STALE_PAYLOAD}" = "1" ]; then
+                _pf_content_note=" content=stale-allowed-by---allow-stale-payload"
+                _preflight_pass payload-content \
+                    "--allow-stale-payload: ${_pf_content_bad}. The round goes on and its rows say it measured other code than ${_pf_want}"
+            else
+                _preflight_fail payload-content \
+                    "${_pf_content_bad}; rebuild the payloads from this checkout before accepting anything with them - payloads/rebuild-base-payloads.sh replaces only the platform layer and keeps rootfs, kernel, initramfs and bootloader byte for byte - or pass --allow-stale-payload to run anyway and record that the round measured other code. A payload built before a fix was committed installs the old code, so the fixed defect reads as still broken"
+                return 1
+            fi
+        else
+            _pf_content_note=" content=ok"
+            _preflight_pass payload-content "every base payload carries this checkout's platform layer"
+        fi
+    fi
     if [ -n "${PAYLOAD_DIR}" ]; then
-        _preflight_pass payload "payload-dir=${PAYLOAD_DIR} files=${_pf_n}${_pf_plat_note}"
+        _preflight_pass payload "payload-dir=${PAYLOAD_DIR} files=${_pf_n}${_pf_plat_note}${_pf_content_note}"
     else
-        _preflight_pass payload "no --payload-dir given; the phases use their own default (payloads) files=${_pf_n}${_pf_plat_note}"
+        _preflight_pass payload "no --payload-dir given; the phases use their own default (payloads) files=${_pf_n}${_pf_plat_note}${_pf_content_note}"
     fi
 
     printf 'preflight: ok\n'
@@ -1289,6 +1487,10 @@ while [ $# -gt 0 ]; do
         --payload-dir)
             PAYLOAD_DIR=${2:?--payload-dir needs a directory}
             shift 2
+            ;;
+        --allow-stale-payload)
+            ALLOW_STALE_PAYLOAD=1
+            shift
             ;;
         --task)
             TASK_ID=${2:?--task needs a task id, e.g. 20261116-12-pre-release-acceptance-0-0-12}

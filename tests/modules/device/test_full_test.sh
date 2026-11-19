@@ -15,6 +15,11 @@
 #   ac-7 the audit phase is given the round's task id and is a GAP row without one
 #   ac-7 docker, docker-after and release are not destructive (they never write a slot)
 #   ac-7 a missing key file is a preflight FAIL, not a silent skip into the phases
+#   ac-8/ac-13 a base payload whose platform layer was built from other code than this
+#        checkout is a preflight FAIL that names the payload and the file: the declared
+#        platform version cannot see it, and a round that installs it measures the old code
+#        while reporting on the new one. --allow-stale-payload lets the run go on and says so
+#        in its row; --dry-run states the gate's verdict without running anything
 #   ac-2 the round-2 phases (software, badconfig, matrix2) are registered: listed by
 #        --list, in an order that matches the drivers' dependencies, selected by --only,
 #        a GAP row when the driver is not installed, and matrix2 gated behind --yes
@@ -115,15 +120,32 @@ run_ft() {
 # turn the matching case into a mismatch behind the test's back.
 want_version=$(sed -n '1p' "$root/VERSION")
 
-# payload_tar <path> <platform> [rootfs]: a payload tar carrying the one member the
-# preflight reads. The members a device unpacks are not needed to decide which platform a
-# payload declares, and a fixture that shipped them would cost 23 MB per case.
+# payload_tar <path> <platform> [rootfs] [platform-tree]: a payload tar carrying the members
+# the preflight reads: the manifest it takes the declared platform from, and the platform
+# layer it compares with the checkout. The layer is packed from this checkout's platform/
+# tree by default, so a fixture counts as "built from the checkout" unless a case hands over
+# a tree of its own - which is how the stale-payload case is built. The members a device
+# unpacks are not needed to answer either question, and a fixture that shipped them would
+# cost 23 MB per case.
 payload_tar() {
     _pt_dir=$(mktemp -d "$tmp/payload.XXXXXX")
+    _pt_tree=${4:-$root/platform}
     printf '{\n  "format": "ab-payload/1",\n  "platform": "%s",\n  "rootfs": "%s",\n  "members": {}\n}\n' \
         "$2" "${3:-25.12.2}" >"$_pt_dir/manifest.json"
-    tar -cf "$1" -C "$_pt_dir" manifest.json
+    tar -cf "$_pt_dir/platform.tar" -C "$_pt_tree" .
+    tar -cf "$1" -C "$_pt_dir" manifest.json platform.tar
     rm -rf "$_pt_dir"
+}
+
+# payload_tar_without_platform <path> <platform>: a payload whose manifest is readable but
+# which carries no platform layer at all. The version can be judged, the code it installs
+# cannot, and the content gate has to say so instead of reading an absent layer as agreement.
+payload_tar_without_platform() {
+    _pwp_dir=$(mktemp -d "$tmp/payload.XXXXXX")
+    printf '{\n  "format": "ab-payload/1",\n  "platform": "%s",\n  "rootfs": "25.12.2",\n  "members": {}\n}\n' \
+        "$2" >"$_pwp_dir/manifest.json"
+    tar -cf "$1" -C "$_pwp_dir" manifest.json
+    rm -rf "$_pwp_dir"
 }
 
 # payload_tar_without_manifest <path>: a tar that is a payload by its name and carries no
@@ -677,6 +699,12 @@ assert_contains "$(cat "$tmp/results-pf/preflight.tsv")" "preflight-ssh" "ac-7 e
 assert_file_exists "$tmp/results-pf/summary.txt" "ac-7 --preflight-only still writes a summary"
 assert_eq "$(tail -n 1 "$tmp/results-pf/summary.txt")" "verdict: PASS" "ac-7 a healthy preflight verdicts PASS"
 assert_contains "$out" "platforms=ok" "ac-8 a payload declaring this checkout's platform is reported as checked"
+# The version being right is not the whole question: the platform layer inside the payload
+# is compared with this checkout's platform/ tree as well, and a payload built from this
+# checkout answers both.
+assert_contains "$out" "content=ok" "ac-8 a payload carrying this checkout's platform layer is reported as checked"
+assert_contains "$(cat "$tmp/results-pf/preflight.tsv")" "preflight-payload-content" \
+    "ac-8 the content check is its own preflight row"
 
 # A payload directory with no payload-*.tar is refused before the run, not during it.
 mkdir -p "$tmp/empty-payloads"
@@ -747,6 +775,102 @@ run_ft --preflight-only --results "$tmp/results-nomanifest" --payload-dir "$tmp/
 assert_eq "$code" 1 "ac-8 a payload without a readable manifest refuses the run"
 assert_contains "$out" "payload-25.12.1.tar declares no readable manifest.platform" \
     "ac-8 the refusal names the tar and what is missing"
+
+# --- ac-8/ac-13: a payload built from other code than the checkout ------------- #
+# The failure the version gate cannot see: measured 2026-11-19, three payloads declared
+# platform 0.0.13 and the checkout was 0.0.13, so the version gate passed them, while their
+# platform.tar had been built at 07:06 and the two fixes the round existed for (the feed
+# read-back in lib/upgrade/packages.sh, the service reconciliation in etc/init.d/ab-boot)
+# were committed at 15:30. Every jump then installed the old code, the fixed defects read as
+# still broken, and the round spent a full run measuring code nobody was asking about.
+#
+# The fixture is the same version as the checkout and the same platform layer, minus the
+# last line of ab-boot: a payload built from a tree that predates the checkout's last fix,
+# which is the shape the round's payloads had (an older file, not a different one).
+stale_layer="$tmp/stale-layer"
+mkdir -p "$stale_layer"
+cp -a "$root/platform/." "$stale_layer/"
+sed '$d' "$root/platform/etc/init.d/ab-boot" >"$stale_layer/etc/init.d/ab-boot"
+mkdir -p "$tmp/content-payloads"
+payload_tar "$tmp/content-payloads/payload-25.12.2.tar" "$want_version" 25.12.2 "$stale_layer"
+: >"$stub_calls"
+run_ft --preflight-only --results "$tmp/results-content-stale" --payload-dir "$tmp/content-payloads"
+assert_eq "$code" 1 "ac-8 a payload whose platform layer was built from other code refuses the run"
+assert_contains "$out" "preflight: FAIL" "ac-8 the stale platform layer is a preflight FAIL"
+assert_contains "$out" "payload-25.12.2.tar" "ac-8 the refusal names the payload"
+assert_contains "$out" "etc/init.d/ab-boot" "ac-8 the refusal names the file that differs"
+assert_contains "$out" "the payload's copy ends before the checkout's goes on" \
+    "ac-8 the refusal says how the two versions differ"
+# It is the content gate that refused, not the version gate: the payload declares the same
+# platform as the checkout, which is the whole point of this case.
+case "$out" in
+    *"declares platform"*)
+        assert_eq "the version gate refused" "the content gate refused" \
+            "ac-8 the refusal is the content gate and not the version gate"
+        ;;
+    *)
+        assert_eq "the content gate refused" "the content gate refused" \
+            "ac-8 the refusal is the content gate and not the version gate"
+        ;;
+esac
+assert_contains "$(cat "$tmp/results-content-stale/preflight.tsv")" "preflight-payload-content" \
+    "ac-8 the content refusal is its own preflight row"
+assert_eq "$(tail -n 1 "$tmp/results-content-stale/summary.txt")" "verdict: FAIL" \
+    "ac-8 the content refusal is a FAIL, not a GAP"
+
+# --allow-stale-payload is the one way through, for reproducing what a stale payload does.
+# The row it writes has to say so: a run that measured other code than the checkout must not
+# look like a run that measured the checkout.
+run_ft --preflight-only --results "$tmp/results-content-allowed" \
+    --payload-dir "$tmp/content-payloads" --allow-stale-payload
+assert_eq "$code" 0 "ac-8 --allow-stale-payload lets a stale payload run"
+assert_contains "$out" "preflight: ok payload-content" "ac-8 the allowed stale payload is a PASS row"
+assert_contains "$(cat "$tmp/results-content-allowed/preflight.tsv")" "stale-allowed-by---allow-stale-payload" \
+    "ac-8 the row says the round measured other code than the checkout"
+assert_contains "$out" "content=stale-allowed-by---allow-stale-payload" \
+    "ac-8 the payload row carries the same mark"
+
+# The other shape a stale file takes: the payload's copy and the checkout's part in the
+# middle rather than at the end (a rewritten function, not an appended one). The refusal
+# states the line, which is what a reader needs to see that the two files are different
+# versions of one file and not two builds of the same one.
+mid_layer="$tmp/mid-layer"
+mkdir -p "$mid_layer"
+cp -a "$root/platform/." "$mid_layer/"
+awk 'NR == 2 { print "# a line the payload of the last round does not have"; next } { print }' \
+    "$root/platform/etc/init.d/ab-boot" >"$mid_layer/etc/init.d/ab-boot"
+mkdir -p "$tmp/mid-payloads"
+payload_tar "$tmp/mid-payloads/payload-25.12.2.tar" "$want_version" 25.12.2 "$mid_layer"
+run_ft --preflight-only --results "$tmp/results-content-mid" --payload-dir "$tmp/mid-payloads"
+assert_eq "$code" 1 "ac-8 a payload whose platform layer parts in the middle refuses the run"
+assert_contains "$out" "first difference at line 2" \
+    "ac-8 the refusal states the line where the two versions part"
+
+# A payload with no platform layer at all is not agreement: there is nothing to compare, so
+# the gate refuses it instead of reading an absent layer as "built from the checkout".
+mkdir -p "$tmp/noplatform-payloads"
+payload_tar_without_platform "$tmp/noplatform-payloads/payload-25.12.2.tar" "$want_version"
+run_ft --preflight-only --results "$tmp/results-noplatform" --payload-dir "$tmp/noplatform-payloads"
+assert_eq "$code" 1 "ac-8 a payload with no platform layer refuses the run"
+assert_contains "$out" "carries no readable platform.tar" \
+    "ac-8 the refusal says the payload has no layer to compare"
+
+# --dry-run has to show the gate without running anything: the operator reads the plan
+# before a slot is written, and a plan silent about a stale payload would hide the very case
+# this gate exists for.
+run_ft --dry-run --results "$tmp/results-content-dry" --payload-dir "$tmp/content-payloads"
+assert_eq "$code" 0 "ac-8 --dry-run still exits 0 on a stale payload"
+assert_contains "$(plan_line preflight)" "STALE, preflight would FAIL" \
+    "ac-8 --dry-run shows the stale payload and the refusal it would cause"
+assert_contains "$(plan_line preflight)" "etc/init.d/ab-boot" \
+    "ac-8 --dry-run names the file that differs"
+run_ft --dry-run --results "$tmp/results-content-dry" --payload-dir "$tmp/content-payloads" \
+    --allow-stale-payload
+assert_contains "$(plan_line preflight)" "allowed by --allow-stale-payload" \
+    "ac-8 --dry-run shows that the flag would let the run go on"
+run_ft --dry-run --results "$tmp/results-content-dry" --payload-dir "$tmp/payloads"
+assert_contains "$(plan_line preflight)" "payload content vs checkout: ok" \
+    "ac-8 --dry-run shows a payload built from the checkout as consistent"
 
 # --- ac-7: a destructive phase without --yes executes nothing ---------------- #
 # The window is narrowed to the matrix alone and no `yes` is typed, so the phase may not
