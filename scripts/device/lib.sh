@@ -239,7 +239,7 @@ dev_ssh() {
 # machine on 2026-11-17 (task 20261117-03, research/agent-3.md: the errno-by-errno kernel
 # source reading, the sampling of the slave node appearing and being unlinked, and the
 # controlled comparison that changed only the stdin the client offered). The same reasoning
-# without the task-local evidence is in docs/known-limitations.md:
+# without the task-local evidence is in docs/troubleshooting.md:
 #
 #   ioctl(TIOCSCTTY): I/O error       EIO from tiocsctty() can only come from
 #                                     hung_up_tty_ioctl(): the tty is already hung up

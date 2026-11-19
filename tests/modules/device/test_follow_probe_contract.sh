@@ -167,6 +167,99 @@ assert_contains "$(fixture_field docker 8)" "/etc/init.d/dockerd start" \
 assert_eq "$(printf '%s\n' "$summary" | awk -F'\t' '$8 != "" && $1 != "docker"' | wc -l | tr -d ' ')" "0" \
   "ac-2 docker is the only sample that changes the machine's running state"
 
+# --- the readiness contract is declared, not a docker branch in the driver -- #
+# Round 5 measured what a single ask costs: the hop's ssh answers at an uptime of about 10 s,
+# this product's first boot restarts the daemons procd lost only after the package follow
+# settles (`stage=services-reconciled ... down=dockerd`, about 120 s), and the probe asked at
+# about 25 s. docker answered `client=yes daemon=no` on a healthy machine and six matrix cases
+# went red. The fix is a declaration in the manifest - "this criterion needs a daemon, here is
+# how the machine says the daemon is up, and here is how long to wait" - so the driver keeps
+# its single generic path and a ninth sample can declare the same thing.
+ready_of() { # <name> <key>: one field of one sample's readiness contract, or empty
+    python3 - "$fixture" "$1" "$2" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+for sample in doc.get("samples") or []:
+    if sample.get("name") != sys.argv[2]:
+        continue
+    value = (sample.get("ready") or {}).get(sys.argv[3])
+    print("" if value is None else value)
+    break
+PY
+}
+
+assert_eq "$(python3 - "$fixture" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+print(" ".join(s["name"] for s in doc.get("samples") or [] if s.get("ready")))
+PY
+)" "docker" "ac-2 docker is the only sample whose criterion needs a daemon to be up"
+assert_eq "$(ready_of docker proc)" "dockerd" \
+  "ac-2 the readiness contract names the process the criterion waits for"
+assert_eq "$(ready_of docker init)" "/etc/init.d/dockerd" \
+  "ac-2 the readiness contract names the init script that starts it"
+assert_eq "$(ready_of docker settle)" "stage=services-reconciled" \
+  "ac-2 the readiness contract names the boot line that says the daemon was given its start"
+assert_eq "$(ready_of docker timeout)" "180" \
+  "ac-2 the wait is bounded by a timeout the manifest fixes, not by the driver"
+assert_eq "$(ready_of docker interval)" "5" \
+  "ac-2 the poll interval is the same one the rest of the device drivers settle with"
+assert_contains "$(cat "$fixture")" '"ready_contract"' \
+  "ac-2 the manifest documents the contract it declares, so the next sample can declare one"
+
+# The other direction: the driver must not know about docker. A `case $name in docker)` would
+# pass every assertion above and would still be a second place "usable" is defined - which is
+# exactly what the manifest exists to prevent (a ninth sample would need a code change).
+assert_eq "$(grep -vE '^[[:space:]]*#' "$probe" | grep -c 'dockerd' || true)" "0" \
+  "ac-2 the driver carries no docker branch: the wait is declarative, not a special case"
+assert_contains "$(grep -vE '^[[:space:]]*#' "$probe")" '_ready_wait' \
+  "ac-2 the driver has one generic readiness wait that every daemon sample uses"
+
+# A readiness contract the driver cannot honour is refused when the manifest is read, not
+# discovered on the device as a loop that cannot end.
+bad_ready="$tmp/manifest-bad-ready.json"
+python3 - "$fixture" "$bad_ready" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+for sample in doc.get("samples") or []:
+    if sample.get("name") == "docker":
+        sample["ready"] = {"proc": "dockerd", "init": "/etc/init.d/dockerd"}
+with open(sys.argv[2], "w", encoding="utf-8") as fh:
+    json.dump(doc, fh)
+PY
+out=$(AB_KEY=/dev/null AB_HOST=root@stub AB_FOLLOW_MANIFEST="$bad_ready" \
+    sh "$probe" --verify --dry-run 2>&1) && rc=0 || rc=$?
+assert_eq "$rc" "2" "ac-2 a readiness contract with no timeout is refused"
+assert_contains "$out" "ready.timeout" \
+  "ac-2 the refusal names the field, so the fixture edit is the thing that gets fixed"
+
+python3 - "$fixture" "$bad_ready" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+for sample in doc.get("samples") or []:
+    if sample.get("name") == "docker":
+        sample["ready"] = {"proc": "dockerd", "init": "/etc/init.d/dockerd",
+                           "settle": "stage=services-reconciled",
+                           "timeout": 0, "interval": 5}
+with open(sys.argv[2], "w", encoding="utf-8") as fh:
+    json.dump(doc, fh)
+PY
+out=$(AB_KEY=/dev/null AB_HOST=root@stub AB_FOLLOW_MANIFEST="$bad_ready" \
+    sh "$probe" --verify --dry-run 2>&1) && rc=0 || rc=$?
+assert_eq "$rc" "2" "ac-2 a zero timeout is refused instead of meaning 'never give up'"
+
 # --------------------------------------------------------------------------- #
 # The rows the machine would print
 # --------------------------------------------------------------------------- #
@@ -581,6 +674,270 @@ out=$(run_probe "$tmp/unmark.tsv" --unmark) && rc=0 || rc=$?
 assert_eq "$rc" "0" "ac-3 --unmark restores every sample and exits 0"
 assert_contains "$out" "probe=docker status=pass ac=ac-3 config=/etc/config/docker restored=restored" \
   "ac-3 --unmark says which file it put back"
+
+# --------------------------------------------------------------------------- #
+# The readiness wait, against a machine that is still booting
+# --------------------------------------------------------------------------- #
+# The stub above replaces the machine with a canned answer, which is right for the deciding
+# half but says nothing about the remote half's loop. Here the machine is replaced by itself:
+# the stub ssh runs the remote script the driver generated, against stubs for the commands
+# that machine would have (apk, sha256sum, pidof, one init script), so what is on trial is
+# the loop the probe really sends - not a description of it.
+#
+# The three states round 5 collapsed into one are separated here:
+#   starting  the daemon runs, the criterion does not answer yet  -> wait, then pass
+#   booting   the daemon is down and the boot has not reconciled   -> wait, then fail with
+#             the seconds it waited and what it last saw
+#   down      the daemon is down and nothing is left to start it  -> fail at once
+# and the fourth: a sample with no readiness contract is asked once, as it always was.
+live="$tmp/live"
+mkdir -p "$live/bin" "$live/init.d" "$live/data"
+
+cat >"$live/bin/ssh" <<'STUB'
+#!/bin/sh
+exec sh -s
+STUB
+# apk answers for any package, so the sample counts as installed on the "machine".
+cat >"$live/bin/apk" <<'STUB'
+#!/bin/sh
+case "$*" in
+    *list*) printf 'wait-probe-1.0-r1\n' ;;
+esac
+exit 0
+STUB
+# One constant hash: what these cases assert is readiness, never a digest.
+cat >"$live/bin/sha256sum" <<'STUB'
+#!/bin/sh
+printf '%064d  %s\n' 0 "${1:-}"
+STUB
+# pidof answers only while the flag exists, which is how a case says "the process is up".
+cat >"$live/bin/pidof" <<'STUB'
+#!/bin/sh
+[ -f "${LIVE_PIDOF_FLAG}" ] || exit 1
+exit 0
+STUB
+# The init script a manifest's ready block names: `enabled` is the boot enablement.
+cat >"$live/init.d/waitprocd" <<'STUB'
+#!/bin/sh
+case "${1:-}" in
+    enabled) [ -f "${LIVE_ENABLED_FLAG}" ] ;;
+esac
+exit 0
+STUB
+chmod +x "$live/bin/ssh" "$live/bin/apk" "$live/bin/sha256sum" "$live/bin/pidof" \
+    "$live/init.d/waitprocd"
+
+# What the live stub's sha256sum answers for every file: the baseline below carries the same
+# value, so these cases measure readiness and never a digest.
+sha_live=$(printf '0%.0s' $(seq 1 64))
+
+# live_reset <process:yes|no> <enabled:yes|no> <reconciled:yes|no>: the machine before a case.
+# The attempts counter starts empty, because how often the criterion was asked is part of
+# what each case asserts.
+live_reset() {
+    : >"$live/attempts"
+    rm -f "$live/pidof.flag" "$live/enabled.flag"
+    [ "$1" = "yes" ] && : >"$live/pidof.flag"
+    [ "$2" = "yes" ] && : >"$live/enabled.flag"
+    if [ "$3" = "yes" ]; then
+        printf 'stage=services-reconciled slot=b result=ok started=1 failed=none down=dockerd\n' \
+            >"$live/boot.log"
+    else
+        : >"$live/boot.log"
+    fi
+}
+
+# live_manifest <ready-at> <reconcile-at> <timeout> <interval>: one sample whose criterion
+# answers `ready=yes` from attempt <ready-at> on, and which - at <reconcile-at>, when that is
+# not empty - also does what the boot does: writes the reconcile line and starts the daemon.
+live_manifest() {
+    python3 - "$live" "$1" "$2" "$3" "$4" <<'PY'
+import json
+import sys
+
+live, ready_at, reconcile_at, timeout, interval = sys.argv[1:6]
+cmd = (
+    "n=$(cat " + live + "/attempts 2>/dev/null || echo 0); n=$((n+1)); "
+    "echo $n >" + live + "/attempts; "
+    'if [ -n "${LIVE_RECONCILE_AT:-}" ] && [ "$n" -ge "$LIVE_RECONCILE_AT" ]; then '
+    "printf 'stage=services-reconciled slot=b result=ok\\n' >>" + live + "/boot.log; "
+    "touch " + live + "/pidof.flag; fi; "
+    'if [ "$n" -ge "${LIVE_READY_AT:-1}" ]; then echo ready=yes; else echo ready=no; fi'
+)
+doc = {
+    "schema": 2,
+    "samples": [{
+        "name": "wait-probe",
+        "packages": ["wait-probe"],
+        "config_path": live + "/config/wait-probe",
+        "data_marker": live + "/data/wait-probe.marker",
+        "check": {"cmd": cmd, "expect": "^ready=yes$"},
+        "ready": {
+            "proc": "waitprocd",
+            "init": live + "/init.d/waitprocd",
+            "settle": "stage=services-reconciled",
+            "timeout": int(timeout),
+            "interval": int(interval),
+        },
+    }],
+}
+with open(live + "/manifest.json", "w", encoding="utf-8") as fh:
+    json.dump(doc, fh)
+PY
+}
+
+# live_manifest_no_ready: the same criterion with no readiness contract at all, which is what
+# every sample but docker declares.
+live_manifest_no_ready() {
+    python3 - "$live" <<'PY'
+import json
+import sys
+
+live = sys.argv[1]
+cmd = (
+    "n=$(cat " + live + "/attempts 2>/dev/null || echo 0); n=$((n+1)); "
+    "echo $n >" + live + "/attempts; echo ready=no"
+)
+doc = {
+    "schema": 2,
+    "samples": [{
+        "name": "wait-probe",
+        "packages": ["wait-probe"],
+        "config_path": live + "/config/wait-probe",
+        "data_marker": live + "/data/wait-probe.marker",
+        "check": {"cmd": cmd, "expect": "^ready=yes$"},
+    }],
+}
+with open(live + "/manifest.json", "w", encoding="utf-8") as fh:
+    json.dump(doc, fh)
+PY
+}
+
+live_baseline() { # the baseline --verify compares against
+    # The live stub's sha256sum answers 64 zeros for every file, so the baseline has to carry
+    # that same value: these cases are about readiness, and a differing hash would make every
+    # one of them fail as config-changed before the criterion was ever read.
+    printf '# follow-probe state schema=2 action=mark\n' >"$live/state.tsv"
+    printf 'wait-probe\tpass\twait-probe-1.0-r1\t%s/config/wait-probe\t%s\t%s/data/wait-probe.marker\t%s\tmarked\tready=yes\n' \
+        "$live" "$sha_live" "$live" "$sha_live" >>"$live/state.tsv"
+}
+
+run_probe_live() { # <args...>: the probe, with the fake machine on PATH
+    PATH="$live/bin:$PATH" \
+        LIVE_PIDOF_FLAG="$live/pidof.flag" LIVE_ENABLED_FLAG="$live/enabled.flag" \
+        LIVE_ATTEMPTS="$live/attempts" LIVE_BOOT_LOG="$live/boot.log" \
+        LIVE_READY_AT="${LIVE_READY_AT:-1}" LIVE_RECONCILE_AT="${LIVE_RECONCILE_AT:-}" \
+        AB_KEY=/dev/null AB_HOST=root@live AB_FOLLOW_STATE="$live/state.tsv" \
+        AB_FOLLOW_BOOT_LOG="$live/boot.log" AB_FOLLOW_MANIFEST="$live/manifest.json" \
+        sh "$probe" "$@"
+}
+
+live_baseline
+
+# 1. Already ready: the first answer is the verdict, so nothing waits. The timeout is 30 s
+#    on purpose - a loop that waits because it was told to would show it here.
+live_reset yes yes yes
+live_manifest 1 "" 30 1
+LIVE_READY_AT=1 LIVE_RECONCILE_AT= out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "0" "ac-2 a daemon that answers at once passes"
+assert_contains "$out" "probe=wait-probe status=pass ac=ac-2 usable=yes" \
+  "ac-2 the ready sample is usable without waiting"
+assert_contains "$out" "waited=0s daemon=ready" \
+  "ac-2 the row says it did not have to wait, and what the machine said"
+assert_eq "$(cat "$live/attempts")" "1" \
+  "ac-2 an already-ready daemon is asked exactly once"
+
+# 2. Starting: the process is there and the criterion does not answer yet, which is the round-5
+#    shape. It must pass, and the row must say how long that took.
+live_reset yes yes no
+live_manifest 3 "" 10 1
+LIVE_READY_AT=3 LIVE_RECONCILE_AT= out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "0" "ac-2 a daemon that is still starting is not a failed package"
+assert_contains "$out" "probe=wait-probe status=pass ac=ac-2 usable=yes" \
+  "ac-2 the sample passes once the daemon answers"
+assert_contains "$out" "waited=2s daemon=ready" \
+  "ac-2 the row carries the seconds it waited and what the machine finally said"
+assert_eq "$(cat "$live/attempts")" "3" \
+  "ac-2 the criterion was asked again until it answered"
+
+# 3. Starting, and never answering: the timeout is what ends the wait, and the row is a FAIL
+#    that names the wait. A probe that turned this into a pass would hide a broken package.
+live_reset yes yes no
+live_manifest 99 "" 3 1
+LIVE_READY_AT=99 LIVE_RECONCILE_AT= out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "1" "ac-2 a daemon that never answers within the timeout fails the run"
+assert_contains "$out" "probe=wait-probe status=fail ac=ac-2 reason=not-ready" \
+  "ac-2 the row says the daemon was not ready, not that the criterion was wrong"
+assert_contains "$out" "waited=3s daemon=starting" \
+  "ac-2 the failing row carries how long it waited and what it last saw"
+assert_eq "$([ "$(cat "$live/attempts")" -ge 2 ] && echo retried || echo asked-once)" "retried" \
+  "ac-2 the wait really asked more than once before giving up"
+
+# 4. Booting: the daemon is down and the boot has not reconciled services yet. The wait must
+#    still be bounded, and the row must say the machine never got that far.
+live_reset no yes no
+live_manifest 99 "" 3 1
+LIVE_READY_AT=99 LIVE_RECONCILE_AT= out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "1" "ac-2 a daemon the boot never started within the timeout fails"
+assert_contains "$out" "probe=wait-probe status=fail ac=ac-2 reason=not-ready" \
+  "ac-2 the row says the sample was not ready"
+assert_contains "$out" "waited=3s daemon=booting" \
+  "ac-2 the row says the boot had not reconciled services yet, so a reader knows what to fix"
+
+# 5. Booting, then the boot reconciles mid-wait: this is the case round 5 measured, and the
+#    probe has to see the daemon arrive rather than fail while the boot is still working.
+live_reset no yes no
+live_manifest 2 2 10 1
+LIVE_READY_AT=2 LIVE_RECONCILE_AT=2 out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "0" "ac-2 a daemon the boot starts a moment later is not a regression"
+assert_contains "$out" "probe=wait-probe status=pass ac=ac-2 usable=yes" \
+  "ac-2 the sample passes once the boot has started its daemon"
+assert_contains "$out" "waited=1s daemon=ready" \
+  "ac-2 the row says how long the boot took to get there"
+assert_contains "$(cat "$live/boot.log")" "stage=services-reconciled" \
+  "ac-2 the case really did reconcile services during the wait"
+
+# 6. Down, and nothing left to start it: the boot has already reconciled and the daemon is
+#    still absent, so waiting would only delay the verdict. This is the "really broken"
+#    state, and it must not be smoothed over.
+live_reset no yes yes
+live_manifest 99 "" 30 1
+LIVE_READY_AT=99 LIVE_RECONCILE_AT= out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "1" "ac-2 a daemon that is down after the boot reconciled fails"
+assert_contains "$out" "probe=wait-probe status=fail ac=ac-2 reason=unusable" \
+  "ac-2 the row reports the criterion's own answer, not a wait that ended"
+assert_contains "$out" "waited=0s daemon=down" \
+  "ac-2 the row says it did not wait, because nothing was coming"
+assert_eq "$(cat "$live/attempts")" "1" \
+  "ac-2 a daemon that is gone is asked exactly once, so a broken package is not delayed"
+
+# 7. A sample with no readiness contract is asked once, however long the timeout of its
+#    neighbours is: the wait is a declaration, not a global pause.
+live_reset yes yes no
+live_manifest_no_ready
+LIVE_READY_AT=99 LIVE_RECONCILE_AT= out=$(run_probe_live --verify) && rc=0 || rc=$?
+assert_eq "$rc" "1" "ac-2 a sample with no daemon still fails on its own answer"
+assert_contains "$out" "probe=wait-probe status=fail ac=ac-2 reason=unusable" \
+  "ac-2 the row keeps the reason it always had"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'waited=' || true)" "0" \
+  "ac-2 a sample that declares no daemon carries no wait facts at all"
+assert_eq "$(cat "$live/attempts")" "1" \
+  "ac-2 a sample with no readiness contract is asked exactly once"
+
+# 8. The baseline is asked through the same wait: --mark runs right after a setup that may
+#    have just started a daemon, and a baseline recorded while it is still coming up would
+#    turn every later verdict about the sample into a GAP (reason=baseline-unusable).
+live_reset yes yes no
+live_manifest 2 "" 10 1
+rm -f "$live/state.tsv"
+LIVE_READY_AT=2 LIVE_RECONCILE_AT= out=$(run_probe_live --mark) && rc=0 || rc=$?
+assert_eq "$rc" "0" "ac-3 --mark waits for a daemon its setup just started"
+assert_contains "$out" "probe=wait-probe status=pass ac=ac-3 usable=yes" \
+  "ac-3 the baseline records the sample as usable rather than as broken before the hop"
+assert_contains "$out" "waited=1s daemon=ready" \
+  "ac-3 the baseline row says the daemon needed a moment"
+assert_eq "$(awk -F'\t' '$1 == "wait-probe" { print $9 }' "$live/state.tsv")" "ready=yes" \
+  "ac-3 the baseline stores the criterion's answer, not the fact that it waited"
 
 # --------------------------------------------------------------------------- #
 # matrix.sh: what this driver's verdict becomes

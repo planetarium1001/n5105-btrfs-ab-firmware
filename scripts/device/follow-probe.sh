@@ -19,7 +19,11 @@
 #
 #   pass  the sample's own criterion matched, and both sha256 values are what --mark saw
 #   fail  it did not: the row carries a reason token (not-installed, unusable,
-#         check-crashed, config-changed, data-lost, no-answer, no-baseline) and the facts
+#         check-crashed, config-changed, data-lost, no-answer, no-baseline, not-ready) and
+#         the facts. not-ready is the one the readiness wait adds: a sample whose daemon
+#         did not come up within the manifest's timeout, and the row carries waited=<n>s
+#         and daemon=<starting|booting|down> so a slow start is not read as a broken
+#         package nor a broken package as a slow start
 #   gap   the sample cannot speak about the hop: it could not be installed when --mark ran
 #         (reason=install-gap), its setup did not run (reason=setup-failed), or its own
 #         criterion was already failing on the baseline image (reason=baseline-unusable).
@@ -47,6 +51,33 @@
 # it: docker's criterion is `docker info` answering, and a daemon that is only enabled at
 # boot comes back on its own after every hop. --mark, --verify and --unmark start nothing,
 # because they run while the machine is being measured.
+#
+# Readiness: a daemon sample is asked until the machine can answer
+# ----------------------------------------------------------------
+# "It is not up yet" and "it will never come up" are different facts, and a probe that asks
+# once cannot tell them apart. The hop's own ssh answers about 10 s after the reboot, but
+# this product's first boot hands the package follow to a detached worker and restarts the
+# daemons procd gave up on only once that follow has settled: measured 2026-11-19, the
+# ring log carries `stage=services-reconciled ... started=1 down=dockerd` at an uptime of
+# about 120 s, while the probe asked at about 25 s. docker's criterion therefore printed
+# `client=yes daemon=no` on a healthy machine and six matrix cases went red (round 5).
+#
+# A sample may declare `ready` in the manifest: the process and init script of the daemon
+# its criterion needs, the ring-log line the boot writes when it has finished restarting
+# those daemons, and a bounded timeout with a poll interval. The criterion is then asked
+# again while the machine can still be expected to change its answer, and the row carries
+# how long that took and what the machine last said (`waited=<n>s daemon=<state>`):
+#
+#   ready     the criterion printed what the manifest's ERE requires
+#   starting  the daemon runs but does not answer yet; the timeout ran out
+#   booting   the daemon is down and the boot has not reconciled services yet; the timeout
+#             ran out, so the machine never got as far as starting it
+#   down      the daemon is down and nothing is left to start it: reported at once
+#
+# The wait is bounded on purpose. A criterion that never answers is a FAIL that names the
+# seconds it waited, never a pass: treating `daemon=no` as usable would hide exactly the
+# defect the sample exists to see, and waiting without a bound would turn a broken package
+# into a hung probe. A sample that declares no `ready` is asked once, as before.
 #
 # Exit status: 0 every sample passed, 1 at least one failed, 2 usage, 3 nothing failed but
 # at least one sample was skipped, 4 nothing failed but at least one sample is a gap.
@@ -89,7 +120,9 @@
 # would remove the evidence the next --verify is there to read.
 #
 # Environment: AB_HOST, AB_KEY, AB_FOLLOW_MANIFEST, AB_FOLLOW_STATE, AB_FOLLOW_MARKER_DIR,
-#              AB_FOLLOW_BAK_SUFFIX, AB_FOLLOW_INSTALL_TIMEOUT (180 s), AB_DRY_RUN.
+#              AB_FOLLOW_BAK_SUFFIX, AB_FOLLOW_INSTALL_TIMEOUT (180 s),
+#              AB_FOLLOW_BOOT_LOG (/boot/ab/log/boot-0.log: the ring log the readiness wait
+#              reads the boot's own reconcile line from), AB_DRY_RUN.
 
 set -u
 
@@ -104,6 +137,11 @@ STATE=${AB_FOLLOW_STATE:-/tmp/ab-follow-state.tsv}
 MARKER_DIR=${AB_FOLLOW_MARKER_DIR:-/data/ab-follow}
 BAK_SUFFIX=${AB_FOLLOW_BAK_SUFFIX:-.ab-follow-bak}
 INSTALL_TIMEOUT=${AB_FOLLOW_INSTALL_TIMEOUT:-180}
+# The boot's ring log, rotated at boot, so boot-0.log is this boot's own record. It is what
+# tells the readiness wait whether the machine has already restarted the daemons procd gave
+# up on; the path is a device fact like the state path, so it is a seam here and not a
+# literal inside the remote script.
+BOOT_LOG=${AB_FOLLOW_BOOT_LOG:-/boot/ab/log/boot-0.log}
 TAB=$(printf '\t')
 
 ACTION=""
@@ -126,6 +164,12 @@ _row_cmd=""
 _row_exp=""
 _row_needs=""
 _row_setup=""
+_row_ready=""
+_ready_proc=""
+_ready_init=""
+_ready_settle=""
+_ready_timeout=""
+_ready_interval=""
 
 usage() {
     cat <<'USAGE'
@@ -145,6 +189,11 @@ usage: follow-probe.sh --install | --mark | --verify | --unmark
   --state FILE     the baseline TSV (default /tmp/ab-follow-state.tsv)
   --manifest FILE  the sample list (default tests/fixtures/follow-samples.json)
   --dry-run        print the remote script and exit; no ssh call, no row
+
+A sample whose criterion needs a daemon declares `ready` in the manifest (proc, init script,
+the boot line that says the daemon was given its start, and a bounded timeout). Its criterion
+is then asked until the daemon answers, and the row carries waited=<n>s daemon=<state>; a
+sample that declares no `ready` is asked once, as before.
 
 Exit status: 0 all passed, 1 a failure, 2 usage, 3 a skip, 4 a gap and no failure.
 USAGE
@@ -262,7 +311,12 @@ _rerun() { # <action> <sample>: the command a reader pastes to repeat one sample
 
 # _manifest_dump <file>: the manifest as flat records, one per line:
 #   meta    <key>   <value>                    (schema, updated, version_line)
-#   sample  <name>  <packages>  <config_path>  <data_marker>  <cmd>  <expect>  <needs>  <setup>
+#   sample  <name>  <packages>  <config_path>  <data_marker>  <cmd>  <expect>  <needs>  <setup>  <ready>
+#
+# <ready> is the sample's readiness contract flattened, `proc,init,settle,timeout,interval`,
+# or empty for a sample that can be asked once. One column and not five because it is one
+# fact - "this criterion needs a daemon and here is how the machine says the daemon is up" -
+# and the driver hands it to the remote half whole (see _split_ready).
 #
 # python3 and not awk: the descriptor holds a nested object (check) and an array
 # (packages), which a character scanner reads only by accident. The driver runs on the
@@ -312,6 +366,34 @@ for sample in samples:
     # names, so a ninth sample does not have to repeat them.
     config_path = sample.get("config_path") or "/etc/config/%s" % name
     data_marker = sample.get("data_marker") or "%s/%s.marker" % (marker_dir, name)
+    # The readiness contract is checked here and not in the driver: a half-declared one
+    # ("wait for a daemon" with no bound, or with a timeout that is not a number) would
+    # otherwise reach the machine as a loop that cannot end, and the failure would land on
+    # a device run instead of on the fixture edit that caused it.
+    ready = sample.get("ready")
+    ready_spec = ""
+    if ready is not None:
+        if not isinstance(ready, dict):
+            sys.exit("follow-probe: %s: sample %s: ready is not an object" % (path, name))
+        ready_proc = (ready.get("proc") or "").strip()
+        ready_init = (ready.get("init") or "").strip()
+        ready_settle = (ready.get("settle") or "").strip()
+        if not ready_proc or not ready_init:
+            sys.exit("follow-probe: %s: sample %s: ready names no proc or no init script"
+                     % (path, name))
+        ready_fields = []
+        for key, value in (("timeout", ready.get("timeout")),
+                           ("interval", ready.get("interval", 5))):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                sys.exit("follow-probe: %s: sample %s: ready.%s is not a positive whole number"
+                         % (path, name, key))
+            ready_fields.append(value)
+        for value in (ready_proc, ready_init, ready_settle):
+            if "\n" in value or "\t" in value or "," in value:
+                sys.exit("follow-probe: %s: sample %s: ready carries a comma, newline or tab"
+                         % (path, name))
+        ready_spec = ",".join([ready_proc, ready_init, ready_settle] +
+                              [str(v) for v in ready_fields])
     fields = [
         "sample",
         name,
@@ -322,6 +404,7 @@ for sample in samples:
         expect,
         ",".join(sample.get("needs") or []),
         setup,
+        ready_spec,
     ]
     out.append("\t".join(fields))
 
@@ -372,9 +455,31 @@ _each_sample() {
         _row_exp=${_f7}
         _row_needs=${_f8}
         _row_setup=${_f9}
+        _row_ready=${_f10}
+        _split_ready "${_row_ready}"
         _want "${_row_name}" || continue
         "${1}"
     done <"${_records}"
+}
+
+# _split_ready <spec>: the sample's readiness contract into the _ready_* variables.
+#
+# The manifest is validated when it is read (see _manifest_dump), so this only splits: an
+# empty spec is a sample that declares no daemon, and every _ready_* stays empty, which is
+# what makes the remote half ask the criterion exactly once.
+_split_ready() {
+    _ready_proc=""
+    _ready_init=""
+    _ready_settle=""
+    _ready_timeout=""
+    _ready_interval=""
+    [ -n "${1}" ] || return 0
+    _ready_proc=$(printf '%s' "${1}" | cut -d, -f1)
+    _ready_init=$(printf '%s' "${1}" | cut -d, -f2)
+    _ready_settle=$(printf '%s' "${1}" | cut -d, -f3)
+    _ready_timeout=$(printf '%s' "${1}" | cut -d, -f4)
+    _ready_interval=$(printf '%s' "${1}" | cut -d, -f5)
+    return 0
 }
 
 _want_list() {
@@ -435,11 +540,101 @@ _bin() {
     command -v "$2" 2>/dev/null || true
     return 0
 }
+# _ready_settled <marker>: has this boot finished restarting the daemons procd gave up on?
+#
+# The answer is the boot's own ring log: this product's ab-boot hands the first boot's
+# package follow to a detached worker, and that worker appends one line per stage, the last
+# of which is the service reconciliation (`stage=services-reconciled`, measured 2026-11-19
+# with started=1 down=dockerd). Until that line is there a daemon that is down is not yet a
+# failed one - the boot itself may still start it. The log is rotated at boot, so boot-0.log
+# is this boot's record and no earlier boot's line can answer for it. An empty marker means
+# the sample declares no such gate, and a machine whose boot never writes the line is bounded
+# by the wait's timeout, which the row then reports.
+_ready_settled() {
+    [ -n "$1" ] || return 0
+    grep -qF "$1" "$BOOT_LOG" 2>/dev/null
+}
+# _ready_wait <fn> <expect> <proc> <init> <settle> <timeout> <interval>: ask a sample's
+# criterion until it answers, or until the machine says it never will.
+#
+# It leaves the evidence in _rw_rc (the criterion's exit status on the last attempt),
+# _rw_out (its output), _rw_secs (how long the wait took) and _rw_state (what the machine
+# said when the wait ended):
+#
+#   ready     the criterion printed what the manifest's ERE requires
+#   starting  the daemon runs but does not answer yet; the timeout ran out
+#   booting   the daemon is down and the boot has not reconciled services yet; the timeout
+#             ran out, so the machine never got as far as starting it
+#   down      the daemon is down and nothing is left to start it: answered at once, because
+#             waiting for a package that is not coming back would hide the failure
+#   none      the sample declares no daemon: one attempt, and the criterion decides
+#
+# Why a loop at all: a hop lands on a machine that has only just booted, and the daemon a
+# criterion needs can be absent for the first two minutes of that boot while the follow
+# worker is still moving packages (measured: the hop's ssh answers at an uptime of about
+# 10 s, the reconcile line lands at about 120 s, and the probe used to ask at about 25 s).
+# Asking once therefore measured the clock instead of the package, and six matrix cases went
+# red for it in round 5.
+_ready_wait() {
+    _rw_fn=$1
+    _rw_exp=$2
+    _rw_proc=$3
+    _rw_init=$4
+    _rw_settle=$5
+    _rw_to=$6
+    _rw_iv=$7
+    case "$_rw_to" in '' | *[!0-9]*) _rw_to=0 ;; esac
+    case "$_rw_iv" in '' | *[!0-9]*) _rw_iv=5 ;; esac
+    _rw_rc=0
+    _rw_out=""
+    _rw_secs=0
+    _rw_state=none
+    while :; do
+        _rw_rc=0
+        _rw_out=$( { "$_rw_fn"; } 2>&1 ) || _rw_rc=$?
+        if [ "$_rw_rc" = 0 ] && printf '%s\n' "$_rw_out" | grep -Eq "$_rw_exp"; then
+            _rw_state=ready
+            return 0
+        fi
+        # Nothing is coming for a sample that declares no daemon, so its one answer is the
+        # verdict the probe has always given.
+        [ -n "$_rw_proc" ] || return "$_rw_rc"
+        case "$(_svc "$_rw_init" "$_rw_proc")" in
+            running)
+                _rw_state=starting
+                ;;
+            expected-not-running)
+                # Enabled at boot with no process: procd gave up on it. That is either a
+                # broken package (report now) or a boot that has not reconciled services yet
+                # (wait), and the ring log is what tells the two apart.
+                if _ready_settled "$_rw_settle"; then
+                    _rw_state=down
+                else
+                    _rw_state=booting
+                fi
+                ;;
+            *)
+                _rw_state=down
+                ;;
+        esac
+        [ "$_rw_state" = down ] && return "$_rw_rc"
+        [ "$_rw_secs" -lt "$_rw_to" ] || return "$_rw_rc"
+        sleep "$_rw_iv"
+        _rw_secs=$((_rw_secs + _rw_iv))
+    done
+}
 REMOTE
 }
 
 _inst_helpers() {
     printf 'SFX=%s\n' "$(_sq "${BAK_SUFFIX}")"
+}
+
+# The ring log the readiness wait reads the boot's own reconcile line from. Emitted as a
+# variable and not as a literal inside the remote preamble, so the path stays the one fact
+# this driver was pointed at (AB_FOLLOW_BOOT_LOG) and a test can point it at a file.
+_boot_log_helper() {
+    printf 'BOOT_LOG=%s\n' "$(_sq "${BOOT_LOG}")"
 }
 
 # One sample's install: apk add, then the sample's setup when it declares one, and the
@@ -468,30 +663,64 @@ _remote_install_block() {
     printf 'rm -f /tmp/ab-follow-inst.$$ /tmp/ab-follow-setup.$$\n'
 }
 
+# _remote_criterion_block <prefix>: one sample's criterion, asked the way the manifest says
+# it has to be asked, and the facts that make the answer auditable.
+#
+# The criterion becomes a shell function so the readiness wait can ask it more than once
+# without the driver pasting it twice; the wait itself is _ready_wait in the preamble, so
+# what a dry run prints is the loop the machine will actually run. <prefix> is the fact
+# prefix - m while --mark records a baseline, p while --verify judges a hop, so the facts
+# are _mcr/_mco/_mwait/_mst and _pcr/_pco/_pwait/_pst - and the facts it leaves are
+#   <p>cr    the criterion's exit status on the last attempt
+#   <p>co    its output, newlines flattened and capped
+#   <p>wait  the seconds spent waiting for the sample to become ready
+#   <p>st    what the machine said when the wait ended (ready|starting|booting|down|none)
+#
+# A sample that declares no readiness contract passes empty values and is asked exactly
+# once: _ready_wait answers "none" without waiting, so the row for it reads as it always did.
+_remote_criterion_block() {
+    _cfx=$1
+    printf '_%s_fn() {\n' "${_cfx}"
+    printf '    %s\n' "${_row_cmd}"
+    printf '}\n'
+    printf '_ready_wait _%s_fn %s %s %s %s %s %s\n' "${_cfx}" \
+        "$(_sq "${_row_exp}")" "$(_sq "${_ready_proc}")" "$(_sq "${_ready_init}")" \
+        "$(_sq "${_ready_settle}")" "${_ready_timeout:-0}" "${_ready_interval:-5}"
+    printf '_%scr=$_rw_rc\n' "${_cfx}"
+    printf '_%swait=$_rw_secs\n' "${_cfx}"
+    printf '_%sst=$_rw_state\n' "${_cfx}"
+    printf '_%sco=$(printf "%%s" "$_rw_out" | tr "\\n\\t" "  " | cut -c1-240)\n' "${_cfx}"
+}
+
 # One sample's mark: the criterion as the machine answers it now, the fake config, the data
 # marker, and the baseline facts.
 #
 # The criterion runs first and before anything is written, so what is recorded is the
 # machine as the hop is about to find it. Its output is what --verify compares against: a
-# criterion that already failed here cannot be evidence about any hop.
+# criterion that already failed here cannot be evidence about any hop. It is asked through
+# the readiness wait as well, because --mark runs straight after a setup that may have just
+# started a daemon: a baseline recorded while the daemon is still coming up would say the
+# sample was broken before the hop and turn every later verdict about it into a GAP.
 _remote_mark_block() {
     printf 'name=%s\n' "$(_sq "${_row_name}")"
     printf 'cfg=%s\n' "$(_sq "${_row_cfg}")"
     printf 'dat=%s\n' "$(_sq "${_row_dat}")"
     printf 'pkg0=%s\n' "$(_sq "${_row_pkgs%% *}")"
-    # The criterion is asked once, and only of a sample that is on the machine: the answer
-    # for a package the feed does not offer is not a fact about the criterion.
+    # The criterion is asked only of a sample that is on the machine: the answer for a
+    # package the feed does not offer is not a fact about the criterion.
     printf 'v=$(_ver "$pkg0")\n'
     printf '_mcr=0\n'
     printf '_mco=""\n'
+    printf '_mwait=0\n'
+    printf '_mst=none\n'
     printf 'if [ -n "$v" ]; then\n'
-    printf '    _mco=$( { %s\n} 2>&1 ) || _mcr=$?\n' "${_row_cmd}"
+    _remote_criterion_block m
     printf 'fi\n'
-    printf '_mco=$(printf "%%s" "$_mco" | tr "\\n\\t" "  " | cut -c1-240)\n'
     cat <<'REMOTE'
 ms=$(printf 'ab-follow:%s:v1' "$name" | sha256sum | awk '{print $1}')
 if [ -z "$v" ] || [ -z "$cfg" ] || [ -z "$dat" ]; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" 0 "" "" "" not-installed "$_mcr" "$_mco"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" 0 "" "" "" not-installed \
+        "$_mcr" "$_mco" "$_mwait" "$_mst"
 else
     _rc=0
     _d=marked
@@ -511,14 +740,15 @@ else
         printf 'pkg=%s\nmarker=%s\n' "$name" "$ms" >"$dat" 2>/dev/null ||
             { _rc=1; _d=data-write-failed; }
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$_rc" "$v" "$(_sha "$cfg")" \
-        "$(_sha "$dat")" "$_d" "$_mcr" "$_mco"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$_rc" "$v" "$(_sha "$cfg")" \
+        "$(_sha "$dat")" "$_d" "$_mcr" "$_mco" "$_mwait" "$_mst"
 fi
 REMOTE
 }
 
 # One sample's verify: the installed version, both sha256 values, and the sample's own
-# criterion (verbatim from the manifest) with its exit status and output.
+# criterion (verbatim from the manifest) with its exit status, its output, and the evidence
+# of how long the machine was given to become able to answer it.
 _remote_verify_block() {
     printf 'name=%s\n' "$(_sq "${_row_name}")"
     printf 'cfg=%s\n' "$(_sq "${_row_cfg}")"
@@ -531,9 +761,8 @@ _remote_verify_block() {
     printf '_pv=$(_ver "$pkg0")\n'
     printf '_pcs=$(_sha "$cfg")\n'
     printf '_pds=$(_sha "$dat")\n'
-    printf '_pcr=0\n'
-    printf '_pco=$( { %s\n} 2>&1 ) || _pcr=$?\n' "${_row_cmd}"
-    printf 'printf "%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n" "$name" "$_pv" "$_pcs" "$_pds" "$_pcr" "$(printf "%%s" "$_pco" | tr "\\n\\t" "  " | cut -c1-240)"\n'
+    _remote_criterion_block p
+    printf 'printf "%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\t%%s\\n" "$name" "$_pv" "$_pcs" "$_pds" "$_pcr" "$_pco" "$_pwait" "$_pst"\n'
 }
 
 _remote_unmark_block() {
@@ -571,11 +800,13 @@ _remote_script() { # <install|mark|verify|unmark>: the whole remote half on stdo
         mark | unmark)
             printf 'set -u\n'
             _inst_helpers
+            _boot_log_helper
             _remote_preamble
             _each_sample "_remote_${1}_block"
             ;;
         verify)
             printf 'set -u\n'
+            _boot_log_helper
             _remote_preamble
             _each_sample "_remote_verify_block"
             ;;
@@ -635,16 +866,24 @@ _row_skip() {
     _emit "${_row_name}" skip "${_skip_ac}" "reason=${_skip_reason}"
 }
 
-# One line per sample in a dry run: what would be installed, what would be set up, and what
-# the criterion needs (network, service, http, kernel), so a reader can see the
-# prerequisites - and the one command that changes the machine - before a run touches it.
+# One line per sample in a dry run: what would be installed, what would be set up, what the
+# criterion needs (network, service, http, kernel), and the readiness contract a daemon
+# sample is judged against - so a reader can see the prerequisites, the one command that
+# changes the machine, and how long the probe will wait for a daemon, before a run touches
+# it.
 _plan_row() {
+    _plan_ready=""
+    if [ -n "${_row_ready}" ]; then
+        _plan_ready=$(printf ' ready="proc=%s init=%s settle=%s timeout=%ss interval=%ss"' \
+            "${_ready_proc}" "${_ready_init}" "${_ready_settle:--}" \
+            "${_ready_timeout}" "${_ready_interval}")
+    fi
     if [ -n "${_row_setup}" ]; then
-        printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s setup="%s"\n' \
-            "${_row_name}" "${_row_pkgs}" "${_row_needs:--}" "${_row_setup}"
+        printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s setup="%s"%s\n' \
+            "${_row_name}" "${_row_pkgs}" "${_row_needs:--}" "${_row_setup}" "${_plan_ready}"
     else
-        printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s\n' \
-            "${_row_name}" "${_row_pkgs}" "${_row_needs:--}"
+        printf 'follow-probe dry-run: sample=%s packages="%s" needs=%s%s\n' \
+            "${_row_name}" "${_row_pkgs}" "${_row_needs:--}" "${_plan_ready}"
     fi
 }
 
@@ -666,7 +905,7 @@ _pop_field() {
     esac
 }
 
-_split_row() { # <line>: _f1 .. _f9, empty fields included
+_split_row() { # <line>: _f1 .. _f10, empty fields included
     _rest=${1}
     _pop_field
     _f1=${_pop}
@@ -686,6 +925,8 @@ _split_row() { # <line>: _f1 .. _f9, empty fields included
     _f8=${_pop}
     _pop_field
     _f9=${_pop}
+    _pop_field
+    _f10=${_pop}
 }
 
 _answer_row() { # <name>: 1 when the machine said nothing about this sample
@@ -707,6 +948,20 @@ _baseline_row() { # <name>: 1 when the baseline does not cover this sample
 # stays one field a reader can copy.
 _quoted() {
     printf '"%s"' "$(printf '%s' "${1}" | tr '\t\n' '  ' | cut -c1-240)"
+}
+
+# _wait_facts <waited> <state>: the readiness evidence a row carries, or nothing at all.
+#
+# It prints nothing for a sample that declares no readiness contract (its row keeps the
+# shape it always had) and nothing for a remote half that predates the two columns, so a
+# baseline or a machine running an older driver still produces rows a reader can compare.
+# The leading space is deliberate: callers append it to the fact list they already built.
+_wait_facts() {
+    [ -n "${_row_ready}" ] || return 0
+    case "${1}" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+    printf ' waited=%ss daemon=%s' "${1}" "${2:-unknown}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -797,6 +1052,9 @@ _row_mark() {
     _ds=${_f5}
     _detail=${_f6}
     _bcheck=${_f8}
+    _mwait=${_f9}
+    _mst=${_f10}
+    _waitf=$(_wait_facts "${_mwait}" "${_mst}")
     if [ "${_rc}" != "0" ]; then
         _emit "${_row_name}" fail ac-3 "reason=mark-failed rc=${_rc} detail=$(_quoted "${_detail}")"
         return 0
@@ -819,18 +1077,18 @@ _row_mark() {
     case "$?" in
         0)
             _emit "${_row_name}" pass ac-3 \
-                "usable=yes version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")"
+                "usable=yes version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")${_waitf}"
             ;;
         1)
             _emit "${_row_name}" pass ac-3 \
-                "usable=no version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}") check=$(_quoted "${_bcheck}")"
+                "usable=no version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}") check=$(_quoted "${_bcheck}")${_waitf}"
             ;;
         *)
             # The remote half answered without the criterion's output, which is the shape of
             # a manifest or a driver that predates this column. Saying "usable=no" here
             # would blame the sample for the answer nobody collected.
             _emit "${_row_name}" pass ac-3 \
-                "usable=unknown version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")"
+                "usable=unknown version=${_ver} config_sha256=$(_short "${_cs}") data_sha256=$(_short "${_ds}")${_waitf}"
             ;;
     esac
 }
@@ -889,6 +1147,9 @@ _row_verify() {
     _ds=${_f4}
     _crc=${_f5}
     _cout=${_f6}
+    _pwait=${_f7}
+    _pst=${_f8}
+    _waitf=$(_wait_facts "${_pwait}" "${_pst}")
     if [ -z "${_ver}" ]; then
         _emit "${_row_name}" fail ac-2 "reason=not-installed"
         return 0
@@ -914,15 +1175,26 @@ _row_verify() {
         _usable=no
     fi
     if [ "${_usable}" = "no" ]; then
-        if [ "${_crc}" = "0" ]; then
-            _why="reason=unusable expect=\"${_row_exp}\""
-        else
-            _why="reason=check-crashed rc=${_crc}"
-        fi
+        # The readiness wait separates "the machine never got the daemon up" from "the
+        # criterion answered and the answer was wrong". Both are failures - the row never
+        # turns them into a pass - but a reader has to be able to tell a daemon that was
+        # still starting when the budget ran out from a package that is broken.
+        case "${_pst}" in
+            starting | booting)
+                _why="reason=not-ready expect=\"${_row_exp}\""
+                ;;
+            *)
+                if [ "${_crc}" = "0" ]; then
+                    _why="reason=unusable expect=\"${_row_exp}\""
+                else
+                    _why="reason=check-crashed rc=${_crc}"
+                fi
+                ;;
+        esac
         _baseline_matched
         case "$?" in
             0)
-                _emit "${_row_name}" fail ac-2 "${_why} check=$(_quoted "${_cout}")"
+                _emit "${_row_name}" fail ac-2 "${_why} check=$(_quoted "${_cout}")${_waitf}"
                 ;;
             1)
                 # The criterion was already failing on the baseline image: this hop is not
@@ -930,18 +1202,18 @@ _row_verify() {
                 # path into five red matrix cases (round 1). The row names the sample and
                 # carries both answers so a reader can see it is the same defect.
                 _emit "${_row_name}" gap ac-2 \
-                    "reason=baseline-unusable baseline_check=$(_quoted "${_bcheck}") check=$(_quoted "${_cout}")"
+                    "reason=baseline-unusable baseline_check=$(_quoted "${_bcheck}") check=$(_quoted "${_cout}")${_waitf}"
                 ;;
             *)
                 # A baseline written before the criterion output was recorded: the row
                 # cannot tell the two classes apart, so it stays a failure and says why.
-                _emit "${_row_name}" fail ac-2 "${_why} baseline=unrecorded check=$(_quoted "${_cout}")"
+                _emit "${_row_name}" fail ac-2 "${_why} baseline=unrecorded check=$(_quoted "${_cout}")${_waitf}"
                 ;;
         esac
         return 0
     fi
     _emit "${_row_name}" pass ac-2 \
-        "usable=yes version=${_ver} config=unchanged data=unchanged check=$(_quoted "${_cout}")"
+        "usable=yes version=${_ver} config=unchanged data=unchanged check=$(_quoted "${_cout}")${_waitf}"
 }
 
 # --------------------------------------------------------------------------- #

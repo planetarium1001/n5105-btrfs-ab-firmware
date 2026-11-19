@@ -52,7 +52,7 @@
 # This probe is a device driver and lives next to the others in scripts/device/. The 403
 # it treats as a pass is why the task's acceptance criterion was rewritten: the entry is
 # usable when an unauthenticated request is answered with the login page and the same
-# entry answers 200 once a session exists (see docs/known-limitations.md).
+# entry answers 200 once a session exists (see docs/troubleshooting.md).
 
 set -u
 

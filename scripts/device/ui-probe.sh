@@ -66,7 +66,7 @@
 #
 # Why the login is an HTTP POST and not an interactive ssh session
 # ----------------------------------------------------------------
-# docs/known-limitations.md records the dropbear 2025.89 defect behind every false
+# docs/troubleshooting.md records the dropbear 2025.89 defect behind every false
 # "interactive login is broken" reading: `ssh -tt host '<cmd>' </dev/null` closes the pty
 # master before the child owns it. The web login is a different mechanism, and every ssh
 # call here is non-interactive: this driver never allocates a pty and never writes that

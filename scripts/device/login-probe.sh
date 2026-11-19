@@ -25,7 +25,7 @@
 # dropbear 2025.89 closes the pty master as soon as one direction of the channel finishes
 # (upstream e28ba1b / mkj/dropbear#365), so `ssh -tt host cmd </dev/null` cannot get a pty
 # on this image and will report three errors that look like device-node faults. They are
-# not: see docs/known-limitations.md. Every session below therefore goes through
+# not: see docs/troubleshooting.md. Every session below therefore goes through
 # `dev_ssh_tty`, which holds the client stdin open for the length of the session. A probe
 # that redirects /dev/null into an interactive ssh is measuring the client, not the machine.
 #
