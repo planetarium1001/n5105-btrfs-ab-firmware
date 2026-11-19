@@ -72,7 +72,7 @@ mkdir -p "$bin" "$state" "$payloads" "$fake/etc/config" "$(dirname "$customfeeds
 : >"$tmp/key"
 # Placeholders, not archives: one byte that is not a tar header reads as "not a tar" on both
 # GNU tar and bsdtar, so lib.sh's shape check (which only speaks for a real tar) stays out.
-for p in payload-25.12.1.tar payload-25.12.2.tar; do
+for p in payload-25.12.0.tar payload-25.12.1.tar payload-25.12.2.tar; do
     printf 'placeholder, not a tar\n' >"$payloads/$p"
 done
 
@@ -198,6 +198,7 @@ hops() { get hops 0; }
 
 payload_rootfs() {
     case "$1" in
+        *25.12.0.tar) printf '25.12.0\n' ;;
         *25.12.1.tar) printf '25.12.1\n' ;;
         *25.12.2.tar) printf '25.12.2\n' ;;
         *) printf '?\n' ;;
@@ -282,7 +283,16 @@ case "${cmd}" in
         # line, exactly as ssh would hand both to the machine's shell.
         sh -c "${cmd}"
         ;;
-    'apk update') exit "${STUB_APK_UPDATE_RC:-0}" ;;
+    'apk update')
+        case "${STUB_APK_UPDATE_LOCKED:-0}" in
+            1)
+                printf 'ERROR: Unable to lock database: Resource temporarily unavailable\n'
+                printf 'ERROR: Failed to open apk database: Resource temporarily unavailable\n'
+                exit 1
+                ;;
+        esac
+        exit "${STUB_APK_UPDATE_RC:-0}"
+        ;;
     'uci get system.@system[0].hostname') cat "$root/etc/config/hostname" 2>/dev/null || printf 'ImmortalWrt\n' ;;
     'for d in /mnt/slots/'*) exit 0 ;;
     'printf'*'/data/ab-matrix.marker')
@@ -452,8 +462,12 @@ assert_contains "$(note_of R1)" "index=2/2" "ac-8 the row carries how many index
 # second source for packages of that release, and the file the operator owns is untouched.
 assert_eq "$(cat "$customfeeds")" "https://example.invalid/operator-own.list" \
     "ac-8 the feed block is removed at the end of the run and the operator's own list stays"
-assert_eq "$(grep -c 'sh -s -- ' "$calls" || true)" "4" \
-    "ac-8 the block is written once per release and removed once at the end"
+# The block is written once per release, removed before each reboot (so the boot that follows
+# does not run the product's own package follow against a feed of the base it is leaving - see
+# the driver's comment) and removed again at the end of the run. Two hops therefore cost six
+# block edits: write 25.12.0, remove, write 25.12.1, remove, write 25.12.2, remove.
+assert_eq "$(grep -c 'sh -s -- ' "$calls" || true)" "6" \
+    "ac-8 the block is written once per release and removed again before each reboot and at the end"
 
 # --- ac-8: a hop that does not end healthy stops the chain ------------------- #
 # The same chain with a machine whose first boot after the first hop comes up degraded: the
@@ -535,6 +549,21 @@ assert_eq "$?" "4" "ac-8 a feed that could not be measured is a gap"
 assert_eq "$(verdicts)" "GAP " "ac-8 the row is GAP, never PASS"
 assert_contains "$(note_of R1)" "could not answer" "ac-8 the row says why it was not measured"
 
+# A machine whose apk database is locked (the product's own package follow holds it for
+# minutes after a base hop, measured 2026-11-19) is a GAP whose note says so, not a claim that
+# the release's feed is broken. The block this run wrote is removed again either way: a custom
+# feed naming a release the machine no longer runs is a second source for packages of that
+# release, and leaving one behind is the trace this driver promises not to leave.
+reset_machine
+out=$(STUB_APK_UPDATE_LOCKED=1 drv --payload-dir "$payloads")
+assert_eq "$?" "4" "ac-8 an apk database another process holds is a gap, not a verdict about the feed"
+assert_contains "$(note_of R1)" "locked by another process" \
+    "ac-8 the row says the machine was busy rather than the mirror being down"
+assert_contains "$(note_of R1)" "not measured" \
+    "ac-8 ... and that the feed leg was therefore not measured"
+assert_eq "$(cat "$customfeeds")" "https://example.invalid/operator-own.list" \
+    "ac-8 a run that could not refresh the index still removes the block it wrote"
+
 # --feed off walks the chain without the leg, and every row says the leg was off, so a run
 # that skipped it cannot be read as one that measured it.
 reset_machine
@@ -557,18 +586,52 @@ assert_eq "$(installs)" "payload-25.12.2.tar " "ac-8 and only its payload is ins
 assert_contains "$(note_of R2)" "start=25.12.1" \
     "ac-8 the row records the start version the run was given"
 
-# A machine that is already further up the chain, walked without --from-version, is refused
-# at the hop's own chain-position assertion - and the row names the flag that fixes it,
-# because "the machine runs 25.12.1" is the answer to why the hop did not land.
+# --- ac-8: the chain start, and the machine that is not on it ----------------- #
+# full-test.sh runs matrix and scenarios before this phase, and they leave the device on
+# whichever base their last case landed on. Round 6 measured what assuming otherwise costs:
+# rise ran on a 25.12.2 machine, R1 stopped on "chain broken: the machine runs 25.12.2, this
+# hop starts from 25.12.0", and the climb was never asked. The chain therefore positions the
+# machine onto its own starting base first, the way platform-chain.sh does, and the row says
+# so: silence would let a reader believe the machine was where the chain starts.
 reset_machine 25.12.1
 out=$(drv --payload-dir "$payloads")
-assert_eq "$?" "1" "ac-8 a machine already past the start of the chain fails the first hop"
-assert_contains "$(note_of R1)" "chain broken" \
-    "ac-8 the row says the machine is not where the hop starts"
-assert_contains "$(note_of R1)" "--from-version 25.12.1" \
-    "ac-8 the row names the flag that starts the chain where the machine is"
-assert_contains "$out" "the machine runs 25.12.1 but this run was told to start at 25.12.0" \
-    "ac-8 the mismatch is stated before the first boot, not only in the row"
+assert_eq "$?" "0" "ac-8 a machine above the chain start is positioned onto it, then climbs"
+assert_eq "$(rows)" "R1 R2 " "ac-8 every hop is still walked after the positioning move"
+assert_eq "$(installs)" "payload-25.12.0.tar payload-25.12.1.tar payload-25.12.2.tar " \
+    "ac-8 the positioning hop installs the chain's start base, and the hops follow in order"
+assert_contains "$(note_of R1)" "positioned=25.12.1->25.12.0" \
+    "ac-8 the first row records the base the machine had to be brought back to"
+assert_eq "$(note_of R2 | grep -c 'positioned=' || true)" "0" \
+    "ac-8 the positioning is not carried onto a hop that did not move anything"
+assert_contains "$(cat "$evidence/rise/00-baseline.log" 2>/dev/null)" "positioning: 25.12.1 -> 25.12.0" \
+    "ac-8 the extra install is logged as positioning, not as a hop of the chain"
+assert_contains "$out" "positioning: the machine runs 25.12.1, the chain starts on 25.12.0" \
+    "ac-8 the run says it is moving the machine before it does"
+
+# A machine already on the start is not touched, and the row says so rather than leaving the
+# field out: "positioned=none" and "positioned=..." are different facts about the run.
+reset_machine 25.12.0
+out=$(drv --payload-dir "$payloads")
+assert_eq "$?" "0" "ac-8 a machine already on the chain start climbs without a positioning hop"
+assert_contains "$(note_of R1)" "positioned=none" \
+    "ac-8 the row states that nothing had to be positioned"
+assert_eq "$(grep -c 'payload-25.12.0.tar' "$calls" || true)" "0" \
+    "ac-8 a machine already on the start is not written to before the first hop"
+
+# A positioning payload that is not there is the named GAP, never a silent climb from the
+# wrong line: the chain cannot ask its question about a machine it could not put on its start.
+reset_machine 25.12.1
+mkdir -p "$tmp/pos-partial"
+for p in payload-25.12.1.tar payload-25.12.2.tar; do
+    printf 'placeholder, not a tar\n' >"$tmp/pos-partial/$p"
+done
+out=$(RESULTS="$tmp/pos-gap.tsv" drv --payload-dir "$tmp/pos-partial")
+assert_eq "$?" "4" "ac-8 a missing positioning payload is an environment gap"
+assert_eq "$(cut -f2 "$tmp/pos-gap.tsv")" "GAP" "ac-8 the row is GAP, not a silent pass"
+assert_contains "$(cut -f4 "$tmp/pos-gap.tsv")" "no positioning payload at" \
+    "ac-8 the row names the payload the positioning hop needed"
+assert_eq "$(grep -c 'ab-upgrade' "$calls" || true)" "0" \
+    "ac-8 the chain never starts from the wrong line: nothing is installed"
 
 reset_machine
 out=$(drv --payload-dir "$payloads" --only R1)

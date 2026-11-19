@@ -54,7 +54,7 @@ mkdir -p "$bin" "$state" "$fake/etc/config" "$payloads"
 # so lib.sh's shape check - which only speaks for a file that really is a tar - tripped there
 # and printed "carries no platform.tar", while GNU tar (CI) failed the read and the check was
 # skipped. One byte that is not a tar header reads as "not a tar" everywhere.
-for p in payload-0.0.11.tar payload-0.0.12.tar payload-25.12.0.tar \
+for p in payload-0.0.10.tar payload-0.0.11.tar payload-0.0.12.tar payload-25.12.0.tar \
     payload-25.12.1.tar payload-25.12.2.tar; do
     printf 'placeholder, not a tar\n' >"$payloads/$p"
 done
@@ -72,7 +72,7 @@ put() { printf '%s\n' "$2" >"$state/$1"; }
 bump() { put "$1" "$(( $(get "$1" 0) + 1 ))"; }
 payload_rootfs() {
     case "$1" in
-        *0.0.11.tar | *0.0.12.tar) printf '25.12.2\n' ;;
+        *0.0.10.tar | *0.0.11.tar | *0.0.12.tar) printf '25.12.2\n' ;;
         *25.12.0.tar) printf '25.12.0\n' ;;
         *25.12.1.tar) printf '25.12.1\n' ;;
         *25.12.2.tar) printf '25.12.2\n' ;;
@@ -81,6 +81,7 @@ payload_rootfs() {
 }
 payload_platform() {
     case "$1" in
+        *0.0.10.tar) printf '0.0.10\n' ;;
         *0.0.11.tar) printf '0.0.11\n' ;;
         *0.0.12.tar) printf '0.0.12\n' ;;
         *25.12.*.tar) printf '0.0.12\n' ;;
@@ -136,6 +137,13 @@ case "${last}" in
         status_line
         ;;
     'ab-slot rootfs') printf '%s\n' "$(get rootfs 25.12.2)" ;;
+    'cat /etc/platform-release'*)
+        # The driver reads the machine's own release file to know which platform it runs,
+        # the same fact platform-chain.sh reads. Kept in step with the rootfs the stub
+        # reports, so a positioning move that lands on the wrong base is visible here too.
+        printf 'PLATFORM_VERSION=%s\nUPSTREAM_VERSION=%s\n' \
+            "$(get platform 0.0.12)" "$(get rootfs 25.12.2)"
+        ;;
     'true' | 'ab-slot gc') exit 0 ;;
     'cat > '* | "cat > "*) cat >/dev/null ;;
     'ab-upgrade --check '*)
@@ -144,12 +152,17 @@ case "${last}" in
         [ "$(payload_rootfs "${payload}")" = "$(get rootfs 25.12.2)" ] && same_base=1
         same_platform=0
         [ "$(payload_platform "${payload}")" = "$(get platform 0.0.12)" ] && same_platform=1
+        # The guard belongs to the release that is RUNNING, not to the payload: the v0.0.10
+        # image compared the base alone, later releases compare the platform too. Modelling
+        # it as a property of the payload would refuse a platform move onto 0.0.10 from a
+        # machine whose own guard is the fixed one - a machine that never refused it.
         guard=0
         if [ "${same_base}" = "1" ]; then
-            case "${STUB_BASE_ONLY_GUARD:-0}" in
-                1) guard=1 ;;
-                *) [ "${same_platform}" = "1" ] && guard=1 ;;
-            esac
+            if [ "${STUB_BASE_ONLY_GUARD:-0}" = "1" ] && [ "$(get platform 0.0.12)" = "0.0.10" ]; then
+                guard=1
+            elif [ "${same_platform}" = "1" ]; then
+                guard=1
+            fi
         fi
         if [ "${guard}" = "1" ]; then
             printf 'ab-upgrade: slot %s already runs %s (platform %s)\n' \
@@ -360,6 +373,58 @@ assert_contains "$(note_of D2)" "base 25.12.1->25.12.0 (down)" \
     "ac-6 the downgrade note carries the base it landed on and the direction it took"
 assert_contains "$(note_of REL)" "index.txt" "ac-7 the release row names what it compared the bytes against"
 
+# --- ac-7: the starting line is a base AND a platform ------------------------ #
+# Round 6 measured what positioning only the base costs. full-test.sh leaves the device on
+# the newest release (25.12.2 @ 0.0.13) and P1 starts on 25.12.2 @ 0.0.10: the base matched,
+# so nothing moved, and P1's documented regression - the v0.0.10 image refusing a same-base
+# platform payload with exit 74 - was never exercised. The row recorded "accepted without
+# --force" as if the guard had changed, which is a green row about a machine the hop never
+# asked about. The platform is positioned now, and the row says so.
+reset_machine 25.12.2 0.0.13
+rm -f "$results"
+out=$(STUB_BASE_ONLY_GUARD=1 drv --only P1 --payload-dir "$payloads")
+rc=$?
+assert_eq "$rc" "0" "ac-7 a machine on the right base and the wrong release is positioned first"
+assert_contains "$(note_of P1)" "positioned-platform=0.0.13->0.0.10" \
+    "ac-7 the row records the platform move the hop needed"
+assert_contains "$(note_of P1)" "positioned=none" \
+    "ac-7 ... and not a base move it did not need"
+assert_contains "$(installs)" "payload-0.0.10.tar payload-0.0.11.tar " \
+    "ac-7 the positioning payload is installed first, then the hop's own"
+assert_contains "$(cat "$evidence/r2/P1.log" 2>/dev/null)" "positioning: platform 0.0.13 -> 0.0.10" \
+    "ac-7 the extra install is logged as positioning, not as a hop of the chain"
+# The regression the hop exists for is now really measured: the machine it starts on is the
+# one whose guard refuses, so the refusal (and the --force that follows it) happens.
+assert_contains "$(note_of P1)" "regression=refused-payload-already-installed" \
+    "ac-7 the positioning makes P1's documented refusal happen instead of being skipped"
+
+# A machine already on its starting line is not touched, and the row says so rather than
+# leaving the field out: "none" and a move are different facts about the run.
+reset_machine 25.12.2 0.0.10
+rm -f "$results"
+out=$(drv --only P1 --payload-dir "$payloads")
+assert_eq "$?" "0" "ac-7 a machine already on its starting line runs the hop"
+assert_contains "$(note_of P1)" "positioned=none" \
+    "ac-7 the row states that no positioning was needed"
+assert_eq "$(grep -c 'payload-0.0.10.tar' "$actions" || true)" "0" \
+    "ac-7 a machine already on the start is not written to before the hop"
+
+# A platform payload that is not there is the named GAP, never a hop judged from the wrong
+# release: the row says which payload the positioning step needed.
+reset_machine 25.12.2 0.0.13
+rm -f "$results"
+mkdir -p "$tmp/r2-plat-partial"
+for p in payload-0.0.11.tar payload-25.12.1.tar payload-25.12.0.tar \
+    payload-25.12.2.tar; do
+    printf 'placeholder, not a tar\n' >"$tmp/r2-plat-partial/$p"
+done
+out=$(drv --only P1 --payload-dir "$tmp/r2-plat-partial")
+assert_eq "$?" "4" "ac-7 a missing positioning payload is an environment gap"
+assert_contains "$(note_of P1)" "no payload to position the machine on platform 0.0.10" \
+    "ac-7 the row names the platform payload the positioning hop needed"
+assert_eq "$(grep -c 'ab-upgrade' "$actions" || true)" "0" \
+    "ac-7 the hop never starts from the wrong release: nothing is installed"
+
 # --- ac-7: the same-base refusal the v0.0.10 image gave ---------------------- #
 # The round recorded exit 74 payload-already-installed and got through with --force. The
 # driver has to keep making that judgement: an unexpected refusal is a failure, this one
@@ -380,7 +445,10 @@ assert_eq "$(grep -cE 'ab-upgrade( --yes)? --force' "$actions" || true)" "1" \
     "ac-7 --force is spent on the refusal and on nothing else"
 
 # --- ac-6: a broken hop stops the chain instead of walking on ---------------- #
-reset_machine
+# The machine is on P1's starting line, so nothing is positioned and the red field this case
+# is about is the hop's own: a positioning move would be judged by the same knob and the row
+# would name the positioning instead.
+reset_machine 25.12.2 0.0.10
 out=$(STUB_BAD_PACKAGES_AFTER_HOP=0 drv --payload-dir "$payloads")
 rc=$?
 assert_eq "$rc" "1" "ac-6 a hop whose assertion fails makes the run fail"

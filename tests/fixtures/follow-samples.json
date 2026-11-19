@@ -80,7 +80,7 @@
         "luci-app-ttyd",
         "ttyd"
       ],
-      "config_path": "/etc/config/luci-app-ttyd",
+      "config_path": "/etc/config/ttyd",
       "data_marker": "/data/ab-follow/luci-app-ttyd.marker",
       "check": {
         "cmd": "e=no; [ -x /etc/init.d/ttyd ] && sh -n /etc/init.d/ttyd 2>/dev/null && e=yes; b=$(_bin /etc/init.d/ttyd ttyd); s=$(_svc /etc/init.d/ttyd ttyd); m=$(_missing luci-app-ttyd); echo \"init=$e bin=${b:-none} svc=$s missing=$m\"",
@@ -90,8 +90,8 @@
         "luci",
         "service"
       ],
-      "why": "The official-feed control sample: it distinguishes 'the community package broke' from 'the whole feed/base broke'. Its init script must parse under the running base's shell, its daemon binary must still be there, its payload must be complete, and a service enabled at boot must actually run - the last one is the only state that separates 'installed' from 'works' for a daemon sample. The binary is looked up through _bin, which asks the init script's own PROG and then PATH, and the row prints the path it found: the first version of this criterion hard-coded /usr/sbin/ttyd and failed a healthy machine, because on this image /etc/init.d/ttyd:8 sets PROG=/usr/bin/ttyd (measured 2026-11-19). The path stays a fact in the row rather than disappearing into a yes/no, so a base that moves the binary is visible in the row that judged it.",
-      "limits": "Like OpenClash it does not start the daemon; the running-branch only applies to a machine where ttyd is already enabled."
+      "why": "The official-feed control sample: it distinguishes 'the community package broke' from 'the whole feed/base broke'. Its init script must parse under the running base's shell, its daemon binary must still be there, its payload must be complete, and a service enabled at boot must actually run - the last one is the only state that separates 'installed' from 'works' for a daemon sample. The binary is looked up through _bin, which asks the init script's own PROG and then PATH, and the row prints the path it found: the first version of this criterion hard-coded /usr/sbin/ttyd and failed a healthy machine, because on this image /etc/init.d/ttyd:8 sets PROG=/usr/bin/ttyd (measured 2026-11-19). The path stays a fact in the row rather than disappearing into a yes/no, so a base that moves the binary is visible in the row that judged it. config_path is /etc/config/ttyd and not /etc/config/luci-app-ttyd, which is the same mistake one step further in: the sample is named after the LuCI app, but the file the daemon reads is the one its own init script loads - /etc/init.d/ttyd runs config_load \"$NAME\" with NAME=ttyd - and luci-app-ttyd ships no /etc/config file at all (measured 2026-11-19: apk info -L lists usr/share/luci/menu.d, usr/share/rpcd/acl.d and two JS views, nothing under etc/config). A marker written to /etc/config/luci-app-ttyd went to a file nothing reads, so the row proved nothing about the configuration the daemon actually starts with, while the file that does matter was left unmeasured.",
+      "limits": "Like OpenClash it does not start the daemon; the running-branch only applies to a machine where ttyd is already enabled. The fake config it marks is a `config marker 'ab_follow'` section appended to the file --mark found, and the init script starts an instance per section of type ttyd only (config_foreach validate_section_ttyd ttyd), so the marker is invisible to the daemon: measured 2026-11-19, ttyd starts with the marker in /etc/config/ttyd and the service is running, which is why this sample's fake config cannot be what stops the daemon."
     },
     {
       "name": "istore",

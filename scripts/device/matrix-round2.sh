@@ -33,6 +33,18 @@
 # healthy chain the step is a no-op, because each hop lands exactly where the next one
 # starts.
 #
+# The starting line is a base AND a platform, and round 6 measured the cost of positioning
+# only half of it: the machine was on 25.12.2 @ 0.0.13 where P1 starts on 25.12.2 @ 0.0.10,
+# the base matched so nothing moved, and P1's documented regression - the v0.0.10 image
+# refusing a same-base platform payload with exit 74 - was never exercised; the row recorded
+# "accepted without --force" as if the guard had changed. The platform is therefore
+# positioned too, the way platform-chain.sh does it (read the machine's release, compare it
+# with the chain's start, walk one platform-only move when they differ), and the row records
+# that move as `positioned-platform=<from>-><to>`. A platform move is only possible on the
+# base the chain's platform payloads carry; a hop that starts on another base has no platform
+# payload to install, its starting platform is not part of what it describes, and the evidence
+# says so instead of pretending.
+#
 #   scripts/device/matrix-round2.sh                    # the whole chain
 #   scripts/device/matrix-round2.sh --only D1          # one hop
 #   scripts/device/matrix-round2.sh --from 4           # resume at D2 (step numbers 1-7)
@@ -148,6 +160,14 @@ CASE_REGRESSION=""
 # when it was already there. It is carried into the row, because a hop that silently moved
 # the base twice would make its own note describe a machine that never existed.
 POSITIONED=""
+# The same fact for the platform layer, and a separate field because it is a separate move:
+# a hop can start on the right base and the wrong platform (that is exactly P1's case after a
+# full-test round, whose earlier phases leave the machine on the newest release), and a row
+# that said only `positioned=none` would hide it.
+POSITIONED_PLATFORM=""
+# Where the machine's release file lives. A seam, like every other device path in this
+# driver: the offline test points it at a file it owns.
+PLATFORM_RELEASE=${AB_R2_PLATFORM_RELEASE:-/etc/platform-release}
 STATUS_LINE=""
 HOP_FAILED=0
 DRIFT=""
@@ -758,66 +778,81 @@ assert_follow() {
 
 _check() { "$@" || HOP_FAILED=1; }
 
-# position_run <case> <from-rootfs>: bring the machine to the base this hop starts in.
+# dev_running_platform: the platform release the machine runs, read from its own release
+# file. Empty means the file is not there or names no PLATFORM_VERSION, which is a machine
+# that cannot say which release it runs - a state the positioning step records rather than
+# guesses around.
+dev_running_platform() {
+    _rp=$(dev_ssh "cat ${PLATFORM_RELEASE} 2>/dev/null" 2>/dev/null) || _rp=""
+    _rp=$(printf '%s\n' "${_rp}" | sed -n 's/^PLATFORM_VERSION=//p' | head -n 1)
+    [ -n "${_rp}" ] || return 1
+    printf '%s\n' "${_rp}"
+}
+
+# platform_payload_base: the base the chain's platform payloads carry.
 #
-# The chain assumes the machine is on P1's base when the first hop runs, and the full-test
-# phase order does not guarantee that: matrix, rise and scenarios leave the device on
-# whichever base their last case landed on, and matrix2 used to stop with "chain broken"
-# instead of getting back to its own starting line. Positioning is that missing step. It is
-# not a result - the chain's question is the hop that follows - but it is walked as a full
-# transaction and judged on what a healthy base change must leave (boot=ok esp=ok
-# pending=none, package metadata settled, rootfs=<from>), because a half-done positioning
-# hop would make every later row a lie. Returns 0 positioned, 1 failed, 2 no payload.
-position_run() {
-    _pos_case=${1:?position_run needs a case}
-    _pos_from=${2:?position_run needs a base}
-    _pos_local="${PAYLOAD_DIR}/payload-${_pos_from}.tar"
-    if [ ! -f "${_pos_local}" ]; then
-        ev "positioning: no payload at ${_pos_local}"
-        return 2
-    fi
+# A platform-only payload is built on one base (payload-0.0.10/0.0.11/0.0.12 all carry
+# 25.12.2), so a platform move is only possible on that base. The value is derived from the
+# chain's own platform hops instead of being written down here: the day a platform hop starts
+# on another base, this follows the case table rather than contradicting it.
+platform_payload_base() {
+    for _ppb in ${CHAIN}; do
+        case "$(case_kind "${_ppb}")" in
+            platform) case_from_rootfs "${_ppb}"; return 0 ;;
+        esac
+    done
+    return 1
+}
 
-    require_healthy "${_pos_case}" || return 1
-    _pos_before=${STATUS_LINE}
-    AB_STATUS_LINE=${_pos_before}
-    require_safe_target "${_pos_case}" "${_pos_before}" || return 1
-    _pos_gen=$(status_field "${_pos_before}" generation) || _pos_gen=0
-    _pos_slot=$(status_field "${_pos_before}" slot) || _pos_slot=""
-    _pos_target=$(other_slot "${_pos_slot}") || return 1
-    _pos_running=$(dev_running_version) || _pos_running=""
-    if [ "${_pos_running}" = "${_pos_from}" ]; then
-        return 0
-    fi
+# _position_hop <case> <payload> <to-base> <to-platform|->: one positioning move, walked as a
+# full transaction and judged on what a healthy switch must leave. It is not a result - the
+# chain's question is the hop that follows - but a half-done positioning hop would make every
+# later row a lie, so it is judged: boot=ok esp=ok pending=none, the target committed, the
+# generation moved, package metadata settled, and the line the caller asked for (the base, and
+# the platform when one was named).
+#
+# Returns 0 landed, 1 failed.
+_position_hop() {
+    _ph_case=${1:?}
+    _ph_local=${2:?}
+    _ph_base=${3:?}
+    _ph_platform=${4:--}
+    require_healthy "${_ph_case}" || return 1
+    _ph_before=${STATUS_LINE}
+    AB_STATUS_LINE=${_ph_before}
+    require_safe_target "${_ph_case}" "${_ph_before}" || return 1
+    _ph_gen=$(status_field "${_ph_before}" generation) || _ph_gen=0
+    _ph_slot=$(status_field "${_ph_before}" slot) || _ph_slot=""
+    _ph_target=$(other_slot "${_ph_slot}") || return 1
 
-    ev "positioning: ${_pos_running:-unknown} -> ${_pos_from}; slot ${_pos_slot}, target ${_pos_target}, generation ${_pos_gen}"
-    _pos_remote="${AB_REMOTE_TMP}/${_pos_local##*/}"
+    _ph_remote="${AB_REMOTE_TMP}/${_ph_local##*/}"
     dev_ssh 'ab-slot gc' >/dev/null 2>&1 || ev "gc reported problems (not a positioning failure)"
-    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_pos_local}" "${_pos_remote}" >/dev/null; then
-        ev "positioning: the payload could not be pushed to ${_pos_remote}"
+    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_ph_local}" "${_ph_remote}" >/dev/null; then
+        ev "positioning: the payload could not be pushed to ${_ph_remote}"
         return 1
     fi
     dev_capture "${AB_EVIDENCE_LOG}" dev_cleanup_slot_mounts >/dev/null
     ev "pre-check: /mnt/slots/* unmounted; --check may remount them, so their absence is not asserted"
 
-    _pos_out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_ab_check "${_pos_remote}")
-    _pos_rc=$?
-    if [ "${_pos_rc}" -ne 0 ]; then
-        ev "positioning: ab-upgrade --check exited ${_pos_rc}: $(printf '%s\n' "${_pos_out}" | tail -n 1)"
+    _ph_out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_ab_check "${_ph_remote}")
+    _ph_rc=$?
+    if [ "${_ph_rc}" -ne 0 ]; then
+        ev "positioning: ab-upgrade --check exited ${_ph_rc}: $(printf '%s\n' "${_ph_out}" | tail -n 1)"
         return 1
     fi
-    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_install "${_pos_remote}" >/dev/null; then
-        ev "positioning: ab-upgrade did not install ${_pos_from}"
+    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_install "${_ph_remote}" >/dev/null; then
+        ev "positioning: ab-upgrade did not install ${_ph_local##*/}"
         return 1
     fi
 
-    _pos_armed=$(dev_capture "${AB_EVIDENCE_LOG}" dev_status) || {
+    _ph_armed=$(dev_capture "${AB_EVIDENCE_LOG}" dev_status) || {
         ev "positioning: ab-slot status is unreadable after the install"
         return 1
     }
-    AB_STATUS_LINE=${_pos_armed}
+    AB_STATUS_LINE=${_ph_armed}
     HOP_FAILED=0
-    _check assert_field pending "${_pos_target}" "${_pos_case}"
-    _check assert_ge "$(status_field "${_pos_armed}" generation || printf 0)" "$((_pos_gen + 1))" "${_pos_case}" generation
+    _check assert_field pending "${_ph_target}" "${_ph_case}"
+    _check assert_ge "$(status_field "${_ph_armed}" generation || printf 0)" "$((_ph_gen + 1))" "${_ph_case}" generation
     [ "${HOP_FAILED}" -eq 0 ] || return 1
 
     dev_reboot
@@ -825,21 +860,99 @@ position_run() {
         ev "positioning: no ssh answer within ${AB_WAIT_UP_FIRST}s after the reboot"
         return 1
     fi
-    if ! _pos_booted=$(dev_capture "${AB_EVIDENCE_LOG}" dev_wait_settled "${AB_WAIT_SETTLE}"); then
+    if ! _ph_booted=$(dev_capture "${AB_EVIDENCE_LOG}" dev_wait_settled "${AB_WAIT_SETTLE}"); then
         ev "positioning: no status line within ${AB_WAIT_SETTLE}s after the machine answered ssh"
         return 1
     fi
-    AB_STATUS_LINE=${_pos_booted}
+    AB_STATUS_LINE=${_ph_booted}
     HOP_FAILED=0
-    _check assert_field boot ok "${_pos_case}"
-    _check assert_field esp ok "${_pos_case}"
-    _check assert_field pending none "${_pos_case}"
-    _check assert_field committed "${_pos_target}" "${_pos_case}"
-    _check assert_field packages aligned "${_pos_case}"
-    _pos_now=$(dev_running_version) || _pos_now=""
-    _check assert_value "${_pos_now}" "${_pos_from}" "${_pos_case}" positioned-rootfs
+    _check assert_field boot ok "${_ph_case}"
+    _check assert_field esp ok "${_ph_case}"
+    _check assert_field pending none "${_ph_case}"
+    _check assert_field committed "${_ph_target}" "${_ph_case}"
+    _check assert_field packages aligned "${_ph_case}"
+    _ph_now=$(dev_running_version) || _ph_now=""
+    _check assert_value "${_ph_now}" "${_ph_base}" "${_ph_case}" positioned-rootfs
+    if [ "${_ph_platform}" != "-" ]; then
+        _ph_plat_now=$(dev_running_platform) || _ph_plat_now=""
+        _check assert_value "${_ph_plat_now}" "${_ph_platform}" "${_ph_case}" positioned-platform
+    fi
     [ "${HOP_FAILED}" -eq 0 ] || return 1
-    ev "positioned: ${_pos_running:-unknown} -> ${_pos_from}, committed ${_pos_target}, generation ${_pos_gen}->$(status_field "${_pos_booted}" generation || printf '?')"
+    ev "positioned: committed ${_ph_target}, generation ${_ph_gen}->$(status_field "${_ph_booted}" generation || printf '?')"
+    return 0
+}
+
+# position_run <case> <from-rootfs> <from-platform>: bring the machine onto the line this hop
+# starts from - the base AND the platform.
+#
+# The chain assumes the machine is on its first hop's line when the chain runs, and the
+# full-test phase order does not guarantee that: matrix, rise and scenarios leave the device
+# on whichever base their last case landed on, and matrix2 used to stop with "chain broken"
+# instead of getting back to its own starting line. Positioning the base is that missing step
+# (unit 11). It was half the step: round 6 ran the chain on a machine that was on the right
+# base and the wrong release (25.12.2 @ 0.0.13 where P1 starts on 25.12.2 @ 0.0.10), so P1's
+# documented regression - the v0.0.10 image refusing a same-base platform payload with exit 74
+# - was never exercised, and the row recorded "accepted without --force" as if the guard had
+# changed. The platform is therefore positioned too, exactly the way platform-chain.sh does it:
+# read what the machine runs, compare it with the chain's start, and walk one platform-only
+# move when they differ.
+#
+# A platform move is only possible on the base the chain's platform payloads carry
+# (platform_payload_base); a hop that starts on another base has no platform payload to
+# install and its starting platform is not part of what the hop describes, so the step records
+# that fact in the evidence instead of pretending to have positioned something.
+#
+# Returns 0 positioned (or already there), 1 failed, 2 no payload.
+position_run() {
+    _pos_case=${1:?position_run needs a case}
+    _pos_from=${2:?position_run needs a base}
+    _pos_from_platform=${3:-}
+    _pos_running=$(dev_running_version) || _pos_running=""
+
+    # 1) the base, when the machine is not on it.
+    if [ "${_pos_running}" != "${_pos_from}" ]; then
+        _pos_local="${PAYLOAD_DIR}/payload-${_pos_from}.tar"
+        if [ ! -f "${_pos_local}" ]; then
+            ev "positioning: no payload at ${_pos_local}"
+            return 2
+        fi
+        ev "positioning: ${_pos_running:-unknown} -> ${_pos_from}"
+        ev "positioning: payload ${_pos_local}"
+        _position_hop "${_pos_case}" "${_pos_local}" "${_pos_from}" - || return 1
+        POSITIONED="${_pos_running:-unknown}->${_pos_from}"
+    fi
+
+    # 2) the platform, when the hop names a start platform and the machine is not on it.
+    # The check runs after the base move on purpose: a base payload carries a platform of its
+    # own, so the release the machine runs after step 1 is the one step 2 has to compare.
+    [ -n "${_pos_from_platform}" ] || return 0
+    _pos_platform_now=$(dev_running_platform) || _pos_platform_now=""
+    if [ -z "${_pos_platform_now}" ]; then
+        ev "positioning: the machine's ${PLATFORM_RELEASE} names no platform, so a platform move cannot be judged; the hop starts from platform ${_pos_from_platform}"
+        return 0
+    fi
+    if [ "${_pos_platform_now}" = "${_pos_from_platform}" ]; then
+        return 0
+    fi
+    _pos_plat_base=$(platform_payload_base) || {
+        ev "positioning: this chain names no platform hop, so its platform payloads have no base to sit on"
+        return 0
+    }
+    if [ "${_pos_from}" != "${_pos_plat_base}" ]; then
+        # A platform payload built on another base would install a rootfs the hop never
+        # described, so the platform is left where it is - and the evidence says so, because
+        # "the start platform did not match" is a fact a reader has to be able to see.
+        ev "positioning: platform ${_pos_platform_now} -> ${_pos_from_platform} not walked: the chain's platform payloads carry base ${_pos_plat_base} and this hop starts on ${_pos_from}"
+        return 0
+    fi
+    _pos_plat_local="${PAYLOAD_DIR}/payload-${_pos_from_platform}.tar"
+    if [ ! -f "${_pos_plat_local}" ]; then
+        ev "positioning: no payload at ${_pos_plat_local}"
+        return 2
+    fi
+    ev "positioning: platform ${_pos_platform_now} -> ${_pos_from_platform}; base stays ${_pos_from}; payload ${_pos_plat_local}"
+    _position_hop "${_pos_case}" "${_pos_plat_local}" "${_pos_from}" "${_pos_from_platform}" || return 1
+    POSITIONED_PLATFORM="${_pos_platform_now}->${_pos_from_platform}"
     return 0
 }
 
@@ -866,6 +979,7 @@ hop_run() {
     _from=$(case_from_rootfs "${_case}") || return 1
     _to=$(case_to_rootfs "${_case}") || return 1
     _dir=$(direction_of "${_from}" "${_to}")
+    _from_platform=$(case_from_platform "${_case}") || _from_platform=""
 
     require_healthy "${_case}" || return 1
     _before=${STATUS_LINE}
@@ -875,26 +989,36 @@ hop_run() {
     _slot=$(status_field "${_before}" slot) || _slot=""
     _target=$(other_slot "${_slot}") || return 1
     _running=$(dev_running_version) || _running=""
+    _running_platform=$(dev_running_platform) || _running_platform=""
 
-    # Getting the machine onto this hop's starting base is not a result, so it is walked as
+    # Getting the machine onto this hop's starting line is not a result, so it is walked as
     # positioning and recorded as such. It used to be an assertion that stopped the chain:
     # full-test.sh runs matrix, rise and scenarios before matrix2, they leave the device on
     # whichever base their last case landed on, and every matrix2 run then died on
-    # "chain broken" before it asked its own question. A positioning hop that does not land
+    # "chain broken" before it asked its own question. The line is a base AND a platform, and
+    # round 6 measured what half of it costs: the machine was on the right base and the wrong
+    # release, P1's documented 74-refusal was never exercised, and the row recorded "accepted
+    # without --force" as if the guard had changed. A positioning hop that does not land
     # healthy still fails here, and the row always says what moved: silence is the one thing
-    # this must not be, because a hidden extra base change would make every later row lie.
+    # this must not be, because a hidden extra switch would make every later row lie.
     POSITIONED=""
-    if [ "${_running}" != "${_from}" ]; then
-        position_run "${_case}" "${_from}"
+    POSITIONED_PLATFORM=""
+    if [ "${_running}" != "${_from}" ] ||
+        { [ -n "${_from_platform}" ] && [ -n "${_running_platform}" ] && [ "${_running_platform}" != "${_from_platform}" ]; }; then
+        position_run "${_case}" "${_from}" "${_from_platform}"
         case "$?" in
-            0) POSITIONED="${_running:-unknown}->${_from}" ;;
+            0) : ;;
             2)
-                CASE_NOTE="no payload to position the machine on ${_from} (it runs ${_running:-unknown})"
+                if [ "${_running}" != "${_from}" ]; then
+                    CASE_NOTE="no payload to position the machine on ${_from} (it runs ${_running:-unknown})"
+                else
+                    CASE_NOTE="no payload to position the machine on platform ${_from_platform} (it runs ${_running_platform} on ${_running})"
+                fi
                 ev "${CASE_NOTE}"
                 return 2
                 ;;
             *)
-                CASE_NOTE="positioning to ${_from} failed; the hop did not start (it ran ${_running:-unknown})"
+                CASE_NOTE="positioning to ${_from}@${_from_platform:-?} failed; the hop did not start (it ran ${_running:-unknown}@${_running_platform:-?})"
                 ev "${CASE_NOTE}"
                 return 1
                 ;;
@@ -907,7 +1031,10 @@ hop_run() {
         _slot=$(status_field "${_before}" slot) || _slot=""
         _target=$(other_slot "${_slot}") || return 1
     fi
-    ev "hop ${_case}: ${_from} -> ${_to} (${_dir}); slot ${_slot}, target ${_target}, generation ${_gen}${POSITIONED:+ (positioned ${POSITIONED})}"
+    _positioned_fact=""
+    [ -n "${POSITIONED}" ] && _positioned_fact=" positioned=${POSITIONED}"
+    [ -n "${POSITIONED_PLATFORM}" ] && _positioned_fact="${_positioned_fact} positioned-platform=${POSITIONED_PLATFORM}"
+    ev "hop ${_case}: ${_from} -> ${_to} (${_dir}); slot ${_slot}, target ${_target}, generation ${_gen}${_positioned_fact}"
 
     _remote="${AB_REMOTE_TMP}/${_local##*/}"
     dev_ssh 'ab-slot gc' >/dev/null 2>&1 || ev "gc reported problems (not a hop failure)"
@@ -1035,13 +1162,13 @@ hop_run() {
     if [ "${HOP_FAILED}" -eq 0 ]; then
         _force_used=none
         [ "${_force}" = "1" ] && _force_used=used
-        CASE_NOTE="hop ok: platform $(case_from_platform "${_case}")->$(case_to_platform "${_case}"), base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}; regression=${CASE_REGRESSION:-none}, force=${_force_used}; positioned=${POSITIONED:-none}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
+        CASE_NOTE="hop ok: platform $(case_from_platform "${_case}")->$(case_to_platform "${_case}"), base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}; regression=${CASE_REGRESSION:-none}, force=${_force_used}; positioned=${POSITIONED:-none}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}${POSITIONED_PLATFORM:+; positioned-platform=${POSITIONED_PLATFORM}}"
         ev "${CASE_NOTE}"
         return 0
     fi
     # The evidence lines are timestamped, so the case name is matched anywhere in the line.
     _first_fail=$(grep -m 1 "FAIL ${_case} " "${AB_EVIDENCE_LOG}" 2>/dev/null) || _first_fail=""
-    CASE_NOTE="assertions failed on this hop: ${_first_fail#FAIL ${_case} }; the chain stops here; positioned=${POSITIONED:-none}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
+    CASE_NOTE="assertions failed on this hop: ${_first_fail#FAIL ${_case} }; the chain stops here; positioned=${POSITIONED:-none}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}${POSITIONED_PLATFORM:+; positioned-platform=${POSITIONED_PLATFORM}}"
     ev "${CASE_NOTE}"
     return 1
 }
@@ -1167,8 +1294,8 @@ plan_case() {
     _to=$(case_to_rootfs "${_case}")
     printf '%s status (red line: a committed slot, boot=ok, esp=ok, pending=none)\n' "${_case}"
     printf '%s gc\n' "${_case}"
-    printf '%s position %s (only when the machine runs something else; the row records positioned=<from>-><to>)\n' \
-        "${_case}" "$(case_from_rootfs "${_case}")"
+    printf '%s position base %s, platform %s (only when the machine runs something else; the row records positioned=<base-from>-><base-to> and positioned-platform=<from>-><to>)\n' \
+        "${_case}" "$(case_from_rootfs "${_case}")" "$(case_from_platform "${_case}")"
     printf '%s push %s -> %s/%s\n' "${_case}" "${_local}" "${AB_REMOTE_TMP}" "${_local##*/}"
     if same_base "${_case}"; then
         printf '%s check %s/%s expect=exit-0, or exit-74 payload-already-installed (the v0.0.10 image did that; recorded as a regression and reinstalled with --force)\n' \

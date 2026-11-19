@@ -274,6 +274,30 @@ assert_contains "$cfg_body" "	list domain '例子.测试'" \
 assert_eq "$(note_of SW-luci-app-openclash | sed -n 's/.*sha256=\([0-9a-f]*\).*/\1/p')" \
     "$(sha_of "$cfg" | cut -c1-8)" "ac-4 the row's sha256 is the file the machine holds"
 
+# ... but a sample that owns no config of its own must not be given one. luci-app-ttyd is the
+# case: its name says LuCI app, its package ships no /etc/config file at all, and the path the
+# name-derived default lands on (/etc/config/ttyd) is the ttyd daemon's live configuration -
+# the file the daemon starts from and the file follow-probe.sh marks as the user's witness
+# across every base hop. Measured on the device 2026-11-19: the synthetic body replaced the
+# daemon's config, ttyd's init script needs `option command` which the body does not carry, the
+# service stopped starting, and the marker the follow probe had written into that same file was
+# destroyed - which is what turned matrix2's P1 row red on a healthy machine. So the fixture
+# declares `"config": "none"` for it and this driver has to honour that: the sample is
+# installed, versioned and asked for LuCI, and it touches no config file at all.
+assert_eq "$(note_of SW-luci-app-ttyd | sed -n 's/.*config=\([^ ]*\).*/\1/p')" "none" \
+    "ac-4 a sample the fixture says owns no config is not given one"
+assert_eq "$([ -e "$dev/etc/config/ttyd" ] && echo written || echo absent)" "absent" \
+    "ac-4 ... and the daemon's own config file is not written by the sample layer"
+assert_eq "$([ -e "$dev/etc/config/ttyd.swprobe-bak" ] && echo copied || echo absent)" "absent" \
+    "ac-4 ... so there is no copy of somebody else's file to put back either"
+# The plan says the same thing before anything is written, so a reader of a dry run cannot
+# believe this sample is about to have its config replaced.
+out=$(probe_run --dry-run --sample luci-app-ttyd)
+assert_contains "$out" "dry-run sample=luci-app-ttyd config=none" \
+    "ac-4 the plan states that this sample owns no config, and why"
+assert_contains "$out" "declared=none" \
+    "ac-4 ... and names the fixture as the one that said so"
+
 # =========================================================================== #
 # ac-3: the three shapes of "not installed", told apart
 # =========================================================================== #

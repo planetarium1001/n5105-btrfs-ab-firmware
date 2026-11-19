@@ -143,6 +143,30 @@ assert_eq "$(printf '%s\n' 'init=yes bin=none svc=stopped missing=0' | grep -Ec 
 assert_eq "$(printf '%s\n' 'init=yes bin=/usr/bin/ttyd svc=running missing=0' | grep -Ec "$ttyd_expect" || true)" "1" \
   "ac-2 the ttyd criterion accepts the daemon this image actually ships"
 
+# --- the config path round 6 falsified ------------------------------------- #
+# The marker is the witness that the user's configuration survived the hop, so it has to be
+# written into the file the package actually reads. For seven samples that is the file the
+# name implies; ttyd is the one where it is not. /etc/init.d/ttyd runs
+# `config_load "$NAME"` with NAME=ttyd, so the daemon reads /etc/config/ttyd, while
+# luci-app-ttyd - the package the sample is named after - ships no /etc/config file at all
+# (measured 2026-11-19: apk info -L lists usr/share/luci/menu.d, usr/share/rpcd/acl.d and two
+# JS views, nothing under etc/config). Round 6 wrote the marker into
+# /etc/config/luci-app-ttyd, a file nothing reads, so the row proved nothing about the
+# configuration the daemon starts with - and the file that does matter was never hashed.
+assert_eq "$(fixture_field luci-app-ttyd 3)" "/etc/config/ttyd" \
+  "ac-3 the ttyd marker goes into the file the daemon's own init script loads"
+assert_eq "$(fixture_field luci-app-ttyd 3 | grep -c 'luci-app-ttyd' || true)" "0" \
+  "ac-3 ... and not into the LuCI app's name, which is not a config file on this image"
+# The daemon must survive the marker: --mark appends a `config marker 'ab_follow'` section and
+# /etc/init.d/ttyd iterates only sections of its own type (config_foreach
+# validate_section_ttyd ttyd), so the section is invisible to it - measured on the device
+# 2026-11-19, the service starts and runs with the marker in place. What broke the service in
+# round 6 was software-probe.sh replacing the whole file with a synthetic body, not this
+# append; the assertion that the sample layer leaves that file alone lives in
+# test_software_probe.sh.
+assert_contains "$(fixture_field luci-app-ttyd 5)" "svc=(running|stopped)" \
+  "ac-2 a daemon that must be up is still judged on being up: the criterion is not relaxed"
+
 # openclash: enabled at boot with no process is this package's steady state on the reference
 # machine, and a probe that will not start a proxy can never make it anything else. Accepting
 # it is not "any state passes": an init script that is gone or unparsable still fails, and

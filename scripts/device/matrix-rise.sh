@@ -30,6 +30,16 @@
 #   sample set still USABLE with its fake config and data marker byte-identical
 #   (follow-probe.sh --verify).
 #
+# The chain start: the machine is brought onto the first hop's starting base before the
+# baseline is captured, and the move is recorded in the first row as positioned=<from>-><to>.
+# The full-test phase order does not guarantee that the device is on that base - matrix and
+# scenarios run before this phase and leave it wherever their last case landed - and round 6
+# measured the cost of assuming otherwise: rise ran on a 25.12.2 machine, R1 stopped on
+# "chain broken: the machine runs 25.12.2, this hop starts from 25.12.0", and the climb was
+# never asked. platform-chain.sh had the same defect and its position_run is the model here:
+# a missing positioning payload is a GAP naming the file, a positioning hop that does not land
+# healthy is a FAIL, and a machine already on the start is not touched.
+#
 # The sample set: installed and marked ONCE, before the first hop walked, and never
 # re-marked. follow-baseline.sh does install+mark in one call, and re-running it after a
 # hop would re-baseline exactly the fact the hop is there to measure - a config the new
@@ -548,6 +558,116 @@ other_slot() {
 }
 
 # --------------------------------------------------------------------------- #
+# Positioning: bringing the machine onto the line the chain starts on
+#
+# The chain assumes the machine is on its first hop's starting base, and the full-test phase
+# order does not guarantee that: matrix and scenarios run before this phase and leave the
+# device on whichever base their last case landed on. Round 6 measured the cost of assuming
+# otherwise - rise ran after matrix, the machine was on 25.12.2, and R1 stopped on
+# "chain broken: the machine runs 25.12.2, this hop starts from 25.12.0" without ever asking
+# its own question. That is the same defect class scripts/device/platform-chain.sh had, and
+# this function is that file's position_run applied to a base chain: read the running base,
+# compare it with the chain's start, and walk one positioning hop when they disagree.
+#
+# It is not a result: the chain's question is the climb that follows. It is judged as a full
+# transaction on what a healthy base change must leave (boot=ok esp=ok pending=none, the
+# target committed, package metadata settled, rootfs=<the start>), because a half-done
+# positioning hop would make every later row a lie. The move is recorded in the first row as
+# positioned=<from>-><to> and in the evidence log; a missing positioning payload is the named
+# GAP and a positioning hop that does not land healthy is a FAIL - silence is the one thing
+# this may not do, because a hidden extra base change would make every row below it lie.
+#
+# The payload is named by the base it carries, not by the case: it also serves --only and
+# --from-version, whose first hop starts from another base.
+#
+# position_run <case> <to-base> [<from-base>]: <from-base> is the base the caller just read
+# from the machine, so the row can say what moved; empty means it was not read.
+#
+# Returns 0 positioned, 1 failed, 2 no payload.
+position_run() {
+    _pos_case=${1:?position_run needs a case}
+    _pos_to=${2:?position_run needs a base}
+    _pos_from_base=${3:-}
+    _pos_local="${PAYLOAD_DIR}/payload-${_pos_to}.tar"
+    if [ ! -f "${_pos_local}" ]; then
+        ev "positioning: no payload at ${_pos_local}"
+        return 2
+    fi
+    # A positioning payload is a base payload of this project's 25.x line; a 24.x one would
+    # install a rootfs nobody described, and the run would then judge hops from a line this
+    # project does not cover.
+    if ! _pos_msg=$(require_supported_line "${_pos_to}" "${_pos_local}" 2>&1); then
+        ev "positioning: ${_pos_msg}"
+        return 1
+    fi
+
+    require_healthy "${_pos_case}" || return 1
+    _pos_before=${STATUS_LINE}
+    AB_STATUS_LINE=${_pos_before}
+    require_safe_target "${_pos_case}" "${_pos_before}" || return 1
+    _pos_gen=$(status_field "${_pos_before}" generation) || _pos_gen=0
+    _pos_slot=$(status_field "${_pos_before}" slot) || _pos_slot=""
+    _pos_target=$(other_slot "${_pos_slot}") || return 1
+    _pos_running=${_pos_from_base:-}
+
+    ev "positioning: ${_pos_running:-unknown} -> ${_pos_to}; slot ${_pos_slot}, target ${_pos_target}, generation ${_pos_gen}"
+    _pos_remote="${AB_REMOTE_TMP}/${_pos_local##*/}"
+    dev_ssh 'ab-slot gc' >/dev/null 2>&1 || ev "gc reported problems (not a positioning failure)"
+    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_pos_local}" "${_pos_remote}" >/dev/null; then
+        ev "positioning: the payload could not be pushed to ${_pos_remote}"
+        return 1
+    fi
+    dev_capture "${AB_EVIDENCE_LOG}" dev_cleanup_slot_mounts >/dev/null
+    ev "pre-check: /mnt/slots/* unmounted; --check may remount them, so their absence is not asserted"
+
+    _pos_out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_ab_check "${_pos_remote}")
+    _pos_rc=$?
+    if [ "${_pos_rc}" -ne 0 ]; then
+        # A positioning hop changes the base, so the already-installed guard has nothing to
+        # refuse here; a refusal means the machine is not the one this chain describes, and
+        # --force would hide it.
+        ev "positioning: ab-upgrade --check exited ${_pos_rc}: $(printf '%s\n' "${_pos_out}" | tail -n 1)"
+        return 1
+    fi
+    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_install "${_pos_remote}" >/dev/null; then
+        ev "positioning: ab-upgrade did not install ${_pos_to}"
+        return 1
+    fi
+
+    _pos_armed=$(dev_capture "${AB_EVIDENCE_LOG}" dev_status) || {
+        ev "positioning: ab-slot status is unreadable after the install"
+        return 1
+    }
+    AB_STATUS_LINE=${_pos_armed}
+    HOP_FAILED=0
+    _check assert_field pending "${_pos_target}" "${_pos_case}"
+    _check assert_ge "$(status_field "${_pos_armed}" generation || printf 0)" "$((_pos_gen + 1))" "${_pos_case}" generation
+    [ "${HOP_FAILED}" -eq 0 ] || return 1
+
+    dev_reboot
+    if ! dev_wait_up_after after-install; then
+        ev "positioning: no ssh answer within ${AB_WAIT_UP_FIRST}s after the reboot"
+        return 1
+    fi
+    if ! _pos_booted=$(dev_capture "${AB_EVIDENCE_LOG}" dev_wait_settled "${AB_WAIT_SETTLE}"); then
+        ev "positioning: no status line within ${AB_WAIT_SETTLE}s after the machine answered ssh"
+        return 1
+    fi
+    AB_STATUS_LINE=${_pos_booted}
+    HOP_FAILED=0
+    _check assert_field boot ok "${_pos_case}"
+    _check assert_field esp ok "${_pos_case}"
+    _check assert_field pending none "${_pos_case}"
+    _check assert_field committed "${_pos_target}" "${_pos_case}"
+    _check assert_field packages aligned "${_pos_case}"
+    _pos_now=$(dev_running_version) || _pos_now=""
+    _check assert_value "${_pos_now}" "${_pos_to}" "${_pos_case}" positioned-rootfs
+    [ "${HOP_FAILED}" -eq 0 ] || return 1
+    ev "positioned: ${_pos_running:-unknown} -> ${_pos_to}, committed ${_pos_target}, generation ${_pos_gen}->$(status_field "${_pos_booted}" generation || printf '?')"
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
 # The historical feed for one release (ac-9's per-hop fact)
 #
 # This half only carries out a decision feed-history.sh made: which URL, and whether the
@@ -765,15 +885,33 @@ feed_point() {
         ev "feed ${_fp_label}: rc=4 ${FEED_NOTE}"
         return 4
     fi
+    # The block is on the machine from here on, so the teardown has to know it: FEED_VERSION
+    # is set before the index refresh and not after it. Measured 2026-11-19: apk update failed
+    # (the product's own package follow was holding the apk lock right after the hop), the
+    # function returned 4 with FEED_VERSION still empty, feed_unpoint then decided there was
+    # nothing of its own to remove, and the block stayed in customfeeds.list naming a release
+    # the next hop would no longer run - the one trace this driver promises not to leave.
+    FEED_VERSION=${_fp_v}
     # The index refresh is what turns "the URL is written" into "apk can read it". Whether
     # a mirror is up is not this driver's judgement, so a failure here is a GAP: the feed
     # leg was not measured, which is a different sentence from "the release has no feed".
+    # A lock held by somebody else on the machine is a third sentence again: the machine is
+    # busy, not the feed broken, and the product's own follow worker holds that lock for
+    # minutes after a base hop (measured 2026-11-19: apk --timeout 300 upgrade still running
+    # while this leg asked). The two are told apart in the note so a reader does not go
+    # looking for a broken mirror.
     if ! _out=$(dev_ssh 'apk update' 2>&1); then
-        FEED_NOTE="apk update failed on the machine after ${_fp_v}'s feed was written: $(printf '%s\n' "${_out}" | grep -m 1 . | cut -c1-200)"
+        case "${_out}" in
+            *'Unable to lock database'*)
+                FEED_NOTE="apk update could not run on the machine after ${_fp_v}'s feed was written: the apk database was locked by another process (the product's package follow, most likely), so the feed leg was not measured: $(printf '%s\n' "${_out}" | grep -m 1 . | cut -c1-200)"
+                ;;
+            *)
+                FEED_NOTE="apk update failed on the machine after ${_fp_v}'s feed was written: $(printf '%s\n' "${_out}" | grep -m 1 . | cut -c1-200)"
+                ;;
+        esac
         ev "feed ${_fp_label}: rc=4 ${FEED_NOTE}"
         return 4
     fi
-    FEED_VERSION=${_fp_v}
     printf 'feed [%s]: %s %s (kmods=%s); %s feed line(s) written, apk update ok\n' \
         "${_fp_label}" "${FEED_SOURCE:-unknown}" "${FEED_ROOT:-?}" "${FEED_KMODS:-?}" \
         "$(printf '%s\n' "${FEED_URLS}" | grep -c .)"
@@ -1129,6 +1267,19 @@ hop_run() {
         return 1
     fi
 
+    # The block this hop wrote names the release the machine is about to leave, and the boot
+    # that follows runs the product's own package follow before this driver can replace it -
+    # measured 2026-11-19: while it was there, the first boot of the next base reported
+    # `packages-refresh ... result=pending reason=network` on every fast rung, the follow's
+    # transaction then timed out, dockerd could not start against the old kernel's modules, and
+    # the sample layer read that as a broken docker. The block has done its work by now (the
+    # samples are installed and marked), so it is removed before the reboot and the landing
+    # release's own block is written after the machine is back. A failure here is recorded and
+    # the hop continues: a stale source is a reason to say so, not to abandon a committed hop.
+    if ! dev_capture "${AB_EVIDENCE_LOG}" feed_unpoint; then
+        ev "feed: the block naming ${_from} could not be removed before the reboot; the machine's own follow will see a feed of the base it is leaving"
+    fi
+
     dev_reboot
     if ! dev_wait_up_after after-install; then
         CASE_NOTE="no ssh answer within ${AB_WAIT_UP_FIRST}s after the reboot"
@@ -1369,6 +1520,13 @@ SELECTED=$(select_cases) || exit 2
 if [ "${DRY_RUN}" = "1" ]; then
     printf '# run from-version=%s ceiling=%s chain="%s" feed=%s resume=%s results=%s\n' \
         "${START_VERSION}" "$(chain_ceiling)" "${SELECTED}" "${FEED_MODE}" "${RESUME}" "${AB_RESULTS}"
+    # The plan cannot know the running base without an ssh call, so the positioning step is
+    # printed as the conditional move it is: the operator standing in front of the machine has
+    # to see that the chain may move it before it walks any hop.
+    _plan_start=$(case_from_rootfs "${SELECTED%% *}") || exit 2
+    printf '# position start: if the machine is not on base %s, install %s/payload-%s.tar once and record positioned=<from>->%s in the first row; a machine already there is not touched, and a missing payload there is a GAP naming %s/payload-%s.tar\n' \
+        "${_plan_start}" "${PAYLOAD_DIR}" "${_plan_start}" "${_plan_start}" \
+        "${PAYLOAD_DIR}" "${_plan_start}"
     for _case in ${SELECTED}; do
         plan_case "${_case}" || exit 2
     done
@@ -1442,10 +1600,52 @@ ev "baseline: config paths ${CONFIG_PATHS}"
 ev "helpers: follow-probe=${FOLLOW_PROBE} follow-baseline=${FOLLOW_BASELINE} feed-history=${FEED_HISTORY}"
 printf 'matrix-rise: start version %s (the machine reports %s), ceiling %s, chain %s, feed %s\n' \
     "${START_VERSION}" "${_machine_start:-unknown}" "$(chain_ceiling)" "${SELECTED}" "${FEED_MODE}"
-# The start version is a claim about the machine, and a claim nobody checked is how a chain
-# walks a hop whose payload is already installed. It is stated here, before the first boot,
-# with the flag that fixes it: the hop's own chain-position assertion would find it too, but
-# only after a push and a reboot.
+# The machine is brought onto the line the chain starts on before the baseline is captured, so
+# every later row is measured against the state the chain actually starts in. The full-test
+# phase order does not guarantee that the machine is there: matrix and scenarios run before
+# this phase and leave the device on whichever base their last case landed on (round 6: rise
+# ran after matrix, the machine was on 25.12.2, and R1 stopped on "chain broken" without
+# asking its own question). The move is recorded in the first row and in the evidence; a
+# payload that is not there is the named GAP, and a positioning hop that does not land is a
+# FAIL - walking the chain from the wrong line is the one thing this must never do quietly.
+_chain_start=$(case_from_rootfs "${_first}") || {
+    printf 'matrix-rise: cannot read the starting base of %s\n' "${_first}" >&2
+    exit 2
+}
+POSITIONED=""
+if [ -n "${_machine_start}" ] && [ "${_machine_start}" != "${_chain_start}" ]; then
+    _position_payload="${PAYLOAD_DIR}/payload-${_chain_start}.tar"
+    printf 'matrix-rise: positioning: the machine runs %s, the chain starts on %s (%s)\n' \
+        "${_machine_start}" "${_chain_start}" "${_position_payload}"
+    position_run "${_first}" "${_chain_start}" "${_machine_start}"
+    case "$?" in
+        0)
+            POSITIONED="${_machine_start}->${_chain_start}"
+            # The positioning hop was judged healthy by position_run; re-read the machine once
+            # so the baseline line is the post-move machine, not the one it replaced.
+            require_healthy "${_first}"
+            AB_STATUS_LINE=${STATUS_LINE}
+            _machine_start=$(dev_running_version) || _machine_start=""
+            ;;
+        2)
+            CASE_NOTE="no positioning payload at ${_position_payload}: the machine runs ${_machine_start} and this chain starts on ${_chain_start}; build it, or pass --from-version ${_machine_start} to start the chain where the machine really is"
+            record "${_first}" GAP - "${CASE_NOTE}"
+            printf '== %s (positioning)\n' "${_first}"
+            printf '   %s: %s\n' "${_first}" "${CASE_NOTE}"
+            exit 4
+            ;;
+        *)
+            CASE_NOTE="positioning to base ${_chain_start} failed; the chain did not start (the machine ran ${_machine_start}). The evidence names the step that failed; --from-version ${_machine_start} can start the chain where the machine really is once that base is on its line"
+            record "${_first}" FAIL "${AB_EVIDENCE_LOG}" "${CASE_NOTE}"
+            printf '== %s (positioning)\n' "${_first}"
+            printf '   %s: %s\n' "${_first}" "${CASE_NOTE}"
+            exit 1
+            ;;
+    esac
+fi
+# The start version is still a claim about the machine, and after positioning it has to hold:
+# an empty read means the machine could not say where it is, and the first hop's own
+# chain-position assertion is then the thing that answers it, not this line.
 if [ -n "${_machine_start}" ] && [ "${_machine_start}" != "${START_VERSION}" ]; then
     printf 'matrix-rise: warning: the machine runs %s but this run was told to start at %s; the first hop will refuse it - rerun with --from-version %s if the machine is right and the flag is wrong\n' \
         "${_machine_start}" "${START_VERSION}" "${_machine_start}"
@@ -1465,6 +1665,15 @@ for _case in ${SELECTED}; do
         "kind=$(hop_expect_value "${_case}" kind) direction=$(hop_expect_value "${_case}" direction) $(hop_expect_value "${_case}" from-rootfs)->$(hop_expect_value "${_case}" to-rootfs)"
     hop_run "${_case}"
     _rc=$?
+    # The chain start's positioning move is a fact about this run, not about the hop, so it
+    # rides on the first row - the only row that can carry it without pretending a later hop
+    # moved the machine - and is cleared after it is recorded. The field is written on that row
+    # either way: "positioned=none" and "positioned=<from>-><to>" are different facts about the
+    # run, and leaving the field out would make a reader guess which one this was.
+    if [ "${FIRST_HOP}" = "1" ]; then
+        CASE_NOTE="${CASE_NOTE}; positioned=${POSITIONED:-none}"
+        POSITIONED=""
+    fi
     case "${_rc}" in
         0)
             record "${_case}" PASS "${AB_EVIDENCE_LOG}" "${CASE_NOTE}"

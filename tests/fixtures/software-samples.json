@@ -30,9 +30,10 @@
     {
       "name": "luci-app-ttyd",
       "kind": "feed-control",
+      "config": "none",
       "source_url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/luci-app-ttyd-26.298.29275~c84adb9.apk",
       "fetched_at": "2026-11-17",
-      "why": "官方 feed 既有对照样本：不依赖第三方源，用来分辨「社区软件坏了」还是「整套 feed 都坏了」。只用 25.x：24.x 的 opkg 包管理器与 apk 不同，版本线结论不可迁移。",
+      "why": "官方 feed 既有对照样本：不依赖第三方源，用来分辨「社区软件坏了」还是「整套 feed 都坏了」。config 是 none 而不是按包名推出的 /etc/config/ttyd：luci-app-ttyd 自己不拥有任何 /etc/config 文件（2026-11-19 实测 apk info -L 只有 menu.d、acl.d 和两个 JS 视图），/etc/config/ttyd 属于 ttyd 这个守护进程包，是它开机启动时真正读的活配置，也是 follow 探针跨跳要当见证的那个文件。按包名推路径正好落到别人的文件上，把守护进程的活配置整份换成合成内容后 ttyd 起不来（init 脚本要求 option command，合成体里没有），并且会抹掉 follow 探针在跳变前记下的标记。所以这一样本只做 ac-3 的安装、版本与 LuCI 可达，配置跨跳由 follow 探针在真文件上判定。只用 25.x：24.x 的 opkg 包管理器与 apk 不同，版本线结论不可迁移。",
       "fallback": "若文件名随 feed 刷新失效，取 feed 目录 https://downloads.immortalwrt.org/releases/25.12.2/packages/x86_64/luci/ 按包名重新匹配；目录整体不可达则本对照记 GAP。"
     },
     {

@@ -333,7 +333,12 @@ _finish() {
 
 # _manifest_dump [file]: the manifest as flat records, one per line:
 #   meta    <key>   <value>              (schema, updated, version_line)
-#   sample  <name>  <kind>  <url>  <fetched_at>  <fallback>
+#   sample  <name>  <kind>  <url>  <fetched_at>  <fallback>  <config>
+#
+# <config> is the sample's own answer to "does this app own a UCI config file this driver may
+# write", and it exists because the name-derived default is a guess that one sample falsifies:
+# see _has_config. It is one more column rather than a second reader, so the driver keeps
+# reading the manifest in one place.
 #
 # A flat reader in awk and not a dependency on python3, because this driver runs where only
 # the repo is; see the shape it reads in tests/fixtures/software-samples.json. Non-string
@@ -347,12 +352,13 @@ _manifest_dump() {
             return e
         }
         function flush_sample() {
-            if (objname != "") printf "sample\t%s\t%s\t%s\t%s\t%s\n", objname, objkind, objurl, objfetched, objfallback
+            if (objname != "") printf "sample\t%s\t%s\t%s\t%s\t%s\t%s\n", objname, objkind, objurl, objfetched, objfallback, objconfig
             objname = ""
             objkind = ""
             objurl = ""
             objfetched = ""
             objfallback = ""
+            objconfig = ""
         }
         { text = text $0 "\n" }
         END {
@@ -400,6 +406,7 @@ _manifest_dump() {
                             else if (key == "source_url") objurl = str
                             else if (key == "fetched_at") objfetched = str
                             else if (key == "fallback") objfallback = str
+                            else if (key == "config") objconfig = str
                         } else if (depth == 1) {
                             printf "meta\t%s\t%s\n", key, str
                         }
@@ -550,12 +557,27 @@ _app_of() {
     esac
 }
 
-# _has_config <name> <kind>: does this sample own a UCI config file? The name says it for the
-# two LuCI families; the kind catches a store or an app that is not named that way. A plain
-# program (htop) or a kernel module owns no config, and inventing /etc/config/htop would test
-# this driver instead of the product: those samples are held to the package half of ac-3, and
-# their ac-4 statement is "same version after the hop".
+# _has_config <name> <kind> <declared>: does this sample own a UCI config file this driver may
+# write? The manifest answers first when it says so, because the name-derived default is a
+# guess and one sample proves it: luci-app-ttyd ships no /etc/config file at all (measured
+# 2026-11-19: apk info -L lists menu.d, acl.d and two JS views), and the file the guess lands
+# on - /etc/config/ttyd - belongs to the ttyd package, is the daemon's live configuration, and
+# is the follow probe's witness across every base hop. Writing a synthetic body over it did two
+# things this driver must not do: it replaced the configuration the daemon starts with (ttyd's
+# init script needs option command, which a synthetic body does not carry, so the service
+# stopped starting) and it destroyed the marker the follow probe had recorded for the same file
+# before the hop, turning a surviving user config into "config changed" in the matrix2 row. A
+# sample that owns no config is held to the package half of ac-3, and its ac-4 statement is
+# "same version after the hop"; the config half of ac-4 for that file belongs to the probe that
+# owns it. The name says it for the other two LuCI families, and the kind catches a store or an
+# app that is not named that way; a plain program (htop) or a kernel module owns no config
+# either, and inventing /etc/config/htop would test this driver instead of the product.
 _has_config() {
+    case "${3:-}" in
+        none) return 1 ;;
+        "") : ;;
+        *) return 0 ;;
+    esac
     case "${1}" in
         luci-app-* | luci-theme-*) return 0 ;;
     esac
@@ -634,6 +656,11 @@ _add_sources() {
 # --------------------------------------------------------------------------- #
 # Config: a real one per app, written through the executor, in a file the run can undo
 # --------------------------------------------------------------------------- #
+# Which samples get one is the manifest's answer, not this driver's guess: see _has_config for
+# the sample that made the guess cost a device run (luci-app-ttyd names a LuCI app whose
+# daemon's live configuration lives in another package's file). A sample that declares
+# `"config": "none"` is installed and versioned like the others and its config half of ac-4 is
+# left to the probe that owns that file.
 
 # _config_body <app> <sample>: the content of the config file. Three things are in it because
 # a version hop is exactly what damages them: non-ASCII text, a blank line inside the file,
@@ -721,12 +748,13 @@ _pre_snapshot() {
 # Actions
 # --------------------------------------------------------------------------- #
 
-# _install_sample <name> <kind> <url> <fallback>: one row for one sample.
+# _install_sample <name> <kind> <url> <fallback> <config>: one row for one sample.
 _install_sample() {
     _is_name=${1}
     _is_kind=${2}
     _is_url=${3}
     _is_fallback=${4:-}
+    _is_config_decl=${5:-}
     _is_case="SW-${_is_name}"
     _is_app=$(_app_of "${_is_name}")
 
@@ -741,14 +769,14 @@ _install_sample() {
                     "${_is_name}" "${_is_name}"
                 ;;
         esac
-        if _has_config "${_is_name}" "${_is_kind}"; then
+        if _has_config "${_is_name}" "${_is_kind}" "${_is_config_decl}"; then
             printf 'software-probe: dry-run sample=%s config=/etc/config/%s (real content, with non-ASCII and quoting)\n' \
                 "${_is_name}" "${_is_app}"
             printf 'software-probe: dry-run sample=%s assert="apk list --installed %s; /etc/config/%s; LuCI 200"\n' \
                 "${_is_name}" "${_is_name}" "${_is_app}"
         else
-            printf 'software-probe: dry-run sample=%s config=none (kind=%s owns no UCI config)\n' \
-                "${_is_name}" "${_is_kind}"
+            printf 'software-probe: dry-run sample=%s config=none (kind=%s, declared=%s: this sample owns no UCI config this driver may write)\n' \
+                "${_is_name}" "${_is_kind}" "${_is_config_decl:-auto}"
             printf 'software-probe: dry-run sample=%s assert="apk list --installed %s; LuCI 200"\n' \
                 "${_is_name}" "${_is_name}"
         fi
@@ -816,7 +844,7 @@ _install_sample() {
 
     _is_config=none
     _is_sha=-
-    if _has_config "${_is_name}" "${_is_kind}"; then
+    if _has_config "${_is_name}" "${_is_kind}" "${_is_config_decl}"; then
         _config_path=""
         _config_sha=""
         if ! _config_write "${_is_app}" "${_is_name}"; then
@@ -847,15 +875,17 @@ _install_sample() {
 }
 
 # _each_sample <callback>: walk the manifest's samples the caller asked for, one line at a
-# time, in the order the fixture lists them.
+# time, in the order the fixture lists them. The callback gets five arguments - name, kind,
+# url, fallback, config - so the manifest's own answer about the config file reaches every
+# action, not just the install one.
 _each_sample() {
-    while IFS="${TAB}" read -r _es_tag _es_name _es_kind _es_url _es_fetched _es_fallback; do
+    while IFS="${TAB}" read -r _es_tag _es_name _es_kind _es_url _es_fetched _es_fallback _es_config; do
         [ "${_es_tag}" = "sample" ] || continue
         _want "${_es_name}" || continue
         # `< /dev/null` on purpose: the action runs ssh, and ssh reads stdin - which is the
         # here-document below. Without this, the first sample swallowed the rest of the list and
         # a six-sample run reported one (measured on the n5105, 2026-11-17).
-        "$@" "${_es_name}" "${_es_kind}" "${_es_url}" "${_es_fallback}" </dev/null
+        "$@" "${_es_name}" "${_es_kind}" "${_es_url}" "${_es_fallback}" "${_es_config}" </dev/null
     done <<EOF
 $(cat "${_manifest_records}")
 EOF
@@ -897,11 +927,12 @@ _action_install() {
 
     # The product as found, before the first thing this run changes.
     _ai_apps=""
-    _ai_names=$(awk -F"${TAB}" '$1 == "sample" { print $2 "\t" $3 }' "${_manifest_records}")
-    while IFS="${TAB}" read -r _ai_name _ai_kind; do
+    _ai_names=$(awk -F"${TAB}" '$1 == "sample" { print $2 "\t" $3 "\t" $7 }' "${_manifest_records}")
+    while IFS="${TAB}" read -r _ai_name _ai_kind _ai_config; do
         [ -n "${_ai_name}" ] || continue
         _want "${_ai_name}" || continue
-        _has_config "${_ai_name}" "${_ai_kind}" && _ai_apps="${_ai_apps} $(_app_of "${_ai_name}")"
+        _has_config "${_ai_name}" "${_ai_kind}" "${_ai_config}" &&
+            _ai_apps="${_ai_apps} $(_app_of "${_ai_name}")"
     done <<EOF
 ${_ai_names}
 EOF
@@ -919,7 +950,7 @@ _installed_version_before() {
     awk -F"${TAB}" -v n="${2}" '$1 == n { print $2; exit }' "${1}" 2>/dev/null
 }
 
-# _baseline_sample <name> <kind> <url> <fallback>: one sample's baseline.
+# _baseline_sample <name> <kind> <url> <fallback> <config>: one sample's baseline.
 _baseline_sample() {
     _bs_version=$(_installed_version "${1}")
     if [ -z "${_bs_version}" ]; then
@@ -928,7 +959,7 @@ _baseline_sample() {
         return 0
     fi
     printf '%s\t%s\n' "${1}" "${_bs_version}" >>"${_bl_dir}/versions.tsv"
-    if ! _has_config "${1}" "${2}"; then
+    if ! _has_config "${1}" "${2}" "${5:-}"; then
         _record "SW-${1}-base@${TAG}" PASS "${_bl_ev}" "version=${_bs_version} config=none kind=${2}"
         return 0
     fi
@@ -965,11 +996,12 @@ _action_baseline() {
 # _baseline_dry: the plan for --baseline, printed without touching the machine.
 _baseline_dry() {
     printf 'software-probe: dry-run baseline sample=%s tag=%s config=%s version (snapshot pair for --compare)\n' \
-        "${1}" "${TAG}" "$(if _has_config "${1}" "${2}"; then printf '/etc/config/%s' "$(_app_of "${1}")"; else printf none; fi)"
+        "${1}" "${TAG}" "$(if _has_config "${1}" "${2}" "${5:-}"; then printf '/etc/config/%s' "$(_app_of "${1}")"; else printf none; fi)"
     return 0
 }
 
-# _compare_sample <name> <kind> <url> <fallback>: one sample's ac-4 statement after a hop.
+# _compare_sample <name> <kind> <url> <fallback> <config>: one sample's ac-4 statement after
+# a hop.
 _compare_sample() {
     _cs_version=$(_installed_version "${1}")
     _cs_base=$(_installed_version_before "${_cp_dir}/versions.tsv" "${1}")
@@ -983,7 +1015,7 @@ _compare_sample() {
         _record "SW-${1}-pkg@${TAG}" FAIL "${_cp_ev}" \
             "reason=version-changed base=${_cs_base:--} now=${_cs_version}"
     fi
-    _has_config "${1}" "${2}" || return 0
+    _has_config "${1}" "${2}" "${5:-}" || return 0
     _cs_app=$(_app_of "${1}")
     if [ ! -f "${_cp_dir}/${1}.tsv" ]; then
         _record "SW-${1}-config@${TAG}" GAP "${_cp_ev}" \
