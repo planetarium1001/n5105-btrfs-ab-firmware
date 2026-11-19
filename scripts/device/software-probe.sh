@@ -77,24 +77,40 @@ EVIDENCE_DIR=${AB_EVIDENCE_DIR:-}
 # "changes outside task scope" - a driver's working file refusing a commit it has nothing to
 # do with. RESULTS is the row channel full-test.sh already hands over, so its directory is
 # the one that is guaranteed to be the round's own.
-# ${RESULTS%/*} on a bare filename strips nothing and on a path with no slash yields the
-# filename itself, so the directory has to be asked for rather than derived by trimming: a
-# caller that passes --results results.tsv would otherwise get results.tsv/software-state,
-# which mkdir turns into a directory named after the file.
-_results_dir() {
+# The state directory is resolved AFTER the arguments are parsed, and it has to be: this
+# block used to run at load time, when --results had not been read yet, so the directory was
+# always derived from the compiled-in default and every run wrote its state into the caller's
+# working directory. Two earlier attempts at this fix looked correct and changed nothing for
+# exactly that reason.
+#
+# ${RESULTS%/*} is not a way to get a directory either: on a bare filename it strips nothing
+# and returns the filename, which mkdir then turns into a directory named after the file.
+# The directory is asked for instead - a path with a slash yields its parent, a bare filename
+# yields the current directory - and an explicit --state-dir or AB_SWPROBE_STATE wins over
+# both because a caller who names a directory has already answered this question.
+_state_dir_from_results() {
     case "${1:-}" in
         "") printf '' ;;
         */*) printf '%s' "${1%/*}" ;;
         *) printf '.' ;;
     esac
 }
-if [ -n "${AB_SWPROBE_STATE:-}" ]; then
-    STATE_DIR=${AB_SWPROBE_STATE}
-elif _sd=$(_results_dir "${RESULTS}") && [ -n "${_sd}" ]; then
-    STATE_DIR=${_sd}/software-state
-else
+resolve_state_dir() {
+    if [ -n "${STATE_DIR_EXPLICIT}" ]; then
+        return 0
+    fi
+    if [ -n "${AB_SWPROBE_STATE:-}" ]; then
+        STATE_DIR=${AB_SWPROBE_STATE}
+        return 0
+    fi
+    if _sd=$(_state_dir_from_results "${RESULTS}") && [ -n "${_sd}" ]; then
+        STATE_DIR=${_sd}/software-state
+        return 0
+    fi
     STATE_DIR=software-probe-state
-fi
+}
+STATE_DIR_EXPLICIT=""
+STATE_DIR=software-probe-state
 DRY_RUN=${AB_DRY_RUN:-0}
 
 # The one file this driver is allowed to add to the device's source list.
@@ -175,6 +191,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         --state-dir)
             STATE_DIR=${2:?--state-dir needs a directory}
+            STATE_DIR_EXPLICIT=1
             shift 2
             ;;
         --third-party-url)
@@ -225,6 +242,7 @@ if [ "${ACTION}" != "install" ] && [ -n "${WANT_SAMPLES}" ]; then
     exit 2
 fi
 
+resolve_state_dir
 AB_RESULTS=${RESULTS}
 DEVCFG_RESULTS=${RESULTS}
 AB_EVIDENCE_LOG=""
