@@ -13,6 +13,11 @@
 # (`stage=packages-refresh ... rung=w2-ifup ...`), which is where an operator already looks
 # for this machine's network story.
 #
+# This is also the rung that repairs the daemons: when the follow it runs is the one that
+# settles (the first-boot worker gave up on the network before it could reconcile), the
+# reconcile of platform/lib/ab-services.sh runs here, so a `stage=services-reconciled` line
+# in the ring log of a boot like that comes from this hook.
+#
 # No `START`: /etc/hotplug.d/iface is run by netifd, not by rc.common.
 
 ACTION="${ACTION:-}"

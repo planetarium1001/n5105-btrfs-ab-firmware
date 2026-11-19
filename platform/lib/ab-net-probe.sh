@@ -88,6 +88,17 @@ AB_CMD="${AB_CMD:-/proc/cmdline}"
 AB_BOOT_ID_FILE="${AB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 AB_NET_RING_LOG_MAX="${AB_NET_RING_LOG_MAX:-32768}"
 
+# The service reconcile a settled follow owes the boot (platform/lib/ab-services.sh). It is a
+# separate file because this library does not own that repair - it only decides when to call
+# it - and ab-boot sources the same file for its own worker.
+AB_SERVICES_LIB="${AB_SERVICES_LIB:-/lib/ab-services.sh}"
+
+# The verdict of the last rung this shell took (`followed`, `skipped`, `pending`, ...), empty
+# before any rung ran. ab_net_attempt clears it and ab_net_follow_call writes it, and the
+# `ifup` rung reads it: only a rung that really followed has closed the window in which procd
+# starts the boot scripts, so only that rung may reconcile the services procd lost.
+AB_NET_FOLLOW_RESULT=""
+
 # --------------------------------------------------------------------------- #
 # Plumbing
 # --------------------------------------------------------------------------- #
@@ -541,6 +552,10 @@ ab_net_follow_call() {
         _call_reason=nothing-due
         _call_version=${_call_version:-unknown}
     fi
+    # The verdict of this rung, published for the carrier that has to act on it. It is the same
+    # token the ring log line below carries, so a carrier and an operator reading that log can
+    # never disagree about what this rung did.
+    AB_NET_FOLLOW_RESULT=${_call_state:-unknown}
     _call_dropped="${AB_PACKAGES_FOLLOW_DROPPED_COUNT:-${AB_PACKAGES_REFRESH_DROPPED_COUNT:-0}}"
     case "${_call_dropped}" in
         '' | *[!0-9]*) _call_dropped=0 ;;
@@ -574,9 +589,15 @@ ab_net_follow_call() {
 #   1  no usable network: nothing was run, the record says reason=network
 #   2  another worker is running the transaction
 #   3  nothing to run or nowhere to run it: the record keeps its pending state
+#
+# Whatever the answer, AB_NET_FOLLOW_RESULT ends up naming the verdict of this rung (empty when
+# the rung never got as far as running the entry), which is what a carrier decides on.
 ab_net_attempt() {
     _att_slot=$1
     _att_rung=$2
+    # Cleared first: a rung that returns before it runs the entry must not leave the verdict of
+    # an earlier rung of this shell behind for a carrier to act on.
+    AB_NET_FOLLOW_RESULT=""
     ab_net_follow_due "${_att_slot}" || return 0
     ab_net_lock_take
     case $? in
@@ -615,6 +636,7 @@ ab_net_attempt() {
             # The network is the reason, and the record has to say so: `follow=pending` with
             # no reason is a machine that looks like it was never asked.
             ab_net_follow_publish_network
+            AB_NET_FOLLOW_RESULT=pending
             ab_net_ring_log "stage=packages-refresh slot=${_att_slot} rung=${_att_rung} probe=${_att_probe} result=pending reason=network"
             ab_net_say "ab-boot: no usable package feed (${_att_probe}), the follow stays pending"
             ab_net_lock_drop
@@ -622,6 +644,7 @@ ab_net_attempt() {
             ;;
     esac
     if ! ab_net_follow_entry_load || ! _att_entry="$(ab_net_follow_entry_name)"; then
+        AB_NET_FOLLOW_RESULT=deferred
         ab_net_ring_log "stage=packages-refresh slot=${_att_slot} rung=${_att_rung} probe=${_att_probe} result=deferred reason=entry-missing lib=${AB_PACKAGES_LIB}"
         ab_net_say "ab-boot: ${AB_PACKAGES_LIB} exposes no follow entry, the record keeps follow pending"
         ab_net_lock_drop
@@ -705,11 +728,57 @@ ab_net_follow_boot() {
 # something changed, so it does not wait its turn behind a 30-minute sleep: it asks once,
 # under the same lock, and a running worker makes it a no-op instead of a second
 # transaction.
+#
+# This rung also reconciles the services procd lost, when the follow it just ran is the one
+# that closed the window - see ab_net_follow_reconcile below.
 ab_net_follow_ifup() {
     if [ -z "${1:-}" ]; then
         ab_net_ring_log "stage=packages-refresh result=skipped reason=slot-unknown"
         return 0
     fi
     ab_net_attempt "$1" w2-ifup
+    _ifup_rc=$?
+    ab_net_follow_reconcile "$1" "${_ifup_rc}"
+    # The hook's own answer stays the same: an `ifup` is never failed, delayed or judged by
+    # what the packages or the services did.
+    return 0
+}
+
+# ab_net_follow_reconcile <slot> <attempt-status>: the repair a settled follow owes the boot.
+#
+# Why this rung has to do it at all: ab-boot hands the first boot's follow to a detached
+# worker, and that worker reconciles after its own follow. On the machine this was written
+# for, the first boot had no usable feed - the follow answered `result=pending reason=network`
+# - so the worker had nothing to close and the follow was left to the `ifup` that arrived ten
+# minutes later. That `ifup` followed (`result=followed`), and the boot carries no
+# `stage=services-reconciled` line at all: procd had given up on dockerd while apk was
+# replacing the package set, and the one repair written for that window was reachable from the
+# worker only. So the rung that actually closes the window repairs it.
+#
+# Only a rung that really followed: `pending` and `failed` leave the window open, and
+# restarting daemons then would race the transaction that is still moving packages; a rung
+# that found nothing due never opened a window. The repair itself decides whether it is still
+# wanted (it is once per boot, and ab-services.sh says so), so this function adds no second
+# rule - and it never fails: the follow is a package question, the repair a service one.
+ab_net_follow_reconcile() {
+    _fr_slot=${1:-?}
+    _fr_rc=${2:-1}
+    [ "${_fr_rc}" = "0" ] || return 0
+    [ "${AB_NET_FOLLOW_RESULT:-}" = "followed" ] || return 0
+    # Sourced here rather than at the top of this file: the ladder's other rungs, the probe and
+    # a test of either never need the service layer, and ab-boot's worker already has it.
+    if ! command -v services_reconcile >/dev/null 2>&1 && [ -f "${AB_SERVICES_LIB}" ]; then
+        # shellcheck source=platform/lib/ab-services.sh disable=SC1090
+        . "${AB_SERVICES_LIB}"
+    fi
+    if ! command -v services_reconcile >/dev/null 2>&1; then
+        # Without the library there is nothing to call, and a hook that stayed silent here
+        # would look exactly like a repair that found nothing to do.
+        ab_net_ring_log "stage=services-reconciled slot=${_fr_slot} result=skipped reason=services-lib-missing lib=${AB_SERVICES_LIB}"
+        return 0
+    fi
+    # The status is the caller's to name: this rung's follow has settled, which is what the
+    # one guard services_reconcile takes from its caller is about.
+    services_reconcile "${_fr_slot}" 0
     return 0
 }

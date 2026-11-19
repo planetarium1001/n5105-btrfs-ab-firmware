@@ -43,9 +43,19 @@ cd "$root" || exit 1
 
 ab_boot="$root/platform/etc/init.d/ab-boot"
 console_lib="$root/platform/lib/ab-console.sh"
+# The reconcile itself is platform/lib/ab-services.sh: an `ifup` has to reach the same repair,
+# so the code moved out of the init script and the hook only sources it. The path is spelled
+# out here for the same reason console_lib is - a hook that is sourced, not executed, cannot
+# find its own siblings through $0.
+services_lib="$root/platform/lib/ab-services.sh"
 if [ ! -f "$ab_boot" ]; then
   printf 'not ok 1 - the boot hook exists\n' >&2
   printf '    missing %s\n' "$ab_boot" >&2
+  exit 1
+fi
+if [ ! -f "$services_lib" ]; then
+  printf 'not ok 1 - the service reconcile library exists\n' >&2
+  printf '    missing %s\n' "$services_lib" >&2
   exit 1
 fi
 
@@ -147,8 +157,9 @@ reconcile() {
     AB_BOOT_RC_DIR="$rc_dir" AB_BOOT_INITD_DIR="$initd_dir" \
     AB_BOOT_UPTIME_FILE="$uptime_file" \
     AB_BOOT_PROCD_STATE_CMD="${PROCD_STATE_CMD-$bin/procd-state}" \
-    AB_BOOT_SLEEP_CMD="$bin/nosleep" AB_BOOT_SETTLE_S="${SETTLE_S:-0}" \
+    AB_BOOT_SLEEP_CMD="${SLEEP_CMD:-$bin/nosleep}" AB_BOOT_SETTLE_S="${SETTLE_S:-0}" \
     AB_BOOT_SETTLE_WAIT_S="${SETTLE_WAIT_S:-0}" \
+    AB_SERVICES_LIB="$services_lib" \
     sh -c ". '$ab_boot'; services_reconcile '$1' '$2'" 2>&1
 }
 
@@ -284,6 +295,32 @@ reconcile b 0
 assert_contains "$(ring)" "result=ok started=0 failed=none down=none" \
   "ac-3 a settled boot procd lost nothing on reconciles to a measured zero"
 
+# --- ac-3 one repair per boot, even when the second carrier is already waiting -----
+# The settle wait can be minutes long and the window has two carriers: an `ifup` can be
+# waiting for the same boot to settle while the boot worker is. A sleeper that finishes the
+# *other* carrier's repair and moves the clock forward turns that race into a fact, and the
+# answer must be taken again right before the starts.
+reset_services
+install_service dockerd yes
+procd_state dockerd false 1
+cat >"$bin/settle-elsewhere" <<STUB
+#!/bin/sh
+printf 'stage=services-reconciled slot=b result=ok started=1 failed=none down=dockerd\n' \
+  >>"$esp/ab/log/boot-0.log"
+printf '300.00 900.00\n' >"$uptime_file"
+exit 0
+STUB
+chmod +x "$bin/settle-elsewhere"
+printf '10.00 20.00\n' >"$uptime_file"
+SETTLE_S=120 SETTLE_WAIT_S=60 SLEEP_CMD="$bin/settle-elsewhere" reconcile b 0
+assert_contains "$(ring)" "result=skipped reason=already-reconciled" \
+  "ac-3 a repair that another carrier finished during the settle wait is not run again"
+assert_eq "$(grep -c 'result=ok started=1' "$esp/ab/log/boot-0.log")" "1" \
+  "ac-3 ... the boot keeps one repair line for the one repair"
+assert_eq "$(grep -c '^start ' "$trace")" "0" \
+  "ac-3 ... and nothing is started a second time"
+printf '300.00 900.00\n' >"$uptime_file"
+
 # --- ac-3: the reconcile is detached, so no boot waits for it -------------
 # The call site is the detached worker of packages_follow_schedule. The follow library is a
 # stub that records its own call and then returns at once, so this asserts the wiring: the
@@ -308,6 +345,7 @@ AB_ESP="$esp" AB_CONSOLE_LIB="$console_lib" AB_CONSOLE_DEV="$console_file" \
   AB_BOOT_RC_DIR="$rc_dir" AB_BOOT_INITD_DIR="$initd_dir" \
   AB_BOOT_UPTIME_FILE="$uptime_file" AB_BOOT_PROCD_STATE_CMD="$bin/procd-state" \
   AB_BOOT_SLEEP_CMD="$bin/nosleep" AB_BOOT_SETTLE_S=0 AB_BOOT_SETTLE_WAIT_S=0 \
+  AB_SERVICES_LIB="$services_lib" \
   AB_PACKAGES_FOLLOW_LOG="$tmp/follow-child.log" \
   sh -c ". '$ab_boot'; packages_follow_schedule b" 2>&1
 assert_eq "$?" "0" "ac-3 scheduling the follow returns at once"

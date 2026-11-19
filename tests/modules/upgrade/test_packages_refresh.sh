@@ -605,6 +605,17 @@ refresh_marker="$tmp/refresh.marker"
 route="$tmp/route"
 printf 'Iface\tDestination\tGateway\tFlags\neth0\t00000000\t0102A8C0\t0003\n' >"$route"
 
+# The service reconcile the worker makes after its follow is not this unit's subject
+# (tests/modules/boot drives it), and the real one would wait for the boot to settle and then
+# ask procd, which this host cannot answer. The stub also keeps the detached child from writing
+# a second ring log line after the next case has seeded the log.
+services_stub="$tmp/services-stub.sh"
+cat >"$services_stub" <<'LIB'
+services_reconcile() {
+  return 0
+}
+LIB
+
 run_boot() {
   mkdir -p "$esp/ab/log"
   : >"$esp/ab/log/boot-0.log"
@@ -614,6 +625,7 @@ run_boot() {
     AB_PACKAGES_LIB="$stublib" AB_PACKAGES_TARGET="$target" \
     AB_PACKAGES_REFRESH_WAIT=0 AB_NET_ROUTE_FILE="$route" \
     AB_PACKAGES_REFRESH_LOG="$tmp/refresh-child.log" \
+    AB_SERVICES_LIB="$services_stub" \
     STUB_REFRESH_LOG="$refresh_marker" \
     sh -c ". '$ab_boot'; start" >"$tmp/boot.out" 2>&1
 }

@@ -147,6 +147,22 @@ ab_packages_follow_if_ready() {
 }
 LIB
 
+# --- the service reconcile the settled follow owes --------------------------
+# platform/lib/ab-services.sh owns that repair and tests/modules/boot drives it. Here it is
+# replaced by a stub that records the call, for two reasons: this unit is about when the
+# follow runs, and the real reconcile waits for the boot to settle and then asks procd -
+# neither of which a host without procd can answer, so a real one would only add a ring log
+# line at an unpredictable moment.
+services_log="$tmp/services.log"
+services_stub="$tmp/services.sh"
+: >"$services_log"
+cat >"$services_stub" <<'LIB'
+services_reconcile() {
+	printf 'reconcile %s %s\n' "${1:-?}" "${2:-?}" >>"${SERVICES_LOG:?}"
+	return 0
+}
+LIB
+
 # --- response bodies --------------------------------------------------------
 # Measured: a real apk v3 index starts with `ADBd`; an authentication page is HTML; a
 # blackholed or refused connection writes nothing at all.
@@ -289,6 +305,7 @@ run_worker() { # <boot|ifup> <slot> [fixture]
     AB_CMD="$tmp/cmdline" AB_NET_NOW_CMD="$tmp/now" AB_NET_SLEEP_CMD="$tmp/nosleep" \
     AB_NET_FOLLOW_W3_INTERVAL="$worker_w3_interval" AB_NET_FOLLOW_W3_DEADLINE="$worker_w3_deadline" \
     ENTRY_LOG="$entrylog" ENTRY_GATE="$worker_gate" AB_NET_SAY=0 \
+    AB_SERVICES_LIB="$services_stub" SERVICES_LOG="$services_log" \
     sh "$tmp/worker.sh" "$1" "$2" 2>&1
 }
 
@@ -452,6 +469,7 @@ ifup_run() { # <fixture> [cmdline]
     AB_NET_FOLLOW_LOCK="$tmp/lock/follow.lock" AB_BOOT_ID_FILE="$tmp/bootid" \
     AB_NET_NOW_CMD="$tmp/now" AB_NET_SLEEP_CMD="$tmp/nosleep" ENTRY_LOG="$entrylog" \
     ENTRY_GATE="$worker_gate" AB_NET_PROBE_INPUT="$1" AB_PACKAGES_IFUP_LOG="$tmp/ifup.log" \
+    AB_SERVICES_LIB="$services_stub" SERVICES_LOG="$services_log" \
     ACTION=ifup sh "$hook"
 }
 wait_for() { # <file> <deciseconds>
@@ -478,6 +496,7 @@ wait_for_line() {
 
 reset_ring
 : >"$entrylog"
+: >"$services_log"
 pending_record
 ifup_run "$fx/ok"
 assert_eq "$?" "0" "ac-8 the ifup hook succeeds"
@@ -485,6 +504,23 @@ wait_for_line "rung=w2-ifup" 100
 assert_eq "$(cat "$entrylog")" "$target" \
   "ac-8 an ifup runs one follow against the system root"
 assert_contains "$(ring)" "rung=w2-ifup" "ac-8 the rung is named W2 in the ring log"
+# The rung that closes the follow window is the rung that repairs what the window cost: the
+# first-boot worker gave up on the network and left the follow pending, so no other carrier
+# would ever reconcile the daemons procd lost. `reconcile <slot> <follow-status>` is the call.
+wait_for "$services_log" 100
+assert_eq "$(cat "$services_log")" "reconcile b 0" \
+  "ac-8 a follow that settles on an ifup is handed to the service reconcile"
+
+# A rung that followed nothing leaves the window open, so it reconciles nothing: restarting
+# daemons while apk is still moving packages is the race that repair exists to avoid.
+: >"$entrylog"
+: >"$services_log"
+reset_ring
+pending_record
+ifup_run "$fx/offline"
+wait_for_line "result=pending reason=network" 100
+assert_eq "$(cat "$services_log")" "" \
+  "ac-8 an ifup that finds no feed reconciles nothing"
 
 # Only `ifup` is a reason. ifdown is the opposite fact and ifupdate says nothing new about
 # reachability; either would multiply transactions for no information.
@@ -493,9 +529,11 @@ reset_ring
 pending_record
 ACTION=ifdown AB_ESP="$esp" AB_PACKAGES_FILE="$record_file" AB_NET_PROBE_LIB="$lib" \
   AB_PACKAGES_LIB="$stub" AB_PACKAGES_TARGET="$target" ENTRY_LOG="$entrylog" \
+  AB_SERVICES_LIB="$services_stub" SERVICES_LOG="$services_log" \
   AB_NET_PROBE_INPUT="$fx/ok" sh "$hook"
 sleep 0.3
 assert_eq "$(cat "$entrylog")" "" "ac-8 ifdown is not a reason to run a transaction"
+assert_eq "$(cat "$services_log")" "" "ac-8 ... and not a reason to reconcile a service"
 
 # A record with nothing outstanding is the same answer: no probe, no transaction.
 : >"$entrylog"
@@ -626,6 +664,7 @@ run_start() {
     AB_NET_PROBE_INPUT="${boot_probe:-$fx/portal}" \
     AB_NET_FOLLOW_W1="${W1:-0}" AB_NET_FOLLOW_W3_DEADLINE="${W3_DEADLINE:-0}" \
     AB_PACKAGES_FOLLOW_LOG="$tmp/follow-child.log" ENTRY_LOG="$entrylog" \
+    AB_SERVICES_LIB="$services_stub" SERVICES_LOG="$services_log" \
     sh -c ". '$ab_boot'; start" >"$tmp/boot.out" 2>&1
 }
 wait_for_log() { # <needle> <deciseconds>
