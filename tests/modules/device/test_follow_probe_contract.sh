@@ -228,8 +228,15 @@ assert_eq "$(ready_of docker proc)" "dockerd" \
   "ac-2 the readiness contract names the process the criterion waits for"
 assert_eq "$(ready_of docker init)" "/etc/init.d/dockerd" \
   "ac-2 the readiness contract names the init script that starts it"
-assert_eq "$(ready_of docker settle)" "stage=services-reconciled" \
+# The marker is an extended regex, and it has to discriminate: a boot that reconciles writes
+# result=ok or result=partial, while a boot that could not reconcile writes result=skipped in
+# the same line shape. Matching the line without its result would treat "I repaired nothing"
+# as "the repair is done", which is what made a follow still waiting for a network look like a
+# dead daemon.
+assert_contains "$(ready_of docker settle)" "stage=services-reconciled" \
   "ac-2 the readiness contract names the boot line that says the daemon was given its start"
+assert_contains "$(ready_of docker settle)" "result=(ok|partial)" \
+  "ac-2 and it counts only a reconcile that ran, not the skip a pending follow leaves behind"
 assert_eq "$(ready_of docker timeout)" "180" \
   "ac-2 the wait is bounded by a timeout the manifest fixes, not by the driver"
 assert_eq "$(ready_of docker interval)" "5" \

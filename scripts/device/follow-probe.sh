@@ -552,7 +552,13 @@ _bin() {
 # by the wait's timeout, which the row then reports.
 _ready_settled() {
     [ -n "$1" ] || return 0
-    grep -qF "$1" "$BOOT_LOG" 2>/dev/null
+    # The marker is an extended regex, not a literal: a boot that reconciles writes
+    # `result=ok` (or `result=partial` when a service refused), and a boot that could not
+    # reconcile writes `result=skipped reason=follow-unsettled` in the very same line shape.
+    # Counting the skip as "settled" is what turned a follow still waiting for a network into
+    # "the daemon is dead": the window it was waiting out had not closed, and the reconcile it
+    # was waiting for had explicitly not run.
+    grep -qE "$1" "$BOOT_LOG" 2>/dev/null
 }
 # _ready_wait <fn> <expect> <proc> <init> <settle> <timeout> <interval>: ask a sample's
 # criterion until it answers, or until the machine says it never will.
