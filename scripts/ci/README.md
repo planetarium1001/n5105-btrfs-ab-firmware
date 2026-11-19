@@ -239,7 +239,7 @@ packages and sixteen real modules are visible at a glance.
 ## S2: the four-partition image
 
 `disk.sh` builds a 514 MiB GPT image (1 MiB alignment, four 128 MiB partitions, 1 MiB
-tail for the backup table) with the geometry frozen in `docs/partitions.md`:
+tail for the backup table) with the geometry frozen in `docs/architecture.md`:
 
 | Partition | PARTNAME | LABEL | Sectors | Filesystem |
 |---|---|---|---|---|
@@ -272,7 +272,7 @@ partition is found by probing for a FAT signature rather than by trusting the GU
 
 `initramfs/boot/init` replaces the S1 probe as the image's `initrd-a`/`initrd-b`. It
 reads `ab/state.json` from the ESP, then composes the running root in the order
-`docs/boot-overlay.md` requires:
+`docs/architecture.md` requires:
 
 | Step | Command (abridged) | Why this order |
 |---|---|---|
@@ -431,7 +431,7 @@ nothing.
 ### GRUB
 
 `disk.sh` renders `scripts/ci/grub.cfg.in` into the ESP and refuses to build unless
-all five rules from `docs/boot-overlay.md` hold. `grub-render.sh --check FILE` runs
+all five rules from `docs/architecture.md` hold. `grub-render.sh --check FILE` runs
 the rules alone, which is what `tests/modules/ab/test_grub.sh` uses to prove each rule
 rejects its own mutant. Rule 4 checks the code lines only: the template's header
 comments mention `&&`, `||` and `${x:-y}` on purpose.

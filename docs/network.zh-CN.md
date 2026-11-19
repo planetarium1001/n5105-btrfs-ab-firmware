@@ -79,7 +79,7 @@ stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.
 指引 —— 默认镜像永远没有这几行。它们的有没有，本身就是"这台机器跑的是哪份镜像"的证据。
 
 地址没出现时先读这一行；日志格式与读取它的 `wan-present` 探针见
-[lifecycle.zh-CN.md](lifecycle.zh-CN.md)。
+[architecture.zh-CN.md](architecture.zh-CN.md)。
 
 ## 改 LAN 网段
 

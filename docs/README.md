@@ -2,39 +2,49 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Each document covers one topic. Every number is either measured or has an explicit rationale.
+Ten pages, each the single source for one subject. Every number in them is measured or has an
+explicit rationale, and every threshold, log field and contract is asserted by
+`python3 scripts/check_design.py all`.
+
+Start with [quickstart.md](quickstart.md) if you want to use the firmware. Read
+[architecture.md](architecture.md) and [ci.md](ci.md) if you are changing it.
+
+## Using it
 
 | Document | Contents |
 |---|---|
-| [ci-pipeline.md](ci-pipeline.md) | Every workflow file and when to run it, the five stages (what each proves and what a failure costs), the artifact map, how to read a run page, and how to reproduce a stage locally |
-| [ci-release-lines.md](ci-release-lines.md) | The two release lines (`v*` and bare upstream versions), what a tag has to prove, the daily upstream watch, and one worked release |
-| [ci-text-contract.md](ci-text-contract.md) | Seven rules for everything the CI says to a human: workflow, job and step labels, input descriptions, the summaries, the issue and pull request bodies, the release title - and the structure fingerprint that keeps a text change from touching what runs |
-| [device-matrix.md](device-matrix.md) | Driving a real machine through the version matrix over SSH: what each assertion proves, the resume file, the result states, and the red line that keeps a bootable slot |
-| [partitions.md](partitions.md) | Partition geometry, GPT PARTNAME and filesystem LABEL naming, sizing rationale, `mkfs` and mount options, subvolumes, first-boot growth |
-| [boot-overlay.md](boot-overlay.md) | Boot sequence, layer responsibilities, mount composition and order, platform-layer injection, GRUB assertions, degraded boot |
-| [lifecycle.md](lifecycle.md) | Generation model, state file, update transaction, health checks, reclamation, logging, commands |
-| [conflicts-payload.md](conflicts-payload.md) | Three-way comparison, disposition, uci boundary, payload contract, the bootloader member, validation, build inputs |
-| [install.md](install.md) | Writing an image, first boot, the console, upgrading a running machine (`ab-upgrade` flags and exit codes, rescuing a torn bootloader), reading `ab-slot status`, troubleshooting |
-| [update.md](update.md) | Updating a machine from a release feed: the configuration file, the three version numbers (`base`, `kernel`, `platform`), `ab-upgrade --feed-check` and `--feed`, the five risk levels and the confirmation each one asks for, `UPDATE_PIN`, every `reason=` token, and how a publisher builds a feed of its own |
-| [network.md](network.md) | First-boot network generation, the shipped defaults (WAN port, bridge ports, LAN subnet), how to change them, and the WAN SSH exception |
-| [debug-ssh.md](debug-ssh.md) | Manual interactive debugging entry point: trigger, connection, prepared artifacts, session bounds, security, why it is not a gate |
-| [backup.md](backup.md) | The three products and the capacity each one can be restored to, why a whole-disk image fails on a smaller disk, the restore decision tree (paths A-D), and what `ab-backup` / `ab-restore` put in a package |
-| [known-limitations.md](known-limitations.md) | Behaviour this project decided not to change, and the evidence behind that decision: interactive SSH login on dropbear 2025.89 (what the three pty errors mean, when it happens, the three ways out), and the form every interactive probe has to use |
+| [quickstart.md](quickstart.md) | the shortest path: write an image, boot it, install one package, upgrade once, roll back once - five steps with the command and the output each one has to produce |
+| [install.md](install.md) | writing an image, the first boot at the console, the network defaults, the acceptance checklist, updating a running system, rescuing a torn bootloader |
+| [update.md](update.md) | updating from a release feed: the configuration file, the three version numbers, the risk levels, every `reason=` token, the status field reference, package follow and rollback |
+| [backup.md](backup.md) | the three products and the media each one restores to, why a whole-disk image fails on a smaller disk, and the restore decision tree |
+| [network.md](network.md) | the first-boot network generation, the shipped defaults, how to change them, and the WAN SSH exception |
+| [troubleshooting.md](troubleshooting.md) | what to read first, what each symptom means, and the behaviour this project decided not to change |
+
+## Changing it
+
+| Document | Contents |
+|---|---|
+| [architecture.md](architecture.md) | partition geometry, filesystems and subvolumes, the boot chain, first-boot growth of p4, the slot state machine, the update transaction, health checks, reclamation, logging, conflict detection and the payload contract |
+| [ci.md](ci.md) | every workflow file and when to run it, the five stages, the cross-version stage and upgrade gates, artifacts, local reproduction, the two release lines, the daily upstream watch, interactive debugging, and the CI text contract |
+| [device-matrix.md](device-matrix.md) | driving a real machine through the version matrix over SSH: what each assertion proves, the resume file, the result states, and the red line that keeps a bootable slot |
 
 ## Conventions
 
-- Thresholds and log fields are contracts. Changing one requires updating `scripts/check_design.py`.
-- Documents describe constraints and criteria, not implementation details.
-- Links are relative and must resolve. `python3 scripts/check_design.py links` verifies this.
-- English is the primary language; a `*.zh-CN.md` translation sits next to every document.
+- Thresholds, log fields and payload members are contracts. Changing one means changing
+  `scripts/check_design.py` and the test that asserts it, in the same commit.
+- Links are relative and must resolve; `python3 scripts/check_design.py links` verifies this.
+- English is the primary language, and every page has a `*.zh-CN.md` translation beside it with
+  the same section structure.
+- Commands are copy-pasteable; placeholders are written as `<angle-brackets>`.
 
 ## Checks
 
-```
+```sh
 python3 scripts/check_design.py all
+./tests/run.sh --module docs
 ```
 
-Individual checks: `partitions`, `esp-data-only`, `overlay-layers`, `generation-model`,
+Individual design checks: `partitions`, `esp-data-only`, `overlay-layers`, `generation-model`,
 `gc-policy`, `log-ring`, `conflict-model`, `payload-contract`, `links`, `text`,
 `retired-names`, `debug-ssh`, `workflow-expressions`.
 

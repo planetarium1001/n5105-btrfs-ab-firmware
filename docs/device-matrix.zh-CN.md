@@ -1,155 +1,152 @@
-# 真机矩阵执行
+# 真机矩阵
+
+**中文** | [English](device-matrix.md)
 
 `scripts/device/` 通过 SSH 驱动一台真机，把一次升级、降级或重启变成一行 PASS/FAIL/GAP。
-它存在的原因是：一个槽「能启动」不等于「没坏」——只有状态字段、breadcrumb 与存活的数据
-标记三者同时成立，才能回答「这次跳变之后机器还能用」。
+它存在的原因是一个槽位可以启动却仍然是坏的：只有状态字段、面包屑与存活的数据标记三者合起来，
+才能回答"这次跳变是否留下了一台可启动的机器"。
 
-## 矩阵只能用哪条线的版本
+前置条件：一台能以 `root` 通过 SSH 到达的机器、手边的 SSH 密钥，以及一个存放待跳变 payload
+的目录。
 
-一句话：25.x / apk 线。低于 25 的版本以及任何 opkg 时代的树都会被拒绝，因为两个时代不共用包管理器、
-防火墙模型和内核模块布局——`scripts/ci/upstream-watch.sh` 早就拒绝把 pin 定在 major 25 以下，
-矩阵受同一条规则约束。`matrix.sh` 会读 payload 的 `platform-release`，对不合规的 payload 打一行明确
-说明后拒绝，而不是让它跑起来、然后在某个看起来像产品 bug 的地方失败。24.x / opkg 线不在本项目范围内：
-这里既不测试也不支持。
+## 矩阵可以使用的版本
 
-## 用途
+只有一条线：25.x / apk 线。早于 25 的版本会被拒绝，任何来自 opkg 时代的树同样被拒绝，因为
+两个时代不共享包管理器、防火墙模型或内核模块布局。`scripts/ci/upstream-watch.sh` 已经拒绝
+钉住主版本低于 25 的版本，矩阵受同一条规则约束：`matrix.sh` 检查 payload 的
+`platform-release`，并用一行明确的说明拒绝 `-` payload，而不是让它跑起来再在某个看起来像
+产品缺陷的地方失败。
 
-A/B 模型只能由**真实上游版本**证明，改 manifest 里的版本号证明不了。矩阵因此在 CI
-真实能构建的版本之间跳变（见 [`ci-pipeline.zh-CN.md`](ci-pipeline.zh-CN.md) 的
-「构建非 pin 版本」），并在每次跳变后断言同一组不变量：
+## 每次跳变后断言什么
 
-- `boot=ok` **且** `esp=ok` —— ESP 读不干净的启动不算通过；
-- `generation` 严格递增、`pending=none`；
-- 两个槽的 upper 都存在，且没有被引用的 `@overlay-*` 残留；
+A/B 模型只能由真实上游版本证明，而不是靠改写 manifest 里的版本字符串。矩阵在流水线真正能构建
+的版本之间跳变，并在每次跳变后断言同一组不变量：
+
+- `boot=ok` **且** `esp=ok`——一次读不到 ESP 的启动不算通过；
+- `generation` 严格增长，`pending=none`；
+- 两个槽位的 upper 都存在，且没有任何 `@overlay-*` 在被引用之外存活；
 - 共享分区上的用户标记与 `/etc/config` 里的配置标记仍在；
-- 启动日志里有 `stage=healthcheck-done result=ok` 与 commit 行。
+- 启动日志带 `stage=healthcheck-done result=ok` 与提交行。
 
-最后一项最容易读错：本次启动的 mark 在轮转后位于 `boot-1.log`，所以驱动先看
-`boot-0.log`，再看 `boot-1.log`，最后看 `ab-slot log --prev`，并记录是哪一份文件命中的。
+最后一条最容易读错：当前这次启动的标记在轮转后位于 `boot-1.log`，所以驱动依次查
+`boot-0.log`、`boot-1.log`、`ab-slot log --prev`，并记录是哪个文件给出了答案。
 
-## 怎么跑
+## 运行
 
 ```sh
-scripts/device/matrix.sh --dry-run                    # 只打印计划，不动设备
+scripts/device/matrix.sh --dry-run                      # 打印计划，不碰任何东西
 scripts/device/matrix.sh --case M3 --payload-dir <dir>
-scripts/device/matrix.sh --payload-dir <dir> --resume  # 跳过已 PASS 的用例
+scripts/device/matrix.sh --payload-dir <dir> --resume    # 跳过已经通过的用例
 
-scripts/device/full-test.sh --dry-run --task <id> --expect 0.0.12   # 全套，只出计划
-scripts/device/full-test.sh --yes --task <id> --expect 0.0.12 --payload-dir <dir>
+scripts/device/full-test.sh --dry-run --expect <version>              # 整套，先看计划
+scripts/device/full-test.sh --yes --expect <version> --payload-dir <dir>
 ```
 
-`--payload-dir` 里放 `payload-<version>.tar`。结果按
-`case<TAB>verdict<TAB>evidence<TAB>note` 追加到 `--results`，一条用例一行；中断后的续跑
-靠读这个文件，不靠记忆。
+`--payload-dir` 里放名为 `payload-<version>.tar` 的 payload。结果追加写入 `--results`，格式
+为 `case<TAB>verdict<TAB>evidence<TAB>note`，每个用例一行，因此中断的运行靠读文件续跑，而
+不是靠记忆。
 
-环境取自 `AB_HOST`（默认 `root@192.168.2.49`）与 `AB_KEY`。ssh 固定带
-`ControlMaster=no`、`ControlPath=none` 与忽略 `known_hosts`：重刷过的机器会换主机密钥，
-而跑驱动的沙箱没有可写的 `~/.ssh`。
+环境取自 `AB_HOST` 与 `AB_KEY`。SSH 调用总是带 `ControlMaster=no`、`ControlPath=none` 与
+被忽略的 `known_hosts`：重刷过的机器会呈现新的主机密钥，而运行驱动的沙箱没有可写的
+`~/.ssh`。
 
-交互登录与上面这些非交互调用是两个问题，它有自己的驱动：`scripts/device/login-probe.sh` 在整个会话期间保持客户端 stdin 打开——因为把 `/dev/null` 重定向进 `ssh -tt` 的探针在这个镜像上会报假失败（dropbear 2025.89，见 [known-limitations.zh-CN.md](known-limitations.zh-CN.md)）。
+交互式登录与这些非交互调用是两个问题，它有自己的驱动：`scripts/device/login-probe.sh` 在
+整个会话期间保持客户端 stdin 打开，因为把 `/dev/null` 重定向进 `ssh -tt` 的探针在这个镜像
+上会报假失败（dropbear 2025.89，见 [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)）。
 
 ## 用户场景
 
-`scenarios.sh` 回答的是另一个问题：用户装过软件、写过数据、改过设置之后，跨版本跳变还能不能保住这些，
-装过的软件还能不能用。
+`scenarios.sh` 回答另一个问题：用户装过包、写过文件、改过设置——一次版本跳变能不能把这一切
+留住，软件还能不能跑？
 
-| 用例 | 造什么 | 判什么 |
+| 用例 | 构建什么 | 评判什么 |
 |---|---|---|
-| S1 预装 | 从该版本自己的 apk 索引里装 luci 应用、一个 CLI 工具、一个 kmod | 已装版本快照、索引里没有的包，以及「装→跑一次→卸」这一圈之后不留残余文件 |
-| S2 用户态 | `/data` 下的文件与目录树、两个假 docker tar、自定义 `uci` 段、hostname、时区、一条防火墙规则 | 每个文件的 sha256、目录条目数、每项设置的 `uci get`，以及真实 `network reload` 之后 ssh 仍应答 |
-| S3 / S4 跳变 | 低→高、高→低，带着预装软件 | 每跳之后同一组数据/配置/软件/挂载/服务判定，并且落点必须是 `packages=aligned packages_reason=none`——`limited` 会带上对齐器记录的原因，这是判定项而不是报告项 |
-| S5 账本 | 最终内核 | 哪些包仍有效、哪个 kmod 需重装、平台层自报什么 |
-| S6 引导工具 | 不造，只读 | ESP 上 `vmlinuz-<slot>`/`initrd-<slot>` 与 payload 的 `kernel.bin`/`initramfs.cpio.gz` 逐字节一致；平台层工具与 `platform.tar` 一致 |
-| S7 releasefeeds | 每个版本从它自己 release 的 feed 列表装一个包，然后跳变 | 每个版本确实从自己的 feed 装、diff 表点出动了什么，以及「feed 供不上某个包」被记为 feed 问题（GAP）而不是机器坏了 |
-| S8 坏配置 | 故意写四类坏配置：指定不存在设备的 network 段、`fw4` 翻译不出来的防火墙规则、被截断的 `docker` `daemon.json`、返回 404 的 apk feed | 每一类要么被拒绝、要么机器可见降级后**恢复**；写之前该类的备份已落在 `/data`、事后逐字节还原；第二次 `apk update` 仍能区分「feed 关了」和「机器没网」。每类的证人是**坏东西没被采纳**，而不是退出码：`fw4 check` 对非法 section 是警告并跳过、仍然退 0（fail-safe，实测），`procd` 会在坏 `daemon.json` 之后重拉 `dockerd`，所以活着 pid 不能当证人——那里的证人是带重试的 `docker info` |
+| S1 preinstall | 来自该版本自己 apk 索引的 LuCI 应用、一个命令行工具与一个 kmod | 已安装版本的快照、索引没有提供哪些包，以及一个装/跑/卸循环不留残余文件 |
+| S2 user state | `/data` 上的文件与目录树、两个假 docker 包、一个额外 `uci` 段、主机名、时区、一条防火墙规则 | 每个文件按 sha256、目录树按条目数、每个设置按 `uci get`，以及真实 `network reload` 之后 SSH 仍有应答 |
+| S3 / S4 jump | 由低到高与由高到低，预装软件在位 | 每跳之后同样的数据、配置、软件包、挂载与服务检查，且该跳落在 `packages=aligned packages_reason=none` |
+| S5 ledger | 最终内核 | 哪些已装包仍然有效、哪个 kmod 必须重装，以及平台层报告了什么 |
+| S6 boot tools | 什么都不建，只读 | ESP 上的 `vmlinuz-<slot>`/`initrd-<slot>` 与 payload 的 `kernel.bin`/`initramfs.cpio.gz` 逐字节一致，平台层工具与 `platform.tar` 一致 |
+| S7 releasefeeds | 每个版本从它自己的 feed 列表取一个包，然后跳变 | 每个版本都能从自己的 feed 安装、diff 表点名了什么移动了，以及无法提供某个包的 feed 被报告为 feed 问题（GAP）而不是坏机器 |
+| S8 badconfig | 故意四个坏配置：点名不存在设备的网络段、`fw4` 无法翻译的防火墙规则、被截断的 docker `daemon.json`，以及返回 404 的 apk feed | 每一类都被拒绝或可见地降级并且恢复、该类自己的备份在写之前已在 `/data` 上并逐字节还原，且第二次 `apk update` 仍能区分"feed 关闭"与"机器没有网络" |
 
-两条让这些用例可信的规则：
+两条规则让这些用例诚实：
 
-- **不用旧格式判定**：包名取自该版本自己的 apk 索引，配置只在出厂文件上做最小追加——市面上流传的
-  23/24 时代片段描述的是 opkg 与另一套防火墙模型。
-- **机器自己留退路**：S2 在 reload 之前用 `setsid`（镜像没有时用 `start-stop-daemon -b`）排好自还原，
-  以 `/tmp/ab-scen-net.ok` 取消；两者都排不上的机器根本不 reload，被跳过的那半段记 FINDING，
-  而不是记一条"没看就通过"。
+- **不用旧格式做判断。** 包名来自该版本自己的 apk 索引，配置写成对随镜像文件的改动，因为流传
+  的 23/24 时代片段描述的是 opkg 与另一套防火墙模型。
+- **机器留有退路。** S2 在 reload 之前先安排自己的回滚（用 `setsid`，没有它时用
+  `start-stop-daemon -b`），由 `/tmp/ab-scen-net.ok` 确认；两者都安排不了的机器根本不
+  reload，被跳过的那一半记为 FINDING，而不是"没看的通过"。
 
-ABI 只报告不判定：换了内核后 kmod 不匹配在 apk 世界是正常行为，因此记成 `FINDING:` 并附重装清单，
-不单独改变任何 verdict。
+ABI 只报告、不评判：为另一个内核构建的 kmod 在 apk 世界里很正常，因此不匹配记为带重装清单的
+`FINDING:`，从不单独改变结论。
 
-## 社区软件样本（第二轮）
+## 社区软件样本
 
-第一轮证明的是「机器上只有验收套件自己装的五个包」时的 A/B 事务。真实机器不是那样：用户会装 LuCI 主题、
-软件站、代理类应用，还会改这些应用自己的 `/etc/config`。第二轮把这层装上再跳版本，回答一个问题——
-事务是否仍然 commit，样本是否保住自己的配置。
+A/B 事务最初是在一台额外软件只有测试套件自己装的五个包的机器上被证明的。真机不是那台机器：
+人们会装 LuCI 主题、软件商店、代理应用，并编辑这些应用自己的 `/etc/config` 文件。这一轮把
+这层东西放到机器上再跳变，只回答一个问题：事务是否仍然提交，样本是否保住自己的配置？
 
-- `scripts/device/software-probe.sh` 安装 `tests/fixtures/software-samples.json` 里列的样本
-  （`--manifest` 换清单，`--sample` 只跑一个）。每个样本一行：装上就记 PASS 与落到的版本，
-  装不上记 GAP 并给出原因与重跑命令——第三方源挂了、或内核模块 ABI 与本机不符，都算 GAP，永远不算 PASS。
-- `--baseline <tag>` 在跳版本前记录、`--compare <tag>` 在跳版本后比对样本**自己的配置**（取值而不只是文件哈希），
-  用的是其它驱动同一套快照助手。配置漂移会写进证据：它是本轮的发现，不是把已 commit 的一跳判红的理由。
-- `--cleanup` 移除样本、它们的配置与加进去的源，机器回到产品基线。第三方源只写在设备侧
-  `/etc/apk/repositories.d/`，**不**进镜像、不进 payload、也不改 `scripts/ci/net-defaults.conf.in`。
-- `scripts/device/badconfig-probe.sh` 写一份「人真的能写出来」的坏配置（坏的 `daemon.json`、坏的 UCI 段、
-  fw4 只警告的防火墙规则、假订阅地址），并且分开判两件事：谁拒绝了它／谁恢复了它，以及有没有别的东西被连累。
+- `scripts/device/software-probe.sh` 安装 `tests/fixtures/software-samples.json` 里列出的
+  样本（`--manifest` 覆盖清单，`--sample` 缩小范围）。每个样本行是带落定版本的 PASS，或带
+  原因与重试命令的 GAP：挂掉的第三方源、ABI 与本内核不匹配的内核模块，都是 GAP 而绝非通过。
+- `--baseline <tag>` 在跳变前、`--compare <tag>` 在跳变后，用与其他驱动相同的快照助手记录并
+  比较样本自己的配置（比较取值，而不只是文件哈希）。
+- `--cleanup` 移除样本、它们的配置以及它添加的源，让机器回到产品基线。第三方源只写进设备的
+  `/etc/apk/repositories.d/`，绝不写进镜像、payload 或 `scripts/ci/net-defaults.conf.in`。
+- `scripts/device/badconfig-probe.sh` 写入人能造出的同类坏配置（坏的 `daemon.json`、坏的
+  UCI 段、fw4 会告警的防火墙规则、假的订阅 URL），并分别评判两件事：谁拒绝或还原了它，以及
+  还有没有别的东西跟着反应。
 
-两条限制先说清，不等跑完才发现：样本清单**只用 25.x**，24.x 是 opkg，结论不可迁移；样本是测试夹具，
-不是产品内容——仓库里没有任何东西依赖它们，装不装样本，发布资产的字节完全一样。
+两条限制先说清楚：样本清单只覆盖 25.x，且样本是测试 fixture 而不是产品内容——本仓库没有任何
+东西依赖它们，发布资产在装或不装样本时逐字节相同。
 
-## 全套验收：一个顺序、一个结论
+## 整套：一种顺序，一个结论
 
-`full-test.sh` 把上面这些驱动，加上两个各自只回答一个问题的新驱动
-（`docker-probe.sh`、`release-verify.sh`），按一个固定顺序跑一遍，并把每个相位的
-结果文件折算成一个结论：
+`full-test.sh` 按一种顺序运行上面的驱动——外加两个只回答自己问题的
+（`docker-probe.sh`、`release-verify.sh`）——并把各阶段的结果文件归约成一个结论：
 
-| 相位 | 回答什么 | `--only` 用例 |
+| 阶段 | 回答什么 | `--only` 的用例 |
 |---|---|---|
-| preflight | 密钥文件、ssh 可达、平台身份、剩余空间、payload 目录 | 永远执行 |
-| probes | 一台还没人动过的机器的基线 | `grow network wan22 key platform adapter initrd packages` |
-| feed-install | ac-12 / ac-13 / ac-3：feed 里有候选、机器确实吃下去了（默认 `--case all`：check→pin→install） | `ac-12`/`check`、`ac-13`/`install`、`ac-3`/`pin`、`both`、`all` |
-| matrix | M1..M7：跳变之后机器还能不能启动 | `M1`..`M7` |
-| scenarios | S1..S8：用户的数据与软件能不能扛过去 | `S1`..`S8` |
-| docker | D1：真实 docker 负载的基线（经国内镜像站拉 ≥2 镜像、一个容器、一个命名卷、一个 commit 镜像） | `D1` |
-| package-revert | P1..P4：包快照、离线回退、payload 篡改被拒、跨 base 的记录被拒。`U1`（包升级真的前进）默认不在集内——它会装包 | `P1`..`P4`、`U1` |
-| recovery | 坏版本自己回滚 | `R1`..、`B1`.. |
-| power-cut | 被打断的候选启动不会被无限重试 | `I1`、`I2` |
-| docker-after | D2 / D3：镜像与产物跨跳存活、`@docker`/`@data` 子卷身份不变 | `D2`、`D3` |
-| release | ac-1：已发布 release 的 tag、四个资产、SHA256SUMS 与 index.txt | `release`，或它的某个子句名 `verdict`/`sums`/`index`——任何一个都会选中整个相位，因为 release-verify.sh 每次都检查全部子句 |
-| audit | PRD 里每个 ac 都有以它自己的名字登记的 evidence | 永远执行 |
+| preflight | 密钥文件、SSH 可达性、平台身份、可用空间、payload 目录 | 总是运行 |
+| probes | 一台还没被人碰过的机器的基线 | `grow network wan22 key platform adapter initrd packages` |
+| feed-install | feed 提供了候选，机器吃下去了（默认 `--case all`：check、pin、install） | `check`、`install`、`pin`、`both`、`all` |
+| matrix | M1..M7：版本跳变是否留下可启动的机器 | `M1`..`M7` |
+| scenarios | S1..S8：用户数据与软件是否活下来 | `S1`..`S8` |
+| docker | D1：真实 docker 负载的基线（经国内镜像站两个镜像、一个容器、一个命名卷、一个提交镜像） | `D1` |
+| package-revert | P1..P4：包快照、离线回退、拒绝被篡改的 payload、拒绝来自另一个 base 的记录。`U1`（包升级确实搬动了）从不在默认集合里——它会安装 | `P1`..`P4`、`U1` |
+| recovery | 坏版本自行回滚 | `R1`..、`B1`.. |
+| power-cut | 被中断的候选启动不会被永久重试 | `I1`、`I2` |
+| docker-after | D2 / D3：镜像与产物活过了切换，`@docker`/`@data` 保住了自己的子卷身份 | `D2`、`D3` |
+| release | 已发布的版本：tag、四个资产、`SHA256SUMS` 与 `index.txt` | `release`，或它的某个子句名 `verdict`/`sums`/`index`——任何一个都会选中整个阶段，因为 `release-verify.sh` 每次都检查全部子句 |
 
-这个顺序是依赖顺序，每一步的理由都写在这里，免得后来的人把它「改回」驱动名的字母序：
+顺序是依赖顺序：
 
-- **`feed-install` 排在 `matrix` / `scenarios` 之前。** ac-12 / ac-13 与 pin 用例都要求机器
-  **低于**候选版本：feed 必须提供比当前更新的东西。matrix 与 scenarios 会把机器升到最新，
-  所以把它们排在前面之后，feed-install 在一台完全健康的机器上也会按定义失败。
-- **`docker` 拆成版本跳之前与之后两段，但仍然是同一个脚本。** D1 在 matrix 与 scenarios **之前**取基线，
-  因为这两个相位就是这份基线要活过去的跳：机器已经在最新版本上时没有可跳的目标，D2 只能答「没有跳」
-  而不是「存储活过了一次跳」（那种答案是带 `reason=no-jump` 的 GAP，绝不是 PASS）。D2/D3 在跳之后
-  立刻判同一份存储。两段指向同一个 `<results>/docker-snapshots` 目录：D1 写 `before.snapshot`，
-  docker-after 读回来并写 `after.snapshot`。之所以不拆成两个脚本，是因为采集与比较在跳的两侧必须是
-  同一份代码；两段只差 `--case`（前段 `D1`，后段 `D2`/`D3`）。
-- **`release` 排在机器相位之后、`audit` 之前。** 它完全不碰机器，但它的行属于同一个结论。
-- **`audit` 最后，因为它判的是上面所有相位刚写下的记录**，而且要被告知这份记录属于哪一轮
-  （`--task <id>`，或 `AB_TASK_ID`）。两者都没有时它记一行 GAP 并写明缺什么：它绝不会退回
-  上一轮的任务号——关于旧记录的一张全绿表，读起来和关于本轮的全绿表一模一样。任务号查不到
-  记录（没有 PRD，或 PRD 里没有 ac 条目）同样是 GAP：那是记录不完整，本轮机器根本没被判定，
-  和「机器坏了」不是同一个结论。
+- **`feed-install` 排在 `matrix` 与 `scenarios` 之前。** feed 必须提供比正在运行的更新的
+  东西，而 matrix 与 scenarios 会把机器带到最新版本，所以排在它们之后的 feed-install 会在
+  一台完全健康的机器上按构造失败。
+- **`docker` 是围绕版本跳变的两个阶段，仍然是同一个脚本。** D1 在 matrix 与 scenarios 之前
+  取基线，因为那两次跳变正是基线要活过的东西；D2 与 D3 在跳变之后立即评判同一个存储。两个
+  窗口都指向同一个 `<results>/docker-snapshots` 目录：D1 写 `before.snapshot`，
+  docker-after 读回并写 `after.snapshot`。它保持为一个驱动，是因为跳变两侧的采集与比较必须
+  是同一份代码。
+- **`release` 排在机器阶段之后。** 它不接触机器，但它的行属于同一个结论。
+- **`docker`、`docker-after` 与 `release` 不具破坏性**：D1 在 docker 存储（`@docker`，挂在
+  `/opt/docker`）里保留两个镜像、一个容器、一个提交镜像和一个命名卷，日志写在 `/tmp` 下，
+  不写槽位、不写 ESP 条目、不写启动决定。它们都不切换槽位、不重启，因此无需 `--yes`。
 
-`docker`、`docker-after`、`release` **不是**破坏性相位：D1 把两个镜像、一个容器、一个 commit 镜像与
-一个命名卷留在 docker 存储（`@docker`，挂在 `/opt/docker`）里，另在 `/tmp` 下留日志，不写任何槽、
-不写 ESP、不做任何启动决策；D2/D3 只读；`release-verify.sh` 压根不连机器。三者都不换槽、
-不重启，因此不需要 `--yes`。
+`power-cut` 按启动路径写它们的方式写下启动路径要读的两个文件——候选标记与中断记录——然后
+重启。那是注入的状态，不是拔掉电源，证据里也这么写；它证明的是决策逻辑与启动接线，而那正是
+缺陷所在。
 
-`power-cut` 是值得多读一遍的那个相位：它按启动路径自己写入的形式，写那两个文件——候选标记与
-中断记录——然后重启。**这是注入态，不是拉电**，证据里也是这么写的；它证明的是决策逻辑与启动
-接线，而那正是缺陷所在。
-
-结论只有三种取值，`GAP` 不算通过：只要有一行 `FAIL` 整轮就是 `FAIL`；没有 `FAIL` 但有至少一行
-`GAP` 就是 `GAP`；两者都没有才是 `PASS`。网络类 `GAP`（镜像站挂了、release 取不到——即 `docker`、
-`docker-after`、`release`）**不会**把整轮判成 `FAIL`：PRD 风险 3 说网络故障不是本产品的缺陷。
+结论有三个取值，`GAP` 不是通过：单行 `FAIL` 就让整次运行 `FAIL`；没有 `FAIL` 但有至少一个
+`GAP` 就是 `GAP`；否则 `PASS`。来自挂掉的镜像站或不可达版本的 `GAP` 不会被转成 `FAIL`：
+网络故障不是这个产品的缺陷。
 
 ## 红线
 
-安装写的是机器**没有在跑**的那个槽。驱动只在「运行槽 = committed 槽且没有排队候选」时
-才允许安装；任何时刻发现「没有可回退的 committed 健康槽」就中止整轮（`exit 3`）。
-破坏性用例排在可逆用例之后；失败的用例只记录、不夹带修——恢复路径是 `ab-slot`，不是手改
+一次安装写的是机器**没有**在运行的那个槽位。除非正在运行的槽位是已提交槽位且没有排队的候选，
+驱动拒绝安装；在任何时刻只要没有已提交的健康槽位可回退，它中止整次运行（`exit 3`）。破坏性
+用例排在可逆用例之后，失败的用例被记录并搁置：恢复路径是 `ab-slot`，而不是手改
 `ab/state.json`。
 
-机器彻底起不来时没有自动恢复。这正是 `image-install` 产物存在的意义：刷回去，重来一次。
+完全回不来的机器没有自动恢复。`image-install` 产物就是为此存在：刷它，重新开始。

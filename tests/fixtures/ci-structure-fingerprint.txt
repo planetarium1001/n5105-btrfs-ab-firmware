@@ -1,4 +1,4 @@
-# CI structure fingerprint - docs/ci-text-contract.md, rule 7.
+# CI structure fingerprint - docs/ci.md, rule 7.
 # Structure only: keys, action pins, identifiers and judge tokens. A prose
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \

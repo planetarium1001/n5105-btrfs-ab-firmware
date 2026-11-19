@@ -140,7 +140,7 @@ block `apk add`, and it does block `ab-slot packages upgrade`
 A community application installs the same way: the same `apk add <name>` and the same
 post-install fact, which is not always a version string. The samples this project measures, with
 the fact each one is judged by, are in `tests/fixtures/software-samples.json` and
-`tests/fixtures/follow-samples.json` ([known-limitations.md](known-limitations.md#a-package-follows-the-base-only-when-the-follow-can-run)).
+`tests/fixtures/follow-samples.json` ([troubleshooting.md](troubleshooting.md#packages-follow-the-base-only-when-the-follow-can-run)).
 
 ## Step 4: upgrade once
 
@@ -219,7 +219,7 @@ reboots into the committed one.
    ```
    Expected: `committed=<the previous slot>`, `pending=none`, `next=` equal to it and `p4=ok`.
    `generation=` stays where it was, because a rollback moves the pointer rather than creating a
-   generation ([lifecycle.md](lifecycle.md#writable-layer-naming), `scripts/device/recovery-probe.sh`).
+   generation ([architecture.md](architecture.md#update-transaction), `scripts/device/recovery-probe.sh`).
 4. Read the package verdict of the slot you came back to.
    ```sh
    ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(packages|packages_reason)='
@@ -242,7 +242,7 @@ ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(slot|committed|pending|nex
 ```
 
 Expected: one `field=value` per line. The table below is what each of those fields means, and where
-its value comes from on the machine. [update-mechanism.md](update-mechanism.md#field-reference) has
+its value comes from on the machine. [update.md](update.md#field-reference) has
 the remaining fields.
 
 | Field | Values | Meaning | Verify with |
@@ -289,10 +289,10 @@ copying a layer.
 The rest of the documentation goes deeper in four directions: the model, the feed, the backups and
 the limits. Each page is the single source for its own subject, and this page does not repeat them.
 
-- [update-mechanism.md](update-mechanism.md): the field reference, the A/B state machine, and the
+- [update.md](update.md): the field reference, the A/B state machine, and the
   gates behind a package follow and a prune.
 - [update.md](update.md): the release feed, the three version numbers, the five risk levels and
   every `reason=` token.
 - [backup.md](backup.md): the three products and what each one can be restored to.
-- [known-limitations.md](known-limitations.md): behaviour this project decided not to change, and
+- [troubleshooting.md](troubleshooting.md): behaviour this project decided not to change, and
   the evidence behind that decision.

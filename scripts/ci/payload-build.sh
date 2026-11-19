@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stage "payload": build the upgrade payload the S5 test installs.
 #
-# The payload follows docs/conflicts-payload.md: a tar with a manifest, the rootfs
+# The payload follows docs/architecture.md: a tar with a manifest, the rootfs
 # tree, the kernel, the boot initramfs and the platform layer. For the test the rootfs
 # is the upstream tree with one visible change (/etc/banner) plus a marker file, so
 # "the slot really is running the payload" is observable from inside the guest.

@@ -90,7 +90,7 @@ The `-wan-ssh` image prints four lines ahead of it - `wan-ssh=open port=22 proto
 of which image a machine is running.
 
 That result line is the first thing to read when the address is missing, and
-[lifecycle.md](lifecycle.md) documents the log format and the `wan-present` probe that reads
+[architecture.md](architecture.md) documents the log format and the `wan-present` probe that reads
 the result.
 
 ## Changing the LAN subnet

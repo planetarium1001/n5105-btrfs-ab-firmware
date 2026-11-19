@@ -26,7 +26,7 @@
 | p4 | `ab-data` | `data` | 128 MiB，首启后扩至盘尾 | btrfs | `@overlay-<版本>`、`@docker`、`@swap`、`@data` |
 
 - PARTNAME（`ab-…`）是引导代码与内核块设备比对时用的稳定名；LABEL 是人或 `blkid`
-  读的短名。两套名字都是契约，见 [docs/partitions.zh-CN.md](docs/partitions.zh-CN.md)。
+  读的短名。两套名字都是契约，见 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md)。
 - `@sys` —— 上游 rootfs，只读
 - `@platform` —— 平台工具，随槽版本绑定，只读
 - `@overlay-<版本>` —— 全部可写状态，两槽共享
@@ -140,18 +140,28 @@ uci commit firewall
 
 ## 文档
 
-先读为预览期写的两篇：
+十篇文档，每篇是它自己主题的唯一来源；索引在 [docs/](docs/README.zh-CN.md)。
 
-- [docs/quickstart.zh-CN.md](docs/quickstart.zh-CN.md) —— 最短路径：写盘、启动、装一个包、
-  升级一次、回退一次
-- [docs/update-mechanism.zh-CN.md](docs/update-mechanism.zh-CN.md) —— 每个状态字段、它的取值，
-  以及验证它的命令
+使用这套固件：
 
-然后是参考：
+- [docs/quickstart.zh-CN.md](docs/quickstart.zh-CN.md) —— 最短路径：写镜像、启动、装一个包、
+  升一次级、回退一次
+- [docs/install.zh-CN.md](docs/install.zh-CN.md) —— 写镜像、首启、验收清单，以及抢救被写坏的
+  引导器
+- [docs/update.zh-CN.md](docs/update.zh-CN.md) —— 从 release feed 升级：配置、风险级别、
+  每个拒绝 token，以及状态字段参考
+- [docs/backup.zh-CN.md](docs/backup.zh-CN.md) —— 三种备份产物、各自能恢复到什么介质，以及
+  恢复决策树
+- [docs/network.zh-CN.md](docs/network.zh-CN.md) —— 首启网络默认值与怎么改
+- [docs/troubleshooting.zh-CN.md](docs/troubleshooting.zh-CN.md) —— 先读什么、每种现象意味着
+  什么，以及本项目决定不去改变的行为
 
-- [docs/](docs/README.zh-CN.md) —— 设计文档
-- [docs/backup.zh-CN.md](docs/backup.zh-CN.md) —— 备份与恢复契约：三种产物、各自能恢复到多大的盘、恢复决策树
-- [docs/known-limitations.zh-CN.md](docs/known-limitations.zh-CN.md) —— 不能工作的部分，以及替代做法
+修改这套固件：
+
+- [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) —— 分区布局、启动链、槽位状态机、
+  升级事务与 payload 契约
+- [docs/ci.zh-CN.md](docs/ci.zh-CN.md) —— 流水线、发布线，以及 CI 文本契约
+- [docs/device-matrix.zh-CN.md](docs/device-matrix.zh-CN.md) —— 通过 SSH 驱动真机跑版本矩阵
 
 ## 状态
 

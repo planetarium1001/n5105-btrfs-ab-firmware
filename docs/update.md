@@ -266,18 +266,6 @@ Update  base     25.12.2 -> 25.12.2
 Proceed? [y/N]
 ```
 
-Z1, a short patch jump:
-
-```
-Update  base     25.12.2 -> 25.12.5
-        kernel   6.12.103 -> 6.12.110
-        platform 0.0.6 -> 0.0.8
-  Change  PATCH ×3   · the entries above are what this update brings
-  Tested  YES        · patch range covered in CI
-  Risk    LOW        · running system replaced; previous slot is the way back
-Proceed? [y/N]
-```
-
 Z2, a patch jump longer than the covered range:
 
 ```
@@ -303,26 +291,10 @@ Update  base     25.12.2 -> 25.18.0
 Proceed? [y/N]
 ```
 
-What backs the `Tested PARTLY` line: a minor jump is the one case CI covers by building the
-previous formal release and upgrading it with this release's payload - the cross-version
-stage. On the tagged line that stage is a gate: `release.yml` declares
-`publish: needs: [build, cross]`, so a run whose cross stage is red or skipped publishes
-nothing (v0.0.9 went out while cross was red; that is the hole the gate closes). A release
-published from now on is therefore one whose cross-line upgrade was proved, not assumed. The
-stage and the gate are described in [ci-release-lines.md](ci-release-lines.md).
-
-Y2, several release lines forward:
-
-```
-Update  base     25.12.2 -> 25.19.0
-        kernel   6.12.103 -> 6.12.150
-        platform 0.0.8 -> 0.3.0
-  Change  MINOR +2   · the entries above are what this update brings
-  Tested  NO         · lines this far apart are not built together
-  Risk    HIGHER     · compatibility is less certain than a neighbouring line
-Backup    ab-backup --help   (recommended)
-Proceed? [y/N]
-```
+What backs `Tested PARTLY`: a minor jump is the one case CI covers by building the previous
+formal release and upgrading it with this release's payload. On the tagged line that stage is a
+gate - `release.yml` declares `publish: needs: [build, cross]` - so a release whose cross-line
+upgrade was not proved is not published ([ci.md](ci.md)).
 
 X1, a new major line. There is no `y` here: the command refuses until a route is chosen,
 and prints both routes and the reason.
@@ -410,45 +382,17 @@ Until an update or rollback rewrites it, `ab-slot packages upgrade` refuses on `
 package transaction is only started when the metadata describes the running kernel and release.
 
 Do the system update first and the package upgrade second. An `apk upgrade` rewrites
-`/lib/upgrade/*`, whose names upstream's sysupgrade interface uses too; the writable layer
-would then shadow this project's upgrade adapter and the next payload install would fail at
+`/lib/upgrade/*`, whose names upstream's sysupgrade interface uses too, so the writable layer
+would shadow this project's upgrade adapter and the next payload install would fail at
 `platform_upgrade_begin`. From 0.0.11 the adapter is loaded from a source a package cannot
-shadow, the shadowing copies are moved into `/mnt/p4/ab/shadow-backup-<timestamp>/` when a
-slot boots from that snapshot, and `/etc/apk/protected_paths.d/ab-upgrade-adapter.list` stops
-the rewrite at `apk upgrade` time (the package's file lands as `*.apk-new`, and apk's database
-still moves). `docs/install.md` has the manual repair for a machine that was already shadowed
-before 0.0.11.
+shadow, the shadowing copies are moved to `/mnt/p4/ab/shadow-backup-<timestamp>/`, and
+`/etc/apk/protected_paths.d/ab-upgrade-adapter.list` keeps `apk upgrade` from rewriting those
+paths (the package's copy lands as `*.apk-new` and apk's database still moves). The manual
+repair for a machine shadowed before 0.0.11 is in [install.md](install.md).
 
-That rule is a `+` rule, and `apk-protected_paths(5)` defines `+` as *conditional*: it
-protects a path only when the visible file's checksum differs from the one apk's database
-records. Only `lib/upgrade/platform.sh` meets that condition, because it is the one of the
-four paths this platform layer replaces; the other three are upstream's files and apk
-keeping them in step with upstream is the point. `scripts/device/apk-protection-probe.sh`
-asks apk for that condition on a running machine and looks for a shadow in the writable
-layer. Run it before and after the next real `apk upgrade` - a baseline that already is the
-newest release has no upgrade candidate, so the probe is the part that can be checked
-today and the `*.apk-new` count going up is the part only a real upgrade can show.
-
-Why the protection cannot be "tested" by forcing a transaction: `apk fix <pkg>` is a no-op on
-the apk-tools this image ships (3.0.5). It answers `(1/1) [APK unavailable, skipped]
-Reinstalling <pkg> (<version>)` with exit status 0 - it neither downloads nor commits anything,
-for `base-files` and `busybox` alike, with the package fetchable, with a local repository apk
-recognises, with a hand-filled cache, and inside a throwaway `--root` where the file was
-deliberately missing. So `*.apk-new` cannot be produced on demand; it appears only when a real
-`apk upgrade` has a candidate, and a machine that is already on the newest release has none.
-That is why the probe asserts the premise instead, and why the proof is the before/after pair
-around the next real upgrade. (The count the probe prints covers `/lib/upgrade` and `/etc/apk`,
-the paths these rules and the adapter live in - not every `*.apk-new` on the machine, of which
-the 0.0.11 device carries eleven unrelated ones.)
-
-Why the package list can look empty: `apk version -l '<'` answers from the cached index,
-and a machine that has never run `apk update` has no index at all. It then prints
-`WARNING: opening from cache ...: No such file or directory` and
-`apk upgrade --simulate` stops with `ERROR: Not continuing due to stale/unavailable
-repositories`; after `apk update` the same command answers `OK: ... in 282 packages` and
-`apk version -l '<'` is an empty table. Both shapes print an empty table, so read the
-warnings and the exit status, not the table. A machine on the newest release genuinely has
-zero candidates - that is not a broken feed.
+`apk version -l '<'` answers from the cached index, so a machine that never ran `apk update`
+prints an empty table with warnings and a non-zero exit; read the warnings and the exit
+status, not the table. A machine on the newest release genuinely has zero candidates.
 
 The counts a snapshot reports are `packages=`, `world=`, `payloads=` and the optional
 `payload-gap=`. `payloads=no` means the snapshot was taken without the package archives (`--no-payloads`)
@@ -463,21 +407,17 @@ world entry, every installed package with its version, and the counts that make 
 self-checking (`packages=`, `world=`, `payloads=`). The newest three are kept.
 
 Alongside the text file the snapshot keeps the packages themselves, in
-`snapshots/snapshot-<id>.d/payloads/`, with one `apkfile <name> <sha256>` line per archive.
-That is not an optimisation: the repositories carry one version of a package - the newest -
-so a version list on its own can only ever restore what the source still has. `apk fetch`
-fills the directory at snapshot time, which costs about 300 MiB and needs the network once.
-From 0.0.11 the fetch is per package: one `apk fetch` per world entry, so a package the feed
-no longer resolves cannot fail the whole set. apk-tools 3 rejects a version pin in `apk fetch`
-(`unable to select package (or its dependencies)`), so the fetch names the package and then
-checks the file it got against the installed version. A feed that has rolled since the machine
-was updated hands back a newer file for some packages; those are dropped and counted missing,
-and the snapshot retries with one recursive `apk fetch` before it gives up. A machine without
-the room can pass `--no-payloads` and gets a list-only snapshot (`payloads no`, and the reason
-for it on the next line). The reason `payload-incomplete` means the fetch ran but did not land
-every archive - most often because the feed no longer carries the installed versions; the
-snapshot can still restore by version, but not offline. Re-run it against a feed that still
-holds those versions (or from a machine whose packages match it) if you need the archives.
+`snapshots/snapshot-<id>.d/payloads/`, with one `apkfile <name> <sha256>` line per archive: the
+repositories carry one version of a package - the newest - so a version list on its own can
+only restore what the source still has. `apk fetch` fills the directory at snapshot time,
+which costs about 300 MiB and needs the network once. From 0.0.11 the fetch is per package, so
+a package the feed no longer resolves cannot fail the whole set; apk-tools 3 rejects a version
+pin in `apk fetch`, so the fetch names the package and checks the file it got against the
+installed version. A feed that rolled since the machine was updated hands back a newer file for
+some packages; those are dropped and counted missing, and the snapshot retries once with a
+recursive `apk fetch` before giving up. `--no-payloads` gives a list-only snapshot
+(`payloads=no`); `payload-incomplete` means the fetch ran but did not land every archive, so
+the snapshot restores by version but not offline.
 
 `revert` prefers the archives: it checks every sha256 against the snapshot, then installs
 them in one `apk add` transaction. Local archives are installed with `--allow-untrusted`,
@@ -598,20 +538,16 @@ apk --cache-dir /etc/apk/ab/cache --cache-max-age 100000 \
 apk del .ab-follow
 ```
 
-The bodies a repository serves are signed by the repository's index rather than by each file, so
-installing them as files needs `--allow-untrusted`; that is how they got here. The virtual entry
-exists only around the transaction: `apk del` puts the world back byte for byte, and a world the
-user did not ask for never gains a line. A captive portal, a hijacked DNS answer or a home outage
-during the reboot therefore has nothing to break - the measured offline run made zero network
-attempts. `--no-prefetch` skips the download and lets the first boot use the network instead; a
+Repository bodies are signed by the index rather than per file, so installing them as files needs
+`--allow-untrusted`. The virtual entry exists only around the transaction: `apk del` puts the world
+back byte for byte. `--no-prefetch` skips the download and lets the first boot use the network; a
 prefetch that fails is not an upgrade that fails - the record falls back to
-`packages=aligned reason=network follow=pending` and the network fallback picks it up.
+`packages=aligned reason=network follow=pending`.
 
-The fallback is only used when there was no prefetch. It asks a probe, and the probe answers three
-ways by reading the first four bytes of the target's index: a captive portal cannot fake the
-`ADBd` magic that an apk index starts with, so `ok`, `portal` and `offline` are told apart by
-evidence rather than by a successful HTTP status. Only `ok` lets a transaction run; the others wait
-and retry:
+The fallback is only used when there was no prefetch. Its probe reads the first four bytes of the
+target's index: a captive portal cannot fake the `ADBd` magic an apk index starts with, so `ok`,
+`portal` and `offline` are told apart by evidence rather than by an HTTP status. Only `ok` lets a
+transaction run:
 
 | Rung | When it retries |
 | --- | --- |
@@ -691,7 +627,7 @@ a package snapshot is a different mechanism with a different job. apk's protecte
 part that matters for a person: a `/etc/config/*` you edited keeps its bytes and the package's own
 copy lands beside it as `*.apk-new` (measured 2026-11-18: `apk upgrade dnsmasq-full` kept an edited
 `/etc/config/dhcp` byte for byte and wrote `dhcp.apk-new`). Nothing merges those files for you -
-see [known-limitations.md](known-limitations.md).
+see [troubleshooting.md](troubleshooting.md).
 
 What is out of scope: a body built for another kernel (replaying it installs a module that cannot
 load, so it is `stale-abi` and stays installed at its old version), and a base switch - a kept body
@@ -737,6 +673,94 @@ scripts pass `--yes` instead of piping a `y`.
 makes the prompt read stdin as if one were attached. It does not change which answers
 accept, but it does bypass the `feed-noninteractive` refusal - so a pipeline that sets it can
 reach the prompt where it would otherwise be refused. Nothing in this project sets it.
+
+## Field reference
+
+Every fact about a slot is published on a surface, and a field is verified by reading the
+surface it comes from:
+
+- `/boot/ab/state.json` - slot state, the single source of truth
+- `/boot/ab/packages` - the one-line package record the last upgrade published
+- `/boot/ab/log/` - the ring log, printed by `ab-slot log`
+- `/proc/cmdline` and `/proc/mounts` - the slot this boot came from, and what is mounted
+
+`<slot>` below is `a` or `b`, `<version>` is an upstream release such as `25.12.2`, and
+`<layer>` is the writable layer name, `@overlay-<version>` with `-r<N>` appended when that
+version is used a second time.
+
+### The state file
+
+`ab/state.json` is the truth; `boot/grub/ab-slot.cfg` is the hint GRUB can read. The hint holds
+two commands, fallback first, so a write cut short still falls back to the committed slot.
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `generation` | integer, only grows | orders writable layers for reclamation; names none of them |
+| `committed` | `a` \| `b` | the slot the machine is committed to run |
+| `pending` | `a` \| `b` \| `null` | the candidate the next boot tries, `null` for none |
+| `slots.<a\|b>.rootfs` | `<version>` | the upstream release that slot carries |
+| `slots.<a\|b>.upper` | `<layer>` | the writable layer that slot boots on |
+
+`generation` moves only in `ab-slot layer`, which is the command an update calls when it stages
+a slot. `pending`, `commit`, `abandon` and `rollback` rewrite the file and leave the number
+alone.
+
+### `ab-slot status` fields
+
+`ab-slot status` prints one machine-readable line on stdout and a human summary on stderr, so
+`ab-slot status 2>/dev/null` is the line alone. The field order is fixed, and the package fields
+at the end appear only when `/boot/ab/packages` exists.
+
+| Field | Values | Meaning | Verify on the machine |
+| --- | --- | --- | --- |
+| `slot=` | `a` \| `b` | the slot this boot runs, from `ab.slot=` on the kernel command line; the committed slot when that is absent | `grep -o 'ab.slot=[ab]' /proc/cmdline` |
+| `upper=` | `<layer>` | the writable layer of the running slot | `cat /boot/ab/state.json` and `btrfs subvolume list /mnt/p4` |
+| `generation=` | integer | the layer ordering number | `cat /boot/ab/state.json` |
+| `committed=` | `a` \| `b` | the slot the state commits | `cat /boot/ab/state.json` |
+| `pending=` | `a` \| `b` \| `none` | the candidate the next boot tries | `cat /boot/ab/state.json` |
+| `p4=` | `ok` \| `degraded` | `/mnt/p4` is mounted | `awk '$2=="/mnt/p4"' /proc/mounts` |
+| `data=` | `ok` \| `missing` | `/data` is mounted | `awk '$2=="/data"' /proc/mounts` |
+| `docker=` | `ok` \| `missing` | `/opt/docker` is mounted | `awk '$2=="/opt/docker"' /proc/mounts` |
+| `swap=` | `ok` \| `missing` | `/swap` is mounted | `awk '$2=="/swap"' /proc/mounts` |
+| `next=` | `a` \| `b` \| `unknown` | what GRUB will boot, read back from the hint file | `ab-slot next` |
+| `disk=` | a device node, or `unknown` | the disk this machine booted from | `ab-slot log \| grep stage=device` |
+| `method=` | `cmdline` \| `partuuid` \| `partname` \| `mount` \| `unique` \| `unresolved` \| `unavailable` | how that disk was established | the same `stage=device` line |
+| `boot=` | `ok` \| `degraded` \| `unknown` | how this boot started, read from this boot's ring log | `ab-slot log \| grep stage=boot` |
+| `esp=` | `ok` \| `dirty` \| `unreadable` \| `unknown` | the initramfs' verdict on the ESP it mounted | `ab-slot log \| grep stage=esp-health` |
+| `packages=` | `aligned` \| `limited` \| `followed` \| `unknown` | whether the slot's package metadata describes the base it runs | `cat /boot/ab/packages` |
+| `packages_reason=` | an aligner token, `none`, `no-record`, `other-slot`, `unknown` | why that verdict is what it is | `cat /boot/ab/packages` |
+| `follow=` | `pending` \| `followed` \| `failed` \| `abandoned` \| `never` \| `unknown` | whether the packages were actually moved onto this base | `ab-packages status` |
+| `reason=` | `none`, `network`, `timeout`, `no-evidence`, `apk-<rc>`, `no-world`, `no-apk`, `no-packages`, `feeds-rewritten`, `no-record`, `other-slot`, `unknown` | why the last follow attempt ended the way it did | `ab-packages status` |
+| `hint=` | `ab-packages update` \| `none` | the command that retries the follow | `sed -n 's/^.* hint=//p' /boot/ab/packages` |
+
+Three values are claims a machine must not make without evidence, so they read `unknown`
+rather than a comfortable default: `boot=`, `esp=` and `packages=`.
+
+### Reading a field in a script
+
+One function reads most of the line. The `^` anchor matters: without it `reason=` also matches
+`packages_reason=`.
+
+```sh
+ab-field() { ab-slot status 2>/dev/null | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+ab-field pending
+ab-field follow
+```
+
+`hint=` holds a space, because its value is a command, so it is the last field of the record and
+it has its own reader:
+
+```sh
+sed -n 's/^.* hint=//p' /boot/ab/packages
+```
+
+A field that names a slot's version has its own command, and it does not read the status line at
+all:
+
+```sh
+ab-slot rootfs a
+ab-slot rootfs b
+```
 
 ## Exit status
 
@@ -794,20 +818,15 @@ are listed in [install.md](install.md): from that point the feed path is the loc
 
 ## Back up before a long jump
 
-Z2, Y2 and X1 print `Backup    ab-backup --help   (recommended)`. That line is advice and
-a command to run yourself; nothing calls `ab-backup` for you. It is printed rather than
-executed because it needs a target medium and the space to hold the package, and a backup
-that silently failed would be worse than none.
+Z2, Y2 and X1 print `Backup    ab-backup --help   (recommended)`. That line is advice: nothing
+calls `ab-backup` for you, because it needs a target medium and the space to hold the package.
 
-What a backup buys you here: this update path can always return to the **previous slot**,
-because the slot that runs today is not touched. It cannot return you to the **previous
-release** once the older release is gone from the feed, and it cannot bring back files you
-changed under `/data`. The three products, which medium each one restores to, and the
-restore decision tree are in [backup.md](backup.md).
-
-The recovery paths after a bad update are in [lifecycle.md](lifecycle.md) (the transaction
-and the automatic revert) and in [install.md](install.md) (a bootloader write that was
-interrupted).
+This update path can always return to the **previous slot**, because the slot that runs today
+is not touched. It cannot return you to the **previous release** once the older release is gone
+from the feed, and it cannot bring back files you changed under `/data`. The three products and
+the restore decision tree are in [backup.md](backup.md); the transaction and the automatic
+revert are in [architecture.md](architecture.md), and an interrupted bootloader write in
+[install.md](install.md).
 
 ## Build your own feed
 

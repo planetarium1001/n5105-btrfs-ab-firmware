@@ -206,6 +206,6 @@ concept name, not a physical file name.
 
 ## See also
 
-- Partition geometry and first-boot growth: [partitions.md](partitions.md)
-- Slot model, state file and commands: [lifecycle.md](lifecycle.md)
+- Partition geometry, first-boot growth, slot model and the update transaction:
+  [architecture.md](architecture.md)
 - Writing an image to a disk: [install.md](install.md)

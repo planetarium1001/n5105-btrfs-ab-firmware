@@ -5,7 +5,7 @@
 #        ab-esp / ab-slot-a / ab-slot-b / ab-data in the frozen geometry, filesystem
 #        LABEL ESP / slot-a / slot-b / data in the mkfs arguments, and the image
 #        verifier asserts the same two sets
-#   ac-2 the btrfs mkfs arguments are the ones docs/partitions.md prescribes
+#   ac-2 the btrfs mkfs arguments are the ones docs/architecture.md prescribes
 #   ac-3 the judge-line gate in scripts/ci/qemu-smoke.sh accepts an S2 ok line and
 #        rejects an S2 failure line
 #   ac-4 the expectation file written by the host verifier parses back into the
@@ -99,14 +99,14 @@ assert_contains "$(cat "$guest_assert")" 'slot-a slot-b data' \
   "ac-1 the guest assertion expects the contract LABELs"
 
 # ac-1f the documents state the same contract, so code and prose cannot drift apart.
-for doc in docs/partitions.md docs/partitions.zh-CN.md README.md README.zh-CN.md; do
+for doc in docs/architecture.md docs/architecture.zh-CN.md README.md README.zh-CN.md; do
   assert_contains "$(cat "$root/$doc")" '| p4 | `ab-data` | `data` |' \
     "ac-1 $doc documents p4 as ab-data with label data"
 done
-assert_contains "$(cat "$root/docs/partitions.md")" "GPT PARTNAME" \
-  "ac-1 partitions.md states the PARTNAME and LABEL columns"
-assert_contains "$(cat "$root/docs/partitions.zh-CN.md")" "GPT PARTNAME" \
-  "ac-1 partitions.zh-CN.md states the PARTNAME and LABEL columns"
+assert_contains "$(cat "$root/docs/architecture.md")" "GPT PARTNAME" \
+  "ac-1 architecture.md states the PARTNAME and LABEL columns"
+assert_contains "$(cat "$root/docs/architecture.zh-CN.md")" "GPT PARTNAME" \
+  "ac-1 architecture.zh-CN.md states the PARTNAME and LABEL columns"
 
 # ac-2 filesystem arguments and subvolume layout
 assert_contains "$(cat "$disk_script")" "mkfs.btrfs -f -m dup -d single" \

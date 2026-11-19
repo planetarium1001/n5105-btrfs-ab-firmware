@@ -2,7 +2,7 @@
 # In-guest assertion for stage S2 (disk image assembly).
 #
 # Runs as the initramfs init (`init=/s2.sh`) with the assembled image attached as
-# /dev/vda, and checks the geometry that docs/partitions.md freezes:
+# /dev/vda, and checks the geometry that docs/architecture.md freezes:
 #
 #   1. four partitions with PARTNAMEs ab-esp / ab-slot-a / ab-slot-b / ab-data and
 #      filesystem LABELs ESP / slot-a / slot-b / data

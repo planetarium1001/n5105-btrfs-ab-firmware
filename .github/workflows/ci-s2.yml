@@ -3,7 +3,7 @@ name: S2 image
 # Stage S2 - four-partition disk image assembly.
 #
 # Builds the installable image from the verified upstream payload and asserts the geometry
-# docs/partitions.md freezes: p1 ESP (vfat, GRUB), p2/p3 slot-a/slot-b (btrfs, @sys +
+# docs/architecture.md freezes: p1 ESP (vfat, GRUB), p2/p3 slot-a/slot-b (btrfs, @sys +
 # @platform), p4 data (btrfs, @overlay-<version>, @docker, @swap, @data).
 #
 # Verification happens twice - on the host against the raw image and inside the guest, which

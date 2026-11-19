@@ -26,7 +26,7 @@ Application-level packaging and configuration are out of scope.
 | p4 | `ab-data` | `data` | 128 MiB, grown to the disk end on first boot | btrfs | `@overlay-<version>`, `@docker`, `@swap`, `@data` |
 
 - PARTNAME (`ab-…`) is the stable name the boot code matches against the kernel's block
-  devices; LABEL is the short name a human or `blkid` reads. [docs/partitions.md](docs/partitions.md)
+  devices; LABEL is the short name a human or `blkid` reads. [docs/architecture.md](docs/architecture.md)
   states both sets as contracts.
 - `@sys` — upstream rootfs, read-only
 - `@platform` — platform tooling, versioned with the slot, read-only
@@ -155,18 +155,29 @@ never hides another.
 
 ## Documentation
 
-Start with the two pages written for the preview:
+Ten pages, each the single source for one subject; the index is [docs/](docs/README.md).
 
-- [docs/quickstart.md](docs/quickstart.md) — the shortest path: write, boot, install one
-  package, upgrade once, roll back once
-- [docs/update-mechanism.md](docs/update-mechanism.md) — every status field, its values, and
-  the command that checks it
+To use the firmware:
 
-Then the reference:
+- [docs/quickstart.md](docs/quickstart.md) — the shortest path: write an image, boot it,
+  install one package, upgrade once, roll back once
+- [docs/install.md](docs/install.md) — writing an image, the first boot, the acceptance
+  checklist, and rescuing a torn bootloader
+- [docs/update.md](docs/update.md) — updating from a release feed: the configuration, the
+  risk levels, every refusal token, and the status field reference
+- [docs/backup.md](docs/backup.md) — the three backup products, which medium each restores
+  to, and the restore decision tree
+- [docs/network.md](docs/network.md) — the first-boot network defaults and how to change them
+- [docs/troubleshooting.md](docs/troubleshooting.md) — what to read first, what each symptom
+  means, and the behaviour this project decided not to change
 
-- [docs/](docs/README.md) — design documents
-- [docs/backup.md](docs/backup.md) — backup and restore contract: the three products, what each one can be restored to, and the restore decision tree
-- [docs/known-limitations.md](docs/known-limitations.md) — what does not work, and what to do instead
+To change it:
+
+- [docs/architecture.md](docs/architecture.md) — partition layout, boot chain, slot state
+  machine, update transaction and payload contract
+- [docs/ci.md](docs/ci.md) — the pipeline, the release lines, and the CI text contract
+- [docs/device-matrix.md](docs/device-matrix.md) — driving a real machine through the version
+  matrix over SSH
 
 ## Status
 

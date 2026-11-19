@@ -1,44 +1,52 @@
 # 文档
 
-[English](README.md) | **简体中文**
+**中文** | [English](README.md)
 
-每篇文档只讲一个主题。所有数字均有实测依据或明确理由。
+十篇文档，每篇是它自己主题的唯一来源。里面的每个数字都是实测的，或者带有明确理由；每个阈值、
+日志字段与契约都由 `python3 scripts/check_design.py all` 断言。
+
+要用这套固件，从 [quickstart.zh-CN.md](quickstart.zh-CN.md) 开始。要改它，读
+[architecture.zh-CN.md](architecture.zh-CN.md) 与 [ci.zh-CN.md](ci.zh-CN.md)。
+
+## 使用
 
 | 文档 | 内容 |
 |---|---|
-| [ci-pipeline.zh-CN.md](ci-pipeline.zh-CN.md) | 每个 workflow 文件与何时该跑它、五个阶段（各自证明什么、失败代价）、产物对照表、怎么读一个 run 页面，以及怎么在本地复现一个阶段 |
-| [ci-release-lines.zh-CN.md](ci-release-lines.zh-CN.md) | 两条发布线（`v*` 与裸版本号）、一个 tag 必须证明什么、每夜的上游 watch，以及一次真实发布的复盘 |
-| [ci-text-contract.zh-CN.md](ci-text-contract.zh-CN.md) | CI 对人说的每一句话的 7 条规则：workflow/job/step 标签、input 描述、各类摘要、Issue 与 PR 正文、release 标题——以及让文本改动碰不到运行行为的结构指纹 |
-| [device-matrix.zh-CN.md](device-matrix.zh-CN.md) | 通过 SSH 驱动真机跑版本矩阵：每条断言证明什么、续跑文件、结果三态，以及保住可启动槽的红线 |
-| [partitions.zh-CN.md](partitions.zh-CN.md) | 分区几何、GPT PARTNAME 与文件系统 LABEL 命名、尺寸依据、`mkfs` 与挂载参数、子卷、首启扩容 |
-| [boot-overlay.zh-CN.md](boot-overlay.zh-CN.md) | 引导顺序、层职责、挂载合成与顺序、平台层注入、GRUB 断言、降级启动 |
-| [lifecycle.zh-CN.md](lifecycle.zh-CN.md) | 代号模型、状态文件、更新事务、健康检查、回收、日志、命令 |
-| [conflicts-payload.zh-CN.md](conflicts-payload.zh-CN.md) | 三方比对、处置、uci 边界、载荷契约、引导器成员、校验、构建输入 |
-| [install.zh-CN.md](install.zh-CN.md) | 写镜像、首次开机、控制台、升级一台运行中的机器（`ab-upgrade` 的选项与退出码、救援被写坏的引导器）、怎么读 `ab-slot status`、排障 |
-| [update.zh-CN.md](update.zh-CN.md) | 从发布 feed 更新一台机器：配置文件、三个版本号（`base`、`kernel`、`platform`）、`ab-upgrade --feed-check` 与 `--feed`、五个风险级别与各自的确认强度、`UPDATE_PIN`、完整的 `reason=` 表，以及发布方怎么自建 feed |
-| [network.zh-CN.md](network.zh-CN.md) | 首启网络生成、出厂默认值（WAN 口、桥端口、LAN 网段）、怎么改、WAN SSH 例外 |
-| [debug-ssh.zh-CN.md](debug-ssh.zh-CN.md) | 人工交互调试入口：触发、连接、已备好的产物、会话时长、安全、为什么它不是门禁 |
-| [backup.zh-CN.md](backup.zh-CN.md) | 三种产物各自能恢复到多大的盘、整盘镜像为什么在更小的盘上写入即失败、恢复决策树（路径 A–D），以及 `ab-backup` / `ab-restore` 往包里装什么 |
-| [known-limitations.zh-CN.md](known-limitations.zh-CN.md) | 本项目决定不改的行为及其取证：dropbear 2025.89 上的交互式 SSH 登录（三行 pty 报错的语义、何时发生、三条出路），以及交互探针必须使用的形态 |
+| [quickstart.zh-CN.md](quickstart.zh-CN.md) | 最短路径：写镜像、启动、装一个包、升一次级、回退一次——五步，每步给出命令与该步必须产生的输出 |
+| [install.zh-CN.md](install.zh-CN.md) | 写镜像、控制台上的首启、网络默认值、验收清单、升级运行中的系统、抢救被写坏的引导器 |
+| [update.zh-CN.md](update.zh-CN.md) | 从 release feed 升级：配置文件、三个版本号、风险级别、每个 `reason=` token、状态字段参考、软件包跟随与回滚 |
+| [backup.zh-CN.md](backup.zh-CN.md) | 三种产物与各自能恢复到什么介质、整盘镜像为什么装不进更小的盘，以及恢复决策树 |
+| [network.zh-CN.md](network.zh-CN.md) | 首启网络生成、随镜像发布的默认值、怎么改它们，以及 WAN SSH 例外 |
+| [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md) | 先读什么、每种现象意味着什么，以及本项目决定不去改变的行为 |
+
+## 修改
+
+| 文档 | 内容 |
+|---|---|
+| [architecture.zh-CN.md](architecture.zh-CN.md) | 分区几何、文件系统与子卷、启动链、p4 首启扩容、槽位状态机、升级事务、健康检查、回收、日志、冲突检测与 payload 契约 |
+| [ci.zh-CN.md](ci.zh-CN.md) | 每个工作流文件与何时跑它、五个阶段、跨版本阶段与升级闸门、产物、本地复现、两条发布线、每日上游 watch、交互式调试，以及 CI 文本契约 |
+| [device-matrix.zh-CN.md](device-matrix.zh-CN.md) | 通过 SSH 驱动真机跑版本矩阵：每条断言证明什么、续跑文件、结果状态，以及保住可启动槽位的红线 |
 
 ## 约定
 
-- 阈值与日志字段是契约，改动必须同步更新 `scripts/check_design.py`
-- 文档描述约束与判据，不复述实现细节
-- 链接使用相对路径且必须可解析，由 `python3 scripts/check_design.py links` 校验
-- 英文为主文档，每篇旁边有对应的 `*.zh-CN.md` 译文
+- 阈值、日志字段与 payload 成员都是契约。改一项意味着在同一次提交里改
+  `scripts/check_design.py` 与断言它的测试。
+- 链接是相对路径且必须能解析；`python3 scripts/check_design.py links` 校验这一点。
+- 英文是正本，每篇旁边都有 `*.zh-CN.md` 译本，且章节结构一致。
+- 命令可直接复制执行；占位符写成 `<angle-brackets>`。
 
-## 校验
+## 检查
 
-```
+```sh
 python3 scripts/check_design.py all
+./tests/run.sh --module docs
 ```
 
-单项检查：`partitions`、`esp-data-only`、`overlay-layers`、`generation-model`、
+单项设计检查：`partitions`、`esp-data-only`、`overlay-layers`、`generation-model`、
 `gc-policy`、`log-ring`、`conflict-model`、`payload-contract`、`links`、`text`、
 `retired-names`、`debug-ssh`、`workflow-expressions`。
 
-## 相关
+## 另见
 
-- 项目概览：[../README.zh-CN.md](../README.zh-CN.md)
+- 项目总览：[../README.zh-CN.md](../README.zh-CN.md)
 - 许可证：[../LICENSES/](../LICENSES/)

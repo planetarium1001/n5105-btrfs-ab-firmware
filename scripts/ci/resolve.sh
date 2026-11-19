@@ -5,7 +5,7 @@
 #   1. accept a requested upstream version (input, "latest", or the pinned default)
 #   2. download the release's sha256sums and package manifest
 #   3. resolve the kernel-module directory name and cross-check it against the
-#      kernel package version (the preflight required by docs/conflicts-payload.md)
+#      kernel package version (the preflight required by docs/architecture.md)
 #   4. compute the cache key from upstream version + tool versions + CI scripts
 #
 # Inputs (environment):

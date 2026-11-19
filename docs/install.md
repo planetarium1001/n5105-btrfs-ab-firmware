@@ -4,8 +4,8 @@ This page is the operator view: how to put the image on a disk, what to do at th
 the first boot, what to check before you trust the machine with a network, how to update it
 and how to get back. It is written to be followed on a real N5105 with a monitor, a keyboard
 and a cable in a socket, so every step says what the command is and what the output has to
-say. The design behind it is in [partitions.md](partitions.md), [boot-overlay.md](boot-overlay.md),
-[network.md](network.md) and [lifecycle.md](lifecycle.md).
+say. The design behind it is in [architecture.md](architecture.md) and
+[network.md](network.md).
 
 ## What you need
 
@@ -259,7 +259,7 @@ reflash if you would rather start from the defaults again.
 * **A `</dev/null` interactive ssh probe reports a healthy machine as broken.** dropbear
   2025.89 closes the pty master as soon as either direction of the channel ends, so
   `ssh -tt host cmd </dev/null` is dropped while a person logging in on the same machine gets a
-  prompt. [known-limitations.md](known-limitations.md) has the errno-level reason, the three
+  prompt. [troubleshooting.md](troubleshooting.md) has the errno-level reason, the three
   ways out, and the form a probe has to use instead.
 
 ## Network defaults on a real machine

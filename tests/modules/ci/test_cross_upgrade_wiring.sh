@@ -28,8 +28,8 @@ s3wf="$(cat .github/workflows/ci-s3.yml)"
 setup_action="$(cat .github/actions/setup-ci/action.yml)"
 script="$(cat "$script_path")"
 readme="$(cat scripts/ci/README.md)"
-pipeline="$(cat docs/ci-pipeline.md)"
-pipeline_zh="$(cat docs/ci-pipeline.zh-CN.md)"
+pipeline="$(cat docs/ci.md)"
+pipeline_zh="$(cat docs/ci.zh-CN.md)"
 
 # --- ac-1: where and how long ----------------------------------------------
 assert_contains "$stage" "workflow_call:" "ac-1 the stage is a reusable workflow"

@@ -3,7 +3,7 @@
 # The two-stage first-boot growth has to be documented where a reader looks for the boot
 # chain, in both languages and with the same vocabulary the code uses - otherwise the next
 # person reads a promise (`blockdev --rereadpt` right after the write) that no longer exists.
-#   ac-9 docs/boot-overlay.md and docs/boot-overlay.zh-CN.md describe the two boots, the whole
+#   ac-9 docs/architecture.md and docs/architecture.zh-CN.md describe the two boots, the whole
 #        `.ab/grow` token set the initramfs now writes, the reboot as the partition-table
 #        re-read, and the write-ahead breadcrumb; neither still lists a re-read tool as a step.
 set -uo pipefail
@@ -14,8 +14,8 @@ source "$root/tests/lib/assert.sh"
 
 cd "$root" || exit 1
 
-en="docs/boot-overlay.md"
-zh="docs/boot-overlay.zh-CN.md"
+en="docs/architecture.md"
+zh="docs/architecture.zh-CN.md"
 en_text="$(cat "$en")"
 zh_text="$(cat "$zh")"
 

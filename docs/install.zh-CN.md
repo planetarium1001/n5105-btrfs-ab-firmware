@@ -1,8 +1,7 @@
 # 安装与升级
 
 这篇是运维视角：怎么把镜像写到盘上、真机第一次启动在控制台上做什么、把机器接进网络之前要核对什么、运行中怎么升级、出问题怎么退回去。它按"手边有一台带显示器、键盘和网线的 N5105"来写，所以每一步都给出命令和该看到的输出。设计细节见
-[partitions.md](partitions.md)、[boot-overlay.md](boot-overlay.md)、
-[network.md](network.md) 与 [lifecycle.md](lifecycle.md)。
+[architecture.md](architecture.md) 与 [network.md](network.md)。
 
 ## 需要准备什么
 
@@ -182,7 +181,7 @@ ip addr add 192.168.100.1/24 dev eth1
 * **单口机不是路由器。** 种子会把它降级成 LAN-only（`stage=net-seed result=lan-only`）：唯一的口进 `br-lan`，`wan` 段被删掉。于是 `wan-present` 探针找不到 WAN 设备，那次启动不会提交该槽（`action=stay`）；LAN 侧照常可用。
 * **默认值只叠加一次。** 它们属于"生成配置的那次启动"。升级带着可写层一起走，不会重新叠加——这是有意的（你的改动优先），代价是改过的默认值只对重新写盘的机器生效。
 * **便利镜像会在 WAN 侧放开 `22/tcp`，而且没有东西替你关它。** 只有 `n5105-ab-<upstream>-install-wan-ssh.img.gz` 带 `allow_ssh_wan` 规则；默认镜像一条 WAN 规则都没有。在便利镜像上，那条规则与解绑的 `dropbear` 会一直留着，`dropbear` 也会用镜像里带的 root 口令接受密码认证。LAN 侧一旦能连，就把它关掉。
-* **用 `</dev/null` 驱动的交互 ssh 探针会把一台健康机器报成坏的。** dropbear 2025.89 在 channel 任一方向结束时立刻关掉 pty master，所以 `ssh -tt host cmd </dev/null` 会被断开，而同一个人手登录却拿得到提示符。[known-limitations.zh-CN.md](known-limitations.zh-CN.md) 写清了 errno 级的根因、三条出路，以及探针该用的形态。
+* **用 `</dev/null` 驱动的交互 ssh 探针会把一台健康机器报成坏的。** dropbear 2025.89 在 channel 任一方向结束时立刻关掉 pty master，所以 `ssh -tt host cmd </dev/null` 会被断开，而同一个人手登录却拿得到提示符。[troubleshooting.zh-CN.md](troubleshooting.zh-CN.md) 写清了 errno 级的根因、三条出路，以及探针该用的形态。
 
 ## 真机上的网络默认值
 

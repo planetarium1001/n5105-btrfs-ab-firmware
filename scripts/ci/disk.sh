@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stage "disk": assemble the four-partition disk image.
 #
-# Geometry, frozen by docs/partitions.md. Every partition carries two names: the GPT
+# Geometry, frozen by docs/architecture.md. Every partition carries two names: the GPT
 # PARTNAME that the code discovers partitions by, and the filesystem LABEL humans read.
 #
 #   p1  ab-esp     128 MiB  vfat   ESP      GRUB, ab-slot.cfg, vmlinuz-a/b, initrd-a/b, ab/, ab/log/
@@ -20,7 +20,7 @@
 # not hold the update fixture (20 MiB into upper left it at 63/64 MiB and overlayfs could
 # not create work/). First boot still grows p4 to the end of the real disk.
 #
-# Filesystem arguments are taken verbatim from docs/partitions.md:
+# Filesystem arguments are taken verbatim from docs/architecture.md:
 #   p2/p3  mkfs.btrfs -m dup -d single     (metadata duplication inside a slot)
 #   p4     mkfs.btrfs -m single -d single  (container layers inflate metadata)
 #
@@ -265,7 +265,7 @@ sudo chmod 0644 "${p1}/boot/grub/ab-slot.cfg"
 sudo mkdir -p "${p1}/ab/log"
 
 # ab/state.json describes the installed state: both slots on generation 1, slot a
-# committed (see the installation row of docs/lifecycle.md). The boot initramfs reads
+# committed (see the installation row of docs/architecture.md). The boot initramfs reads
 # it before it can mount anything, so the image has to ship it; S4 starts updating it.
 sudo tee "${p1}/ab/state.json" >/dev/null <<STATE
 {

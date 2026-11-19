@@ -184,6 +184,6 @@ rsync -aHAX /mnt/img/@data/ /srv/rescue/
 
 ## 相关
 
-- 分区几何与首启扩容：[partitions.zh-CN.md](partitions.zh-CN.md)
-- 槽模型、状态文件与命令：[lifecycle.zh-CN.md](lifecycle.zh-CN.md)
+- 分区几何与首启扩容：[architecture.zh-CN.md](architecture.zh-CN.md)
+- 槽模型、状态文件与命令：[architecture.zh-CN.md](architecture.zh-CN.md)
 - 把镜像写到盘上：[install.zh-CN.md](install.zh-CN.md)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Module: ci
-# Guards docs/ci-text-contract.md: the seven rules that decide what the pipeline says to a
+# Guards docs/ci.md: the seven rules that decide what the pipeline says to a
 # human - workflow, job and step labels, input descriptions, the stage summary, the report,
 # the diagnostics block, the issue and pull request bodies the upstream watch renders, and
 # the release title and notes.
@@ -420,7 +420,7 @@ assert_eq "$(text_scan non-ascii)" "" \
 # exemption vanished would otherwise be a rule the repository cannot follow).
 assert_eq "$(text_scan scope)" ".github/actions .github/workflows scripts/ci" \
   "rule 1 the scan covers the CI surface and only the CI surface"
-zh_hits=$(LC_ALL=C grep -c '[^ -~]' docs/ci-text-contract.zh-CN.md 2>/dev/null || true)
+zh_hits=$(LC_ALL=C grep -c '[^ -~]' docs/ci.zh-CN.md 2>/dev/null || true)
 assert_eq "$([ "${zh_hits:-0}" -gt 0 ] && echo yes || echo no)" "yes" \
   "rule 1 the translation sits outside the scan, and it does carry non-ASCII"
 
@@ -630,7 +630,7 @@ assert_contains "${refusal}" "CI_TEXT_FINGERPRINT_REASON is empty" \
 
 if [ "${CI_TEXT_FINGERPRINT_WRITE:-0}" = "1" ]; then
   {
-    printf '# CI structure fingerprint - docs/ci-text-contract.md, rule 7.\n'
+    printf '# CI structure fingerprint - docs/ci.md, rule 7.\n'
     printf '# Structure only: keys, action pins, identifiers and judge tokens. A prose\n'
     printf '# change must leave every line below byte-identical.\n'
     printf '# Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \\\n'

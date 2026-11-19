@@ -81,8 +81,7 @@ RETIRED_TOKENS = ("@wf", "genNNNN", "upper_gen", "wf-esp", "wf-slot", "wf-shared
 
 def check_retired_tokens(problems: Problems) -> None:
     """Names retired in favour of @platform and version-named layers."""
-    for name in ("README.md", "README.zh-CN.md", "partitions.md", "boot-overlay.md",
-                 "lifecycle.md", "conflicts-payload.md"):
+    for name in ("README.md", "README.zh-CN.md", "architecture.md"):
         path = DOCS / name if (DOCS / name).is_file() else ROOT / name
         if not path.is_file():
             continue
@@ -90,9 +89,9 @@ def check_retired_tokens(problems: Problems) -> None:
 
 
 def check_partitions(problems: Problems) -> None:
-    doc = read_doc("partitions.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "partitions.md",
+        "architecture.md",
         doc,
         "| p1 | `ab-esp` | `ESP` | 128 MiB | vfat |",
         "| p2 | `ab-slot-a` | `slot-a` | 128 MiB | btrfs |",
@@ -116,30 +115,30 @@ def check_partitions(problems: Problems) -> None:
     ratio = SLOT_MIB / MEASURED_ROOTFS_MIB
     if ratio < MIN_SLOT_RATIO:
         problems.add(
-            "partitions.md",
+            "architecture.md",
             f"slot headroom {ratio:.1f}x is below the {MIN_SLOT_RATIO}x floor",
         )
 
 
 def check_esp_data_only(problems: Problems) -> None:
-    doc = read_doc("partitions.md", problems)
-    problems.need("partitions.md", doc, "p1 holds data only, never executable scripts")
+    doc = read_doc("architecture.md", problems)
+    problems.need("architecture.md", doc, "p1 holds data only, never executable scripts")
 
     p1_row = next((line for line in doc.splitlines() if line.startswith("| p1 ")), "")
     if not p1_row:
-        problems.add("partitions.md", "p1 table row not found")
+        problems.add("architecture.md", "p1 table row not found")
     else:
-        problems.forbid("partitions.md", p1_row, ".sh", "ab-slot", "busybox", "/usr/")
-        problems.need("partitions.md", p1_row, "ab/")
+        problems.forbid("architecture.md", p1_row, ".sh", "ab-slot", "busybox", "/usr/")
+        problems.need("architecture.md", p1_row, "ab/")
 
-    boot = read_doc("boot-overlay.md", problems)
-    problems.need("boot-overlay.md", boot, "@platform", "degraded", "tmpfs")
+    boot = read_doc("architecture.md", problems)
+    problems.need("architecture.md", boot, "@platform", "degraded", "tmpfs")
 
 
 def check_overlay_layers(problems: Problems) -> None:
-    doc = read_doc("boot-overlay.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "boot-overlay.md",
+        "architecture.md",
         doc,
         "lowerdir=/mnt/@platform:/mnt/@sys",
         "index=off",
@@ -151,7 +150,7 @@ def check_overlay_layers(problems: Problems) -> None:
         "the `volatile` option is never used",
     )
     problems.need_prefix(
-        "boot-overlay.md",
+        "architecture.md",
         doc,
         "upperdir=/mnt/p4/@overlay-",
         "workdir=/mnt/p4/@overlay-",
@@ -159,9 +158,9 @@ def check_overlay_layers(problems: Problems) -> None:
 
 
 def check_generation_model(problems: Problems) -> None:
-    doc = read_doc("lifecycle.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "lifecycle.md",
+        "architecture.md",
         doc,
         "@overlay-<version>",
         "no subvolume is ever renamed",
@@ -175,9 +174,9 @@ def check_generation_model(problems: Problems) -> None:
 
 
 def check_gc_policy(problems: Problems) -> None:
-    doc = read_doc("lifecycle.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "lifecycle.md",
+        "architecture.md",
         doc,
         "The reference set",
         "never delete a layer that is currently mounted",
@@ -193,9 +192,9 @@ def check_gc_policy(problems: Problems) -> None:
 
 
 def check_log_ring(problems: Problems) -> None:
-    doc = read_doc("lifecycle.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "lifecycle.md",
+        "architecture.md",
         doc,
         "the composed root `/` is writable with at least 16 MiB free",
         "probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail> [reason=<token>]",
@@ -217,9 +216,9 @@ def check_log_ring(problems: Problems) -> None:
 
 
 def check_conflict_model(problems: Problems) -> None:
-    doc = read_doc("conflicts-payload.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "conflicts-payload.md",
+        "architecture.md",
         doc,
         "UpstreamChanged",
         "UserChanged",
@@ -234,9 +233,9 @@ def check_conflict_model(problems: Problems) -> None:
 
 
 def check_payload_contract(problems: Problems) -> None:
-    doc = read_doc("conflicts-payload.md", problems)
+    doc = read_doc("architecture.md", problems)
     problems.need(
-        "conflicts-payload.md",
+        "architecture.md",
         doc,
         "rootfs.tar.gz",
         "kernel.bin",

@@ -593,7 +593,7 @@ assert_contains "$(cat scripts/ci/assemble.sh)" 'sh "${check_platform}/usr/sbin/
 # page that never mentions the gate would describe a pipeline that no longer exists.
 # --------------------------------------------------------------------------- #
 
-for doc in docs/ci-release-lines docs/ci-pipeline docs/update; do
+for doc in docs/ci docs/ci docs/update; do
   for lang in md zh-CN.md; do
     assert_contains "$(cat "${doc}.${lang}")" 'needs: [build, cross]' \
       "ac-1 ${doc}.${lang} states the publish gate on build and cross"

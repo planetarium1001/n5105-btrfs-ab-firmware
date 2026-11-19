@@ -238,18 +238,6 @@ Update  base     25.12.2 -> 25.12.2
 Proceed? [y/N]
 ```
 
-Z1，一个短的 patch 跳跃：
-
-```
-Update  base     25.12.2 -> 25.12.5
-        kernel   6.12.103 -> 6.12.110
-        platform 0.0.6 -> 0.0.8
-  Change  PATCH ×3   · the entries above are what this update brings
-  Tested  YES        · patch range covered in CI
-  Risk    LOW        · running system replaced; previous slot is the way back
-Proceed? [y/N]
-```
-
 Z2，超出覆盖范围的 patch 跳跃：
 
 ```
@@ -275,25 +263,10 @@ Update  base     25.12.2 -> 25.18.0
 Proceed? [y/N]
 ```
 
-`Tested PARTLY` 这行靠什么支撑：minor 跳跃是 CI 唯一会覆盖的情形——在同一次 run 里构建上一个
-正式版，并用本发布的 payload 升级它，也就是跨版本阶段。在代码线上这个阶段是门：`release.yml`
-声明 `publish: needs: [build, cross]`，所以 cross 红着或被跳过的那次 run 不发布任何东西
-（v0.0.9 就是 cross 红着时发出去的，这个门堵的就是这个洞）。因此从这里往后发布出来的 release，
-其跨线升级都是被证明过的，而不是被假设的。这个阶段与这道门见
-[ci-release-lines.zh-CN.md](ci-release-lines.zh-CN.md)。
-
-Y2，前进几条发布线：
-
-```
-Update  base     25.12.2 -> 25.19.0
-        kernel   6.12.103 -> 6.12.150
-        platform 0.0.8 -> 0.3.0
-  Change  MINOR +2   · the entries above are what this update brings
-  Tested  NO         · lines this far apart are not built together
-  Risk    HIGHER     · compatibility is less certain than a neighbouring line
-Backup    ab-backup --help   (recommended)
-Proceed? [y/N]
-```
+`Tested PARTLY` 这行靠什么支撑：minor 跳跃是 CI 唯一会覆盖的情形——构建上一个正式版，并用
+本发布的 payload 升级它。在 tag 线上这个阶段是门：`release.yml` 声明
+`publish: needs: [build, cross]`，因此跨线升级未被证明的版本不会被发布
+（[ci.zh-CN.md](ci.zh-CN.md)）。
 
 X1，跨一条新的大版本线。这里没有 `y`：没有选路线之前命令直接拒绝，并把两条路线与理由
 一起打出来。
@@ -380,27 +353,11 @@ ab-slot packages revert          # 按最新一份快照回放版本
 已经在上 0.0.11 之前被遮蔽的机器，手工修复见 `docs/install.zh-CN.md`。
 
 那条规则是 `+` 规则，而 `apk-protected_paths(5)` 把 `+` 定义为**条件**保护：只有可见文件的
-校验和与 apk 数据库记录不一致时才保护。四个路径里只有 `lib/upgrade/platform.sh` 满足这个条件，
-因为它是这个 platform 层真正替换掉的那一个；另外三个是上游自己的文件，让 apk 跟着上游升级它们
-本来就是目的。`scripts/device/apk-protection-probe.sh` 会在一台运行中的机器上向 apk 询问这个条件，
-并到可写层里找 shadow。请在**下一次真实 `apk upgrade` 前后各跑一次** —— 基线已经是最新版的机器
-没有升级候选，所以今天能查的是探针这一半，`*.apk-new` 计数上涨那一半只有真实升级才能给出。
+校验和与 apk 数据库记录不一致时才保护。`scripts/device/apk-protection-probe.sh` 会在运行中的
+机器上向 apk 询问这个条件，并到可写层里找 shadow。
 
-为什么「造一次事务来验证保护」这条路走不通：这个镜像带的 apk-tools 3.0.5 里，`apk fix <包>`
-是空操作——它输出 `(1/1) [APK unavailable, skipped] Reinstalling <包> (<版本>)` 并且退出码为 0，
-既不下载也不提交。`base-files` 与 `busybox` 都一样，包能正常 `apk fetch` 下来、本地仓库能被 apk
-认出、缓存手工填好、甚至在一个一次性 `--root` 里把文件故意删掉，结果都是 skip。所以
-`*.apk-new` 无法按需产生：它只在真实 `apk upgrade` 有候选时出现，而已经跑在最新版上的机器没有
-候选。这就是探针改为断言前提、并把证明时刻留给下一次真实升级前后对比的原因。
-（探针打印的计数只覆盖 `/lib/upgrade` 与 `/etc/apk`，也就是这些规则与适配层所在的路径，
-不是全机的 `*.apk-new`——0.0.11 那台机器上另有十一个与此无关的历史遗留。）
-
-包列表为什么看起来是空的：`apk version -l '<'` 从缓存索引里取答案，而一台**从未跑过**
-`apk update` 的机器根本没有索引。它会打印
-`WARNING: opening from cache ...: No such file or directory`，`apk upgrade --simulate` 以
-`ERROR: Not continuing due to stale/unavailable repositories` 停下；跑过 `apk update` 之后同一条
-命令给出 `OK: ... in 282 packages`，而 `apk version -l '<'` 是一张空表。**两种情形都是空表**，
-所以要看警告与退出码，不要看表。一台已经跑在最新版上的机器确实零候选 —— 那不是 feed 坏了。
+`apk version -l '<'` 从缓存索引里取答案，所以**从未跑过** `apk update` 的机器会打印一张空表，
+还带警告与非零退出码；要看警告与退出码，不要看表。已经跑在最新版上的机器确实零候选。
 
 一条快照会报 `packages=`、`world=`、`payloads=` 与可选的 `payload-gap=`。`payloads=no` 表示这次
 快照没有带包归档（`--no-payloads`）——**它本身就是答案**，不是缺失，所以不为它另设 `reason=` 字段：
@@ -411,15 +368,12 @@ ab-slot packages revert          # 按最新一份快照回放版本
 以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。
 
 文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`，每个归档一行
-`apkfile <name> <sha256>`。这不是优化：仓库里一个包只留最新那一个版本，所以光有版本清单，
-能回退的只有源上还在的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。
-0.0.11 起改为逐包抓取：每个 world 条目一次 `apk fetch`，源上已经解析不到的包不会拖垮整组。
-apk-tools 3 不接受 `apk fetch` 的版本钉子（报 `unable to select package (or its dependencies)`），
-所以按包名抓、再拿下载到的文件和已装版本核对：源在机器安装后滚过版本的包会拿到更新的文件，这种文件
-会被丢弃并计入缺失，然后才用一次 `--recursive` 兜底。空间不够的机器可以 `--no-payloads`，得到只记清单的
-快照（`payloads no`，下一行写原因）。原因 `payload-incomplete` 表示抓取跑了但没下来全部归档——通常是源上
-已经不再保留已装版本：这种快照仍可按版本回退，但不能离线装回；需要包体就换仍保留这些版本或与已装集合
-一致的源重跑一次。
+`apkfile <name> <sha256>`：仓库里一个包只留最新那一个版本，所以光有版本清单，能回退的只有源上还在
+的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。0.0.11 起改为逐包抓取，
+源上已经解析不到的包不会拖垮整组；apk-tools 3 不接受 `apk fetch` 的版本钉子，所以按包名抓、再拿
+下载到的文件和已装版本核对，拿到更新文件的包被丢弃并计入缺失，然后才用一次 `--recursive` 兜底。
+`--no-payloads` 得到只记清单的快照（`payloads=no`）；`payload-incomplete` 表示抓取跑了但没下来
+全部归档，这种快照仍可按版本回退，但不能离线装回。
 
 `revert` 优先用包体：逐个核对快照里的 sha256，然后一次 `apk add` 事务装回。本地归档用
 `--allow-untrusted` 安装，因为设备上没有它们的 keyring；这里的信任来自快照内的摘要清单（写在同一个分区上），
@@ -605,7 +559,7 @@ ab-packages replay                           # 把所有已留的本体重新装
 接下来由 apk 的保护路径完成对人最重要的那部分：你改过的 `/etc/config/*` 保持原样，包里的副本落在
 它旁边成为 `*.apk-new`（2026-11-18 实测：`apk upgrade dnsmasq-full` 把改过的 `/etc/config/dhcp`
 原样保留，并写出 `dhcp.apk-new`）。这些文件没有人替你合并——见
-[known-limitations.zh-CN.md](known-limitations.zh-CN.md)。
+[troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)。
 
 不在范围内的是：为另一个内核构建的本体（重放它会装上加载不了的模块，所以它是 `stale-abi`，
 保持旧版本已装），以及跨基底——留住的体会重放回它为它构建的那个基底。`/etc/apk/ab/cache/` 是另一个
@@ -645,6 +599,89 @@ ab-packages replay                           # 把所有已留的本体重新装
 `AB_UPGRADE_ASSUME_TTY=1` 只给测试套件用（它没有终端）：让提示把 stdin 当作终端来读。
 它不改变哪些答案算同意，但确实绕过了 `feed-noninteractive` 的拒绝——所以设了它的管道
 能走到本来会被拒绝的那个提示。本项目里没有任何地方设置它。
+
+## 字段表
+
+槽位的每个事实都发布在某个界面上，字段靠读它来源的那个界面来核对：
+
+- `/boot/ab/state.json`——槽位状态，唯一的事实来源
+- `/boot/ab/packages`——上次升级发布的一行软件包记录
+- `/boot/ab/log/`——环形日志，用 `ab-slot log` 打印
+- `/proc/cmdline` 与 `/proc/mounts`——本次启动来自哪个槽位，以及挂载了什么
+
+下文 `<slot>` 是 `a` 或 `b`，`<version>` 是形如 `25.12.2` 的上游版本，`<layer>` 是可写层
+名字 `@overlay-<version>`（同一版本第二次使用时追加 `-r<N>`）。
+
+### 状态文件
+
+`ab/state.json` 是事实；`boot/grub/ab-slot.cfg` 是 GRUB 能读的提示。提示里是两条命令，
+fallback 在前，因此被截断的写入仍会回退到已提交槽位。
+
+| 字段 | 取值 | 含义 |
+| --- | --- | --- |
+| `generation` | 整数，只增不减 | 为回收排序可写层；不给任何层命名 |
+| `committed` | `a` \| `b` | 机器被提交运行的槽位 |
+| `pending` | `a` \| `b` \| `null` | 下次启动尝试的候选，没有则为 `null` |
+| `slots.<a\|b>.rootfs` | `<version>` | 该槽位携带的上游版本 |
+| `slots.<a\|b>.upper` | `<layer>` | 该槽位启动所用的可写层 |
+
+`generation` 只在 `ab-slot layer` 里变动，那是升级暂存槽位时调用的命令。`pending`、
+`commit`、`abandon` 与 `rollback` 只重写文件，不动这个数字。
+
+### `ab-slot status` 的字段
+
+`ab-slot status` 在 stdout 打印一行机器可读内容，在 stderr 打印人读摘要，所以
+`ab-slot status 2>/dev/null` 只剩那一行。字段顺序固定，末尾的软件包字段只在
+`/boot/ab/packages` 存在时出现。
+
+| 字段 | 取值 | 含义 | 在机器上核对 |
+| --- | --- | --- | --- |
+| `slot=` | `a` \| `b` | 本次启动运行的槽位，来自内核命令行上的 `ab.slot=`；缺失时取已提交槽位 | `grep -o 'ab.slot=[ab]' /proc/cmdline` |
+| `upper=` | `<layer>` | 运行中槽位的可写层 | `cat /boot/ab/state.json` 与 `btrfs subvolume list /mnt/p4` |
+| `generation=` | 整数 | 层排序号 | `cat /boot/ab/state.json` |
+| `committed=` | `a` \| `b` | 状态提交的槽位 | `cat /boot/ab/state.json` |
+| `pending=` | `a` \| `b` \| `none` | 下次启动尝试的候选 | `cat /boot/ab/state.json` |
+| `p4=` | `ok` \| `degraded` | `/mnt/p4` 是否挂载 | `awk '$2=="/mnt/p4"' /proc/mounts` |
+| `data=` | `ok` \| `missing` | `/data` 是否挂载 | `awk '$2=="/data"' /proc/mounts` |
+| `docker=` | `ok` \| `missing` | `/opt/docker` 是否挂载 | `awk '$2=="/opt/docker"' /proc/mounts` |
+| `swap=` | `ok` \| `missing` | `/swap` 是否挂载 | `awk '$2=="/swap"' /proc/mounts` |
+| `next=` | `a` \| `b` \| `unknown` | GRUB 将启动什么，从提示文件读回 | `ab-slot next` |
+| `disk=` | 设备节点或 `unknown` | 本机从哪块盘启动 | `ab-slot log \| grep stage=device` |
+| `method=` | `cmdline` \| `partuuid` \| `partname` \| `mount` \| `unique` \| `unresolved` \| `unavailable` | 该盘是如何确定的 | 同一条 `stage=device` 行 |
+| `boot=` | `ok` \| `degraded` \| `unknown` | 本次启动是怎么起来的，读自本次环形日志 | `ab-slot log \| grep stage=boot` |
+| `esp=` | `ok` \| `dirty` \| `unreadable` \| `unknown` | initramfs 对它挂载的 ESP 的判定 | `ab-slot log \| grep stage=esp-health` |
+| `packages=` | `aligned` \| `limited` \| `followed` \| `unknown` | 该槽位的软件包元数据是否描述它运行的 base | `cat /boot/ab/packages` |
+| `packages_reason=` | 对齐器 token、`none`、`no-record`、`other-slot`、`unknown` | 为什么是这个判定 | `cat /boot/ab/packages` |
+| `follow=` | `pending` \| `followed` \| `failed` \| `abandoned` \| `never` \| `unknown` | 软件包是否真的搬到了这个 base 上 | `ab-packages status` |
+| `reason=` | `none`、`network`、`timeout`、`no-evidence`、`apk-<rc>`、`no-world`、`no-apk`、`no-packages`、`feeds-rewritten`、`no-record`、`other-slot`、`unknown` | 上次跟随尝试为何那样结束 | `ab-packages status` |
+| `hint=` | `ab-packages update` \| `none` | 重试跟随的命令 | `sed -n 's/^.* hint=//p' /boot/ab/packages` |
+
+有三个值是没有证据就不该给出的断言，因此它们读作 `unknown` 而不是一个让人安心的默认值：
+`boot=`、`esp=` 与 `packages=`。
+
+### 在脚本里读一个字段
+
+一个函数能读出这一行的大部分内容。`^` 锚点很重要：没有它，`reason=` 也会匹配
+`packages_reason=`。
+
+```sh
+ab-field() { ab-slot status 2>/dev/null | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+ab-field pending
+ab-field follow
+```
+
+`hint=` 的取值里带空格，因为它的值是一条命令，所以它是记录的最后一项，并有自己的读法：
+
+```sh
+sed -n 's/^.* hint=//p' /boot/ab/packages
+```
+
+点名词位版本的字段有自己的命令，根本不读状态行：
+
+```sh
+ab-slot rootfs a
+ab-slot rootfs b
+```
 
 ## 退出码
 
@@ -701,17 +738,14 @@ payload 下载下来之后可能被拒绝的那些 reason 属于安装器，列�
 
 ## 跨度大之前先备份
 
-Z2、Y2、X1 会打一行 `Backup    ab-backup --help   (recommended)`。那只是建议和一条你自己
-去执行的命令，没有任何东西替你调 `ab-backup`。之所以打印而不自动执行，是因为它需要目标
-介质和装得下这个包的空间，而一次悄悄失败的备份比没有备份更糟。
+Z2、Y2、X1 会打一行 `Backup    ab-backup --help   (recommended)`。那只是建议：没有任何东西
+替你调 `ab-backup`，因为它需要目标介质和装得下这个包的空间。
 
-这里备份买到的是什么：这条更新路径永远能退回**上一个槽位**，因为今天在跑的槽位没有被碰过。
-但一旦旧发布从 feed 里消失，它不能把你退回**上一个发布**，也不能找回你在 `/data` 下改过的
-文件。三种产物、各自能恢复到多大的盘、以及恢复决策树，见
-[backup.zh-CN.md](backup.zh-CN.md)。
-
-升级出问题之后的恢复路径见 [lifecycle.zh-CN.md](lifecycle.zh-CN.md)（更新事务与自动回退）
-以及 [install.zh-CN.md](install.zh-CN.md)（引导器写到一半被打断）。
+这条更新路径永远能退回**上一个槽位**，因为今天在跑的槽位没有被碰过。但一旦旧发布从 feed 里
+消失，它不能把你退回**上一个发布**，也不能找回你在 `/data` 下改过的文件。三种产物与恢复决策树
+见 [backup.zh-CN.md](backup.zh-CN.md)；更新事务与自动回退见
+[architecture.zh-CN.md](architecture.zh-CN.md)，引导器写到一半被打断见
+[install.zh-CN.md](install.zh-CN.md)。
 
 ## 自建 feed
 

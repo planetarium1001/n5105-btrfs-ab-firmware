@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage "image-verify": assert the assembled image against docs/partitions.md.
+# Stage "image-verify": assert the assembled image against docs/architecture.md.
 #
 # This runs on the host against the raw image, so a regression is caught with a
 # precise message and without waiting for a boot. The QEMU stage repeats the
@@ -220,7 +220,7 @@ if problems:
         print(f"  - {item}", file=sys.stderr)
     sys.exit(1)
 print("[image-verify] PARTNAME ab-esp/ab-slot-a/ab-slot-b/ab-data and "
-      "LABEL ESP/slot-a/slot-b/data match docs/partitions.md")
+      "LABEL ESP/slot-a/slot-b/data match docs/architecture.md")
 PYTHON
 note "four partitions carry the documented PARTNAME and LABEL, plus the sizes and types"
 

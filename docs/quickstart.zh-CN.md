@@ -131,7 +131,7 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
 社区应用走的是同一条路：同样一条 `apk add <name>`，同样看一条装完之后的事实，而这条事实不总是
 版本号。本项目实测的样本，以及每个样本看的是哪条事实，在
 `tests/fixtures/software-samples.json` 与 `tests/fixtures/follow-samples.json` 里
-（[known-limitations.zh-CN.md](known-limitations.zh-CN.md#包只在跟随能跑的时候才跟上基底)）。
+（[troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)）。
 
 ## 第四步：升级一次
 
@@ -206,7 +206,7 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    ```
    预期：`committed=<上一个槽>`、`pending=none`、`next=` 与它相等、`p4=ok`。`generation=` 停在
    原地，因为回退移动的是指针，而不是造出一个新的代
-   （[lifecycle.zh-CN.md](lifecycle.zh-CN.md#可写层命名)、`scripts/device/recovery-probe.sh`）。
+   （[architecture.zh-CN.md](architecture.zh-CN.md#升级事务)、`scripts/device/recovery-probe.sh`）。
 4. 读你回退到的那个槽的包结论。
    ```sh
    ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(packages|packages_reason)='
@@ -228,7 +228,7 @@ ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(slot|committed|pending|nex
 ```
 
 预期：一行一个 `field=value`。下表是这些字段的含义，以及它们在机器上从哪里读。其余字段见
-[update-mechanism.zh-CN.md](update-mechanism.zh-CN.md#字段表)。
+[update.zh-CN.md](update.zh-CN.md#字段表)。
 
 | 字段 | 取值 | 含义 | 验证命令 |
 | --- | --- | --- | --- |
@@ -272,10 +272,10 @@ ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(slot|committed|pending|nex
 其余文档在四个方向上深入：模型、feed、备份与边界。每一页都是自己那个主题的唯一来源，本页不重复
 它们。
 
-- [update-mechanism.zh-CN.md](update-mechanism.zh-CN.md)：字段参考、A/B 状态机，以及包跟随与
+- [update.zh-CN.md](update.zh-CN.md)：字段参考、A/B 状态机，以及包跟随与
   剪枝背后的闸门。
 - [update.zh-CN.md](update.zh-CN.md)：发布 feed、三个版本号、五个风险级别，以及每一个
   `reason=` token。
 - [backup.zh-CN.md](backup.zh-CN.md)：三种产物，以及各自能恢复到什么介质上。
-- [known-limitations.zh-CN.md](known-limitations.zh-CN.md)：本项目决定不改的行为，以及那个决定
+- [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)：本项目决定不改的行为，以及那个决定
   背后的证据。
