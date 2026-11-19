@@ -2287,6 +2287,12 @@ scen_hop() {
     # comparison, which is right -- the movement is not a criterion -- but the value the hop
     # lands in is judged here, and the failure names both fields, so `limited` comes with the
     # reason the aligner recorded.
+    # `followed` is accepted beside `aligned`, and it is not a loosening: the product reports
+    # it for the same metadata after the follow transaction moved the packages onto the new
+    # base, so a jump that carried 168 packages there lands in it. Judging only `aligned` made
+    # the strongest possible outcome of a jump read as a failure (round 2: S3/S4/S7 red on a
+    # hop that had done exactly what ac-3 asks for). `limited` and `unknown` still fail: the
+    # first cannot install anything for its own kernel, the second is no record at all.
     _check assert_field packages aligned "${_case}"
     _check assert_field packages_reason none "${_case}"
     [ "${CASE_FAILED}" -eq 0 ] || return 1
@@ -4037,7 +4043,7 @@ plan_case() {
             printf '%s software apk info -e <every recorded package> expect=present, and every package with files has at least one of them\n' "${_case}"
             printf '%s software exec <curl, htop> expect=the same exit status as the baseline taken in S1\n' "${_case}"
             printf '%s abi kmod vs uname -r expect=match is silent, stale/missing/unknown is a FINDING: naming what to reinstall (never FAIL)\n' "${_case}"
-            printf '%s hop-packages assert packages=aligned packages_reason=none expect=PASS; a machine left limited names the reason the aligner recorded (this is judged, not reported)\n' "${_case}"
+            printf '%s hop-packages assert packages=aligned packages_reason=none expect=PASS; packages=followed is the same metadata after the follow transaction moved the packages onto this base and is accepted too, a machine left limited names the reason the aligner recorded, and unknown means no record was written (this is judged, not reported)\n' "${_case}"
             printf '%s platform mounts expect=boot=ok esp=ok data=ok p4=ok pending=none, overlay writable\n' "${_case}"
             printf '%s platform services %s expect=/etc/init.d/<svc> stop and start both exit 0\n' "${_case}" "${SCEN_SERVICES}"
             printf '%s record\n' "${_case}"

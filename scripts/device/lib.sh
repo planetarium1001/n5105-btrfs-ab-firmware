@@ -71,18 +71,61 @@ AB_POLL_INTERVAL=${AB_POLL_INTERVAL:-5}
 AB_WAIT_SETTLE=$(( AB_WAIT_UP_HARD - AB_WAIT_UP_FIRST ))
 [ "${AB_WAIT_SETTLE}" -ge "${AB_POLL_INTERVAL}" ] || AB_WAIT_SETTLE=${AB_POLL_INTERVAL}
 
-# The boot ring log. boot-0.log belongs to the current boot and boot-1.log to the one
-# before it, and the ring rotates: the breadcrumb of the boot that committed is not
-# always in boot-0.log (measured: stage=mark only ever appears in boot-1.log/boot-2.log)
-# while the current boot's stage=commit is. Every reader therefore searches both files
-# and only then falls back to `ab-slot log --prev`.
+# The boot ring log. boot-0.log belongs to the current boot, boot-1.log to the one before
+# it and boot-2.log to the one before that: ab-boot's rotate_logs keeps exactly three
+# generations, deleting boot-2.log before it shifts the other two. A reader that searches
+# only two of them can report a healthy hop as silent. That is not hypothetical: the first
+# boot of a new base runs the package follow (168 packages measured on this box), and the
+# machine can be rebooted again before the commit line of that boot is read, which moves
+# the line to boot-2.log. `ab-slot log` has --prev (boot-1) and --upgrade, but no --prev2,
+# so the third generation is read by its path.
 AB_BOOT_LOG=${AB_BOOT_LOG:-/boot/ab/log/boot-0.log}
 AB_BOOT_LOG_PREV=${AB_BOOT_LOG_PREV:-/boot/ab/log/boot-1.log}
+AB_BOOT_LOG_PREV2=${AB_BOOT_LOG_PREV2:-/boot/ab/log/boot-2.log}
+AB_CURRENT_LOG_CMD=${AB_CURRENT_LOG_CMD:-ab-slot log}
 AB_PREV_LOG_CMD=${AB_PREV_LOG_CMD:-ab-slot log --prev}
-# Local copies of those two files for the hop under test; empty means "not collected",
-# which is normal for boot-1.log on a machine that has only booted once.
+# The third generation is read by its path, not by a subcommand: `ab-slot log` answers for
+# boot-0 and has --prev for boot-1, and there is no --prev2 to invent here. Empty means
+# "build it from AB_BOOT_LOG_PREV2 at the moment of the search", so a caller that repoints
+# the path also repoints the fallback instead of leaving a stale command behind.
+AB_PREV2_LOG_CMD=${AB_PREV2_LOG_CMD:-}
+# Local copies of those three files for the hop under test; empty means "not collected",
+# which is normal for boot-1.log on a machine that booted once and for boot-2.log on one
+# that booted twice.
 AB_BOOT_LOG_LOCAL=${AB_BOOT_LOG_LOCAL:-}
 AB_BOOT_LOG_PREV_LOCAL=${AB_BOOT_LOG_PREV_LOCAL:-}
+AB_BOOT_LOG_PREV2_LOCAL=${AB_BOOT_LOG_PREV2_LOCAL:-}
+# A commit breadcrumb is retried, bounded: ab-commit records the decision in ab/state.json
+# before it appends the ring line, so a settle poll that watches pending=none can read the
+# log a moment too early. The last attempt decides, so a machine that wrote nothing still
+# fails.
+AB_BOOT_MARK_TRIES=${AB_BOOT_MARK_TRIES:-3}
+AB_BOOT_MARK_WAIT=${AB_BOOT_MARK_WAIT:-2}
+# A hop reboots the machine and then runs the package follow as a background worker, and a
+# sample whose criterion needs a service can be mid-restart while that worker moves packages
+# under it. docker is the measured case: on this box its criterion answered `client=yes
+# daemon=no` right after a hop whose first boot followed 168 packages, and answered again a
+# few minutes later without anything else changing. A failing verify is therefore retried,
+# bounded, and the last attempt decides: a service that needed to come back is not reported
+# as a broken package, while a package that really stopped working - dropped from the world,
+# config hash moved - fails every attempt and still lands red.
+# The budget is the measured window, not a guess: 6 x 10 s covers the follow of a first boot
+# plus procd's respawn, and each attempt is written into the evidence with the
+# `packages=`/`follow=` pair so the next run can tell "still following" from "broken".
+AB_FOLLOW_TRIES=${AB_FOLLOW_TRIES:-6}
+AB_FOLLOW_WAIT=${AB_FOLLOW_WAIT:-10}
+
+# ab_packages_state <status_line>: `packages=` and `follow=` as one token pair, for evidence.
+# The first boot of a new base runs the package follow in a background worker, and a sample
+# whose criterion needs one of the packages that follow is moving can fail for as long as the
+# worker runs. Recording the pair beside a retry is what lets a reader tell "the probe asked
+# while the follow was still running" from "the package did not survive the hop" without
+# another device run.
+ab_packages_state() {
+    _aps_packages=$(status_field "${1:-}" packages) || _aps_packages=unknown
+    _aps_follow=$(status_field "${1:-}" follow) || _aps_follow=unknown
+    printf 'packages=%s follow=%s\n' "${_aps_packages}" "${_aps_follow}"
+}
 
 AB_RESULTS=${AB_RESULTS:-results.tsv}
 AB_ASSERT_FAILURES=0
@@ -537,8 +580,8 @@ dev_collect() {
 }
 
 # dev_collect_optional <remote_path> <local_path>: pull a file that may not exist.
-# boot-1.log is normal to be missing on a machine that booted once, so a missing ring
-# log is recorded and not treated as a failed step.
+# A ring log is normal to be missing on a machine that has not booted that many times, so a
+# missing boot-1.log or boot-2.log is recorded and not treated as a failed step.
 dev_collect_optional() {
     dev_collect "${1:?dev_collect_optional needs a remote path}" \
         "${2:?dev_collect_optional needs a local path}"
@@ -617,6 +660,48 @@ _dev_assert_fail() { # <case> <message>
     ev "FAIL ${1:--} ${2:-assertion failed}"
 }
 
+# _packages_assert <got> <want> <case>: `packages` is the one field whose expected value
+# is a floor, not an equality.
+#
+# The product reports three states it can stand behind (platform/usr/sbin/ab-slot
+# packages_state): `aligned` (the metadata names this base, the packages have not moved),
+# `followed` (the same metadata after the follow transaction moved the packages onto this
+# base) and `limited` (the metadata is partial; `packages_reason` names why). `followed` is
+# strictly stronger than `aligned`, so a hop that installed a payload with packages to
+# follow lands in `followed` and used to fail an `aligned` assertion exactly when the
+# feature worked. `limited` is not accepted here: for a hop that claims the packages are
+# usable it is a real defect, and the reason is named so the reader knows which part of the
+# world broke. `unknown` stays a failure too: it means no record, never "already aligned".
+_packages_assert() {
+    _pkg_got=${1-}
+    _pkg_want=${2-}
+    _pkg_case=${3:-?}
+    case "${_pkg_want}" in
+        aligned)
+            case "${_pkg_got}" in
+                aligned | followed) return 0 ;;
+                limited)
+                    _pkg_reason=$(status_field "${AB_STATUS_LINE:-}" packages_reason) || _pkg_reason=unknown
+                    _dev_assert_fail "${_pkg_case}" \
+                        "assert_field packages: expected=aligned got=limited (packages_reason=${_pkg_reason})"
+                    return 1
+                    ;;
+                *)
+                    _dev_assert_fail "${_pkg_case}" \
+                        "assert_field packages: expected=aligned got=${_pkg_got}"
+                    return 1
+                    ;;
+            esac
+            ;;
+        *)
+            [ "${_pkg_got}" = "${_pkg_want}" ] && return 0
+            _dev_assert_fail "${_pkg_case}" \
+                "assert_field packages: expected=${_pkg_want} got=${_pkg_got}"
+            return 1
+            ;;
+    esac
+}
+
 # assert_field <field> <expected> <case>: a field of the captured status line.
 assert_field() {
     _field=${1:?assert_field needs a field}
@@ -630,6 +715,10 @@ assert_field() {
         fi
     fi
     _got=$(status_field "${AB_STATUS_LINE}" "${_field}") || _got=missing
+    if [ "${_field}" = "packages" ]; then
+        _packages_assert "${_got}" "${_want}" "${_case}"
+        return $?
+    fi
     [ "${_got}" = "${_want}" ] && return 0
     _dev_assert_fail "${_case}" "assert_field ${_field}: expected=${_want} got=${_got}"
     return 1
@@ -707,17 +796,20 @@ dev_version_re() {
 }
 
 # boot_mark_find <extended regex>: where the boot wrote one breadcrumb.
-# Prints "<source>: <line>" for the first source that has it, searching boot-0.log, then
-# boot-1.log, then `ab-slot log --prev` on the machine. That order is what the ring log
-# dictates: boot-0.log carries the current boot's stage=commit, while stage=mark lives
-# in the previous boot's file, and a log that is still being written has neither. A
-# caller that only ever grepped boot-0.log would report every healthy hop as red.
-# The source is named by the remote file, not by the local copy, so a reader of the
-# evidence sees the file on the machine and not the name this run happened to give it.
+# Prints "<source>: <line>" for the first source that has it, searching the collected
+# boot-0/boot-1/boot-2 copies, then the live ring on the machine (`ab-slot log`, then
+# `ab-slot log --prev`, then the boot-2 path). That order is what the ring log dictates:
+# boot-0.log carries the current boot's stage=commit, stage=mark lives in a previous boot's
+# file, and the first boot of a new base can be followed by enough reboots that the commit
+# line is in boot-2.log. The live sources come last so a normal hop pays no ssh at all,
+# while a line that landed after the copy was collected is still found. The source is named
+# by the remote file or command, not by the local copy, so a reader of the evidence sees
+# the file on the machine and not the name this run happened to give it.
 boot_mark_find() {
     _pattern=${1?boot_mark_find needs a pattern}
     for _pair in "${AB_BOOT_LOG_LOCAL}|${AB_BOOT_LOG}" \
-        "${AB_BOOT_LOG_PREV_LOCAL}|${AB_BOOT_LOG_PREV}"; do
+        "${AB_BOOT_LOG_PREV_LOCAL}|${AB_BOOT_LOG_PREV}" \
+        "${AB_BOOT_LOG_PREV2_LOCAL}|${AB_BOOT_LOG_PREV2}"; do
         _file=${_pair%%|*}
         [ -n "${_file}" ] || continue
         [ -f "${_file}" ] || continue
@@ -726,25 +818,40 @@ boot_mark_find() {
         printf '%s: %s\n' "$(basename "${_pair#*|}")" "${_hit}"
         return 0
     done
-    _hit=$(dev_ssh "${AB_PREV_LOG_CMD}" 2>/dev/null | grep -E "${_pattern}" | tail -n 1)
-    [ -n "${_hit}" ] || return 1
-    printf '%s: %s\n' "${AB_PREV_LOG_CMD}" "${_hit}"
+    for _cmd in "${AB_CURRENT_LOG_CMD}" "${AB_PREV_LOG_CMD}" \
+        "${AB_PREV2_LOG_CMD:-cat ${AB_BOOT_LOG_PREV2}}"; do
+        [ -n "${_cmd}" ] || continue
+        _hit=$(dev_ssh "${_cmd}" 2>/dev/null | grep -E "${_pattern}" | tail -n 1)
+        [ -n "${_hit}" ] || continue
+        printf '%s: %s\n' "${_cmd}" "${_hit}"
+        return 0
+    done
+    return 1
 }
 
 # assert_boot_mark <case> <extended regex> <label>: the breadcrumb exists somewhere the
 # ring log can have put it. The evidence records which source answered, because a reader
 # of a red row has to tell "the machine wrote nothing" from "the matrix looked in the
-# wrong file".
+# wrong file". A miss is retried, bounded: ab-commit records the decision in ab/state.json
+# before it appends the ring line, so a settle poll that watches pending=none can collect
+# the log a moment too early. The retry re-reads the live ring, and the last attempt still
+# fails a machine that wrote nothing.
 assert_boot_mark() {
     _case=${1:-?}
     _pattern=${2?assert_boot_mark needs a pattern}
     _label=${3:-log line}
-    if _hit=$(boot_mark_find "${_pattern}"); then
-        ev "boot-mark ${_label}: hit ${_hit}"
-        return 0
-    fi
+    _attempt=0
+    while :; do
+        _attempt=$((_attempt + 1))
+        if _hit=$(boot_mark_find "${_pattern}"); then
+            ev "boot-mark ${_label}: hit ${_hit}"
+            return 0
+        fi
+        [ "${_attempt}" -lt "${AB_BOOT_MARK_TRIES}" ] || break
+        sleep "${AB_BOOT_MARK_WAIT}"
+    done
     _dev_assert_fail "${_case}" \
-        "assert_boot_mark ${_label}: /${_pattern}/ not in ${AB_BOOT_LOG}, not in ${AB_BOOT_LOG_PREV} (collected as ${AB_BOOT_LOG_LOCAL:-none} and ${AB_BOOT_LOG_PREV_LOCAL:-none}), and not in \`${AB_PREV_LOG_CMD}\`"
+        "assert_boot_mark ${_label}: /${_pattern}/ not in ${AB_BOOT_LOG}, ${AB_BOOT_LOG_PREV}, ${AB_BOOT_LOG_PREV2} (collected as ${AB_BOOT_LOG_LOCAL:-none}, ${AB_BOOT_LOG_PREV_LOCAL:-none}, ${AB_BOOT_LOG_PREV2_LOCAL:-none}), and not in \`${AB_CURRENT_LOG_CMD}\`, \`${AB_PREV_LOG_CMD}\`, \`${AB_PREV2_LOG_CMD:-cat ${AB_BOOT_LOG_PREV2}}\`"
     return 1
 }
 

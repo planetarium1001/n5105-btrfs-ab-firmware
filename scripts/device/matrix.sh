@@ -278,17 +278,37 @@ assert_follow() {
     # The hop that just happened may still be finishing: a first boot on a new base also
     # runs the package refresh, and on this box that is minutes of apk against the feeds.
     # A driver that reports "no machine answered" is retried; a real verdict is not.
+    # A failing pass is retried too, bounded: the samples include one whose criterion needs
+    # a running daemon (docker), and the daemon can still be starting when the hop's ssh
+    # answers. A package that really stopped working fails every attempt, so the final
+    # verdict still says what it always did.
     _follow_attempt=0
     while :; do
         _follow_attempt=$((_follow_attempt + 1))
         _follow_rc=0
         _follow_out=$(sh "${FOLLOW_PROBE}" --verify --state "${AB_FOLLOW_STATE}" 2>&1) || _follow_rc=$?
-        [ "${_follow_rc}" -eq 3 ] && [ "${_follow_attempt}" -lt 4 ] || break
-        case "${_follow_out}" in
-            *no-machine*) sleep 30 ;;
-            *) break ;;
+        case "${_follow_rc}" in
+            0 | 2 | 4) break ;;
+            3)
+                [ "${_follow_attempt}" -lt 4 ] || break
+                case "${_follow_out}" in
+                    *no-machine*) sleep 30 ;;
+                    *) break ;;
+                esac
+                ;;
+            *)
+                [ "${_follow_attempt}" -lt "${AB_FOLLOW_TRIES}" ] || break
+                # Recorded, never silent: a reader of a green row has to be able to see that
+                # the samples needed a second look, or a service that is merely slow and one
+                # that is broken read the same way. The packages/follow pair is what tells a
+                # reader whether the follow worker was still moving packages when the probe
+                # asked, which is the measured shape of a first boot on a new base.
+                ev "follow ${_case}: attempt ${_follow_attempt}/${AB_FOLLOW_TRIES} exited ${_follow_rc} ($(ab_packages_state "${AB_STATUS_LINE:-}")), asking again in ${AB_FOLLOW_WAIT}s"
+                sleep "${AB_FOLLOW_WAIT}"
+                ;;
         esac
     done
+    [ "${_follow_attempt}" -le 1 ] || ev "follow ${_case}: judged on attempt ${_follow_attempt}/${AB_FOLLOW_TRIES}"
     printf '%s\n' "${_follow_out}" | sed 's/^/  /'
     ev "follow ${_case} rc=${_follow_rc} probe=${FOLLOW_PROBE}"
     case "${_follow_rc}" in
@@ -440,17 +460,23 @@ hop_install() {
         return 1
     fi
     AB_STATUS_LINE=${_booted}
-    # Both files of the ring log are collected, and a missing one is normal rather than an
-    # error: boot-1.log does not exist on a machine that has booted once, and boot-0.log is
-    # the one that is still being written. Which file carried the breadcrumb is decided by
-    # assert_boot_log and recorded in the evidence.
+    # All three files of the ring log are collected, and a missing one is normal rather than
+    # an error: boot-1.log does not exist on a machine that has booted once, boot-2.log on
+    # one that has booted twice, and boot-0.log is the one that is still being written.
+    # Which file carried the breadcrumb is decided by assert_boot_log and recorded in the
+    # evidence. The third generation is not optional: the first boot of a new base runs the
+    # package follow, and a further reboot before the commit line is read moves that line
+    # to boot-2.log.
     _log_base="${AB_EVIDENCE_LOG%.log}-boot-${_version}"
     AB_BOOT_LOG_LOCAL="${_log_base}-0.log"
     AB_BOOT_LOG_PREV_LOCAL="${_log_base}-1.log"
+    AB_BOOT_LOG_PREV2_LOCAL="${_log_base}-2.log"
     dev_capture "${AB_EVIDENCE_LOG}" dev_collect_optional "${AB_BOOT_LOG}" "${AB_BOOT_LOG_LOCAL}" \
         || ev "boot log not collected: ${AB_BOOT_LOG}"
     dev_capture "${AB_EVIDENCE_LOG}" dev_collect_optional "${AB_BOOT_LOG_PREV}" "${AB_BOOT_LOG_PREV_LOCAL}" \
         || ev "previous boot log not collected: ${AB_BOOT_LOG_PREV} (normal on a machine that booted once)"
+    dev_capture "${AB_EVIDENCE_LOG}" dev_collect_optional "${AB_BOOT_LOG_PREV2}" "${AB_BOOT_LOG_PREV2_LOCAL}" \
+        || ev "third boot log not collected: ${AB_BOOT_LOG_PREV2} (normal on a machine that booted twice)"
 
     HOP_FAILED=0
     # The plan line promises this comparison, so the run has to make it: the stable fields
@@ -461,6 +487,14 @@ hop_install() {
     assert_boot_health "${_case}" "$((_gen_before + 1))"
     _check assert_field slot "${_target}" "${_case}"
     _check assert_field committed "${_target}" "${_case}"
+    # packages= is recorded here, not judged. Two facts decide that: ab-commit retargets the
+    # package record at commit time, and the follow worker publishes `followed` afterwards,
+    # so the value a settle poll sees depends on whether the worker finished first - a
+    # healthy hop can read `unknown reason=no-record` for a moment. Judging it here would
+    # turn that timing into a red row. The drivers whose hop *is* the package question
+    # (matrix-rise, matrix2, scenarios) judge it after their own settle, where the product's
+    # own state machine has finished; matrix's question is the switch.
+    ev "packages ${_case}: $(ab_packages_state "${_booted}")"
     _check assert_match "$(status_field "${_booted}" upper || printf '')" \
         "^@overlay-$(dev_version_re "${_version}")(-r[0-9]+)?\$" "${_case}" upper
     _check assert_boot_log "${_case}" "${_version}"
@@ -746,13 +780,14 @@ plan_case() {
         printf '%s %s/%s settle until boot=ok pending=none (wait_up answers before the commit lands; %s s left of the %s s cap)\n' \
             "${_case}" "${_idx}" "${_total}" "${AB_WAIT_SETTLE}" "${AB_WAIT_UP_HARD}"
         printf '%s %s/%s status\n' "${_case}" "${_idx}" "${_total}"
-        printf '%s %s/%s collect %s %s (a missing file is not an error)\n' "${_case}" "${_idx}" "${_total}" \
-            "${AB_BOOT_LOG}" "${AB_BOOT_LOG_PREV}"
+        printf '%s %s/%s collect %s %s %s (a missing file is not an error)\n' "${_case}" "${_idx}" "${_total}" \
+            "${AB_BOOT_LOG}" "${AB_BOOT_LOG_PREV}" "${AB_BOOT_LOG_PREV2}"
         # Rendered from the switch criterion in lib.sh, so the plan and the check that
         # judges the run cannot describe different fields.
         ab_status_switch_expect "${_case}" "<other>" "${_version}" "${_idx}/${_total}"
-        printf '%s %s/%s assert boot-log healthcheck-done-result-ok commit-action-commit in boot-0.log, else boot-1.log, else `%s`\n' \
-            "${_case}" "${_idx}" "${_total}" "${AB_PREV_LOG_CMD}"
+        printf '%s %s/%s assert boot-log healthcheck-done-result-ok commit-action-commit in boot-0.log, else boot-1.log, else boot-2.log, else `%s`/`%s`/`%s`\n' \
+            "${_case}" "${_idx}" "${_total}" "${AB_CURRENT_LOG_CMD}" "${AB_PREV_LOG_CMD}" \
+            "${AB_PREV2_LOG_CMD:-cat ${AB_BOOT_LOG_PREV2}}"
         printf '%s %s/%s assert markers data+config replaced-nothing\n' "${_case}" "${_idx}" "${_total}"
         printf '%s %s/%s assert layer-invariant every slot upper exists and no unreferenced @overlay-* survives (count %s is a hint, not the assertion)\n' \
             "${_case}" "${_idx}" "${_total}" "${AB_LAYER_COUNT}"

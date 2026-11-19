@@ -54,6 +54,29 @@
 #             by design (ab-pkgs-assets.sh:31) and is not a local package any more; this
 #             driver reports that as the store deleting it, not as a chain defect.
 #
+# Where a local body comes from, and why `auto` exists
+# ---------------------------------------------------
+# The class needs a body no feed offers, and neither the machine nor the checkout keeps one:
+# `/var` is a tmpfs, so an `.apk` installed from a file is gone when the transaction ends
+# (measured 2026-11-18). Three ways to supply one, and each says something different:
+#
+#   --local-apk <file>  an operator's own file. The real thing, and the only form that
+#                       proves a body from outside this repository replays.
+#   --local-pkg <name>  a body the machine already keeps in /etc/apk/ab/local/, which is the
+#                       state of a machine where a local package was installed earlier.
+#   --local-apk auto    this driver builds one. It exists because the acceptance round of
+#                       2026-11-19 ran this chain with neither and recorded
+#                       `local:no-body` as a GAP on every attempt - a row that reads as a
+#                       product defect while it is a missing fixture. The body is a real apk
+#                       archive in the two-member v2 container apk-tools still reads, so the
+#                       proof is still the product's own `apk add --allow-untrusted`, not a
+#                       stub. What it cannot prove is that an operator's own file replays;
+#                       that is what --local-apk <file> is for.
+#
+# `auto` is not the default. A bare run keeps answering `local:no-body` and names the flags,
+# because "which package is the local sample" is an environment fact this driver must not
+# invent behind an operator's back; the orchestrator asks for it explicitly.
+#
 # World entries, and the one legitimate way one can disappear
 # ----------------------------------------------------------
 # Every class's entry in /etc/apk/world has to survive the hop. The one recorded exception is
@@ -162,10 +185,24 @@ CUSTOM_URL=${AB_PKGCLASS_CUSTOMFEED_URL:-}
 # on every hop, so the world of the next hop is comparable with the one of this hop.
 NEW_PKG=${AB_PKGCLASS_NEW_PKG:-tmux}
 # The local class. A body no feed offers is what makes it local, so a body has to be supplied:
-# --local-apk pushes one, and --local-pkg adopts a body already kept in <assets>/. Neither is
-# a default, because a package the feeds still offer is `superseded`, not local.
+# --local-apk pushes one, --local-pkg adopts a body already kept in <assets>/, and
+# --local-apk auto builds one (see the header). None of them is a default, because a package
+# the feeds still offer is `superseded`, not local, and because "which package is the local
+# sample" is an environment fact rather than something to invent silently.
 LOCAL_PKG=${AB_PKGCLASS_LOCAL_PKG:-}
 LOCAL_APK=${AB_PKGCLASS_LOCAL_APK:-}
+# Whether --local-pkg was said on the command line, as opposed to inherited from
+# AB_PKGCLASS_LOCAL_PKG. The two weigh differently against --local-apk auto: an explicit flag
+# that contradicts the built body is an error, while an environment default is a default and
+# yields to the flag that was actually typed.
+LOCAL_PKG_EXPLICIT=0
+# The body `auto` builds. The name and the version are fixed rather than knobs: the store's
+# `<name>-<version>.apk` file name is the interface the gate looks bodies up by
+# (ab-pkgs-assets.sh:20), and a knob here would be a second place that decides it.
+LOCAL_BODY_PKG="ab-pkgclass-local"
+LOCAL_BODY_VERSION="1.0.0-r1"
+# Where a body came from, for the row: given, kept (already on the machine) or built.
+LOCAL_BODY_SOURCE=""
 
 # The three classes, in the order they are installed and judged. Fixed, not a knob: a chain
 # that quietly dropped the class a machine cannot serve would look green and cover two thirds
@@ -219,6 +256,7 @@ usage: package-classes.sh [--only <case>] [--from <step>] [--resume]
   --new-pkg NAME           a package the source has not served yet (default tmux)
   --local-pkg NAME         adopt the body already kept for NAME in /etc/apk/ab/local/
   --local-apk PATH         push this .apk and install it as a local package
+  --local-apk auto         build the local class body instead of asking for one
   --dry-run                print the chain and each class's criterion; no ssh is sent
 
 Exit: 0 all PASS, 1 a FAIL, 2 usage, 3 red line, 4 GAP (payload or baseline missing).
@@ -285,6 +323,7 @@ while [ $# -gt 0 ]; do
             ;;
         --local-pkg)
             LOCAL_PKG=${2:?--local-pkg needs a name}
+            LOCAL_PKG_EXPLICIT=1
             shift 2
             ;;
         --local-apk)
@@ -307,6 +346,28 @@ while [ $# -gt 0 ]; do
     esac
 done
 PAYLOAD_SPECS=${PAYLOAD_SPECS:-}
+
+# --local-apk auto names its own package, so the plan, the payload preflight and the baseline
+# all talk about the same sample before a byte is built.
+#
+# A --local-pkg *flag* beside it is a usage error rather than a preference: the body that gets
+# built carries one name, and a run that said two would install one package and then judge
+# another - a `local:no-body` on the second one, which is the GAP this flag exists to remove.
+# A name inherited from AB_PKGCLASS_LOCAL_PKG is a default and yields, because the flag that
+# was typed is the more recent instruction; the replacement is printed so the run says which
+# sample it is actually about.
+if [ "${LOCAL_APK}" = "auto" ]; then
+    if [ "${LOCAL_PKG_EXPLICIT}" = "1" ] && [ "${LOCAL_PKG}" != "${LOCAL_BODY_PKG}" ]; then
+        printf 'package-classes: --local-apk auto builds %s, so --local-pkg %s names a package that body will not install; pass one of them\n' \
+            "${LOCAL_BODY_PKG}" "${LOCAL_PKG}" >&2
+        exit 2
+    fi
+    if [ -n "${LOCAL_PKG}" ] && [ "${LOCAL_PKG}" != "${LOCAL_BODY_PKG}" ]; then
+        printf 'package-classes: --local-apk auto builds %s, so it replaces the local sample %s from AB_PKGCLASS_LOCAL_PKG\n' \
+            "${LOCAL_BODY_PKG}" "${LOCAL_PKG}" >&2
+    fi
+    LOCAL_PKG=${LOCAL_BODY_PKG}
+fi
 
 if [ -n "${ONLY_CASE}" ] && [ -n "${FROM_STEP}" ]; then
     printf 'package-classes: --only and --from answer different questions; pass one\n' >&2
@@ -1020,6 +1081,152 @@ _dropped_has() {
     } END { exit !found }'
 }
 
+# --------------------------------------------------------------------------- #
+# The local class's body, when the run has to supply one
+#
+# `--local-apk auto` builds a package the feeds do not offer, so that the local class is
+# measured instead of reported as a missing fixture. Everything below runs on the operator's
+# machine and writes nothing on the device: the built file is pushed the way any other body
+# is, and from that point the class is judged by the product's own `ab-packages replay`.
+# --------------------------------------------------------------------------- #
+
+# _host_sha256 <file>: the digest of a file on this machine. The device's busybox calls the
+# tool sha256sum and a laptop may only have shasum; which one runs is not part of the claim,
+# so the same fallback tests/modules/device/test_package_classes.sh uses is used here.
+_host_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "${1}" | cut -d' ' -f1
+    else
+        shasum -a 256 "${1}" | cut -d' ' -f1
+    fi
+}
+
+# _local_body_target: where a built body lands. A temporary directory rather than the
+# checkout: the file is a fixture this driver can rebuild in a second, and a body inside the
+# tree would be a package the repository has to keep explaining for ever.
+_local_body_target() {
+    _lbt_dir=${TMPDIR:-/tmp}
+    _lbt_dir=${_lbt_dir%/}
+    printf '%s/ab-pkgclass-local/%s-%s.apk\n' "${_lbt_dir}" "${LOCAL_BODY_PKG}" "${LOCAL_BODY_VERSION}"
+}
+
+# _tar_ustar <archive> <dir> <member>...: one tar the apk v2 reader can follow.
+#
+# The format is asked for by name because that reader parses ustar headers, and the ownership
+# because the archive's uid is the uid apk installs. Both are preferences and not
+# requirements: a tar that refuses the flags still produces a body apk accepts, so the plain
+# form is the fallback rather than a failure.
+_tar_ustar() {
+    _tu_archive=${1:?}
+    _tu_dir=${2:?}
+    shift 2
+    if tar --format=ustar --owner=0 --group=0 -cf "${_tu_archive}" -C "${_tu_dir}" "$@" 2>/dev/null; then
+        return 0
+    fi
+    tar -cf "${_tu_archive}" -C "${_tu_dir}" "$@"
+}
+
+# _local_body_build: build the local class's body and print its path.
+#
+# The container is the two-member form apk-tools 3.0.5 still reads as a v2 package: a gzip
+# member holding a tar with `.PKGINFO`, immediately followed by a gzip member holding the
+# files. Three details are not decoration, and all three were measured on the device on
+# 2026-11-19 with `apk add --simulate --allow-untrusted --force-non-repository`:
+#
+#   * the control member carries NO end-of-archive terminator. The reader parses both members
+#     as one tar stream, so a zero block pair after `.PKGINFO` ends the archive before the data
+#     member is reached and apk answers `unexpected end of file`. A tar writer always adds
+#     that terminator and pads to a whole record, so the member is cut at the end of
+#     `.PKGINFO`'s own data.
+#   * `datahash` is the sha256 of the *compressed* data member, which is what the reader
+#     compares when that member ends.
+#   * the data member keeps the writer's terminator: it ends the stream, and the reader stops
+#     there on end of file.
+#
+# A body that is one gzip member instead of two fails differently and less obviously: the
+# reader sees a non-hidden name while the control block is still open and answers `v2 package
+# format error`. Both are asserted below, so a body this function returns has been read back
+# at the offsets it claims rather than assumed to be right.
+_local_body_build() {
+    _lb_out=$(_local_body_target)
+    _lb_dir=${_lb_out%/*}
+    _lb_work=${_lb_dir}/build
+    for _lb_tool in tar gzip; do
+        if ! command -v "${_lb_tool}" >/dev/null 2>&1; then
+            printf 'package-classes: %s is not on this machine, so --local-apk auto cannot build a body\n' \
+                "${_lb_tool}" >&2
+            return 1
+        fi
+    done
+    rm -rf "${_lb_work}"
+    mkdir -p "${_lb_work}/data/usr/bin" "${_lb_work}/control" || return 1
+
+    # What the body installs. One program and no configuration file: the fake configuration
+    # and the /data marker ac-12 asks about are written by this driver, so a package that
+    # shipped the same path would turn its own copy into an `.apk-new` beside the file being
+    # measured and blur which one the hop kept.
+    cat >"${_lb_work}/data/usr/bin/${LOCAL_BODY_PKG}" <<PROGRAM
+#!/bin/sh
+# The local class sample: a program that came from a file, not from a feed.
+printf '%s\n' "${LOCAL_BODY_PKG}"
+PROGRAM
+    chmod 0755 "${_lb_work}/data/usr/bin/${LOCAL_BODY_PKG}"
+    # A fixed timestamp keeps the body reproducible: two runs of this driver on the same
+    # machine produce the same bytes, so a sha256 in a row can be compared across rounds.
+    # The directories are touched as well as the file: a tar records a directory's mtime, so
+    # leaving those at "now" would make every run a different archive.
+    touch -t 202601010000 "${_lb_work}/data/usr/bin/${LOCAL_BODY_PKG}" \
+        "${_lb_work}/data/usr/bin" "${_lb_work}/data/usr" || :
+
+    _tar_ustar "${_lb_work}/data.tar" "${_lb_work}/data" usr || return 1
+    gzip -n -9 -c "${_lb_work}/data.tar" >"${_lb_work}/data.tar.gz" || return 1
+    _lb_datahash=$(_host_sha256 "${_lb_work}/data.tar.gz")
+
+    cat >"${_lb_work}/control/.PKGINFO" <<PKGINFO
+pkgname = ${LOCAL_BODY_PKG}
+pkgver = ${LOCAL_BODY_VERSION}
+arch = x86_64
+pkgdesc = acceptance fixture: the local class sample, a package no feed offers
+url = https://example.invalid/n5105-btrfs-ab-firmware
+license = MIT
+size = 4096
+builddate = 1767225600
+datahash = ${_lb_datahash}
+PKGINFO
+    touch -t 202601010000 "${_lb_work}/control/.PKGINFO" || :
+
+    _tar_ustar "${_lb_work}/control.tar" "${_lb_work}/control" .PKGINFO || return 1
+    _lb_size=$(wc -c <"${_lb_work}/control/.PKGINFO" | tr -d ' ')
+    _lb_len=$((512 + ((_lb_size + 511) / 512) * 512))
+    head -c "${_lb_len}" "${_lb_work}/control.tar" >"${_lb_work}/control.trim.tar" || return 1
+
+    # The cut is checked rather than trusted, and in both directions: a writer that laid
+    # `.PKGINFO` out differently (an extended header, a different block size) would be cut in
+    # the wrong place, and the machine would then answer with a format error that reads like a
+    # defect of the product. The last block must not be all NUL (the cut landed on data), and
+    # the first eight bytes must be the name field's content.
+    #
+    # Eight bytes and not nine: the tar name field is padded, so a ninth byte would be the NUL
+    # that terminates `.PKGINFO` and reading it into a shell variable would drop it.
+    if [ "$(tail -c 512 "${_lb_work}/control.trim.tar" | tr -d '\000' | wc -c | tr -d ' ')" = "0" ]; then
+        printf 'package-classes: the control member was cut inside padding, so this tar writer does not lay the file out the way --local-apk auto expects; pass --local-apk <file> with a body built elsewhere\n' >&2
+        return 1
+    fi
+    if [ "$(head -c 8 "${_lb_work}/control.trim.tar")" != ".PKGINFO" ]; then
+        printf 'package-classes: the control member does not start with .PKGINFO; pass --local-apk <file> with a body built elsewhere\n' >&2
+        return 1
+    fi
+
+    gzip -n -9 -c "${_lb_work}/control.trim.tar" >"${_lb_work}/control.tar.gz" || return 1
+    cat "${_lb_work}/control.tar.gz" "${_lb_work}/data.tar.gz" >"${_lb_out}.tmp" || return 1
+    mv "${_lb_out}.tmp" "${_lb_out}" || return 1
+    # The facts go to stderr and the path to stdout: a caller that captured both would capture
+    # the log line into a file name.
+    printf 'package-classes: built the local class body %s (%s bytes, sha256 %s)\n' \
+        "${_lb_out}" "$(wc -c <"${_lb_out}" | tr -d ' ')" "$(_host_sha256 "${_lb_out}")" >&2
+    printf '%s\n' "${_lb_out}"
+}
+
 # ensure_baseline <case>: the three classes as they were before the first hop.
 #   0 a baseline exists (recorded now or inherited), 2 it cannot be established here.
 ensure_baseline() {
@@ -1045,10 +1252,20 @@ ensure_baseline() {
         ev "baseline existing ${STATE} source=${CUSTOM_SOURCE_AT_BASELINE}"
         return 0
     fi
-    # The local body: a file this run pushes, or one the machine already keeps. Neither exists
-    # without saying so, because a package the feeds still offer is superseded and not local.
+    # The local body: a file this run pushes, one the machine already keeps, or one this run
+    # builds. None exists without saying so, because a package the feeds still offer is
+    # superseded and not local.
     _eb_local_file=""
     _eb_local_state="none"
+    if [ "${LOCAL_APK}" = "auto" ]; then
+        _eb_built=$(_local_body_build) || {
+            printf 'baseline: the local class body could not be built; pass --local-apk <file> with one built elsewhere\n' >&2
+            BASELINE_REASON="local:body-not-built"
+            return 2
+        }
+        LOCAL_APK=${_eb_built}
+        LOCAL_BODY_SOURCE="built"
+    fi
     if [ -n "${LOCAL_APK}" ]; then
         if [ ! -f "${LOCAL_APK}" ]; then
             printf 'baseline: no local body at %s\n' "${LOCAL_APK}" >&2
@@ -1071,15 +1288,16 @@ ensure_baseline() {
             return 2
         fi
         _eb_local_state="pushed"
+        [ -n "${LOCAL_BODY_SOURCE}" ] || LOCAL_BODY_SOURCE="given"
     fi
     if [ -z "${LOCAL_PKG}" ]; then
-        printf 'baseline: the local class needs a body no feed offers: pass --local-apk <file> or --local-pkg <name> for a body already kept in %s\n' \
+        printf 'baseline: the local class needs a body no feed offers: pass --local-apk <file>, --local-pkg <name> for a body already kept in %s, or --local-apk auto to build one\n' \
             "${ASSETS}" >&2
         BASELINE_REASON="local:no-body"
         return 2
     fi
     LOCAL_REMOTE_BODY=${_eb_local_file}
-    ev "baseline: installing the three classes (distfeeds=${DIST_PKG} customfeeds=${CUSTOM_PKG} local=${LOCAL_PKG}, local-body=${_eb_local_state})"
+    ev "baseline: installing the three classes (distfeeds=${DIST_PKG} customfeeds=${CUSTOM_PKG} local=${LOCAL_PKG}, local-body=${_eb_local_state}, local-body-source=${LOCAL_BODY_SOURCE:-kept})"
     if ! _ask baseline; then
         BASELINE_REASON="baseline:no-answer"
         return 2
@@ -1651,10 +1869,17 @@ plan_case() { # <case>: what the hop will do, printed and not done.
     if _baseline_present; then
         printf '%s baseline: %s is there; the three classes are not re-marked\n' "${_case}" "${STATE}"
     elif [ "${_case}" = "${SELECTED%% *}" ]; then
+        # A body this run builds is named as such: a plan that printed the string `auto` would
+        # leave the reader to guess whether a file exists yet.
+        if [ "${LOCAL_APK}" = "auto" ]; then
+            _plan_local="a body this run builds (${LOCAL_BODY_PKG}-${LOCAL_BODY_VERSION}.apk, no feed offers it)"
+        else
+            _plan_local=${LOCAL_APK:-a body kept in ${ASSETS}/}
+        fi
         printf '%s baseline: install %s from distfeeds.list, %s from %s, and the local class from %s; write %s and %s; record sha256 into %s\n' \
             "${_case}" "${DIST_PKG}" "${CUSTOM_PKG}" \
             "${CUSTOM_URL:-the first source in ${CUSTOMFEEDS}}" \
-            "${LOCAL_APK:-a body kept in ${ASSETS}/}" \
+            "${_plan_local}" \
             "${CONFIG_DIR}/<pkg>" "${MARKER_DIR}/<pkg>.marker" "${STATE}"
     else
         printf '%s baseline: recorded by the first hop of this run, not again here\n' "${_case}"

@@ -67,6 +67,20 @@
 #   * the audit phase is handed this round's task id (--task or AB_TASK_ID). With none it
 #     writes a GAP row and says what is missing; it never falls back to the previous
 #     round's task id, because auditing a stale record reads as a green audit of this one.
+#
+# Two phases need a file this host has to have, and both were recorded as GAPs in the round
+# of 2026-11-19 for want of one rather than for want of a product:
+#
+#   package-classes  the local class needs a body no feed offers. --local-apk auto is handed
+#                    over unless the operator named a body (AB_PKGCLASS_LOCAL_APK) or a kept
+#                    package (AB_PKGCLASS_LOCAL_PKG), so the class is measured instead of
+#                    reported as `local:no-body`. See package-classes.sh's header for what
+#                    the built body is and is not.
+#   matrix2          its REL case reads the v0.0.12 assets offline, and the round never named
+#                    a directory: the row said `no asset directory for v0.0.12 (got 'unset')`
+#                    on a case that needs no machine at all. --release-dir (or
+#                    AB_FULLTEST_RELEASE_DIR) names one, and the default is the directory the
+#                    fetch command in that same row fills (see _matrix2_release_dir).
 
 set -u
 
@@ -170,6 +184,9 @@ FEED_URL=${AB_FEED_URL:-}
 # read it back and write after.snapshot. Overridable, but it must be the SAME value for both
 # phases - two directories would leave D2 comparing against nothing.
 DOCKER_SNAPSHOT_DIR=${AB_FULLTEST_DOCKER_SNAPSHOT_DIR:-}
+# Where matrix2's REL case reads the v0.0.12 release assets. Empty means "use the default
+# _matrix2_release_dir computes", which is the directory its own fetch command fills.
+RELEASE_ASSET_DIR=${AB_FULLTEST_RELEASE_DIR:-}
 FROM_PHASE=""
 FROM_INDEX=""
 STOP_AFTER=""
@@ -244,6 +261,13 @@ usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
   --expect VERSION     the candidate the feed is expected to offer (feed-install.sh
                        --expect, and the tag the release phase reads). It also names the
                        payload R1 installs: payload-<VERSION>.tar. Default: the drivers' own
+  --release-dir DIR    the v0.0.12 assets matrix2's REL case reads (also
+                       AB_FULLTEST_RELEASE_DIR). REL needs no machine: it compares a
+                       published release's bytes with its own index.txt, so an empty
+                       directory is a GAP about a file, not about the product. Default:
+                       <payload-dir>/release-v0.0.12, which is what
+                       `gh release download v0.0.12 --dir <payload-dir>/release-v0.0.12`
+                       fills. The row names the path it was given either way.
   --yes                allow the destructive phases (matrix, rise, matrix2,
                        platform-chain, recovery, power-cut); without it they ask for a
                        typed `yes` and are recorded as GAP when refused. docker,
@@ -452,6 +476,47 @@ _release_staged_dir() {
     printf '%s\n' "${PAYLOAD_DIR}"
 }
 
+# _matrix2_release_dir: where matrix2's REL case reads the v0.0.12 release assets.
+#
+# REL is the one case of the whole run that needs no machine: it compares a published
+# release's bytes with the index.txt that release publishes. It was still a GAP on every
+# attempt of the 2026-11-19 round, because nothing ever named a directory - `no asset
+# directory for v0.0.12 (got 'unset')` on a case that cannot fail for want of a device.
+#
+# The default is the directory the fetch command in that row fills, so the row's advice and
+# this default are one answer instead of two: `gh release download v0.0.12 --dir
+# <payloads>/release-v0.0.12`. It sits beside the payloads because both are downloaded
+# build artifacts (payloads/.gitignore'd, payloads/README.md), and because the v0.0.12
+# payload inside it is the same layer payload-0.0.12.tar carries.
+#
+# The path is passed whether or not it exists: a directory that is not there yet is a fact
+# the driver reports with the path in it, which is a better GAP than one about `unset`.
+_matrix2_release_dir() {
+    if [ -n "${RELEASE_ASSET_DIR}" ]; then
+        printf '%s\n' "${RELEASE_ASSET_DIR}"
+        return 0
+    fi
+    printf '%s/release-v0.0.12\n' "${PAYLOAD_DIR:-payloads}"
+}
+
+# _package_classes_local_args: how the local class of the three-class chain is supplied.
+#
+# The driver answers `local:no-body` and names the flags when nothing supplies a body, which
+# is right for an operator standing in front of the machine: "which package is the local
+# sample" is an environment fact. A round, though, has to measure the class rather than
+# report the fixture it did not bring, so this script asks the driver to build one.
+#
+# An operator's own body wins, and is left to the driver: AB_PKGCLASS_LOCAL_APK and
+# AB_PKGCLASS_LOCAL_PKG are the driver's own knobs, and a value there means somebody has
+# already answered the question. Passing --local-apk auto over it would replace a real
+# operator body with a fixture and quietly weaken the proof.
+_package_classes_local_args() {
+    if [ -n "${AB_PKGCLASS_LOCAL_APK:-}" ] || [ -n "${AB_PKGCLASS_LOCAL_PKG:-}" ]; then
+        return 0
+    fi
+    printf -- '--local-apk auto '
+}
+
 # _recovery_cases <selected>: the R1/B1 tokens the recovery phase will run, with the
 # driver's own default (R1 B1) spelled out. Which cases this phase covers has to have one
 # answer here, because the payload below is required by R1 alone: a phase that reads its case
@@ -551,6 +616,12 @@ _phase_args() {
             if [ -n "${PAYLOAD_DIR}" ]; then
                 printf '%s %s ' "--payload-dir" "${PAYLOAD_DIR}"
             fi
+            if [ "${1}" = "package-classes" ]; then
+                # The local class is one third of ac-12, and a run that leaves it to the
+                # driver's own `local:no-body` answers two thirds of the acceptance item.
+                _pa_local=$(_package_classes_local_args)
+                [ -n "${_pa_local}" ] && printf '%s' "${_pa_local}"
+            fi
             ;;
         feed-history)
             # Its one positional argument is the release to ask about, and the round already
@@ -592,6 +663,10 @@ _phase_args() {
                     if [ -n "${PAYLOAD_DIR}" ]; then
                         printf '%s %s ' "--payload-dir" "${PAYLOAD_DIR}"
                     fi
+                    # REL reads a published release's own bytes and needs no machine, so the
+                    # directory is named here whether or not it has been filled yet: the row
+                    # then carries the path and the command that fills it.
+                    printf '%s %s ' "--release-dir" "$(_matrix2_release_dir)"
                     ;;
             esac
             ;;
@@ -1221,6 +1296,10 @@ while [ $# -gt 0 ]; do
             ;;
         --expect)
             EXPECT=${2:?--expect needs a version, e.g. 0.0.12}
+            shift 2
+            ;;
+        --release-dir)
+            RELEASE_ASSET_DIR=${2:?--release-dir needs a directory}
             shift 2
             ;;
         --yes)

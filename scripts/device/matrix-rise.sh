@@ -23,7 +23,7 @@
 #
 # What a hop has to show (the same six fields plus the base and the layer):
 #   committed=<the slot that was not running>, boot=ok, esp=ok, pending=none,
-#   packages=aligned, generation >= before+1, rootfs=<the base it installs>,
+#   packages=aligned|followed, generation >= before+1, rootfs=<the base it installs>,
 #   direction=up (computed from the numbers, never read off a case name),
 #   upper=@overlay-<base>(-rN)?, the two groups lib.sh defines (STABLE must not move,
 #   IDENTITY must move), the /data marker and the /etc/config marker unchanged, and the
@@ -858,15 +858,31 @@ verify_samples() {
     # The hop that just happened may still be finishing: a first boot on a new base also
     # runs the package refresh, and on this box that is minutes of apk against the feeds.
     # A driver that reports "no machine answered" is retried; a real verdict is not.
+    # A failing pass is retried too, bounded: the samples include one whose criterion needs
+    # a running daemon (docker), and the daemon can still be starting when the hop's ssh
+    # answers. A package that really stopped working fails every attempt.
     _attempt=0
     while :; do
         _attempt=$((_attempt + 1))
         _rc=0
         _out=$(sh "${FOLLOW_PROBE}" --verify --state "${FOLLOW_STATE}" 2>&1) || _rc=$?
-        [ "${_rc}" -eq 3 ] && [ "${_attempt}" -lt 4 ] || break
-        case "${_out}" in
-            *no-machine*) sleep "${AB_POLL_INTERVAL}" ;;
-            *) break ;;
+        case "${_rc}" in
+            0 | 2 | 4) break ;;
+            3)
+                [ "${_attempt}" -lt 4 ] || break
+                case "${_out}" in
+                    *no-machine*) sleep "${AB_POLL_INTERVAL}" ;;
+                    *) break ;;
+                esac
+                ;;
+            *)
+                [ "${_attempt}" -lt "${AB_FOLLOW_TRIES}" ] || break
+                # Recorded, never silent: a reader of a green row has to be able to see that
+                # the samples needed a second look, and the packages/follow pair says whether
+                # the follow worker was still moving packages when the probe asked.
+                ev "samples ${_case}: attempt ${_attempt}/${AB_FOLLOW_TRIES} exited ${_rc} ($(ab_packages_state "${AB_STATUS_LINE:-}")), asking again in ${AB_FOLLOW_WAIT}s"
+                sleep "${AB_FOLLOW_WAIT}"
+                ;;
         esac
     done
     printf '%s\n' "${_out}" | sed 's/^/  /'
@@ -1136,6 +1152,10 @@ hop_run() {
     _check assert_field esp ok "${_case}"
     _check assert_field pending none "${_case}"
     _check assert_field committed "${_target}" "${_case}"
+    # `aligned|followed`: a hop that carried packages onto the new base lands in `followed`,
+    # and lib.sh accepts it there because it is the stronger state of the same metadata.
+    # `limited` and `unknown` still fail, so a machine that cannot install for its own kernel,
+    # or one that wrote no record at all, is not read as finished.
     _check assert_field packages aligned "${_case}"
     _check assert_ge "$(status_field "${_booted}" generation || printf 0)" "$((_gen + 1))" "${_case}" generation
     _running_now=$(dev_running_version) || _running_now=""
@@ -1315,7 +1335,7 @@ plan_case() {
     printf '%s install %s/%s\n' "${_case}" "${AB_REMOTE_TMP}" "${_local##*/}"
     printf '%s reboot, then wait_up %ss, then settle until boot=ok pending=none\n' \
         "${_case}" "${AB_WAIT_UP_FIRST}"
-    printf '%s assert boot=ok esp=ok pending=none committed=<the slot that is not running> generation>=+1 packages=aligned rootfs=%s upper=@overlay-%s(-rN)? direction=%s\n' \
+    printf '%s assert boot=ok esp=ok pending=none committed=<the slot that is not running> generation>=+1 packages=aligned|followed rootfs=%s upper=@overlay-%s(-rN)? direction=%s\n' \
         "${_case}" "${_to}" "${_to}" "$(hop_expect_value "${_case}" direction)"
     printf '%s assert the stable fields did not move: %s\n' "${_case}" "${AB_STATUS_FIELDS_STABLE}"
     printf '%s assert the /data marker and the /etc/config marker unchanged, then %s --verify --state %s\n' \

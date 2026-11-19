@@ -22,6 +22,17 @@
 # IDENTITY must move), plus the community samples through follow-probe.sh. "It came back"
 # is never a verdict.
 #
+# Positioning. A hop declares the base it starts in, and the machine has to be there. The
+# chain used to treat "it is not" as a broken chain and stop, which was wrong for the way
+# the device phase actually runs: matrix.sh, matrix-rise.sh and scenarios.sh run before
+# matrix2 in full-test.sh and leave the device on whichever base their last case landed on.
+# Every hop now brings the machine to its own starting base first, the way matrix.sh does,
+# and the row records it as `positioned=<from>-><to>`. A positioning hop that does not land
+# healthy fails the row, and the record is never silent: a hop that moved the base twice
+# without saying so would make its own note describe a machine that never existed. Within a
+# healthy chain the step is a no-op, because each hop lands exactly where the next one
+# starts.
+#
 #   scripts/device/matrix-round2.sh                    # the whole chain
 #   scripts/device/matrix-round2.sh --only D1          # one hop
 #   scripts/device/matrix-round2.sh --from 4           # resume at D2 (step numbers 1-7)
@@ -133,6 +144,10 @@ FROM_STEP=""
 DRY_RUN=0
 CASE_NOTE=""
 CASE_REGRESSION=""
+# `<from>-><to>` when this hop had to bring the machine back to its starting base, empty
+# when it was already there. It is carried into the row, because a hop that silently moved
+# the base twice would make its own note describe a machine that never existed.
+POSITIONED=""
 STATUS_LINE=""
 HOP_FAILED=0
 DRIFT=""
@@ -573,22 +588,41 @@ _drift() {
 # second copy in this driver is how a driver starts disagreeing with the sample list.
 # --------------------------------------------------------------------------- #
 
-# _follow_verify <label> <rows-out>: one --verify pass, retried while the machine is still
-# coming up. The hop that just happened may still be finishing a first boot's package
-# refresh, and "no machine answered" is a reason to ask again, not a verdict.
+# _follow_verify <label> <rows-out> [retry-fail]: one --verify pass, retried while the
+# machine is still coming up. The hop that just happened may still be finishing a first
+# boot's package refresh, and "no machine answered" is a reason to ask again, not a verdict.
+# A failing pass is retried only when the caller asks (the per-hop judgement does, the
+# pre-chain baseline does not): the samples include one whose criterion needs a running
+# daemon (docker), and the daemon can still be starting when the hop's ssh answers. A
+# package that really stopped working fails every attempt.
 # Rows are written as `<sample> <status>`, one per line.
 _follow_verify() {
     _fv_label=${1:?_follow_verify needs a label}
     _fv_rows=${2:?_follow_verify needs a rows path}
+    _fv_retry_fail=${3:-0}
     _fv_attempt=0
     while :; do
         _fv_attempt=$((_fv_attempt + 1))
         FOLLOW_RC=0
         _fv_text=$(sh "${FOLLOW_PROBE}" --verify --state "${FOLLOW_STATE}" 2>&1) || FOLLOW_RC=$?
-        [ "${FOLLOW_RC}" -eq 3 ] && [ "${_fv_attempt}" -lt 4 ] || break
-        case "${_fv_text}" in
-            *no-machine*) sleep "${AB_POLL_INTERVAL}" ;;
-            *) break ;;
+        case "${FOLLOW_RC}" in
+            0 | 2 | 4) break ;;
+            3)
+                [ "${_fv_attempt}" -lt 4 ] || break
+                case "${_fv_text}" in
+                    *no-machine*) sleep "${AB_POLL_INTERVAL}" ;;
+                    *) break ;;
+                esac
+                ;;
+            *)
+                [ "${_fv_retry_fail}" = "1" ] || break
+                [ "${_fv_attempt}" -lt "${AB_FOLLOW_TRIES}" ] || break
+                # Recorded, never silent: a reader of a green row has to be able to see that
+                # the samples needed a second look, and the packages/follow pair says whether
+                # the follow worker was still moving packages when the probe asked.
+                ev "follow ${_fv_label}: attempt ${_fv_attempt}/${AB_FOLLOW_TRIES} exited ${FOLLOW_RC} ($(ab_packages_state "${AB_STATUS_LINE:-}")), asking again in ${AB_FOLLOW_WAIT}s"
+                sleep "${AB_FOLLOW_WAIT}"
+                ;;
         esac
     done
     printf '%s\n' "${_fv_text}" | sed 's/^/  /'
@@ -672,7 +706,7 @@ assert_follow() {
             ;;
     esac
     _af_rows="${EVIDENCE_DIR}/${_af_case}.follow.tsv"
-    _follow_verify "${_af_case}" "${_af_rows}"
+    _follow_verify "${_af_case}" "${_af_rows}" 1
     if [ ! -s "${_af_rows}" ]; then
         FOLLOW_NOTE="fail(no-rows)"
         _dev_assert_fail "${_af_case}" \
@@ -724,6 +758,91 @@ assert_follow() {
 
 _check() { "$@" || HOP_FAILED=1; }
 
+# position_run <case> <from-rootfs>: bring the machine to the base this hop starts in.
+#
+# The chain assumes the machine is on P1's base when the first hop runs, and the full-test
+# phase order does not guarantee that: matrix, rise and scenarios leave the device on
+# whichever base their last case landed on, and matrix2 used to stop with "chain broken"
+# instead of getting back to its own starting line. Positioning is that missing step. It is
+# not a result - the chain's question is the hop that follows - but it is walked as a full
+# transaction and judged on what a healthy base change must leave (boot=ok esp=ok
+# pending=none, package metadata settled, rootfs=<from>), because a half-done positioning
+# hop would make every later row a lie. Returns 0 positioned, 1 failed, 2 no payload.
+position_run() {
+    _pos_case=${1:?position_run needs a case}
+    _pos_from=${2:?position_run needs a base}
+    _pos_local="${PAYLOAD_DIR}/payload-${_pos_from}.tar"
+    if [ ! -f "${_pos_local}" ]; then
+        ev "positioning: no payload at ${_pos_local}"
+        return 2
+    fi
+
+    require_healthy "${_pos_case}" || return 1
+    _pos_before=${STATUS_LINE}
+    AB_STATUS_LINE=${_pos_before}
+    require_safe_target "${_pos_case}" "${_pos_before}" || return 1
+    _pos_gen=$(status_field "${_pos_before}" generation) || _pos_gen=0
+    _pos_slot=$(status_field "${_pos_before}" slot) || _pos_slot=""
+    _pos_target=$(other_slot "${_pos_slot}") || return 1
+    _pos_running=$(dev_running_version) || _pos_running=""
+    if [ "${_pos_running}" = "${_pos_from}" ]; then
+        return 0
+    fi
+
+    ev "positioning: ${_pos_running:-unknown} -> ${_pos_from}; slot ${_pos_slot}, target ${_pos_target}, generation ${_pos_gen}"
+    _pos_remote="${AB_REMOTE_TMP}/${_pos_local##*/}"
+    dev_ssh 'ab-slot gc' >/dev/null 2>&1 || ev "gc reported problems (not a positioning failure)"
+    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_push "${_pos_local}" "${_pos_remote}" >/dev/null; then
+        ev "positioning: the payload could not be pushed to ${_pos_remote}"
+        return 1
+    fi
+    dev_capture "${AB_EVIDENCE_LOG}" dev_cleanup_slot_mounts >/dev/null
+    ev "pre-check: /mnt/slots/* unmounted; --check may remount them, so their absence is not asserted"
+
+    _pos_out=$(dev_capture "${AB_EVIDENCE_LOG}" dev_ab_check "${_pos_remote}")
+    _pos_rc=$?
+    if [ "${_pos_rc}" -ne 0 ]; then
+        ev "positioning: ab-upgrade --check exited ${_pos_rc}: $(printf '%s\n' "${_pos_out}" | tail -n 1)"
+        return 1
+    fi
+    if ! dev_capture "${AB_EVIDENCE_LOG}" dev_install "${_pos_remote}" >/dev/null; then
+        ev "positioning: ab-upgrade did not install ${_pos_from}"
+        return 1
+    fi
+
+    _pos_armed=$(dev_capture "${AB_EVIDENCE_LOG}" dev_status) || {
+        ev "positioning: ab-slot status is unreadable after the install"
+        return 1
+    }
+    AB_STATUS_LINE=${_pos_armed}
+    HOP_FAILED=0
+    _check assert_field pending "${_pos_target}" "${_pos_case}"
+    _check assert_ge "$(status_field "${_pos_armed}" generation || printf 0)" "$((_pos_gen + 1))" "${_pos_case}" generation
+    [ "${HOP_FAILED}" -eq 0 ] || return 1
+
+    dev_reboot
+    if ! dev_wait_up_after after-install; then
+        ev "positioning: no ssh answer within ${AB_WAIT_UP_FIRST}s after the reboot"
+        return 1
+    fi
+    if ! _pos_booted=$(dev_capture "${AB_EVIDENCE_LOG}" dev_wait_settled "${AB_WAIT_SETTLE}"); then
+        ev "positioning: no status line within ${AB_WAIT_SETTLE}s after the machine answered ssh"
+        return 1
+    fi
+    AB_STATUS_LINE=${_pos_booted}
+    HOP_FAILED=0
+    _check assert_field boot ok "${_pos_case}"
+    _check assert_field esp ok "${_pos_case}"
+    _check assert_field pending none "${_pos_case}"
+    _check assert_field committed "${_pos_target}" "${_pos_case}"
+    _check assert_field packages aligned "${_pos_case}"
+    _pos_now=$(dev_running_version) || _pos_now=""
+    _check assert_value "${_pos_now}" "${_pos_from}" "${_pos_case}" positioned-rootfs
+    [ "${HOP_FAILED}" -eq 0 ] || return 1
+    ev "positioned: ${_pos_running:-unknown} -> ${_pos_from}, committed ${_pos_target}, generation ${_pos_gen}->$(status_field "${_pos_booted}" generation || printf '?')"
+    return 0
+}
+
 # hop_run <case>: 0 PASS, 1 FAIL, 2 GAP (payload missing, refused as out of scope).
 hop_run() {
     _case=${1:?hop_run needs a case}
@@ -756,12 +875,39 @@ hop_run() {
     _slot=$(status_field "${_before}" slot) || _slot=""
     _target=$(other_slot "${_slot}") || return 1
     _running=$(dev_running_version) || _running=""
-    if ! assert_value "${_running}" "${_from}" "${_case}" "chain-position"; then
-        CASE_NOTE="chain broken: the machine runs ${_running:-unknown}, this hop starts from ${_from}; resume with --from ${_case}"
-        ev "${CASE_NOTE}"
-        return 1
+
+    # Getting the machine onto this hop's starting base is not a result, so it is walked as
+    # positioning and recorded as such. It used to be an assertion that stopped the chain:
+    # full-test.sh runs matrix, rise and scenarios before matrix2, they leave the device on
+    # whichever base their last case landed on, and every matrix2 run then died on
+    # "chain broken" before it asked its own question. A positioning hop that does not land
+    # healthy still fails here, and the row always says what moved: silence is the one thing
+    # this must not be, because a hidden extra base change would make every later row lie.
+    POSITIONED=""
+    if [ "${_running}" != "${_from}" ]; then
+        position_run "${_case}" "${_from}"
+        case "$?" in
+            0) POSITIONED="${_running:-unknown}->${_from}" ;;
+            2)
+                CASE_NOTE="no payload to position the machine on ${_from} (it runs ${_running:-unknown})"
+                ev "${CASE_NOTE}"
+                return 2
+                ;;
+            *)
+                CASE_NOTE="positioning to ${_from} failed; the hop did not start (it ran ${_running:-unknown})"
+                ev "${CASE_NOTE}"
+                return 1
+                ;;
+        esac
+        require_healthy "${_case}" || return 1
+        _before=${STATUS_LINE}
+        AB_STATUS_LINE=${_before}
+        require_safe_target "${_case}" "${_before}" || return 1
+        _gen=$(status_field "${_before}" generation) || _gen=0
+        _slot=$(status_field "${_before}" slot) || _slot=""
+        _target=$(other_slot "${_slot}") || return 1
     fi
-    ev "hop ${_case}: ${_from} -> ${_to} (${_dir}); slot ${_slot}, target ${_target}, generation ${_gen}"
+    ev "hop ${_case}: ${_from} -> ${_to} (${_dir}); slot ${_slot}, target ${_target}, generation ${_gen}${POSITIONED:+ (positioned ${POSITIONED})}"
 
     _remote="${AB_REMOTE_TMP}/${_local##*/}"
     dev_ssh 'ab-slot gc' >/dev/null 2>&1 || ev "gc reported problems (not a hop failure)"
@@ -857,6 +1003,10 @@ hop_run() {
     _check assert_field esp ok "${_case}"
     _check assert_field pending none "${_case}"
     _check assert_field committed "${_target}" "${_case}"
+    # `aligned|followed`: a hop that carried packages onto the new base lands in `followed`,
+    # and lib.sh accepts it there because it is the stronger state of the same metadata.
+    # `limited` and `unknown` still fail, so a machine that cannot install for its own kernel,
+    # or one that wrote no record at all, is not read as finished.
     _check assert_field packages aligned "${_case}"
     _check assert_ge "$(status_field "${_booted}" generation || printf 0)" "$((_gen + 1))" "${_case}" generation
     _running_now=$(dev_running_version) || _running_now=""
@@ -885,13 +1035,13 @@ hop_run() {
     if [ "${HOP_FAILED}" -eq 0 ]; then
         _force_used=none
         [ "${_force}" = "1" ] && _force_used=used
-        CASE_NOTE="hop ok: platform $(case_from_platform "${_case}")->$(case_to_platform "${_case}"), base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}; regression=${CASE_REGRESSION:-none}, force=${_force_used}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
+        CASE_NOTE="hop ok: platform $(case_from_platform "${_case}")->$(case_to_platform "${_case}"), base ${_from}->${_to} (${_dir}), committed ${_target}, generation ${_gen}->${_gen_now}, packages=${_pkg_now}; regression=${CASE_REGRESSION:-none}, force=${_force_used}; positioned=${POSITIONED:-none}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
         ev "${CASE_NOTE}"
         return 0
     fi
     # The evidence lines are timestamped, so the case name is matched anywhere in the line.
     _first_fail=$(grep -m 1 "FAIL ${_case} " "${AB_EVIDENCE_LOG}" 2>/dev/null) || _first_fail=""
-    CASE_NOTE="assertions failed on this hop: ${_first_fail#FAIL ${_case} }; the chain stops here; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
+    CASE_NOTE="assertions failed on this hop: ${_first_fail#FAIL ${_case} }; the chain stops here; positioned=${POSITIONED:-none}; config-drift=${DRIFT_CFG}; pkg-drift=${DRIFT_PKG}; follow=${FOLLOW_NOTE:-unjudged}"
     ev "${CASE_NOTE}"
     return 1
 }
@@ -1017,6 +1167,8 @@ plan_case() {
     _to=$(case_to_rootfs "${_case}")
     printf '%s status (red line: a committed slot, boot=ok, esp=ok, pending=none)\n' "${_case}"
     printf '%s gc\n' "${_case}"
+    printf '%s position %s (only when the machine runs something else; the row records positioned=<from>-><to>)\n' \
+        "${_case}" "$(case_from_rootfs "${_case}")"
     printf '%s push %s -> %s/%s\n' "${_case}" "${_local}" "${AB_REMOTE_TMP}" "${_local##*/}"
     if same_base "${_case}"; then
         printf '%s check %s/%s expect=exit-0, or exit-74 payload-already-installed (the v0.0.10 image did that; recorded as a regression and reinstalled with --force)\n' \
@@ -1029,7 +1181,7 @@ plan_case() {
     fi
     printf '%s reboot, then wait_up %ss, then settle until boot=ok pending=none\n' \
         "${_case}" "${AB_WAIT_UP_FIRST}"
-    printf '%s assert boot=ok esp=ok pending=none committed=<the slot that is not running> generation>=+1 packages=aligned rootfs=%s upper=@overlay-%s(-rN)? direction=%s rollback=%s\n' \
+    printf '%s assert boot=ok esp=ok pending=none committed=<the slot that is not running> generation>=+1 packages=aligned|followed rootfs=%s upper=@overlay-%s(-rN)? direction=%s rollback=%s\n' \
         "${_case}" "${_to}" "${_to}" "$(hop_expect_value "${_case}" direction)" \
         "$(hop_expect_value "${_case}" rollback)"
     printf '%s assert the stable fields did not move: %s\n' "${_case}" "${AB_STATUS_FIELDS_STABLE}"

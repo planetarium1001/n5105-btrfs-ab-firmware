@@ -220,6 +220,49 @@ AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=n
 assert_field boot ok M1
 assert_eq "$?" "0" "assert_field is silent and zero when the field agrees"
 
+# --- ac-4: packages is a floor, not an equality ---------------------------- #
+# The product reports `aligned` (metadata names this base, packages have not moved) and
+# `followed` (the same metadata after the follow transaction moved the packages onto this
+# base). A hop that carries packages lands in `followed`, and asserting `aligned` alone
+# turned that success into a red row: round 2 lost M1/M2/M4/M6, R1 and S3/S4/S7 to it.
+AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=by-id boot=ok esp=ok packages=aligned packages_reason=none"
+assert_field packages aligned M1
+assert_eq "$?" "0" "packages=aligned satisfies an aligned expectation"
+
+AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=by-id boot=ok esp=ok packages=followed packages_reason=none"
+: >"$AB_EVIDENCE_LOG"
+assert_field packages aligned M1
+assert_eq "$?" "0" "packages=followed satisfies an aligned expectation: the packages moved onto this base, which is stronger"
+assert_eq "$(cat "$AB_EVIDENCE_LOG")" "" "a followed base writes no failure line"
+
+# `limited` is not a variant of aligned: it means the metadata is partial, and the reason
+# the aligner recorded is what makes the row actionable. Accepting it would turn "this
+# machine cannot install anything for its own kernel" into a pass.
+AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=by-id boot=ok esp=ok packages=limited packages_reason=no-world"
+out=$(assert_field packages aligned M1 2>&1)
+assert_eq "$?" "1" "packages=limited still fails an aligned expectation"
+assert_contains "$out" "expected=aligned got=limited" "the failure names both values"
+assert_contains "$out" "packages_reason=no-world" "the failure carries the reason the aligner recorded"
+
+# `unknown` is "no record", never "already aligned". It is the one token that must keep
+# failing, or a machine that published nothing would read as finished.
+AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=by-id boot=ok esp=ok packages=unknown packages_reason=no-record"
+out=$(assert_field packages aligned M1 2>&1)
+assert_eq "$?" "1" "packages=unknown fails an aligned expectation"
+assert_contains "$out" "expected=aligned got=unknown" "the failure names the missing record"
+
+# Any other expected value is still an equality: the tolerance belongs to `aligned` alone,
+# so a caller that asks for `followed` gets exactly that.
+AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=by-id boot=ok esp=ok packages=aligned packages_reason=none"
+out=$(assert_field packages followed M1 2>&1)
+assert_eq "$?" "1" "an explicit followed expectation is not satisfied by aligned"
+assert_contains "$out" "expected=followed got=aligned" "the failure states both values"
+
+# Every other field keeps the strict comparison.
+AB_STATUS_LINE="slot=a upper=@overlay-25.12.2 generation=7 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/sda method=by-id boot=ok esp=ok packages=aligned packages_reason=none"
+out=$(assert_field packages_reason none M1 2>&1)
+assert_eq "$?" "0" "packages_reason is compared exactly"
+
 assert_ge 7 6 M1 generation
 assert_eq "$?" "0" "assert_ge accepts a growing generation"
 assert_ge 7 7 M1 generation
@@ -303,10 +346,12 @@ bootdir="$tmp/bootlogs"
 mkdir -p "$bootdir"
 boot0="$bootdir/boot-0.log"
 boot1="$bootdir/boot-1.log"
+boot2="$bootdir/boot-2.log"
 AB_EVIDENCE_LOG="$tmp/M1-boot.log"
 : >"$AB_EVIDENCE_LOG"
 AB_BOOT_LOG_LOCAL="$boot0"
 AB_BOOT_LOG_PREV_LOCAL="$boot1"
+AB_BOOT_LOG_PREV2_LOCAL="$boot2"
 
 # The current boot wrote both breadcrumbs: the answer is boot-0.log.
 cat >"$boot0" <<'LOG'
@@ -336,6 +381,25 @@ assert_eq "$out" "" "a rotated hit is not a failure line"
 assert_contains "$(cat "$AB_EVIDENCE_LOG")" "boot-mark healthcheck-done: hit boot-1.log" \
     "the evidence says the previous boot's file carried the breadcrumb"
 
+# The ring keeps three generations, and the commit line can be in the third one. The first
+# boot of a new base runs the package follow (168 packages measured on the reference box),
+# so the machine can be rebooted again before the harness reads that boot's commit line, and
+# the line moves to boot-2.log. A search that stopped at boot-1.log reported a healthy hop
+# as "the machine wrote nothing" (round 2, M1).
+: >"$AB_EVIDENCE_LOG"
+printf 'stage=device slot=b\n' >"$boot0"
+printf 'stage=device slot=a\n' >"$boot1"
+cat >"$boot2" <<'LOG'
+stage=healthcheck-done slot=b upper=@overlay-25.12.0 rootfs=25.12.0 result=ok
+stage=commit slot=b upper=@overlay-25.12.0 rootfs=25.12.0 result=ok action=commit
+LOG
+out=$(assert_boot_log M1 25.12.0 2>&1)
+assert_eq "$?" "0" "breadcrumbs only in boot-2.log still pass"
+assert_eq "$out" "" "a twice-rotated hit is not a failure line"
+assert_contains "$(cat "$AB_EVIDENCE_LOG")" "boot-mark commit-line: hit boot-2.log" \
+    "the evidence says which of the three generations answered"
+: >"$boot2"
+
 # Neither file has it and `ab-slot log --prev` has no answer either: that is a red hop,
 # and the failure has to name every source that was searched.
 : >"$AB_EVIDENCE_LOG"
@@ -346,6 +410,7 @@ assert_eq "$?" "1" "a breadcrumb that no source has fails"
 assert_contains "$out" "FAIL M1 assert_boot_mark healthcheck-done" "the failure names the breadcrumb"
 assert_contains "$out" "boot-0.log" "the failure names the file that was searched first"
 assert_contains "$out" "boot-1.log" "the failure names the rotated file"
+assert_contains "$out" "boot-2.log" "the failure names the third generation too"
 assert_contains "$out" "ab-slot log --prev" "the failure names the last resort that was tried"
 
 # A healthcheck line without the commit line of the version under test: the commit
@@ -361,6 +426,7 @@ assert_eq "$?" "1" "a commit line for a different version does not satisfy the h
 assert_contains "$out" "rootfs=25\\.12\\.2" "the version is matched literally, so 25.12.20 cannot pass"
 AB_BOOT_LOG_LOCAL=""
 AB_BOOT_LOG_PREV_LOCAL=""
+AB_BOOT_LOG_PREV2_LOCAL=""
 
 # --- ac-5: results.tsv ----------------------------------------------------- #
 AB_RESULTS="$tmp/results.tsv"
@@ -398,10 +464,10 @@ assert_eq "$(printf '%s\n' "$out" | awk '$1 == "M1" && $2 == "1/2" {print $3}' |
 assert_eq "$(printf '%s\n' "$out" | awk '$1 == "M1" && $2 == "2/2" {print $3}' | tr '\n' ',' | cut -d, -f1)" \
     "unmount" "M1 plans a second hop for the last version"
 assert_contains "$out" "M1 1/2 assert boot=ok esp=ok" "the assert step names the fields it reads"
-assert_contains "$out" "M1 1/2 assert boot-log healthcheck-done-result-ok commit-action-commit in boot-0.log, else boot-1.log, else \`ab-slot log --prev\`" \
-    "the plan says where the breadcrumb is searched, in the order the ring log dictates"
-assert_contains "$out" "M1 1/2 collect /boot/ab/log/boot-0.log /boot/ab/log/boot-1.log (a missing file is not an error)" \
-    "the plan collects both ring files and lets boot-1.log be missing"
+assert_contains "$out" "M1 1/2 assert boot-log healthcheck-done-result-ok commit-action-commit in boot-0.log, else boot-1.log, else boot-2.log, else \`ab-slot log\`/\`ab-slot log --prev\`/\`cat /boot/ab/log/boot-2.log\`" \
+    "the plan says where the breadcrumb is searched, in the order the ring log dictates, across all three generations"
+assert_contains "$out" "M1 1/2 collect /boot/ab/log/boot-0.log /boot/ab/log/boot-1.log /boot/ab/log/boot-2.log (a missing file is not an error)" \
+    "the plan collects all three ring files and lets the older two be missing"
 assert_contains "$out" "M1 1/2 assert layer-invariant every slot upper exists and no unreferenced @overlay-* survives" \
     "the layer step asserts the invariant, not a count"
 assert_contains "$out" "M1 1/2 unmount /mnt/slots/a /mnt/slots/b (left behind by an earlier --check; their absence is deliberately not asserted)" \
@@ -466,9 +532,14 @@ pending=$(cat "$dev/pending")
 case "${last}" in
     "ab-slot status")
         if [ "$pending" = "none" ]; then next=${slot}; else next=${pending}; fi
-        printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=ok data=ok docker=ok swap=ok next=%s disk=/dev/sda method=by-id boot=%s esp=ok\n' \
+        # packages= is part of the real line, so the fixture prints it too: a hop is judged
+        # on the metadata it lands in, and a fixture that omitted the field would make that
+        # assertion untestable here. FAKE_PACKAGES names the state a hop lands in; unset
+        # means `aligned`, the ordinary case.
+        printf 'slot=%s upper=%s generation=%s committed=%s pending=%s p4=ok data=ok docker=ok swap=ok next=%s disk=/dev/sda method=by-id boot=%s esp=ok packages=%s packages_reason=none\n' \
             "${slot}" "$(cat "$dev/upper-${slot}")" "$(cat "$dev/generation")" \
-            "${slot}" "${pending}" "${next}" "$(cat "$dev/boot")"
+            "${slot}" "${pending}" "${next}" "$(cat "$dev/boot")" \
+            "${FAKE_PACKAGES:-aligned}"
         ;;
     "ab-slot rootfs")
         cat "$dev/rootfs-${slot}"
@@ -627,6 +698,50 @@ assert_eq "$(awk -F'\t' 'NR == 1 {print $2}' "$tmp/e2e-rotated/results.tsv")" "P
     "the rotated ring log still records PASS"
 assert_contains "$(cat "$tmp/e2e-rotated/evidence/$(date -u +%Y%m%d)-m3.log")" \
     "boot-mark commit-line: hit boot-1.log" "the evidence says the rotated file answered"
+
+# The ring keeps three generations. A hop whose commit line has been rotated twice - the
+# first boot of a new base runs the package follow, and the machine can be rebooted again
+# before the harness reads it - must still pass. Round 2 lost M1 to a search that stopped at
+# boot-1.log and reported "the machine wrote nothing" about a machine that had committed.
+setup_fake_device 25.12.2
+export FAKE_BOOT_LOG_DEST=boot-2.log
+out=$(run_matrix "$tmp/e2e-rotated2" --case M3)
+assert_eq "$?" "0" "a commit line found in boot-2.log is not a failed hop"
+assert_eq "$(awk -F'\t' 'NR == 1 {print $2}' "$tmp/e2e-rotated2/results.tsv")" "PASS" \
+    "the twice-rotated ring log still records PASS"
+assert_contains "$(cat "$tmp/e2e-rotated2/evidence/$(date -u +%Y%m%d)-m3.log")" \
+    "boot-mark commit-line: hit boot-2.log" "the evidence says the third generation answered"
+unset FAKE_BOOT_LOG_DEST
+
+# The package metadata a hop lands in: matrix.sh records it, it does not judge it. Two facts
+# decide that. ab-commit retargets the package record at commit time and the follow worker
+# publishes `followed` afterwards, so what a settle poll sees depends on whether the worker
+# finished first - a healthy hop can read `unknown reason=no-record` for a moment, and
+# judging it there would turn that timing into a red row. The drivers whose hop IS the
+# package question (matrix-rise, matrix2, scenarios) judge it after their own settle, where
+# the product's state machine has finished, and they accept `aligned|followed`.
+setup_fake_device 25.12.2
+export FAKE_PACKAGES=followed
+out=$(run_matrix "$tmp/e2e-followed" --case M3)
+rc=$?
+unset FAKE_PACKAGES
+assert_eq "$rc" "0" "a hop that lands packages=followed passes"
+assert_eq "$(awk -F'\t' 'NR == 1 {print $2}' "$tmp/e2e-followed/results.tsv")" "PASS" \
+    "the followed base records PASS, not FAIL"
+assert_contains "$(cat "$tmp/e2e-followed/evidence/$(date -u +%Y%m%d)-m3.log")" \
+    "packages M3: packages=followed" "the evidence records the state the hop landed in"
+
+# A state matrix.sh does not judge is still reported, not dropped: `unknown` says no record
+# was written, and a reader of a green switch row has to be able to see it.
+setup_fake_device 25.12.2
+export FAKE_PACKAGES=unknown
+out=$(run_matrix "$tmp/e2e-unknown" --case M3)
+rc=$?
+unset FAKE_PACKAGES
+assert_eq "$rc" "0" "matrix.sh does not judge the package state; its question is the switch"
+assert_contains "$(cat "$tmp/e2e-unknown/evidence/$(date -u +%Y%m%d)-m3.log")" \
+    "packages M3: packages=unknown" \
+    "an unrecorded state is still printed into the evidence, so it is not silently dropped"
 unset FAKE_BOOT_LOG_DEST
 
 # No ring log at all: that is a red hop, not a silent pass, and it has to name both files
@@ -728,5 +843,62 @@ out=$(run_matrix "$tmp/e2e-pass" --case M3 --resume)
 assert_eq "$?" "0" "--resume on a finished matrix exits zero"
 assert_contains "$out" "M3: already PASS" "--resume skips a case with a PASS row"
 assert_eq "$(wc -l <"$tmp/e2e-pass/results.tsv" | tr -d ' ')" "1" "--resume appends no second row"
+
+# --- ac-6: the round-2 chain positions instead of stopping ------------------ #
+# matrix.sh has positioned each case since it was written. matrix-round2.sh assumed instead
+# that the machine was already on the hop's starting base, which held only when it ran
+# alone: full-test.sh runs matrix, rise and scenarios first, they leave the device on
+# whichever base their last case landed on, and every matrix2 run then died on "chain
+# broken" before it asked its own question (round 2, P1: "the machine runs 25.12.0, this hop
+# starts from 25.12.2"). A hop now brings the machine to its own starting base, and the row
+# records it as positioned=<from>-><to> so a hop that moved the base twice cannot be silent
+# about it. D1 is the case here, not P1: this simulated device derives the installed rootfs
+# from the payload's file name, and a platform payload keeps the base it lands on.
+round2="$root/scripts/device/matrix-round2.sh"
+r2_payloads="$tmp/r2-payloads"
+mkdir -p "$r2_payloads"
+for v in 25.12.0 25.12.1 25.12.2; do
+    printf 'payload %s\n' "$v" >"$r2_payloads/payload-${v}.tar"
+done
+
+run_round2() { # <results dir> <payload dir> [args...]
+    _dir=$1
+    _pl=$2
+    shift 2
+    AB_WAIT_UP=10 AB_WAIT_UP_FIRST=10 AB_WAIT_UP_HARD=20 \
+        sh "$round2" --payload-dir "$_pl" --results "$_dir/results.tsv" "$@" 2>&1
+}
+
+# The machine is on the base a previous phase left it on, which is not D1's starting base.
+setup_fake_device 25.12.0
+out=$(run_round2 "$tmp/r2-position" "$r2_payloads" --only D1)
+assert_eq "$?" "0" "the round-2 chain runs a hop whose starting base is not the running one"
+assert_contains "$(awk -F'\t' 'NR == 1 {print $4}' "$tmp/r2-position/results.tsv")" \
+    "positioned=25.12.0->25.12.2" "the row records the base the machine had to be brought back to"
+assert_eq "$(cat "$FAKE_DEV/rootfs-$(cat "$FAKE_DEV/committed")")" "25.12.1" \
+    "the hop still lands on the version the case names, not on the positioning's"
+assert_contains "$(cat "$tmp/r2-position/evidence/r2/D1.log")" "positioning: 25.12.0 -> 25.12.2" \
+    "the extra install is logged as positioning, not as a result"
+
+# The same hop on a machine already where it belongs records no positioning: the field has
+# to mean "the base was moved for this hop", not "the base is right", or a reader cannot
+# tell a chain that walked cleanly from one that had to be repaired before every row.
+setup_fake_device 25.12.2
+out=$(run_round2 "$tmp/r2-noposition" "$r2_payloads" --only D1)
+assert_eq "$?" "0" "a hop already on its starting base runs"
+assert_contains "$(awk -F'\t' 'NR == 1 {print $4}' "$tmp/r2-noposition/results.tsv")" \
+    "positioned=none" "nothing was positioned, and the row says so instead of leaving it out"
+
+# A hop whose positioning cannot be walked is a GAP row, never a silent pass: the chain
+# cannot ask its question about a machine it could not put on the right base.
+setup_fake_device 25.12.0
+mkdir -p "$tmp/r2-partial"
+printf 'payload 25.12.1\n' >"$tmp/r2-partial/payload-25.12.1.tar"
+out=$(run_round2 "$tmp/r2-nopayload" "$tmp/r2-partial" --only D1)
+assert_eq "$?" "4" "a payload missing for the starting base is an environment gap"
+assert_contains "$(awk -F'\t' 'NR == 1 {print $2}' "$tmp/r2-nopayload/results.tsv")" "GAP" \
+    "the row is GAP, not a silent pass"
+assert_contains "$(awk -F'\t' 'NR == 1 {print $4}' "$tmp/r2-nopayload/results.tsv")" \
+    "position the machine on 25.12.2" "the row names the base that could not be reached"
 
 finish
