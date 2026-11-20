@@ -620,7 +620,15 @@ _ready_wait() {
                 fi
                 ;;
             *)
-                _rw_state=down
+                # No init script, or one that is not enabled: both are shapes the same
+                # package has before and after a follow reinstalls it, so a boot that has
+                # not settled yet has not answered the question. Only a settled boot makes
+                # "the package is not here" a finding about the package.
+                if _ready_settled "$_rw_settle"; then
+                    _rw_state=down
+                else
+                    _rw_state=booting
+                fi
                 ;;
         esac
         [ "$_rw_state" = down ] && return "$_rw_rc"
