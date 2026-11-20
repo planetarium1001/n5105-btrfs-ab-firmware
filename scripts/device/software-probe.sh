@@ -641,8 +641,17 @@ _add_sources() {
     fi
     mkdir -p "${STATE_DIR}" 2>/dev/null || true
     # The same four columns as written.tsv - path, sha256, whether an original was there, the
-    # copy beside it - so one loop in --cleanup can undo both.
-    printf '%s\t%s\t%s\t%s\n' "${SOURCES_PATH}" "-" "${_as_had}" "${SOURCES_PATH}${BAK_SUFFIX}" \
+    # copy beside it - so one loop in --cleanup can undo both. The sha is the digest of what
+    # was written, not a placeholder: --cleanup uses it to leave alone a file that no longer
+    # holds this run's bytes (a results directory can outlive the machine it describes).
+    _as_sha="-"
+    if _as_tmp=$(devcfg_tmpfile); then
+        printf '%s' "${THIRD_PARTY_URLS}" >"${_as_tmp}"
+        _as_sha=$(devcfg_sha256 "${_as_tmp}") || _as_sha="-"
+        [ -n "${_as_sha}" ] || _as_sha="-"
+        rm -f "${_as_tmp}" 2>/dev/null || true
+    fi
+    printf '%s\t%s\t%s\t%s\n' "${SOURCES_PATH}" "${_as_sha}" "${_as_had}" "${SOURCES_PATH}${BAK_SUFFIX}" \
         >>"${STATE_DIR}/sources.tsv"
     # apk needs its index refreshed before a feed it has not seen can answer. A failure here
     # is not fatal: a sample that then cannot be found is already a GAP with its own command.
@@ -755,6 +764,27 @@ _pre_snapshot() {
 # --------------------------------------------------------------------------- #
 # Actions
 # --------------------------------------------------------------------------- #
+
+# _left_dirty: the real files this driver has changed and not put back yet, as one line. It
+# reads the same bookkeeping --cleanup uses, so "this machine is holding a fixture" and
+# "cleanup knows what to restore" are one fact instead of two. The 2026-11-20 round learned
+# this the hard way: the fixture in /etc/config/argon made the theme page fail to load, and
+# nothing in the round's own output said the machine was dirty.
+_left_dirty() {
+    _ld_out=""
+    for _ld_f in "${STATE_DIR}/written.tsv" "${STATE_DIR}/sources.tsv"; do
+        [ -f "${_ld_f}" ] || continue
+        while IFS="${TAB}" read -r _ld_path _ld_rest; do
+            [ -n "${_ld_path}" ] || continue
+            if [ -n "${_ld_out}" ]; then
+                _ld_out="${_ld_out},${_ld_path}"
+            else
+                _ld_out=${_ld_path}
+            fi
+        done <"${_ld_f}"
+    done
+    printf '%s' "${_ld_out}"
+}
 
 # _install_sample <name> <kind> <url> <fallback> <config>: one row for one sample.
 _install_sample() {
@@ -1096,6 +1126,16 @@ _action_cleanup() {
         return 4
     fi
 
+    # Paths this run created that no longer hold its bytes: somebody else's file now, so they
+    # are neither restored nor deleted, and the snapshot comparison must not report them as
+    # damage this driver did. The list is read back from the state directory, not kept in a
+    # shell variable, because the second cleanup of the same machine sees the same files and
+    # would otherwise report them again as "the config moved" - the false defect report this
+    # whole path exists to avoid.
+    _cl_alone_file="${STATE_DIR}/left-alone.tsv"
+    _cl_alone=""
+    [ -f "${_cl_alone_file}" ] && _cl_alone=$(cut -f1 "${_cl_alone_file}" 2>/dev/null)
+
     # 1. the packages
     _cl_left=""
     _cl_count=0
@@ -1118,32 +1158,111 @@ _action_cleanup() {
 
     # 2. the config files and the source file: restore what was there, remove what this run
     # created, and delete the copies either way.
+    #
+    # Each entry is struck off its list once it has been dealt with, and only the entries that
+    # could not be put back stay behind. That is what makes a second --cleanup a no-op: without
+    # it the second run tries to restore from a backup the first one deleted and reports
+    # `restore failed` about a machine that is already clean - a defect report about nothing,
+    # which is worse than no report at all.
     for _cl_list in written.tsv sources.tsv; do
         [ -f "${STATE_DIR}/${_cl_list}" ] || continue
+        _cl_keep="${STATE_DIR}/.${_cl_list}.keep"
+        : >"${_cl_keep}"
         while IFS="${TAB}" read -r _cl_path _cl_sha _cl_had _cl_bak; do
             [ -n "${_cl_path}" ] || continue
+            _cl_done=0
             if [ "${_cl_had}" = "yes" ]; then
-                devcfg_exec "cp -a $(devcfg_sq "${_cl_bak}") $(devcfg_sq "${_cl_path}")" >/dev/null 2>&1 ||
+                if ! devcfg_exec "test -f $(devcfg_sq "${_cl_bak}")" >/dev/null 2>&1; then
+                    # No copy beside the file. Either this entry was already dealt with by an
+                    # earlier cleanup, or the machine was reflashed under this bookkeeping -
+                    # both are "there is nothing to put back", not a failure.
+                    _cl_done=1
+                elif devcfg_exec "cp -a $(devcfg_sq "${_cl_bak}") $(devcfg_sq "${_cl_path}")" >/dev/null 2>&1; then
+                    _cl_done=1
+                else
                     _log "${_cl_ev}" "restore failed: ${_cl_bak} -> ${_cl_path}"
+                fi
             else
-                devcfg_exec "rm -f $(devcfg_sq "${_cl_path}")" >/dev/null 2>&1 ||
-                    _log "${_cl_ev}" "remove failed: ${_cl_path}"
+                # This run created the file, so putting it back means removing it - but only
+                # while it still holds what this run wrote. A state directory can outlive the
+                # machine it describes (a reflash keeps the host's results directory), and in
+                # that case the path may now belong to something else entirely: deleting it
+                # would destroy a file this driver never created and then report success.
+                if ! devcfg_exec "test -f $(devcfg_sq "${_cl_path}")" >/dev/null 2>&1; then
+                    _cl_done=1
+                else
+                    _cl_tmp=$(devcfg_tmpfile) || _cl_tmp=""
+                    _cl_now=""
+                    if [ -n "${_cl_tmp}" ]; then
+                        if devcfg_exec "cat $(devcfg_sq "${_cl_path}")" >"${_cl_tmp}" 2>/dev/null; then
+                            _cl_now=$(devcfg_sha256 "${_cl_tmp}")
+                        fi
+                        rm -f "${_cl_tmp}" 2>/dev/null || true
+                    fi
+                    if [ -z "${_cl_now}" ]; then
+                        _log "${_cl_ev}" "remove failed: ${_cl_path} (could not read it back)"
+                    elif [ -z "${_cl_sha}" ] || [ "${_cl_sha}" = "-" ]; then
+                        # Bookkeeping written before the digest was recorded: there is nothing
+                        # to compare against, so this keeps the old behaviour - remove it - and
+                        # says that it could not prove the file was this run's.
+                        if devcfg_exec "rm -f $(devcfg_sq "${_cl_path}")" >/dev/null 2>&1; then
+                            _log "${_cl_ev}" "removed ${_cl_path} without verifying it was this run's"
+                            _cl_done=1
+                        else
+                            _log "${_cl_ev}" "remove failed: ${_cl_path}"
+                        fi
+                    elif [ "${_cl_now}" = "${_cl_sha}" ]; then
+                        if devcfg_exec "rm -f $(devcfg_sq "${_cl_path}")" >/dev/null 2>&1; then
+                            _cl_done=1
+                        else
+                            _log "${_cl_ev}" "remove failed: ${_cl_path}"
+                        fi
+                    else
+                        # Not this run's file any more: left alone on purpose, and said out loud.
+                        _log "${_cl_ev}" "left alone: ${_cl_path} no longer holds this run's bytes"
+                        _cl_alone="${_cl_alone} ${_cl_path}"
+                        printf '%s\n' "${_cl_path}" >>"${_cl_alone_file}" 2>/dev/null || true
+                        _cl_done=1
+                    fi
+                fi
             fi
-            devcfg_exec "rm -f $(devcfg_sq "${_cl_bak}")" >/dev/null 2>&1 || true
+            if [ "${_cl_done}" = "1" ]; then
+                devcfg_exec "rm -f $(devcfg_sq "${_cl_bak}")" >/dev/null 2>&1 || true
+            else
+                printf '%s\t%s\t%s\t%s\n' "${_cl_path}" "${_cl_sha}" "${_cl_had}" "${_cl_bak}" \
+                    >>"${_cl_keep}"
+            fi
         done <"${STATE_DIR}/${_cl_list}"
+        mv "${_cl_keep}" "${STATE_DIR}/${_cl_list}" 2>/dev/null || true
     done
 
     # 3. is the machine where it was? The paths come from the pre-run snapshot, so a file this
     # run never touched is not compared by accident.
-    _cl_paths=$(cut -f1 "${STATE_DIR}/pre.tsv")
+    # A path that now holds somebody else's bytes is left out of the comparison on both
+    # sides: it is not damage this driver did, and calling it "the machine moved" would send
+    # the next reader looking for a restore that must not happen. It is reported as its own
+    # GAP instead, by name.
+    _cl_pre="${STATE_DIR}/pre.tsv"
+    if [ -n "${_cl_alone}" ]; then
+        printf '%s\n' ${_cl_alone} >"${STATE_DIR}/.left-alone"
+        _cl_pre="${STATE_DIR}/pre-compare.tsv"
+        awk -F"${TAB}" 'NR == FNR { skip[$1] = 1; next } !($1 in skip)' \
+            "${STATE_DIR}/.left-alone" "${STATE_DIR}/pre.tsv" >"${_cl_pre}" 2>/dev/null ||
+            : >"${_cl_pre}"
+    fi
+    _cl_paths=$(cut -f1 "${_cl_pre}")
     # shellcheck disable=SC2086
     devcfg_snapshot "${STATE_DIR}/post.tsv" ${_cl_paths} >/dev/null 2>&1 || true
-    _cl_out=$(devcfg_assert_same "SW-cleanup" "${STATE_DIR}/pre.tsv" "${STATE_DIR}/post.tsv" \
+    _cl_out=$(devcfg_assert_same "SW-cleanup" "${_cl_pre}" "${STATE_DIR}/post.tsv" \
         "${_cl_ev}" 2>&1) || true
     _count_recorded "SW-cleanup"
     if [ -n "${_cl_out}" ]; then
         printf '%s\n' "${_cl_out}"
         _log "${_cl_ev}" "${_cl_out}"
+    fi
+    if [ -n "${_cl_alone}" ]; then
+        _record "SW-cleanup-left" GAP "${_cl_ev}" \
+            "reason=left-alone paths=${_cl_alone# } note=the machine was reflashed or the file was rewritten; this driver will not delete what it did not write"
     fi
     return 0
 }
@@ -1190,6 +1309,12 @@ if [ "${DRY_RUN}" = "1" ]; then
     printf 'software-probe: dry run, nothing was contacted and no row was written\n'
     exit "${_ai_rc}"
 fi
+
+# One line, always, whatever the action did: which of this machine's real files the driver has
+# changed and not put back. A round that leaves the machine dirty now says so in its own log
+# instead of surfacing later as "the theme page does not load".
+_ld_now=$(_left_dirty)
+printf 'left-dirty=%s\n' "${_ld_now:-none}"
 
 _finish
 _rc=$?

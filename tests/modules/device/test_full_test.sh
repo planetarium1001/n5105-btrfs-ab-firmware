@@ -1127,6 +1127,170 @@ assert_eq "$code" 0 "ac-2 matrix2 with --yes runs"
 assert_eq "$(awk -F'\t' '$1 == "T1" { print $2 }' "$tmp/hx2-matrix2/matrix2.tsv")" "PASS" \
     "ac-2 the matrix2 rows land in the matrix2 phase's own file"
 
+# --- ac-1/ac-2: the round ends by putting the machine back ------------------ #
+# The samples the software phase installs are written into the apps' real config files, and
+# only software-probe.sh --cleanup puts them back. The 2026-11-20 round finished with a
+# fixture in /etc/config/argon and nothing said so: the theme page then read a config with no
+# `global` section and the failure looked like a product defect. So the orchestrator now calls
+# the cleanup itself - after the last phase, before the verdict, and never per hop, because
+# restoring between hops would turn "the config survived the hop" into "a restored file exists".
+sw_calls="$tmp/sw-calls.log"
+# The stub behaves like the real driver on the one point that matters here: it takes its rows
+# channel from --results and writes a FAIL row there when it could not put something back. A
+# stub that only exits non-zero would let the orchestrator's claim ("the round does not go red
+# over this") pass without ever exercising it.
+cat >"$hx/software-probe.sh" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"${STUB_SWPROBE_CALLS:?}"
+res=""
+prev=""
+for a in "$@"; do
+    if [ "$prev" = "--results" ]; then res=$a; fi
+    prev=$a
+done
+printf 'software-probe start action=cleanup\n'
+if [ -n "${STUB_SWPROBE_DIRTY:-}" ]; then
+    printf 'left-dirty=%s\n' "${STUB_SWPROBE_DIRTY}"
+else
+    printf 'left-dirty=none\n'
+fi
+if [ "${STUB_SWPROBE_FAILROW:-0}" = "1" ] && [ -n "$res" ]; then
+    printf 'SW-cleanup\tFAIL\t-\tconfig moved between the two snapshots\n' >>"$res"
+fi
+exit "${STUB_SWPROBE_RC:-0}"
+STUB
+chmod +x "$hx/software-probe.sh"
+
+sweep_ok="$tmp/hx-sweep-ok"
+mkdir -p "$sweep_ok/software-state"
+printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+    >"$sweep_ok/software-state/written.tsv"
+: >"$sw_calls"
+STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+    STUB_SWPROBE_CALLS="$sw_calls" run_hx --from audit --results "$sweep_ok" --task "$round_task"
+assert_eq "$code" 0 "ac-1 a round whose sweep succeeded still exits 0"
+assert_contains "$(cat "$sw_calls")" "--cleanup" \
+    "ac-1 the round calls the software driver with --cleanup by itself"
+assert_eq "$(awk -F'\t' '$1 == "sweep" { print $2 }' "$sweep_ok/sweep.tsv")" "PASS" \
+    "ac-1 the sweep is a PASS row of its own"
+assert_eq "$(grep -c '^sweep	' "$sweep_ok/verdict.tsv" || true)" "1" \
+    "ac-1 exactly one sweep row reaches the round's verdict"
+assert_eq "$(tail -n 1 "$sweep_ok/verdict.tsv" | cut -f1)" "sweep" \
+    "ac-1 the sweep is the last row, so it runs after every judged phase"
+assert_eq "$(tail -n 1 "$sweep_ok/summary.txt")" "verdict: PASS" \
+    "ac-1 a clean sweep leaves the round's own verdict alone"
+
+# The sweep failing is a GAP with the dirty list in it: a round that could not put the machine
+# back has to say which files are still holding a fixture, and it may not turn itself red for
+# it. "The product failed" and "the bookkeeping failed" are different findings.
+sweep_gap="$tmp/hx-sweep-gap"
+mkdir -p "$sweep_gap/software-state"
+printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+    >"$sweep_gap/software-state/written.tsv"
+STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+    STUB_SWPROBE_CALLS="$sw_calls" STUB_SWPROBE_RC=1 STUB_SWPROBE_FAILROW=1 \
+    STUB_SWPROBE_DIRTY=/etc/config/argon \
+    run_hx --from audit --results "$sweep_gap" --task "$round_task"
+assert_eq "$(awk -F'\t' '$1 == "sweep" { print $2 }' "$sweep_gap/sweep.tsv")" "GAP" \
+    "ac-2 a sweep that could not put the machine back is a GAP row"
+assert_contains "$(cat "$sweep_gap/sweep.tsv")" "left-dirty=/etc/config/argon" \
+    "ac-2 the GAP row carries the files that are still dirty"
+assert_contains "$(cat "$sweep_gap/sweep-driver.tsv")" "FAIL" \
+    "ac-2 the driver's own failure is parked in the sweep's own rows file"
+assert_eq "$(grep -c 'FAIL' "$sweep_gap/verdict.tsv" || true)" "0" \
+    "ac-2 ... and it never reaches the round's verdict"
+assert_eq "$(tail -n 1 "$sweep_gap/summary.txt")" "verdict: GAP" \
+    "ac-2 ... so the round is GAP, not FAIL"
+
+# The other two conditions of a PASS, each on its own: an exit code of 0 with a FAIL row in
+# the driver's own output is not a clean sweep, and a non-zero exit with no row is not one
+# either. Without these two cases deleting either condition leaves the suite green.
+for sw_case in failrow:0:1 exit3:3:0; do
+    sw_name=$(printf '%s' "${sw_case}" | cut -d: -f1)
+    sw_rc=$(printf '%s' "${sw_case}" | cut -d: -f2)
+    sw_row=$(printf '%s' "${sw_case}" | cut -d: -f3)
+    sw_dir="$tmp/hx-sweep-${sw_name}"
+    mkdir -p "$sw_dir/software-state"
+    printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+        >"$sw_dir/software-state/written.tsv"
+    STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+        STUB_SWPROBE_CALLS="$sw_calls" STUB_SWPROBE_RC="$sw_rc" STUB_SWPROBE_FAILROW="$sw_row" \
+        run_hx --from audit --results "$sw_dir" --task "$round_task"
+    assert_eq "$(awk -F'\t' '$1 == "sweep" { print $2 }' "$sw_dir/sweep.tsv")" "GAP" \
+        "ac-2 a sweep with ${sw_name} is a GAP, because every PASS condition has to hold"
+    assert_contains "$(cat "$sw_dir/sweep.tsv")" "exit=${sw_rc}" \
+        "ac-2 ... and the row names the exit code it saw"
+done
+
+# Exiting 0 is not the same as having put the machine back: the driver's own left-dirty line
+# is the third condition, so a PASS row can never state that the machine is still dirty.
+sweep_dirty="$tmp/hx-sweep-dirty"
+mkdir -p "$sweep_dirty/software-state"
+printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+    >"$sweep_dirty/software-state/written.tsv"
+STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+    STUB_SWPROBE_CALLS="$sw_calls" STUB_SWPROBE_DIRTY=/etc/config/argon \
+    run_hx --from audit --results "$sweep_dirty" --task "$round_task"
+assert_eq "$(awk -F'\t' '$1 == "sweep" { print $2 }' "$sweep_dirty/sweep.tsv")" "GAP" \
+    "ac-2 a driver that exits 0 while naming a dirty file is not a PASS"
+
+# No bookkeeping means the software phase never ran on this machine: nothing to put back, and
+# inventing a row for it would add a GAP to every round that skipped that phase.
+sweep_none="$tmp/hx-sweep-none"
+mkdir -p "$sweep_none/software-state"
+: >"$sweep_none/software-state/written.tsv"
+: >"$sweep_none/software-state/sources.tsv"
+mkdir -p "$sweep_none/software-state/base-hop-1"
+: >"$sw_calls"
+STUB_SWPROBE_CALLS="$sw_calls" run_hx --from audit --results "$sweep_none" --task "$round_task"
+assert_eq "$(wc -l <"$sw_calls" | tr -d ' ')" "0" \
+    "ac-1 a state directory with nothing pending calls no cleanup"
+assert_eq "$(cat "$sweep_none/sweep.tsv" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "ac-1 ... and writes no sweep row about nothing"
+
+# A round continued in the same results directory - what --from and "already PASS, skip" are
+# for - must be judged on this run's sweep, not on the one before it. Both files are truncated
+# per run for that reason: an old sweep row would be counted twice, and an old driver FAIL row
+# would keep the sweep at GAP after the machine came back clean.
+sweep_re="$tmp/hx-sweep-reuse"
+mkdir -p "$sweep_re/software-state"
+printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+    >"$sweep_re/software-state/written.tsv"
+printf 'sweep\tGAP\t-\treason=stale-row-from-an-earlier-round\n' >"$sweep_re/sweep.tsv"
+printf 'SW-cleanup\tFAIL\t-\tconfig moved between the two snapshots\n' >"$sweep_re/sweep-driver.tsv"
+STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+    STUB_SWPROBE_CALLS="$sw_calls" run_hx --from audit --results "$sweep_re" --task "$round_task"
+assert_eq "$(grep -c '^sweep	' "$sweep_re/verdict.tsv" || true)" "1" \
+    "ac-1 a reused results directory holds one sweep row, not one per run"
+assert_eq "$(awk -F'\t' '$1 == "sweep" { print $2 }' "$sweep_re/sweep.tsv")" "PASS" \
+    "ac-1 ... and an earlier round's FAIL row does not keep this sweep at GAP"
+assert_eq "$(grep -c 'stale-row-from-an-earlier-round' "$sweep_re/verdict.tsv" || true)" "0" \
+    "ac-1 ... and the earlier round's row is gone from the verdict"
+
+# With nothing left to put back, the sweep row of an earlier run must not survive either: a
+# round that never installed a sample cannot be judged on a sweep it did not perform.
+sweep_stale="$tmp/hx-sweep-stale"
+mkdir -p "$sweep_stale/software-state"
+: >"$sweep_stale/software-state/written.tsv"
+: >"$sweep_stale/software-state/sources.tsv"
+printf '/etc/config/argon\tmissing\t-\t-\n' >"$sweep_stale/software-state/pre.tsv"
+printf 'sweep\tGAP\t-\treason=stale-row-from-an-earlier-round\n' >"$sweep_stale/sweep.tsv"
+STUB_AUDIT_RESULT=covered STUB_AUDIT_COVERED=13 STUB_AUDIT_MISSING=0 \
+    STUB_SWPROBE_CALLS="$sw_calls" run_hx --from audit --results "$sweep_stale" --task "$round_task"
+assert_eq "$(grep -c '^sweep	' "$sweep_stale/verdict.tsv" || true)" "0" \
+    "ac-1 a round with nothing pending carries no sweep row, not even an old one"
+assert_eq "$(tail -n 1 "$sweep_stale/summary.txt")" "verdict: PASS" \
+    "ac-1 ... so an old GAP cannot hold a clean round down"
+
+# A dry run is a plan: it cleans nothing, even when there is something to clean.
+sweep_dry="$tmp/hx-sweep-dry"
+mkdir -p "$sweep_dry/software-state"
+printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+    >"$sweep_dry/software-state/written.tsv"
+: >"$sw_calls"
+STUB_SWPROBE_CALLS="$sw_calls" run_hx --dry-run --results "$sweep_dry" --task "$round_task"
+assert_eq "$(wc -l <"$sw_calls" | tr -d ' ')" "0" "ac-1 a dry run calls no cleanup"
+
 # --- ac-2: the orchestrator carries no second copy of the round's own lists ---------- #
 # The samples are tests/fixtures/software-samples.json (read by software-probe.sh) and the
 # 25.x line is decided by the drivers, not here. A sample name or a 24.x path baked into this

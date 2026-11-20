@@ -575,6 +575,111 @@ assert_eq "$?" "2" "ac-4 two actions in one run is a usage error, not a silent l
 probe_run --cleanup >/dev/null 2>&1
 assert_eq "$?" "4" "ac-4 cleanup with no state to undo is a GAP"
 
+# =========================================================================== #
+# ac-5 / ac-6: cleanup is idempotent, and a dirty machine is a visible fact
+#
+# The driver writes its fixture into the app's real config file and only --cleanup puts it
+# back. Two things follow that nothing used to check: running --cleanup twice must not report
+# a restore it could not do (the first run already deleted the backup), and the round's log
+# has to say - in one line, without the reader knowing where the bookkeeping lives - that the
+# machine is holding a fixture.
+# =========================================================================== #
+new_device 25.12.2
+mkdir -p "$dev/etc/config" "$dev/feed"
+printf 'config argon\n\toption mode "original"\n' >"$dev/etc/config/argon"
+printf '1.2.3-r1\n' >"$dev/feed/istore"
+
+out=$(probe_run --third-party-url 'https://feed.example.invalid/samples')
+assert_eq "$(printf '%s\n' "$out" | grep -c '^left-dirty=' || true)" "1" \
+    "ac-6 the run prints exactly one left-dirty line"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^left-dirty=none$' || true)" "0" \
+    "ac-6 a run that wrote a fixture does not claim a clean machine"
+assert_contains "$out" "left-dirty=/etc/config/argon" \
+    "ac-6 ... naming the config file the fixture was written into"
+
+out=$(probe_run --cleanup)
+assert_contains "$out" "left-dirty=none" "ac-6 after the cleanup the line says the machine is clean"
+argon_clean=$(sha_of "$dev/etc/config/argon")
+
+out=$(probe_run --cleanup)
+rc=$?
+assert_eq "$rc" "0" "ac-5 a second cleanup exits 0"
+sw_ev=$(row_of SW-cleanup | cut -f3)
+assert_eq "$(grep -c 'restore failed' "$sw_ev" 2>/dev/null || true)" "0" \
+    "ac-5 a second cleanup does not report a restore it could not do"
+assert_eq "$(sha_of "$dev/etc/config/argon")" "$argon_clean" "ac-5 a second cleanup changes nothing"
+assert_contains "$out" "left-dirty=none" "ac-5 ... and still reports a clean machine"
+assert_eq "$(cat "$state/written.tsv" 2>/dev/null | wc -l | tr -d ' ')" "0" \
+    "ac-5 the first cleanup emptied the change list, so the second had nothing to undo"
+sw_ev=$(row_of SW-cleanup | cut -f3)
+assert_eq "$(grep -c 'restore failed' "$sw_ev" 2>/dev/null || true)" "0" \
+    "ac-5 ... and its evidence log holds no restore it could not do"
+
+# Bookkeeping that outlived its backups: the machine was reflashed, the state directory was
+# not. There is nothing to put back, and saying "restore failed" would be a defect report
+# about a machine nobody touched.
+printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
+    >>"$state/written.tsv"
+out=$(probe_run --cleanup)
+rc=$?
+assert_eq "$rc" "0" "ac-4 stale bookkeeping with no backup is skipped, not an error"
+st_ev=$(row_of SW-cleanup | cut -f3)
+assert_eq "$(grep -c 'restore failed' "$st_ev" 2>/dev/null || true)" "0" \
+    "ac-4 ... and it does not cry restore failed"
+assert_eq "$(wc -l <"$state/written.tsv" | tr -d ' ')" "0" \
+    "ac-4 ... and the stale entry is struck off the list instead of being retried forever"
+assert_eq "$(sha_of "$dev/etc/config/argon")" "$argon_clean" \
+    "ac-4 ... and the file it names is left exactly as it was"
+
+# The other half of the reflash hazard: a path this run created, now holding somebody else's
+# bytes. Deleting it would destroy a file this driver never wrote and then report success.
+new_device 25.12.2
+mkdir -p "$dev/feed"
+printf '1.2.3-r1\n' >"$dev/feed/istore"
+probe_run --sample luci-app-openclash >/dev/null
+printf 'config openclash\n\toption owner "somebody-else"\n' >"$dev/etc/config/openclash"
+out=$(probe_run --cleanup)
+rc=$?
+assert_eq "$rc" "4" \
+    "ac-4 a cleanup that deliberately left somebody else's file alone ends as GAP, never FAIL"
+assert_eq "$(verdict_of SW-cleanup-left)" "GAP" "ac-4 ... recorded under its own name"
+assert_contains "$(note_of SW-cleanup-left)" "reason=left-alone" "ac-4 ... with the reason that says why"
+assert_file_exists "$dev/etc/config/openclash" "ac-4 ... and leaves that file where it is"
+# The decision has to outlive the run that made it: a second cleanup sees the same file and
+# must not decide it "moved" this time.
+out2=$(probe_run --cleanup)
+rc2=$?
+assert_eq "$rc2" "4" \
+    "ac-5 a second cleanup still ends as GAP about the file it left alone, not as a FAIL"
+assert_eq "$(grep -c 'changed /etc/config/openclash' "$(row_of SW-cleanup | cut -f3)" 2>/dev/null || true)" "0" \
+    "ac-5 ... and does not report it as a config that moved"
+assert_contains "$(cat "$(row_of SW-cleanup | cut -f3)")" "left alone: /etc/config/openclash" \
+    "ac-4 ... saying out loud that it left it alone"
+
+# =========================================================================== #
+# ac-7: the fixture survives the hop, so the restore may not happen before the round ends
+#
+# --baseline and --compare are the two actions that run *during* a round. If either of them
+# put the config back, "the config survived the hop" would be a statement about a file this
+# driver had already restored, which is exactly the evidence ac-4 is supposed to produce.
+# =========================================================================== #
+new_device 25.12.2
+mkdir -p "$dev/etc/config" "$dev/feed"
+printf 'config argon\n\toption mode "original"\n' >"$dev/etc/config/argon"
+printf '1.2.3-r1\n' >"$dev/feed/istore"
+probe_run --third-party-url 'https://feed.example.invalid/samples' >/dev/null
+fixture_sha=$(sha_of "$dev/etc/config/argon")
+probe_run --baseline hop-1 >/dev/null
+assert_file_exists "$state/base-hop-1/luci-theme-argon.tsv" \
+    "ac-7 the baseline really took a snapshot"
+assert_eq "$(sha_of "$dev/etc/config/argon")" "$fixture_sha" \
+    "ac-7 a baseline leaves the fixture in the app's config file"
+probe_run --compare hop-1 >/dev/null
+assert_eq "$(sha_of "$dev/etc/config/argon")" "$fixture_sha" \
+    "ac-7 a comparison leaves the fixture in the app's config file"
+assert_file_exists "$dev/etc/config/argon.swprobe-bak" \
+    "ac-7 ... and the backup is still there for the round's own cleanup to use"
+
 new_device 25.12.2
 probe_run --sample htop >/dev/null
 bad_format=$(awk -F'\t' 'NF != 4 || ($2 != "PASS" && $2 != "FAIL" && $2 != "GAP") { print }' "$results")

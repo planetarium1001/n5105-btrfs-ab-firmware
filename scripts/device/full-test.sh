@@ -47,11 +47,21 @@
 # instead of parsing prose out of the log. Only when a phase exits without a row does the
 # orchestrator write one, so "exit 0 and said nothing" can never read as a silent pass.
 #
+# After the last phase it puts the machine back: software-probe.sh writes its samples into the
+# apps' real config files, and only its --cleanup restores them. That sweep is not a phase (no
+# --only or --from can select or skip it); it writes results/sweep.log and its own rows file
+# results/sweep-driver.tsv, and contributes exactly one row - `sweep`, PASS or GAP, never FAIL -
+# because a cleanup that did not finish is a bookkeeping finding, not a product defect.
+#
 # Verdict (ac-7): the per-phase files are concatenated into results/verdict.tsv, and
 #
 #   verdict: PASS   no row is FAIL and no row is GAP    (exit 0)
 #   verdict: GAP    nothing failed, something was not decided   (exit 1)
 #   verdict: FAIL   at least one row is FAIL            (exit 1)
+#
+# The sweep row takes part in that arithmetic like any other, but it can only ever be a GAP:
+# the driver's own rows (including the FAIL it records when it cannot put something back) go to
+# results/sweep-driver.tsv, which no phase owns and this file never concatenates.
 #
 # Exit status: 0 PASS, 1 not PASS, 2 bad usage.
 #
@@ -1429,6 +1439,81 @@ _count_rows() { # <tsv> <verdict>
     awk -F'\t' -v v="${2}" '$2 == v { n++ } END { printf "%d", n }' "${1}"
 }
 
+# _sweep_run: put the machine back after the last judged phase, and record what happened.
+#
+# software-probe.sh writes its samples into the apps' *real* config files (/etc/config/argon
+# and friends) and keeps the bookkeeping it needs to undo that under <results>/software-state.
+# Only its own --cleanup restores them, and until this function existed nothing ever called it:
+# the 2026-11-20 round finished with a fixture in /etc/config/argon, the theme page could not
+# read `argon.@global[0]`, and the failure read as a product defect while it was this round's
+# own leftover.
+#
+# It runs here - after the last phase, before the verdict - and not between hops, because
+# restoring between hops would make "the config survived the hop" a statement about a file that
+# had already been put back.
+#
+# The driver's own rows go to sweep-driver.tsv, which no phase owns and the verdict never
+# reads. That is deliberate: --cleanup records FAIL when it could not put something back, and
+# a FAIL there would turn the whole round red over a bookkeeping failure. The round learns one
+# row from this function - PASS when the machine is demonstrably back, GAP (naming what is
+# still dirty) when it is not - and never FAIL, because "the product is broken" and "the
+# cleanup did not finish" are different findings.
+_sweep_run() {
+    # Both files are this run's answer, not a history. A round may be continued in the same
+    # results directory (that is what --from and the "already PASS, skip" rule are for), so an
+    # earlier sweep row must not be re-read into this verdict, and an earlier driver FAIL row
+    # must not keep this sweep at GAP after the machine came back clean.
+    mkdir -p "${RESULTS_DIR}" 2>/dev/null || true
+    : >"${RESULTS_DIR}/sweep.tsv"
+    : >"${RESULTS_DIR}/sweep-driver.tsv"
+    _sw_state="${RESULTS_DIR}/software-state"
+    _sw_pending=0
+    for _sw_l in "${_sw_state}/written.tsv" "${_sw_state}/sources.tsv"; do
+        [ -s "${_sw_l}" ] && _sw_pending=1
+    done
+    if [ "${_sw_pending}" -eq 0 ]; then
+        printf '  sweep: nothing is holding a fixture (%s has no pending change)\n' "${_sw_state}"
+        return 0
+    fi
+    _sw_driver=$(_phase_script software)
+    if [ ! -f "${_sw_driver}" ]; then
+        AB_RESULTS="${RESULTS_DIR}/sweep.tsv"
+        record sweep GAP - "reason=no-driver driver=${_sw_driver} changed=${_sw_state}/written.tsv"
+        printf '  sweep: GAP, the software driver is not installed at %s\n' "${_sw_driver}"
+        return 0
+    fi
+    sh "${_sw_driver}" --cleanup --results "${RESULTS_DIR}/sweep-driver.tsv" \
+        >"${RESULTS_DIR}/sweep.log" 2>&1
+    _sw_rc=$?
+    _sw_dirty=$(_sweep_dirty_note)
+    _sw_fails=0
+    if [ -f "${RESULTS_DIR}/sweep-driver.tsv" ]; then
+        _sw_fails=$(awk -F'	' '$2 == "FAIL" { n += 1 } END { print n + 0 }' \
+            "${RESULTS_DIR}/sweep-driver.tsv")
+    fi
+    AB_RESULTS="${RESULTS_DIR}/sweep.tsv"
+    if [ "${_sw_rc}" -eq 0 ] && [ "${_sw_fails}" -eq 0 ] && [ "${_sw_dirty}" = "left-dirty=none" ]; then
+        record sweep PASS "${RESULTS_DIR}/sweep.log" "cleanup exit 0 ${_sw_dirty}"
+        printf '  sweep: the software driver put the machine back\n'
+    else
+        _sw_why="exit=${_sw_rc}"
+        [ "${_sw_fails}" -eq 0 ] || _sw_why="${_sw_why} failed-rows=${_sw_fails}"
+        record sweep GAP "${RESULTS_DIR}/sweep.log" \
+            "reason=cleanup-incomplete ${_sw_why} ${_sw_dirty:-left-dirty=unknown} changed=${_sw_state}/written.tsv"
+        printf '  sweep: GAP, the cleanup did not confirm a clean machine (%s)\n' "${_sw_why}"
+    fi
+    return 0
+}
+
+# _sweep_dirty_note: the driver's own left-dirty line, so the row answers "what is still
+# holding a fixture" without the reader opening the log. `left-dirty=none` is also the third
+# condition of a PASS: a driver that exits 0 while naming a file has not put the machine back.
+_sweep_dirty_note() {
+    _sdn=$(sed -n 's/^left-dirty=\(.*\)$/left-dirty=\1/p' "${RESULTS_DIR}/sweep.log" 2>/dev/null |
+        tail -n 1)
+    printf '%s' "${_sdn}"
+}
+
 _write_verdict() {
     mkdir -p "${RESULTS_DIR}" || return 1
     : >"${RESULTS_DIR}/verdict.tsv"
@@ -1436,6 +1521,10 @@ _write_verdict() {
         [ -f "${RESULTS_DIR}/${_wv_p}.tsv" ] || continue
         cat "${RESULTS_DIR}/${_wv_p}.tsv" >>"${RESULTS_DIR}/verdict.tsv"
     done
+    # The sweep is not a phase (no --only or --from may select or skip it), so it is appended
+    # here rather than found in the loop above. It is last on purpose: it is the round's last
+    # action, and a reader of verdict.tsv should see it after every judged row.
+    [ -f "${RESULTS_DIR}/sweep.tsv" ] && cat "${RESULTS_DIR}/sweep.tsv" >>"${RESULTS_DIR}/verdict.tsv"
     _wv_passed=$(_count_rows "${RESULTS_DIR}/verdict.tsv" PASS)
     _wv_failed=$(_count_rows "${RESULTS_DIR}/verdict.tsv" FAIL)
     _wv_gap=$(_count_rows "${RESULTS_DIR}/verdict.tsv" GAP)
@@ -1741,6 +1830,8 @@ if [ "${DRY_RUN}" = "1" ]; then
     printf 'plan: nothing was executed and no file was written (--dry-run)\n'
     exit 0
 fi
+
+_sweep_run
 
 _write_verdict
 exit $?
