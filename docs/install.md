@@ -86,12 +86,15 @@ whether they do:
 
 ```sh
 ./scripts/device/release-verify.sh --tag v0.0.9
+./scripts/device/release-verify.sh --tag v0.1.0-rc.2   # a preview: VERSION still says 0.1.0
 ```
 
 It prints one `release-verify check=... result=...` line per claim - the tag against the
 `VERSION` it carries, each of the four assets, every line of `SHA256SUMS`, and the
 `platform` / `base` the index declares - and ends with a `release-verify result=pass|fail`
-line, exiting 0 only when every check passed. `--dir <path>` runs the same checks over
+line, exiting 0 only when every check passed. A preview tag is judged the way the publisher
+judges it - the version before the `-` suffix is what has to equal `VERSION`, and the row
+prints `preview=rc.2` so the evidence says which preview the bytes are. `--dir <path>` runs the same checks over
 files you downloaded by hand, and `AB_DRY_RUN=1` sends nothing over the network at all.
 Run it before `dd`: a digest that disagrees with `SHA256SUMS` is the last cheap moment to
 stop.

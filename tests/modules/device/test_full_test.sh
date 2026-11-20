@@ -1291,6 +1291,23 @@ printf '/etc/config/argon\tdeadbeef\tyes\t/etc/config/argon.swprobe-bak\n' \
 STUB_SWPROBE_CALLS="$sw_calls" run_hx --dry-run --results "$sweep_dry" --task "$round_task"
 assert_eq "$(wc -l <"$sw_calls" | tr -d ' ')" "0" "ac-1 a dry run calls no cleanup"
 
+# --- the release tag: derived, or stated -------------------------------------- #
+# On the release line the tag is v + VERSION and deriving it is right. A preview is published
+# as v0.1.0-rc.2 over VERSION 0.1.0, so the derived tag names a release that does not exist:
+# the 2026-11-20 round came back `reason=no-such-release` about a preview that had been
+# published correctly. The tag is now stated by the caller, and the default is unchanged.
+run_ft --dry-run --only release --results "$tmp/results-tag-default"
+assert_contains "$(plan_line release)" "--tag v$want_version" \
+    "the release phase still derives its tag from VERSION when none is given"
+run_ft --dry-run --only release --release-tag v0.1.0-rc.2 --results "$tmp/results-tag-stated"
+assert_contains "$(plan_line release)" "--tag v0.1.0-rc.2" \
+    "a stated release tag reaches the driver"
+assert_eq "$(printf '%s\n' "$(plan_line release)" | grep -c -- "--tag v$want_version ")" "0" \
+    "and the derived tag is not also passed (the stated one contains it as a prefix)"
+AB_RELEASE_TAG=v0.1.0-rc.3 run_ft --dry-run --only release --results "$tmp/results-tag-env"
+assert_contains "$(plan_line release)" "--tag v0.1.0-rc.3" \
+    "the environment names the tag too, for a round started from a script"
+
 # --- ac-2: the orchestrator carries no second copy of the round's own lists ---------- #
 # The samples are tests/fixtures/software-samples.json (read by software-probe.sh) and the
 # 25.x line is decided by the drivers, not here. A sample name or a 24.x path baked into this

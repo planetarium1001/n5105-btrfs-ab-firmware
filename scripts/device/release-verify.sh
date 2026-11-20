@@ -360,14 +360,33 @@ elif [ "${source_kind}" = "release" ] &&
     version_from=repository-at-tag
 fi
 
+# A preview tag carries a pre-release suffix over the same bytes: v0.1.0-rc.1 is release
+# 0.1.0, published as a GitHub pre-release. The publisher (release-publish.yml) already reads
+# the tag that way - it strips everything from the first `-` and compares what is left with
+# VERSION - and this check is the same rule, deliberately: two rules for one tag is how the
+# 2026-11-20 round came back with `tag-version=fail` about a release that had been published
+# exactly as designed. The suffix is printed rather than swallowed, so the row itself says
+# which preview the bytes are.
 case "${tag}" in
     v*)
+        tag_base=${tag#v}
+        tag_preview=""
+        case "${tag_base}" in
+            *-*) tag_preview=${tag_base#*-}; tag_base=${tag_base%%-*} ;;
+        esac
         if [ -z "${expected_version}" ]; then
             rv_skip tag-version "tag=${tag} reason=version-unreadable"
-        elif [ "${tag#v}" = "${expected_version}" ]; then
-            rv_pass tag-version "tag=${tag} version=${expected_version} from=${version_from}"
         else
-            rv_fail tag-version "tag=${tag} version=${expected_version} from=${version_from}"
+            if [ -n "${tag_preview}" ]; then
+                rv_subject="tag=${tag} version=${expected_version} preview=${tag_preview} from=${version_from}"
+            else
+                rv_subject="tag=${tag} version=${expected_version} from=${version_from}"
+            fi
+            if [ "${tag_base}" = "${expected_version}" ]; then
+                rv_pass tag-version "${rv_subject}"
+            else
+                rv_fail tag-version "${rv_subject}"
+            fi
         fi
         ;;
     *)

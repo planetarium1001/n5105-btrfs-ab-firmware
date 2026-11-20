@@ -65,11 +65,14 @@ release 上读回来，并回答一致不一致：
 
 ```sh
 ./scripts/device/release-verify.sh --tag v0.0.9
+./scripts/device/release-verify.sh --tag v0.1.0-rc.2   # 预览版：VERSION 仍是 0.1.0
 ```
 
 它每条断言打一行 `release-verify check=... result=...` —— tag 与它携带的 `VERSION`、四件资产、
 `SHA256SUMS` 的每一行、index 声明的 `platform` / `base` —— 最后一行是
-`release-verify result=pass|fail`，只有全部断言通过才退出 0。`--dir <path>` 用同样的断言核对你自己
+`release-verify result=pass|fail`，只有全部断言通过才退出 0。预览 tag 按发布端的同一规则判定 ——
+`-` 之前的那段版本必须等于 `VERSION`，且行里会打出 `preview=rc.2`，让证据自己说明这是哪个预览。
+`--dir <path>` 用同样的断言核对你自己
 下载下来的文件，`AB_DRY_RUN=1` 则一个网络包都不发。请在 `dd` 之前跑它：摘要与 `SHA256SUMS` 不一致的
 时候，这是最后一个代价很小的止步点。
 

@@ -196,6 +196,13 @@ TASK_ID=${AB_TASK_ID:-}
 # the driver's own default" - this script does not know which release is under acceptance,
 # and a version hardcoded here would keep claiming it long after the release moved on.
 EXPECT=${AB_EXPECT:-}
+# The release the release phase reads back. Empty means "v + this checkout's VERSION", which
+# is right for a tag on the release line and wrong for a preview: a preview is published as
+# v0.1.0-rc.2 over VERSION 0.1.0, so the derived tag v0.1.0 names a release that does not
+# exist and the phase comes back `no-such-release` about bytes nobody published. The tag is
+# stated by whoever starts the round, because this script cannot know which preview is under
+# acceptance - and a value hardcoded here would keep claiming it after the next one ships.
+RELEASE_TAG=${AB_RELEASE_TAG:-}
 FEED_URL=${AB_FEED_URL:-}
 # Both docker phases read and write this one directory: D1 leaves before.snapshot, D2/D3
 # read it back and write after.snapshot. Overridable, but it must be the SAME value for both
@@ -235,7 +242,8 @@ usage() {
     cat <<'USAGE'
 usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
                     [--stop-after PHASE] [--only CASE]... [--results DIR]
-                    [--payload-dir DIR] [--task ID] [--expect VERSION] [--yes]
+                    [--payload-dir DIR] [--task ID] [--expect VERSION]
+                    [--release-tag TAG] [--yes]
 
   Runs the device acceptance suite in one order:
       preflight probes feed-install docker follow feed-history matrix rise
@@ -288,8 +296,13 @@ usage: full-test.sh [--list] [--dry-run] [--preflight-only] [--from PHASE]
                        Without one the audit is a GAP row: it will not read the previous
                        round's record just because that id is still around
   --expect VERSION     the candidate the feed is expected to offer (feed-install.sh
-                       --expect, and the tag the release phase reads). It also names the
-                       payload R1 installs: payload-<VERSION>.tar. Default: the drivers' own
+                       --expect). It also names the payload R1 installs:
+                       payload-<VERSION>.tar. Default: the drivers' own
+  --release-tag TAG    the release the release phase reads back (also AB_RELEASE_TAG).
+                       Default: v + this checkout's VERSION, which is right on the release
+                       line. A preview is published as v0.1.0-rc.2 over VERSION 0.1.0, so a
+                       preview round has to name its tag or the phase asks about a release
+                       that was never published
   --release-dir DIR    the v0.0.12 assets matrix2's REL case reads (also
                        AB_FULLTEST_RELEASE_DIR). REL needs no machine: it compares a
                        published release's bytes with its own index.txt, so an empty
@@ -488,6 +501,10 @@ _checkout_version() {
 # Measured 2026-11-19: `v25.12.2` was asked for, the driver answered `no-such-release`, and
 # the row read as a defect of a release that had nothing wrong with it.
 _release_tag() {
+    if [ -n "${RELEASE_TAG}" ]; then
+        printf '%s\n' "${RELEASE_TAG}"
+        return 0
+    fi
     _rt_version=$(_checkout_version) || return 1
     printf 'v%s\n' "${_rt_version}"
 }
@@ -1604,6 +1621,10 @@ while [ $# -gt 0 ]; do
             ;;
         --release-dir)
             RELEASE_ASSET_DIR=${2:?--release-dir needs a directory}
+            shift 2
+            ;;
+        --release-tag)
+            RELEASE_TAG=${2:?--release-tag needs a tag, e.g. v0.1.0-rc.2}
             shift 2
             ;;
         --yes)

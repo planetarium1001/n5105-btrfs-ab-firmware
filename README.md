@@ -184,11 +184,11 @@ To change it:
 Design stage. Partition geometry, boot chain, and update transaction are finalized.
 Implementation proceeds through stages S0–S6.
 
-Current version: `0.1.0`, on upstream base `25.12.2`. This is the first preview of N5105 AB
-Firmware. The A/B transaction, the package follow across a base hop and the recovery paths are
-now measured end to end on the reference machine: 61 checks passed and none failed, with the
-14 that could not be measured named individually and traced to a missing fixture or an
-unreachable mirror. The entries below are what the preview carries.
+Current version: `0.1.0`, on upstream base `25.12.2`. This is the second preview of N5105 AB
+Firmware, published as `v0.1.0-rc.2`. The A/B transaction, the package follow across a base
+hop and the recovery paths are now measured end to end on the reference machine: 61 checks
+passed and none failed, with the 14 that could not be measured named individually and traced
+to a missing fixture or an unreachable mirror. The entries below are what the preview carries.
 
 - **An apk protection rule is judged by its premise.** `scripts/device/apk-protection-probe.sh`
   asks `apk audit --backup` whether apk sees a protected path as unmodified — the premise a

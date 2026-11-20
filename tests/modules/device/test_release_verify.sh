@@ -180,4 +180,41 @@ rc=$?
 assert_eq "$rc" "2" "a tree with no VERSION and no --tag is a usage error"
 assert_contains "$out" "no --tag and no VERSION" "the missing file is named"
 
+# --- a preview tag: the publisher's rule, read back -------------------------- #
+# release-publish.yml accepts v<X.Y.Z>-rc.<N> over VERSION X.Y.Z: a preview is the same bytes
+# with a pre-release suffix on the tag, and it is published as a GitHub pre-release. Until this
+# test existed the read-back side compared the two strings for equality, so every preview came
+# back as tag-version=fail against a release that had been published correctly - and the round
+# that found it (2026-11-20) was told its release was wrong when only the checker was.
+repo_prev="$tmp/repo-prev"
+make_repo "$repo_prev" 0.1.0
+prev_assets="$tmp/assets-prev"
+make_assets "$prev_assets" 0.1.0
+
+out=$(rv "$repo_prev" --dir "$prev_assets" --tag v0.1.0-rc.1 --version 0.1.0 2>&1)
+rc=$?
+assert_eq "$rc" "0" "a preview tag of this version verifies"
+assert_contains "$out" "check=tag-version result=pass tag=v0.1.0-rc.1 version=0.1.0" \
+    "the preview tag is judged against the base version, as the publisher judges it"
+assert_contains "$out" "preview=rc.1" "the row says which preview it is"
+assert_contains "$out" "release-verify result=pass checks=" \
+    "every other check still passes, so the suffix changes nothing else"
+
+# The suffix is not a wildcard: a preview of a different version is still not this release.
+out=$(rv "$repo_prev" --dir "$prev_assets" --tag v0.0.9-rc.1 --version 0.1.0 2>&1)
+rc=$?
+assert_eq "$rc" "1" "a preview tag of another version fails"
+assert_contains "$out" "check=tag-version result=fail tag=v0.0.9-rc.1 version=0.1.0" \
+    "... and the row names both versions, so the reader sees which is which"
+
+# A tag with no suffix keeps the rule it always had, and is not called a preview.
+out=$(rv "$repo_prev" --dir "$prev_assets" --tag v0.1.0 --version 0.1.0 2>&1)
+rc=$?
+assert_eq "$rc" "0" "a plain tag of this version still passes"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'preview=')" "0" \
+    "a plain release is not described as a preview"
+out=$(rv "$repo_prev" --dir "$prev_assets" --tag v0.0.9 --version 0.1.0 2>&1)
+rc=$?
+assert_eq "$rc" "1" "a plain tag of another version still fails"
+
 finish
