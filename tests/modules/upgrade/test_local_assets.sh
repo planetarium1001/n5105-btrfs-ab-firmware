@@ -103,16 +103,18 @@ printf '%s\n' "$*" >>"${APK_CALLS:-/dev/null}"
 root=""
 applet=""
 allow=0
+simulate=0
 arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) root=$2; shift 2 ;;
     --allow-untrusted) allow=1; shift ;;
+    --simulate) simulate=1; shift ;;
     --cache-dir|--timeout|--repositories-file) shift 2 ;;
-    version|policy|add) applet=$1; shift ;;
+    --no-network) shift ;;
+    version|policy|add|adbdump) applet=$1; shift ;;
     -*) shift ;;
     *)
-      # `version -t <a> <b>` has two positional arguments; every other applet has one.
       if [ "$applet" = "version" ]; then
         if [ -z "$v1" ]; then v1=$1; else v2=$1; fi
       else
@@ -145,8 +147,43 @@ db_set() {
   mv "$file.new" "$file"
 }
 
-pkginfo() {
-  tar -xzOf "$1" .PKGINFO 2>/dev/null || tar -xzOf "$1" ./.PKGINFO 2>/dev/null
+# fixture_identity: `<name> <version>` for a fixture body. The fixtures are either a real tar
+# package (the shape the library falls back to for v2) or a synthetic v3 body: the literal
+# `ADBd` magic followed by the identity a real `apk adbdump` would print, kept in `<file>.info`.
+# A body in the store has neither, so the relaxed `<name>-<version>.apk` name is the last answer.
+fixture_identity() {
+  if info=$(tar -xzOf "$1" .PKGINFO 2>/dev/null) || info=$(tar -xzOf "$1" ./.PKGINFO 2>/dev/null); then
+    name=$(printf '%s\n' "$info" | sed -n 's/^pkgname[ ]*=[ ]*//p' | head -n 1)
+    ver=$(printf '%s\n' "$info" | sed -n 's/^pkgver[ ]*=[ ]*//p' | head -n 1)
+    [ -n "$name" ] && [ -n "$ver" ] && { printf '%s %s\n' "$name" "$ver"; return 0; }
+  fi
+  if [ -f "$1.info" ]; then
+    name=$(sed -n 's/^name=//p' "$1.info" | head -n 1)
+    ver=$(sed -n 's/^version=//p' "$1.info" | head -n 1)
+    [ -n "$name" ] && [ -n "$ver" ] && { printf '%s %s\n' "$name" "$ver"; return 0; }
+  fi
+  file=${1##*/}
+  file=${file%.apk}
+  last=${file##*-}
+  rest=${file%-*}
+  [ "$rest" = "$file" ] && return 1
+  case "$last" in
+    r?*)
+      num=${last#r}
+      case "$num" in
+        '' | *[!0-9]*) ;;
+        *)
+          ver=${rest##*-}
+          name=${rest%-*}
+          [ -n "$name" ] && { printf '%s %s\n' "$name" "$ver-$last"; return 0; }
+          ;;
+      esac
+      ;;
+  esac
+  case "$last" in
+    [0-9]*) printf '%s %s\n' "$rest" "$last"; return 0 ;;
+  esac
+  return 1
 }
 
 case "$applet" in
@@ -162,48 +199,67 @@ case "$applet" in
       print "="
     }'
     ;;
+  adbdump)
+    [ "$(head -c 4 "$arg" 2>/dev/null)" = "ADBd" ] || {
+      printf 'ERROR: %s: ADB header error\n' "$arg" >&2
+      exit 99
+    }
+    id=$(fixture_identity "$arg") || {
+      printf 'ERROR: %s: ADB header error\n' "$arg" >&2
+      exit 99
+    }
+    name=${id%% *}
+    ver=${id#* }
+    printf '#%%SCHEMA: 676B6370\n# ADB block, size: 0, compat: 0, ver: 0\ninfo:\n  name: %s\n  version: %s\n  arch: x86_64\npaths: # 0 items\n' \
+      "$name" "$ver"
+    ;;
   policy)
     ver=$(db_version "$arg")
-    printf '%s-%s:\n' "$arg" "${ver:-0}"
-    printf '  lib/apk/db/installed\n'
+    printf '%s policy:\n' "$arg"
+    printf '  %s:\n' "${ver:-0}"
+    printf '    lib/apk/db/installed\n'
     if [ -f "${APK_FEEDS:-/nonexistent}" ] && grep -qx "$arg" "${APK_FEEDS}"; then
-      printf '  https://downloads.example/releases/25.12.2/targets/x86/64/packages/packages.adb\n'
+      printf '  %s:\n' "${APK_FEED_VERSION:-9.9.9-r9}"
+      printf '    https://downloads.example/releases/25.12.2/targets/x86/64/packages/packages.adb\n'
     fi
     ;;
   add)
-    [ "$allow" = "1" ] || { printf 'ERROR: untrusted archive\n' >&2; exit 99; }
-    info=$(pkginfo "$arg")
-    name=$(printf '%s\n' "$info" | sed -n 's/^pkgname[ ]*=[ ]*//p' | head -n 1)
-    ver=$(printf '%s\n' "$info" | sed -n 's/^pkgver[ ]*=[ ]*//p' | head -n 1)
-    [ -n "$name" ] || {
-      file=${arg##*/}
-      file=${file%.apk}
-      rev=${file##*-}
-      rest=${file%-*}
-      ver=${rest##*-}-$rev
-      name=${rest%-*}
+    id=$(fixture_identity "$arg") || {
+      printf 'ERROR: untrusted archive\n' >&2
+      exit 99
     }
+    name=${id%% *}
+    ver=${id#* }
+    if [ "$simulate" = "1" ]; then
+      printf '(1/1) Installing %s (%s)\n' "$name" "$ver"
+      printf 'OK: 1 MiB in 1 packages\n'
+      exit 0
+    fi
+    [ "$allow" = "1" ] || { printf 'ERROR: untrusted archive\n' >&2; exit 99; }
     x="${APK_EXTRACT:-/tmp}/apk-extract.$$"
-    rm -rf "$x"; mkdir -p "$x"
-    tar -xzf "$arg" -C "$x" 2>/dev/null
-    ( cd "$x" && find . -type f ) | while IFS= read -r member; do
-      rel=${member#./}
-      case "$rel" in
-        .PKGINFO|.CONFIG) continue ;;
-        etc/config/*)
-          if [ -f "$root/$rel" ]; then
-            cp "$x/$rel" "$root/$rel.apk-new"
-          else
+    rm -rf "$x"
+    mkdir -p "$x"
+    tar -xzf "$arg" -C "$x" 2>/dev/null || :
+    if [ -d "$x" ] && [ "$(find "$x" -type f 2>/dev/null | wc -l | tr -d ' ')" != "0" ]; then
+      ( cd "$x" && find . -type f ) | while IFS= read -r member; do
+        rel=${member#./}
+        case "$rel" in
+          .PKGINFO|.CONFIG) continue ;;
+          etc/config/*)
+            if [ -f "$root/$rel" ]; then
+              cp "$x/$rel" "$root/$rel.apk-new"
+            else
+              mkdir -p "$root/$(dirname "$rel")"
+              cp "$x/$rel" "$root/$rel"
+            fi
+            ;;
+          *)
             mkdir -p "$root/$(dirname "$rel")"
             cp "$x/$rel" "$root/$rel"
-          fi
-          ;;
-        *)
-          mkdir -p "$root/$(dirname "$rel")"
-          cp "$x/$rel" "$root/$rel"
-          ;;
-      esac
-    done
+            ;;
+        esac
+      done
+    fi
     db_set "$name" "$ver"
     printf '(1/1) Installing %s (%s)\n' "$name" "$ver"
     ;;
@@ -454,6 +510,139 @@ assert_contains "$out" "replay name=ui version=1.0-r1 result=ok" \
   "ac-1 ab-packages replay installs the file it was handed"
 assert_file_exists "$asset_dir/ui-1.0-r1.apk" \
   "ac-1 and keeps its body in the same step, so the next base can replay it"
+
+# --- identity comes from the package, not from the file name ----------------
+# A v3 body is a synthetic `ADBd` container plus the info block a real `apk adbdump` prints; the
+# stub answers from that sidecar, so a test can give a body any file name and still be honest
+# about what the package says. The point under test is which of the two wins.
+mkroot
+mkadb() { # <path> <name> <version>
+  printf 'ADBd' >"$1"
+  printf 'name=%s\nversion=%s\n' "$2" "$3" >"$1.info"
+}
+mkadb "$tmp/minieap-0.94.0_x86-64.apk" minieap 0.94.0
+assert_eq "$(asset_env "ab_pkgs_asset_identify '$tmp/minieap-0.94.0_x86-64.apk'")" "minieap 0.94.0" \
+  "ac-1 a v3 body whose file name is not apk-shaped is named from its own info block"
+assert_eq "$(asset_env "ab_pkgs_asset_format '$tmp/minieap-0.94.0_x86-64.apk'")" "v3" \
+  "ac-3 the format sniffer names an ADB container by its magic"
+mkadb "$tmp/htop-9.9.9-r9.apk" tree 2.2.1-r2
+assert_eq "$(asset_env "ab_pkgs_asset_identify '$tmp/htop-9.9.9-r9.apk'")" "tree 2.2.1-r2" \
+  "ac-1 the package's own metadata outranks a plausible-looking file name"
+asset_env "ab_pkgs_assets_capture '$fixture_root' '$tmp/minieap-0.94.0_x86-64.apk'" >/dev/null 2>&1
+assert_file_exists "$asset_dir/minieap-0.94.0.apk" \
+  "ac-1 the kept body carries the metadata name and version"
+assert_eq "$(ls "$asset_dir" | grep -c 'x86-64' || true)" "0" \
+  "ac-1 and never the name it happened to be downloaded as"
+
+# The fast path accepts apk's no-revision shape too, because apk's own metadata may carry none.
+assert_eq "$(asset_env "ab_pkgs_asset_split 'x/minieap-0.94.0.apk'")" "minieap 0.94.0" \
+  "ac-1 the fast path accepts <name>-<version> with no revision"
+assert_eq "$(asset_env "ab_pkgs_asset_split 'x/foo-bar.apk' >/dev/null 2>&1 || printf failed")" "failed" \
+  "ac-1 a name with no version at all is still not split into two words"
+
+# --- a file that is not an apk says which kind it is ------------------------
+printf '!<arch>\n' >"$tmp/demo.ipk"
+out=$(asset_env "ab_pkgs_assets_capture '$fixture_root' '$tmp/demo.ipk'; printf 'reason=%s' \"\$AB_PKGS_ASSETS_REASON\"" 2>&1)
+assert_contains "$out" "reason=asset-format-ipk" \
+  "ac-3 an ipk is refused as an ipk, not as an unnameable package"
+printf '#!/bin/sh\necho hi\n' >"$tmp/demo.run"
+out=$(asset_env "ab_pkgs_assets_capture '$fixture_root' '$tmp/demo.run'; printf 'reason=%s' \"\$AB_PKGS_ASSETS_REASON\"" 2>&1)
+assert_contains "$out" "reason=asset-format-run" \
+  "ac-3 a .run script is refused as a script"
+assert_eq "$(ls "$asset_dir"/*.ipk "$asset_dir"/*.run 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "ac-3 neither is written to the store"
+
+# --- superseded compares versions, it does not just check the name ----------
+# The live failure: distfeeds offered only 0.93-r2 while the body was 0.94.0, and the body was
+# deleted anyway. A feed that is older cannot replace what the machine runs.
+mkroot
+mkapk "$tmp/pkg-mini" minieap 0.94.0
+cp "$tmp/pkg-mini.apk" "$asset_dir/minieap-0.94.0.apk"
+printf 'minieap\n' >"$tmp/feeds-mini"
+out=$(APK_FEEDS="$tmp/feeds-mini" APK_FEED_VERSION=0.93-r2 \
+  asset_env "ab_pkgs_assets_superseded '$fixture_root'; printf 'superseded=%s' \"\$AB_PKGS_ASSETS_SUPERSEDED\"" 2>&1)
+assert_eq "$(ls "$asset_dir"/minieap-0.94.0.apk 2>/dev/null | wc -l | tr -d ' ')" "1" \
+  "ac-4 a feed that only knows an older version does not take the body over"
+assert_contains "$(cat "$asset_dir/superseded" 2>/dev/null)" "kept name=minieap version=0.94.0 reason=source-older" \
+  "ac-4 and the decision to keep it is written down"
+assert_eq "$(printf '%s' "$out" | sed -n 's/.*superseded=\(.*\)/\1/p')" "" \
+  "ac-4 nothing is reported as superseded when nothing was"
+out=$(APK_FEEDS="$tmp/feeds-mini" APK_FEED_VERSION=0.95-r1 \
+  asset_env "ab_pkgs_assets_superseded '$fixture_root'; printf 'superseded=%s' \"\$AB_PKGS_ASSETS_SUPERSEDED\"" 2>&1)
+assert_contains "$out" "minieap-0.94.0" \
+  "ac-4 a feed that knows a newer version does take the body over"
+assert_eq "$(ls "$asset_dir"/minieap-*.apk 2>/dev/null | wc -l | tr -d ' ')" "0" \
+  "ac-4 and the body is removed"
+assert_contains "$(cat "$asset_dir/superseded" 2>/dev/null)" "superseded name=minieap version=0.94.0" \
+  "ac-4 the journal still records the supersede, so the deletion is visible"
+
+# --- the declaration is checked, never taken on trust -----------------------
+# The stub is the apk on this fixture. A v3 body is identifiable from its info block, so a
+# declaration that disagrees with it is refused before the store is touched; a file whose
+# identity nothing can answer is refused as unverifiable rather than filed under the guess.
+mkroot
+mkadb "$tmp/decl.apk" minieap 0.94.0
+reset_calls
+out=$(cli_env replay --yes --name minieap --version 0.94.0 "$tmp/decl.apk" 2>&1)
+assert_contains "$out" "kept minieap-0.94.0 (declared)" \
+  "ac-2 a declaration the package confirms keeps the body under the declared name"
+assert_contains "$out" "replay name=minieap version=0.94.0 result=ok" \
+  "ac-2 and the replay moves the database to the declared version"
+assert_file_exists "$asset_dir/minieap-0.94.0.apk" \
+  "ac-2 the body is in the store after the confirmed declaration"
+
+# A declaration may spell the revision apk normalised away (`0.94.0-r0` vs `0.94.0`); that is
+# the same version to apk, and the store keeps the package's own spelling.
+out=$(cli_env replay --yes --name minieap --version 0.94.0-r0 "$tmp/decl.apk" 2>&1)
+assert_contains "$out" "kept minieap-0.94.0 (declared)" \
+  "ac-2 a declaration with an explicit -r0 matches the metadata's 0.94.0"
+assert_file_exists "$asset_dir/minieap-0.94.0.apk" \
+  "ac-2 and the store keeps the package's own spelling"
+
+before=$(ls "$asset_dir"/*.apk 2>/dev/null | wc -l | tr -d ' ')
+out=$(cli_env replay --yes --name minieap --version 0.9.0 "$tmp/decl.apk" 2>&1)
+rc=$?
+assert_contains "$out" "refused, reason=asset-name-mismatch" \
+  "ac-2 a declaration the package contradicts is refused"
+assert_eq "$rc" "74" "ac-2 and the refusal is the before-anything-written code"
+assert_eq "$(ls "$asset_dir"/*.apk 2>/dev/null | wc -l | tr -d ' ')" "$before" \
+  "ac-2 the store is untouched by the refused declaration"
+
+printf 'ADBd' >"$tmp/blob.bin"
+out=$(cli_env replay --yes --name blob --version 1.0 "$tmp/blob.bin" 2>&1)
+rc=$?
+assert_contains "$out" "refused, reason=asset-name-unverifiable" \
+  "ac-2 a declaration nothing can confirm is refused, not filed under a guess"
+assert_eq "$rc" "74" "ac-2 and that refusal also writes nothing"
+
+# --- keeping the same body twice is not a failure ---------------------------
+# A second `replay <same file>` finds the bytes already in the store. That is "kept", not a
+# write that failed: the store copy is what a follow would replay either way.
+mkroot
+mkadb "$tmp/twice.apk" twice 1.0-r1
+out=$(asset_env "ab_pkgs_assets_capture '$fixture_root' '$tmp/twice.apk'; printf 'state=%s captured=%s' \"\$AB_PKGS_ASSETS_STATE\" \"\$AB_PKGS_ASSETS_CAPTURED\"")
+assert_contains "$out" "state=ok" "ac-1 keeping a body that is already kept still succeeds"
+assert_contains "$out" "twice-1.0-r1" "ac-1 and the kept body is reported by the library"
+out=$(asset_env "ab_pkgs_assets_capture '$fixture_root' '$tmp/twice.apk'; printf 'state=%s' \"\$AB_PKGS_ASSETS_STATE\"")
+assert_contains "$out" "state=ok" "ac-1 the second keep of the same bytes is not a failure"
+assert_eq "$(ls "$asset_dir"/twice-*.apk | wc -l | tr -d ' ')" "1" \
+  "ac-1 and the store still holds exactly one body for the name"
+
+# --- the kept decision is journalled once, not once per maintenance run ------
+# A feed that stays older makes the same decision every time the store is maintained. The
+# journal is a record of decisions, not a counter of runs.
+mkroot
+mkapk "$tmp/pkg-stay" stay 2.0-r1
+cp "$tmp/pkg-stay.apk" "$asset_dir/stay-2.0-r1.apk"
+printf 'stay\n' >"$tmp/feeds-stay"
+for _i in 1 2 3; do
+  APK_FEEDS="$tmp/feeds-stay" APK_FEED_VERSION=1.0-r1 \
+    asset_env "ab_pkgs_assets_superseded '$fixture_root'" >/dev/null 2>&1
+done
+assert_eq "$(grep -c 'kept name=stay version=2.0-r1 reason=source-older' "$asset_dir/superseded" 2>/dev/null || true)" "1" \
+  "ac-4 the kept decision is written once even when maintenance runs three times"
+assert_file_exists "$asset_dir/stay-2.0-r1.apk" \
+  "ac-4 and the older feed never takes the body over"
 
 # --- the report -------------------------------------------------------------
 assert_matches "$(asset_env "ab_pkgs_assets_report '$fixture_root'")" \

@@ -609,17 +609,34 @@ Kept bodies live in `/etc/apk/ab/local/<name>-<version>.apk` - on the writable l
 store keeps one body per name (the highest version), which is also the name the gate looks for when
 it asks whether a local package can be replayed.
 
-Three rules bound the store:
+Four rules bound the store:
 
-* a body whose name a feed starts offering is `superseded`: journalled in
-  `/etc/apk/ab/local/superseded`, then deleted. The feed is the better source - it is maintained
-  and follows the base - and `ab-packages status` keeps printing the journal line, so the deletion
-  is not silent;
+* a body whose name a feed starts offering **at a version no older than the body** is
+  `superseded`: journalled in `/etc/apk/ab/local/superseded`, then deleted. The feed is the better
+  source - it is maintained and follows the base - and `ab-packages status` keeps printing the
+  journal line, so the deletion is not silent. A feed that only offers an older version cannot
+  replace what the machine runs: the body is kept and the journal gets a
+  `kept ... reason=source-older` line instead;
 * the store is bounded by `AB_PKGS_CACHE_MAX` (256 MiB by default). Over the bound, the oldest
   bodies that are not the installed version go first: a body the machine runs is the one a replay
   would want;
-* a body that cannot be named (neither `<name>-<version>.apk` nor a `.PKGINFO` inside it) is
-  refused rather than filed under a guess.
+* a body's identity comes from the package itself, **never from its file name**: `apk adbdump`
+  reads the `info:` block of a v3 package, `.PKGINFO` covers a v2/legacy tar, and the file name is
+  only consulted on a machine with no apk to ask. So any name (`-x86_64`, `_v1.2.3`,
+  `linux-amd64`, ...) can be handed over as it is; renaming is not part of the procedure. A file
+  that is not an apk is refused by kind: an ipk answers `reason=asset-format-ipk`, a `.run`
+  script answers `reason=asset-format-run`;
+* when neither the metadata nor `apk add --simulate` can answer (for example a future apk that
+  drops `adbdump`), the identity may be declared:
+
+  ```sh
+  ab-packages replay --name minieap --version 0.94.0 /tmp/minieap-0.94.0_x86-64.apk
+  ```
+
+  The declaration is never taken on trust: the package's own metadata, or apk's own transaction
+  plan, has to agree with it, or the command refuses with `reason=asset-name-mismatch`; when
+  neither can answer it refuses with `reason=asset-name-unverifiable`. Both refusals write
+  nothing to the store, because a name nobody checked is a name the next upgrade will believe.
 
 A replay is `apk add --allow-untrusted <body>` and nothing else: no `--force-*`, no `--overwrite`.
 The trust is the file you kept, because there is no keyring for local archives; the digest list in
@@ -642,7 +659,7 @@ follow's downloads and is emptied when the follow ends.
 | `ab-packages sources [<name>...]` | every feed, or every source that offers a name (`feed`, `customfeeds`, `installed`) | nothing |
 | `ab-packages update` | retries the follow: the gate, the plan, one question, one `apk upgrade`, and the record | the record, `/boot/ab/log/upgrade.log` |
 | `ab-packages update --only <name>` | retries a single package with `apk upgrade <name>` and measures whether it moved; the record is left alone, because it describes the whole world | no record |
-| `ab-packages replay [--yes] [<file.apk>...]` | installs kept bodies, or keeps the file it is handed and installs that | `/etc/apk/ab/local/` |
+| `ab-packages replay [--yes] [--name <n> --version <v>] [<file.apk>...]` | installs kept bodies, or keeps the file it is handed and installs that; a file no tool can name takes a declared identity, which is checked | `/etc/apk/ab/local/` |
 | `ab-packages cache status` / `cache clean` | what one follow left behind, or empty it (kept bodies stay) | the cache |
 
 `ab-packages status` is deliberately offline and read-only: it asks no package manager and needs no

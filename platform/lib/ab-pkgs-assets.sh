@@ -47,15 +47,24 @@
 #   ab_pkgs_assets_dir <root>                    the kept-body directory for <root>
 #   ab_pkgs_cache_dir <root>                     the follow cache directory for <root>
 #   ab_pkgs_asset_split <path>                   `name version` from an apk file name; 1 if it
-#                                                does not follow apk's naming
-#   ab_pkgs_asset_identify <path>                `name version` from the file name, else from
-#                                                the package's own `.PKGINFO`
+#                                                does not follow apk's naming. Only a fast path:
+#                                                the file name is never the identity.
+#   ab_pkgs_asset_identify <path>                `name version` from the package's own metadata
+#                                                (`apk adbdump`, then `.PKGINFO`); the file name
+#                                                only when there is no apk on the machine
+#   ab_pkgs_asset_format <path>                   v3 | v2 | ipk | run | unknown, by magic
 #   ab_pkgs_assets_list <root>                   `name version path bytes`, one body per line
 #   ab_pkgs_assets_bytes <root>                  bytes of every kept body
 #   ab_pkgs_assets_highest <root> <name>         path of the highest kept version; 1 none,
 #                                                2 cannot be ordered
 #   ab_pkgs_policy_sources <root> <name>         one source per line: `installed` or a feed URL
+#   ab_pkgs_policy_versions <root> <name>        `version source` pairs, one per line
+#   ab_pkgs_installed_version <root> <name>      the version apk's database records, or 1
+#   ab_pkgs_version_cmp <root> <a> <b>           -1 | 0 | 1, ordered by apk's own rules
 #   ab_pkgs_assets_capture <root> <file>...      keep the body; sets _CAPTURED/_REASON/_STATE
+#   ab_pkgs_assets_capture_declared <root> <name> <version> <file>
+#                                                keep a body under a declared identity, but only
+#                                                after the package itself confirms it
 #   ab_pkgs_assets_superseded <root>             journal then delete bodies a feed offers
 #   ab_pkgs_assets_prune <root>                  one version per name, then the quota
 #   ab_pkgs_assets_maintain <root>               superseded + prune, in that order
@@ -81,6 +90,8 @@ AB_PKGS_ASSETS_STATE=""
 AB_PKGS_ASSETS_REASON=""
 # shellcheck disable=SC2034
 AB_PKGS_ASSETS_CAPTURED=""
+# shellcheck disable=SC2034
+AB_PKGS_ASSETS_CAPTURED_NAMES=""
 # shellcheck disable=SC2034
 AB_PKGS_ASSETS_PRUNED=""
 # shellcheck disable=SC2034
@@ -170,32 +181,47 @@ _ab_pkgs_asset_files() {
 
 # ab_pkgs_asset_split <path|basename>: `name version` from apk's own archive name.
 #
-# apk versions may not contain a `-` (it separates the version from the revision), so the last
-# two dashes are unambiguous: `foo-bar-1.2.3-r1.apk` -> name `foo-bar`, version `1.2.3-r1`.
-# A version always starts with a digit, which is what keeps a body named `foo-bar.apk` (no
-# version at all) from being split into `foo` + `bar`.
+# This is a fast path, not the identity: `ab_pkgs_asset_identify` asks the package itself first
+# and only falls back here on a machine with no apk to ask. Two shapes are accepted:
+#
+#   <name>-<version>-r<rev>.apk   `foo-bar-1.2.3-r1.apk` -> `foo-bar 1.2.3-r1`
+#   <name>-<version>.apk          `minieap-0.94.0.apk`   -> `minieap 0.94.0`
+#
+# apk versions may not contain a `-`, so in both shapes the name ends at the dash before the
+# version; a version always starts with a digit, which is what keeps `foo-bar.apk` (no version
+# at all) from being split into `foo` + `bar`. The second shape exists because apk's own
+# metadata may carry no revision at all (`minieap 0.94.0`, measured 2026-11-20).
 ab_pkgs_asset_split() {
     _as_stem=${1##*/}
     _as_stem=${_as_stem%.apk}
-    _as_rev=${_as_stem##*-}
-    case "${_as_rev}" in
-        r?*) ;;
-        *) return 1 ;;
-    esac
-    _as_num=${_as_rev#r}
-    case "${_as_num}" in
-        '' | *[!0-9]*) return 1 ;;
-    esac
+    _as_last=${_as_stem##*-}
     _as_rest=${_as_stem%-*}
     [ "${_as_rest}" = "${_as_stem}" ] && return 1
-    _as_ver=${_as_rest##*-}
-    case "${_as_ver}" in
+    case "${_as_last}" in
+        r?*)
+            _as_num=${_as_last#r}
+            case "${_as_num}" in
+                '' | *[!0-9]*) ;;
+                *)
+                    _as_ver=${_as_rest##*-}
+                    case "${_as_ver}" in
+                        [0-9]*) ;;
+                        *) return 1 ;;
+                    esac
+                    _as_name=${_as_rest%-*}
+                    [ -n "${_as_name}" ] || return 1
+                    printf '%s %s\n' "${_as_name}" "${_as_ver}-${_as_last}"
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+    case "${_as_last}" in
         [0-9]*) ;;
         *) return 1 ;;
     esac
-    _as_name=${_as_rest%-*}
-    [ -n "${_as_name}" ] || return 1
-    printf '%s %s\n' "${_as_name}" "${_as_ver}-${_as_rev}"
+    [ -n "${_as_rest}" ] || return 1
+    printf '%s %s\n' "${_as_rest}" "${_as_last}"
 }
 
 # _ab_pkgs_pkginfo <file>: `name version` from the package's own `.PKGINFO`.
@@ -220,10 +246,118 @@ _ab_pkgs_pkginfo() {
     printf '%s %s\n' "${_apk_name}" "${_apk_ver}"
 }
 
+# _ab_pkgs_adbdump <file>: `name version` from the package's own ADB metadata, or 1.
+#
+# apk-tools 3 packages are ADB containers (`ADBd` magic) whose head carries an `info:` block
+# with `name:` and `version:`. `apk adbdump` prints that block and then the whole file table; the
+# reader below stops at `paths:`, so a 29 MiB package costs its header, not its payload (measured
+# 2026-11-20: 0.35 s for the full dump, less when it stops early). This is the identity apk
+# itself installs by, which is why the file name never has to be trusted. An index file
+# (`packages.adb`) also answers rc=0 but has no `info:` block, hence the emptiness check.
+_ab_pkgs_adbdump() {
+    [ -f "$1" ] || return 1
+    command -v apk >/dev/null 2>&1 || return 1
+    _ad_out=$(apk adbdump "$1" 2>/dev/null | awk '
+        /^info:/ { inside = 1; next }
+        inside && /^  name: / { name = substr($0, 9); next }
+        inside && /^  version: / { version = substr($0, 12); next }
+        inside && /^paths:/ { exit }
+        END { if (name != "" && version != "") print name " " version }
+    ')
+    [ -n "${_ad_out}" ] || return 1
+    _ad_name=${_ad_out%% *}
+    _ad_ver=${_ad_out#* }
+    case "${_ad_name}" in
+        '' | *' '*) return 1 ;;
+    esac
+    case "${_ad_ver}" in
+        '' | *' '*) return 1 ;;
+    esac
+    printf '%s %s\n' "${_ad_name}" "${_ad_ver}"
+}
+
+# ab_pkgs_asset_format <file>: `v3`, `v2`, `ipk`, `run` or `unknown`, by magic bytes only.
+#
+# The store can explain why a body was refused: an ipk is an `ar` archive (iStore's old line),
+# a `.run` is a shell script, a v2 package is a tar whose `.PKGINFO` this library can read even
+# though apk-tools 3 refuses to install it. Sniffing is `head -c 4` plus `tar -t` because the
+# image has no `od`/`xxd` (measured 2026-11-18). A file this cannot name is `unknown`, and the
+# caller reports it as unidentified rather than guessing.
+ab_pkgs_asset_format() {
+    [ -f "$1" ] || return 1
+    _af_magic=$(head -c 4 "$1" 2>/dev/null)
+    case "${_af_magic}" in
+        ADBd) printf 'v3'; return 0 ;;
+        '!<ar') printf 'ipk'; return 0 ;;
+        '#!'*) printf 'run'; return 0 ;;
+    esac
+    if tar -xzOf "$1" .PKGINFO >/dev/null 2>&1 \
+        || tar -xzOf "$1" ./.PKGINFO >/dev/null 2>&1; then
+        printf 'v2'
+        return 0
+    fi
+    printf 'unknown'
+    return 0
+}
+
+# _ab_pkgs_simulate_identity <root> <file>: `name version` from apk's own transaction plan, or 1.
+#
+# `apk add --simulate` installs nothing and writes nothing; it prints one line per package it
+# would install, in dependency order, so the last `Installing`/`Replacing` line is the file's own
+# package. This is the fallback for a machine whose apk no longer ships `adbdump`: the question
+# "what is this file" is still answered by apk itself, never by the name. A package already
+# installed at the same version answers `Replacing`, which is why both verbs are parsed.
+_ab_pkgs_simulate_identity() {
+    _si_root=${1:-/}
+    _si_file=$2
+    command -v apk >/dev/null 2>&1 || return 1
+    _si_prefix=$(_ab_pkgs_root "${_si_root}")
+    if [ -z "${_si_prefix}" ]; then
+        _si_out=$(apk add --simulate --allow-untrusted --no-network "${_si_file}" 2>/dev/null) || return 1
+    else
+        _si_out=$(apk --root "${_si_prefix}" add --simulate --allow-untrusted --no-network "${_si_file}" 2>/dev/null) || return 1
+    fi
+    printf '%s\n' "${_si_out}" | awk '
+        /^[0-9]+\/[0-9]+ Installing / {
+            line = $0
+            sub(/^[0-9]+\/[0-9]+ Installing /, "", line)
+            if (line ~ /\(.*\)$/) {
+                name = line; sub(/ \(.*$/, "", name)
+                ver = line; sub(/^.* \(/, "", ver); sub(/\)$/, "", ver)
+                last = name " " ver
+            }
+            next
+        }
+        /^[0-9]+\/[0-9]+ Replacing / {
+            line = $0
+            sub(/^[0-9]+\/[0-9]+ Replacing /, "", line)
+            if (line ~ /\(.* -> .*\)$/) {
+                name = line; sub(/ \(.*$/, "", name)
+                ver = line; sub(/^.* -> /, "", ver); sub(/\)$/, "", ver)
+                last = name " " ver
+            }
+            next
+        }
+        END { if (last != "") print last }
+    ' | grep .
+}
+
+# ab_pkgs_asset_identify <path>: `name version`, or 1.
+#
+# The order is the identity order, not a convenience order:
+#
+#   1. the package's own metadata (`apk adbdump`) - the same bytes apk installs by;
+#   2. `.PKGINFO` for a v2 tar package (legacy, and what the fixtures build);
+#   3. the file name, only on a machine with no apk to ask (a fixture tree, a build host).
+#
+# A machine with apk that cannot read the file is refused here; `ab_pkgs_assets_capture_declared`
+# is the one path that lets a person state the identity instead, and it has to be confirmed.
 ab_pkgs_asset_identify() {
     [ -f "$1" ] || return 1
-    ab_pkgs_asset_split "$1" && return 0
-    _ab_pkgs_pkginfo "$1"
+    _ai_meta=$(_ab_pkgs_adbdump "$1") && { printf '%s\n' "${_ai_meta}"; return 0; }
+    _ab_pkgs_pkginfo "$1" && return 0
+    command -v apk >/dev/null 2>&1 && return 1
+    ab_pkgs_asset_split "$1"
 }
 
 # _ab_pkgs_version_cmp <root> <a> <b>: prints -1, 0 or 1. The ordering is apk's own, asked of
@@ -244,6 +378,12 @@ _ab_pkgs_version_cmp() {
     esac
 }
 
+# ab_pkgs_version_cmp <root> <a> <b>: public spelling of the ordering above, for callers whose
+# question is "did the declaration match" rather than "which body is newest".
+ab_pkgs_version_cmp() {
+    _ab_pkgs_version_cmp "$@"
+}
+
 # ab_pkgs_assets_list <root>: `name version path bytes` for every kept body, one per line.
 # A file this library cannot name is left out of the listing on purpose: reporting it as a
 # body of some name would make the gate believe a replay is possible that is not.
@@ -252,7 +392,11 @@ ab_pkgs_assets_list() {
     [ -d "${_al_dir}" ] || return 0
     while IFS= read -r _al_file; do
         [ -n "${_al_file}" ] || continue
-        _al_id=$(ab_pkgs_asset_identify "${_al_file}") || continue
+        # The store's own invariant is that a body is named after its identity, so the name is
+        # the cheap answer here; a file dropped in by hand keeps the old behaviour and is read
+        # from its metadata instead. Listing does not spawn apk per body on the common path.
+        _al_id=$(ab_pkgs_asset_split "${_al_file}") \
+            || _al_id=$(ab_pkgs_asset_identify "${_al_file}") || continue
         _al_name=${_al_id%% *}
         _al_ver=${_al_id#* }
         printf '%s %s %s %s\n' "${_al_name}" "${_al_ver}" "${_al_file}" \
@@ -317,6 +461,11 @@ _ab_pkgs_installed_version() {
     ' "${_iv_db}" 2>/dev/null
 }
 
+# ab_pkgs_installed_version <root> <name>: the public spelling of the database question.
+ab_pkgs_installed_version() {
+    _ab_pkgs_installed_version "$@"
+}
+
 # ab_pkgs_policy_sources <root> <name>: every source that offers <name>, one per line.
 #
 # `apk policy` is the only authority on this and it is the same question the gate's L
@@ -330,6 +479,23 @@ ab_pkgs_policy_sources() {
     _ps_src=$(printf '%s\n' "${_ps_out}" | sed 's/^[ \t]*//' | grep -v '^$' | grep -v ':$')
     [ -n "${_ps_src}" ] || return 1
     printf '%s\n' "${_ps_src}"
+}
+
+# ab_pkgs_policy_versions <root> <name>: `version source` pairs from `apk policy`.
+#
+# `apk policy` prints one block per candidate version and, under each, the sources that offer it
+# (the installed database is one such "source"). The superseded rule needs more than "some feed
+# knows this name": a feed that only offers an older version is not a replacement for a body the
+# machine runs, so this reader keeps the version attached to each source.
+ab_pkgs_policy_versions() {
+    _pvv_root=${1:-/}
+    _pvv_name=$2
+    _pvv_out=$(_ab_pkgs_apk "${_pvv_root}" policy "${_pvv_name}" 2>/dev/null) || return 1
+    printf '%s\n' "${_pvv_out}" | awk '
+        /^[^ \t].*:$/ { next }
+        /^[ \t]+[^ \t].*:$/ { ver = $1; sub(/:$/, "", ver); next }
+        /^[ \t]+[^ \t]/ { if (ver != "") print ver " " $1; next }
+    ' | grep .
 }
 
 # _ab_pkgs_feed_kind <root> <url>: which feed list a URL came from. The two files the platform
@@ -356,53 +522,90 @@ _ab_pkgs_feed_kind() {
 # the default cache dies with the boot), so the body is copied here while it still exists. A
 # body whose name cannot be read is refused with `reason=asset-unidentified` instead of being
 # filed under a guess, and a body that is already kept byte for byte is left alone.
+# _ab_pkgs_asset_keep <root> <file> <name> <version>: copy one body under its canonical name.
+#
+# Returns 0 when written, 2 when the same bytes were already there, 1 when the store cannot be
+# written (reason set). The copy is written beside its destination and renamed: a power cut
+# leaves the store with the old body or the new one, never half of either.
+_ab_pkgs_asset_keep() {
+    _ak_root=$1
+    _ak_file=$2
+    _ak_name=$3
+    _ak_ver=$4
+    _ak_dir=$(ab_pkgs_assets_dir "${_ak_root}")
+    if ! mkdir -p "${_ak_dir}" 2>/dev/null; then
+        AB_PKGS_ASSETS_REASON="assets-unwritable"
+        return 1
+    fi
+    _ak_dest="${_ak_dir}/${_ak_name}-${_ak_ver}.apk"
+    if [ -f "${_ak_dest}" ] \
+        && [ "$(_ab_pkgs_file_bytes "${_ak_dest}")" = "$(_ab_pkgs_file_bytes "${_ak_file}")" ]; then
+        return 2
+    fi
+    _ak_tmp="${_ak_dest}.tmp.$$"
+    if ! cp "${_ak_file}" "${_ak_tmp}" 2>/dev/null; then
+        AB_PKGS_ASSETS_REASON="assets-unwritable"
+        return 1
+    fi
+    sync 2>/dev/null || :
+    if ! mv "${_ak_tmp}" "${_ak_dest}" 2>/dev/null; then
+        rm -f "${_ak_tmp}" 2>/dev/null || :
+        AB_PKGS_ASSETS_REASON="assets-unwritable"
+        return 1
+    fi
+    sync 2>/dev/null || :
+    return 0
+}
+
+# ab_pkgs_assets_capture <root> <file>...: keep the bodies of local packages.
+#
+# This is the moment a body is kept: apk itself keeps nothing (measured: `/var` is a tmpfs and
+# the default cache dies with the boot), so the body is copied here while it still exists. The
+# identity comes from the package's own metadata (see ab_pkgs_asset_identify); a body that
+# cannot be named is refused with a token that says why - `asset-unidentified` for a file whose
+# metadata cannot be read, `asset-format-ipk` / `asset-format-run` for a file that is not an
+# apk at all. A body that is already kept byte for byte is left alone.
 ab_pkgs_assets_capture() {
     _ac_root=${1:?ab_pkgs_assets_capture needs a root}
     shift
     AB_PKGS_ASSETS_CAPTURED=""
+    AB_PKGS_ASSETS_CAPTURED_NAMES=""
     AB_PKGS_ASSETS_REASON=""
     AB_PKGS_ASSETS_STATE=""
-    _ac_dir=$(ab_pkgs_assets_dir "${_ac_root}")
     _ac_kept=0
     for _ac_file in "$@"; do
         if [ ! -f "${_ac_file}" ] || [ ! -s "${_ac_file}" ]; then
             AB_PKGS_ASSETS_REASON="asset-missing"
             continue
         fi
+        _ac_fmt=$(ab_pkgs_asset_format "${_ac_file}") || _ac_fmt="unknown"
+        case "${_ac_fmt}" in
+            ipk)
+                AB_PKGS_ASSETS_REASON="asset-format-ipk"
+                continue
+                ;;
+            run)
+                AB_PKGS_ASSETS_REASON="asset-format-run"
+                continue
+                ;;
+        esac
         if ! _ac_id=$(ab_pkgs_asset_identify "${_ac_file}"); then
             AB_PKGS_ASSETS_REASON="asset-unidentified"
             continue
         fi
         _ac_name=${_ac_id%% *}
         _ac_ver=${_ac_id#* }
-        if ! mkdir -p "${_ac_dir}" 2>/dev/null; then
-            AB_PKGS_ASSETS_STATE="failed"
-            AB_PKGS_ASSETS_REASON="assets-unwritable"
-            return 1
-        fi
-        _ac_dest="${_ac_dir}/${_ac_name}-${_ac_ver}.apk"
-        # The copy is written beside its destination and renamed: a power cut leaves the store
-        # with the old body or the new one, never half of either.
-        if [ -f "${_ac_dest}" ] \
-            && [ "$(_ab_pkgs_file_bytes "${_ac_dest}")" = "$(_ab_pkgs_file_bytes "${_ac_file}")" ]; then
-            AB_PKGS_ASSETS_CAPTURED="${AB_PKGS_ASSETS_CAPTURED} ${_ac_name}-${_ac_ver}"
-            _ac_kept=$((_ac_kept + 1))
-            continue
-        fi
-        _ac_tmp="${_ac_dest}.tmp.$$"
-        if ! cp "${_ac_file}" "${_ac_tmp}" 2>/dev/null; then
-            AB_PKGS_ASSETS_REASON="assets-unwritable"
-            continue
-        fi
-        sync 2>/dev/null || :
-        if ! mv "${_ac_tmp}" "${_ac_dest}" 2>/dev/null; then
-            rm -f "${_ac_tmp}" 2>/dev/null || :
-            AB_PKGS_ASSETS_REASON="assets-unwritable"
-            continue
-        fi
-        sync 2>/dev/null || :
-        AB_PKGS_ASSETS_CAPTURED="${AB_PKGS_ASSETS_CAPTURED} ${_ac_name}-${_ac_ver}"
-        _ac_kept=$((_ac_kept + 1))
+        # 0 wrote it, 2 found the same bytes already there: both are "this body is kept". Treating
+        # 2 as a failure would make a second `replay <same file>` report a store it did not write.
+        _ab_pkgs_asset_keep "${_ac_root}" "${_ac_file}" "${_ac_name}" "${_ac_ver}"
+        case $? in
+            0 | 2)
+                AB_PKGS_ASSETS_CAPTURED="${AB_PKGS_ASSETS_CAPTURED} ${_ac_name}-${_ac_ver}"
+                AB_PKGS_ASSETS_CAPTURED_NAMES="${AB_PKGS_ASSETS_CAPTURED_NAMES} ${_ac_name}"
+                _ac_kept=$((_ac_kept + 1))
+                ;;
+            *) continue ;;
+        esac
     done
     if [ "${_ac_kept}" -gt 0 ]; then
         AB_PKGS_ASSETS_STATE="ok"
@@ -414,6 +617,104 @@ ab_pkgs_assets_capture() {
         [ -n "${AB_PKGS_ASSETS_REASON}" ] || AB_PKGS_ASSETS_REASON="asset-unidentified"
         return 1
     fi
+    return 0
+}
+
+# ab_pkgs_assets_capture_declared <root> <name> <version> <file>: keep a body a person named.
+#
+# The declaration is the last resort for a file whose identity no tool on the machine can read.
+# It is never taken on trust: the package's own metadata, or apk's own transaction plan when the
+# metadata cannot be read, has to agree with it before anything is written. A declaration that
+# cannot be confirmed leaves the store untouched - `asset-name-mismatch` for a disagreement,
+# `asset-name-unverifiable` for "nothing here can answer". The install that follows is still one
+# `apk add --allow-untrusted <body>`; the declaration only decides the store's file name.
+ab_pkgs_assets_capture_declared() {
+    _acd_root=${1:?ab_pkgs_assets_capture_declared needs a root}
+    _acd_name=$2
+    _acd_ver=$3
+    _acd_file=$4
+    AB_PKGS_ASSETS_CAPTURED=""
+    AB_PKGS_ASSETS_CAPTURED_NAMES=""
+    AB_PKGS_ASSETS_REASON=""
+    AB_PKGS_ASSETS_STATE=""
+    case "${_acd_name}" in
+        '' | *' '*)
+            AB_PKGS_ASSETS_STATE="failed"
+            AB_PKGS_ASSETS_REASON="asset-name-mismatch"
+            return 1
+            ;;
+    esac
+    case "${_acd_ver}" in
+        '' | *' '*)
+            AB_PKGS_ASSETS_STATE="failed"
+            AB_PKGS_ASSETS_REASON="asset-name-mismatch"
+            return 1
+            ;;
+    esac
+    if [ ! -f "${_acd_file}" ] || [ ! -s "${_acd_file}" ]; then
+        AB_PKGS_ASSETS_STATE="failed"
+        AB_PKGS_ASSETS_REASON="asset-missing"
+        return 1
+    fi
+    _acd_fmt=$(ab_pkgs_asset_format "${_acd_file}") || _acd_fmt="unknown"
+    case "${_acd_fmt}" in
+        ipk)
+            AB_PKGS_ASSETS_STATE="failed"
+            AB_PKGS_ASSETS_REASON="asset-format-ipk"
+            return 1
+            ;;
+        run)
+            AB_PKGS_ASSETS_STATE="failed"
+            AB_PKGS_ASSETS_REASON="asset-format-run"
+            return 1
+            ;;
+    esac
+    _acd_actual=$(ab_pkgs_asset_identify "${_acd_file}") || _acd_actual=""
+    if [ -z "${_acd_actual}" ]; then
+        _acd_actual=$(_ab_pkgs_simulate_identity "${_acd_root}" "${_acd_file}") || _acd_actual=""
+        if [ -z "${_acd_actual}" ]; then
+            AB_PKGS_ASSETS_STATE="failed"
+            AB_PKGS_ASSETS_REASON="asset-name-unverifiable"
+            return 1
+        fi
+    fi
+    # The name has to match exactly; the version is compared the way apk compares versions, so
+    # `0.94.0-r0` and `0.94.0` are the same declaration rather than a mismatch a person has to
+    # debug. When apk cannot order them at all, exact equality is the only honest answer.
+    _acd_actual_name=${_acd_actual%% *}
+    _acd_actual_ver=${_acd_actual#* }
+    _acd_ok=1
+    if [ "${_acd_actual_name}" = "${_acd_name}" ]; then
+        _acd_cmp=$(_ab_pkgs_version_cmp "${_acd_root}" "${_acd_actual_ver}" "${_acd_ver}") \
+            || _acd_cmp=""
+        case "${_acd_cmp}" in
+            0) _acd_ok=0 ;;
+            '')
+                [ "${_acd_actual_ver}" = "${_acd_ver}" ] && _acd_ok=0
+                ;;
+        esac
+    fi
+    if [ "${_acd_ok}" -ne 0 ]; then
+        AB_PKGS_ASSETS_STATE="failed"
+        AB_PKGS_ASSETS_REASON="asset-name-mismatch"
+        return 1
+    fi
+    # The store is named after the package's own spelling, not the declaration's: a body filed
+    # as `foo-1.0-r0.apk` while apk records `1.0` would make the next gate ask the wrong question.
+    _acd_store_ver=${_acd_actual_ver:-${_acd_ver}}
+    _ab_pkgs_asset_keep "${_acd_root}" "${_acd_file}" "${_acd_name}" "${_acd_store_ver}"
+    case $? in
+        0 | 2) : ;;
+        *)
+            AB_PKGS_ASSETS_STATE="failed"
+            [ -n "${AB_PKGS_ASSETS_REASON}" ] || AB_PKGS_ASSETS_REASON="assets-unwritable"
+            return 1
+            ;;
+    esac
+    AB_PKGS_ASSETS_CAPTURED=" ${_acd_name}-${_acd_store_ver}"
+    AB_PKGS_ASSETS_CAPTURED_NAMES=" ${_acd_name}"
+    AB_PKGS_ASSETS_STATE="ok"
+    ab_pkgs_assets_prune "${_acd_root}" || :
     return 0
 }
 
@@ -429,15 +730,35 @@ _ab_pkgs_journal() {
         >>"${_jw_file}" 2>/dev/null || :
 }
 
-# ab_pkgs_assets_superseded <root>: a body whose name a feed offers is no longer needed.
+# _ab_pkgs_journal_kept <root> <name> <version> <reason>: the other store decision.
 #
-# The question is asked per name, once, and answered by apk policy: if any source other than
-# the installed database answers for the name, the feed owns it from now on - signed, following
-# the base, maintained - and the kept copy is a stale second opinion that a replay would install
-# over a newer feed version. So it is journalled first and deleted second: a body deleted
-# without a line would be a package that silently stopped being replayable.
+# A body a feed only knows an older version of is kept, and that is a decision too: without this
+# line the journal would only ever record deletions, and "why is this body still here" would be
+# unanswerable. Same file, same append-only shape, different verb.
+_ab_pkgs_journal_kept() {
+    _jk_file=$(_ab_pkgs_superseded_path "$1")
+    # This decision is re-made on every maintain run; the journal is append-only, so writing the
+    # same fact again would grow a file that is supposed to be a record. One line per decision.
+    grep -qF "kept name=$2 version=$3 reason=$4 " "${_jk_file}" 2>/dev/null && return 0
+    _jk_when=$(date -u +%s 2>/dev/null) || _jk_when=0
+    printf 'kept name=%s version=%s reason=%s at=%s\n' "$2" "$3" "$4" "${_jk_when}" \
+        >>"${_jk_file}" 2>/dev/null || :
+}
+
+# ab_pkgs_assets_superseded <root>: a body a feed has taken over, by version, is no longer needed.
 #
-# Sets AB_PKGS_ASSETS_SUPERSEDED (space list of `name-version`) and _STATE (ok|unknown|no-apk).
+# The question is asked per name, once, and answered by `apk policy`. A feed owns the name only
+# when it offers a version at least as new as the body: a feed that only knows an older version
+# cannot replace the body the machine runs, and deleting it would throw away the one copy a
+# replay could use (measured 2026-11-20: `minieap 0.94.0` was deleted because distfeeds offered
+# only `0.93-r2`). So the version comes first and the decision follows it:
+#
+#   feed_version >= body_version  -> journal `superseded`, then delete the body
+#   feed_version <  body_version  -> keep the body, journal `kept ... reason=source-older`
+#   no feed source, or no answer  -> keep the body, say nothing (or `unknown` when apk failed)
+#
+# Sets AB_PKGS_ASSETS_SUPERSEDED (space list of `name-version` actually deleted) and _STATE
+# (ok|unknown|no-apk).
 ab_pkgs_assets_superseded() {
     _sup_root=${1:-/}
     AB_PKGS_ASSETS_SUPERSEDED=""
@@ -449,20 +770,53 @@ ab_pkgs_assets_superseded() {
             *" ${_sup_name} "*) continue ;;
         esac
         _sup_names="${_sup_names} ${_sup_name}"
-        if ! _sup_src=$(ab_pkgs_policy_sources "${_sup_root}" "${_sup_name}"); then
+        if ! _sup_vers=$(ab_pkgs_policy_versions "${_sup_root}" "${_sup_name}"); then
             # No answer means no decision: deleting a body because apk could not be asked would
             # throw away the only copy of a package on the strength of a missing tool.
             AB_PKGS_ASSETS_STATE="unknown"
             continue
         fi
-        _sup_feed=$(printf '%s\n' "${_sup_src}" | grep -vx 'lib/apk/db/installed' | head -n 1)
-        [ -n "${_sup_feed}" ] || continue
-        _sup_kind=$(_ab_pkgs_feed_kind "${_sup_root}" "${_sup_feed}")
+        # The highest version any source other than the installed database offers; the installed
+        # database is never a source that can "take a body back over".
+        _sup_feed_ver=""
+        _sup_feed_src=""
+        while IFS=' ' read -r _sup_v _sup_s; do
+            [ -n "${_sup_v}" ] || continue
+            [ "${_sup_s}" = "lib/apk/db/installed" ] && continue
+            if [ -z "${_sup_feed_ver}" ]; then
+                _sup_feed_ver=${_sup_v}
+                _sup_feed_src=${_sup_s}
+                continue
+            fi
+            if ! _sup_cmp=$(_ab_pkgs_version_cmp "${_sup_root}" "${_sup_v}" "${_sup_feed_ver}"); then
+                _sup_feed_ver=""
+                break
+            fi
+            [ "${_sup_cmp}" = "1" ] && _sup_feed_ver=${_sup_v} && _sup_feed_src=${_sup_s}
+        done <<VERS
+${_sup_vers}
+VERS
+        [ -n "${_sup_feed_ver}" ] || continue
+        _sup_kind=$(_ab_pkgs_feed_kind "${_sup_root}" "${_sup_feed_src}")
         while IFS=' ' read -r _sup_n2 _sup_v2 _sup_p2 _sup_b2; do
             [ "${_sup_n2}" = "${_sup_name}" ] || continue
-            _ab_pkgs_journal "${_sup_root}" "${_sup_n2}" "${_sup_v2}" "${_sup_kind}"
-            rm -f "${_sup_p2}" 2>/dev/null || :
-            AB_PKGS_ASSETS_SUPERSEDED="${AB_PKGS_ASSETS_SUPERSEDED} ${_sup_n2}-${_sup_v2}"
+            if ! _sup_dec=$(_ab_pkgs_version_cmp "${_sup_root}" "${_sup_feed_ver}" "${_sup_v2}"); then
+                # The two versions cannot be ordered (no apk): keeping is the safe direction.
+                AB_PKGS_ASSETS_STATE="unknown"
+                continue
+            fi
+            case "${_sup_dec}" in
+                0 | 1)
+                    _ab_pkgs_journal "${_sup_root}" "${_sup_n2}" "${_sup_v2}" "${_sup_kind}"
+                    rm -f "${_sup_p2}" 2>/dev/null || :
+                    AB_PKGS_ASSETS_SUPERSEDED="${AB_PKGS_ASSETS_SUPERSEDED} ${_sup_n2}-${_sup_v2}"
+                    ;;
+                *)
+                    # The feed is older: the body is still the only way to reinstall the version
+                    # this machine runs, so it stays and the decision is written down.
+                    _ab_pkgs_journal_kept "${_sup_root}" "${_sup_n2}" "${_sup_v2}" "source-older"
+                    ;;
+            esac
         done <<BODIES
 $(ab_pkgs_assets_list "${_sup_root}")
 BODIES

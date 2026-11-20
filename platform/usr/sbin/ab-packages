@@ -39,7 +39,10 @@
 #                               install kept bodies again with `apk add --allow-untrusted`.
 #                               With no argument: every kept body. With a file: keep that body
 #                               and install it - this is how a local package's body is kept,
-#                               because apk keeps nothing by itself (/var is a tmpfs).
+#                               because apk keeps nothing by itself (/var is a tmpfs). The
+#                               name comes from the package's own metadata; --name/--version
+#                               is the last resort for a file no tool here can read, and the
+#                               declaration is checked against the package before it is kept.
 #   cache status | cache clean  the follow cache: what is in it, or empty it (kept bodies stay).
 #   --version, -V               the identity this machine was built as, from
 #                               /etc/platform-release. Answered before anything else is read.
@@ -95,7 +98,7 @@ refuse() {
 }
 
 usage() {
-    say "usage: ab-packages status|sources [<name>...]|update [--yes] [--only <name>]|replay [--yes] [<file.apk>...]|cache status|clean|--version|-V"
+    say "usage: ab-packages status|sources [<name>...]|update [--yes] [--only <name>]|replay [--yes] [--name <n> --version <v>] [<file.apk>...]|cache status|clean|--version|-V"
     exit 2
 }
 
@@ -697,30 +700,77 @@ _installed_version() {
 
 cmd_replay() {
     _re_mode="follow"
+    _re_decl_name=""
+    _re_decl_ver=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --yes) _re_mode="yes"; shift ;;
+            --name)
+                [ "$#" -ge 2 ] || { say "ab-packages replay: --name needs a value"; usage; }
+                _re_decl_name=$2
+                shift 2
+                ;;
+            --version)
+                [ "$#" -ge 2 ] || { say "ab-packages replay: --version needs a value"; usage; }
+                _re_decl_ver=$2
+                shift 2
+                ;;
             -*) say "ab-packages replay: unknown option $1"; usage ;;
             *) break ;;
         esac
     done
     # A file argument is the moment a local package's body is kept: the file is captured first,
-    # so an install that fails still leaves the body behind for the next attempt.
-    if [ "$#" -gt 0 ]; then
+    # so an install that fails still leaves the body behind for the next attempt. The declared
+    # form is the same act with a person-supplied identity, and it is checked before anything is
+    # written: a declaration is an input, not an authority.
+    if [ -n "${_re_decl_name}" ] || [ -n "${_re_decl_ver}" ]; then
+        if [ -z "${_re_decl_name}" ] || [ -z "${_re_decl_ver}" ]; then
+            say "ab-packages replay: --name and --version go together"
+            usage
+        fi
+        if [ "$#" -ne 1 ]; then
+            say "ab-packages replay: --name/--version describe one file"
+            usage
+        fi
+        if ! ab_pkgs_assets_capture_declared "${AB_PACKAGES_ROOT}" \
+            "${_re_decl_name}" "${_re_decl_ver}" "$1"; then
+            case "${AB_PKGS_ASSETS_REASON}" in
+                asset-name-mismatch)
+                    refuse asset-name-mismatch \
+                        "The package does not call itself ${_re_decl_name} ${_re_decl_ver}." \
+                        "The identity inside the file is what apk installs by; a declaration only names the kept body."
+                    ;;
+                asset-name-unverifiable)
+                    refuse asset-name-unverifiable \
+                        "Nothing on this machine could confirm the declared identity." \
+                        "The file was not kept: a body filed under a name nobody checked is a body the next upgrade will trust."
+                    ;;
+                *)
+                    refuse "${AB_PKGS_ASSETS_REASON:-asset-unidentified}" \
+                        "The file could not be kept under the declared name." \
+                        "Nothing was written to the store."
+                    ;;
+            esac
+        fi
+        say "ab-packages: kept${AB_PKGS_ASSETS_CAPTURED:- nothing} (declared)"
+    elif [ "$#" -gt 0 ]; then
         if ! ab_pkgs_assets_capture "${AB_PACKAGES_ROOT}" "$@"; then
             refuse "${AB_PKGS_ASSETS_REASON:-asset-unidentified}" \
                 "One of those files is not a package this tool can name." \
-                "A name is read from apk's own <name>-<version>.apk form or from the package's .PKGINFO."
+                "The name comes from the package's own metadata (apk adbdump, then .PKGINFO);" \
+                "for a file no tool here can read, pass --name and --version and they will be checked."
         fi
         say "ab-packages: kept${AB_PKGS_ASSETS_CAPTURED:- nothing}"
+    fi
+    if [ "$#" -gt 0 ]; then
         # The captured bodies are replayed by name, not by `name-version`: the replay asks the
         # store for the highest body of a name, which is the one just captured when it is the
-        # only one, and the newest one when the store already held another version.
+        # only one, and the newest one when the store already held another version. The library
+        # reports the names it kept, so this does not depend on re-parsing a file name.
         set --
-        for _re_item in ${AB_PKGS_ASSETS_CAPTURED}; do
+        for _re_item in ${AB_PKGS_ASSETS_CAPTURED_NAMES}; do
             # shellcheck disable=SC2086  # one name per body, by construction
-            _re_id=$(ab_pkgs_asset_split "${_re_item}.apk") || continue
-            set -- "$@" "${_re_id%% *}"
+            set -- "$@" "${_re_item}"
         done
     fi
     _re_count=$(ab_pkgs_assets_list "${AB_PACKAGES_ROOT}" | grep -c . || true)
@@ -752,6 +802,23 @@ cmd_replay() {
     esac
     ab_pkgs_assets_replay "${AB_PACKAGES_ROOT}" "$@" || :
     ab_pkgs_assets_maintain "${AB_PACKAGES_ROOT}" || :
+    # A declaration that survived capture but not the install is a file that lied about itself;
+    # the database is the only witness that cannot be edited by the file. Ordered comparison, so
+    # `0.94.0` and `0.94.0-r0` are the same version rather than a mismatch.
+    if [ -n "${_re_decl_name}" ]; then
+        _re_dbver=$(ab_pkgs_installed_version "${AB_PACKAGES_ROOT}" "${_re_decl_name}" 2>/dev/null) \
+            || _re_dbver=""
+        _re_same=1
+        if [ -n "${_re_dbver}" ]; then
+            _re_same=$(ab_pkgs_version_cmp "${AB_PACKAGES_ROOT}" "${_re_dbver}" "${_re_decl_ver}" 2>/dev/null) || _re_same=1
+        fi
+        if [ "${_re_same}" != "0" ]; then
+            printf 'replay name=%s version=%s result=failed reason=asset-name-mismatch\n' \
+                "${_re_decl_name}" "${_re_decl_ver}"
+            say "ab-packages: the database does not show ${_re_decl_name} ${_re_decl_ver}; the declaration was wrong"
+            return 1
+        fi
+    fi
     printf 'replay result=%s ok=%s unchanged=%s failed=%s\n' "${AB_PKGS_REPLAY_STATE:-unknown}" \
         "${AB_PKGS_REPLAY_OK}" "${AB_PKGS_REPLAY_UNCHANGED}" "${AB_PKGS_REPLAY_FAILED}"
     case "${AB_PKGS_REPLAY_STATE}" in

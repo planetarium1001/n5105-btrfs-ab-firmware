@@ -544,15 +544,27 @@ ab-packages replay                           # 把所有已留的本体重新装
 同域，因此随 generation 快照走，也永不碰 `/data`。同一个名字只留一个本体（最高版本），这也正是
 闸门问「本地包能不能重放」时所要找的文件名。
 
-三条规则给这个store定界：
+四条规则给这个 store 定界：
 
-* 某个名字一旦有源开始提供，它的本体就是 `superseded`：先写进 `/etc/apk/ab/local/superseded`
-  这份 journal，再删除本体。源是更好的来源——有人维护、跟着基底走——而 `ab-packages status` 会继续
-  打印那行 journal，所以删除不是静默的；
+* 某个名字有源开始提供、**且源提供的版本不低于本体**时，本体才是 `superseded`：先写进
+  `/etc/apk/ab/local/superseded` 这份 journal，再删除本体。源是更好的来源——有人维护、跟着基底走——
+  而 `ab-packages status` 会继续打印那行 journal，所以删除不是静默的。若源只提供更旧的版本，本体
+  保留，journal 写一行 `kept ... reason=source-older`：一个更旧的 feed 版本替代不了机器正在跑的东西；
 * store 受 `AB_PKGS_CACHE_MAX`（默认 256 MiB）约束。超限时先删最旧的、不是当前安装版本的那些本体：
   机器正在跑的那个版本，才是重放会想要的；
-* 认不出名字的本体（既不是 `<name>-<version>.apk`，里面也没有 `.PKGINFO`）会被拒绝，而不是按猜的
-  名字归档。
+* 本体的身份来自包自己的元数据，**不来自文件名**：先用 `apk adbdump` 读 v3 包的 `info:` 块，读不到
+  再用 `.PKGINFO`（v2/遗留），都没有才用文件名——而文件名只在"这台机器没有 apk 可问"时才算数。
+  所以任意文件名（`-x86_64`、`_v1.2.3`、`linux-amd64`……）都可以直接交给它，不需要改名。不是 apk 的
+  文件会按种类拒绝：ipk 是 `reason=asset-format-ipk`，`.run`/脚本是 `reason=asset-format-run`；
+* 如果包内元数据与 `apk add --simulate` 都读不出（例如未来 apk 移除了 `adbdump`），可以显式声明身份：
+
+  ```sh
+  ab-packages replay --name minieap --version 0.94.0 /tmp/minieap-0.94.0_x86-64.apk
+  ```
+
+  声明**不会被直接采纳**：包内元数据或 apk 自己的事务计划必须与它一致，否则以
+  `reason=asset-name-mismatch` 拒绝；两者都无法回答时以 `reason=asset-name-unverifiable` 拒绝。
+  这两种拒绝都不写 store——一个没人核对过的名字，会被下一次升级当成真的。
 
 重放就是 `apk add --allow-untrusted <本体>`，没有别的：没有 `--force-*`，没有 `--overwrite`。
 信任来自你留住的那个文件，因为本地归档没有 keyring；包快照里的摘要清单是另一套机制、另一件事。
@@ -573,7 +585,7 @@ ab-packages replay                           # 把所有已留的本体重新装
 | `ab-packages sources [<name>...]` | 本机所有 feed，或某个包的所有来源（`feed`、`customfeeds`、`installed`） | 什么都不写 |
 | `ab-packages update` | 重试跟随：闸门、计划块、一次提问、一次 `apk upgrade`，然后记录 | 记录与 `/boot/ab/log/upgrade.log` |
 | `ab-packages update --only <name>` | 用 `apk upgrade <name>` 重试单个包，并测量它到底有没有动；记录不动，因为记录描述整个 world | 不改记录 |
-| `ab-packages replay [--yes] [<file.apk>...]` | 重新安装已留的本体；给它文件时，留住本体并安装它 | `/etc/apk/ab/local/` |
+| `ab-packages replay [--yes] [--name <n> --version <v>] [<file.apk>...]` | 重新安装已留的本体；给它文件时，留住本体并安装它；读不出身份的文件用声明的身份（声明会被校验） | `/etc/apk/ab/local/` |
 | `ab-packages cache status` / `cache clean` | 一次跟随留下了什么，或清空它（已留的本体不受影响） | 缓存 |
 
 `ab-packages status` 刻意是离线且只读的：它不问包管理器、不需要网络，因为被问的机器可能正是包坏掉
