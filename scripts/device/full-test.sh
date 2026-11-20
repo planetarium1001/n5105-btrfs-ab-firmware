@@ -1039,16 +1039,29 @@ _payload_content_mismatches() {
             # but it states "EOF on" instead when one file is a prefix of the other - which
             # is the usual shape of a stale file, because a fix adds code to the end - so
             # both answers are turned into a sentence.
-            _pcm_line=$(cmp "${_pcm_work}/member" "${_pcm_repo}" 2>&1 \
-                | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -n 1)
-            if [ -n "${_pcm_line}" ]; then
-                _pcm_where=", first difference at line ${_pcm_line}"
-            elif [ "${_pcm_seen}" -lt "${_pcm_bytes}" ]; then
+            #
+            # Whether one file is a prefix is decided here, from the bytes, and never from
+            # cmp's own EOF sentence: GNU cmp appends ", in line N" to it ("cmp: EOF on x
+            # after byte 12, in line 2") and BSD cmp does not ("cmp: EOF on x"), so reading
+            # the line number out of that message made the same two files a line difference
+            # on the CI runner and a truncated file on the laptop. The sentence this gate
+            # prints may not depend on which cmp the host happens to install.
+            if [ "${_pcm_seen}" -lt "${_pcm_bytes}" ] \
+                && head -c "${_pcm_seen}" "${_pcm_repo}" | cmp -s "${_pcm_work}/member" -; then
                 _pcm_where=", the payload's copy ends before the checkout's goes on"
-            elif [ "${_pcm_seen}" -gt "${_pcm_bytes}" ]; then
+            elif [ "${_pcm_seen}" -gt "${_pcm_bytes}" ] \
+                && head -c "${_pcm_bytes}" "${_pcm_work}/member" | cmp -s - "${_pcm_repo}"; then
                 _pcm_where=", the payload's copy goes on past the checkout's end"
             else
-                _pcm_where=", same size, different bytes"
+                # The two files part inside the length they share, where "differ: char N,
+                # line M" is the one message POSIX fixes for both implementations.
+                _pcm_line=$(cmp "${_pcm_work}/member" "${_pcm_repo}" 2>&1 \
+                    | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -n 1)
+                if [ -n "${_pcm_line}" ]; then
+                    _pcm_where=", first difference at line ${_pcm_line}"
+                else
+                    _pcm_where=", same size, different bytes"
+                fi
             fi
             _pcm_diff="${_pcm_diff}${_pcm_diff:+, }${_pcm_rel} (payload ${_pcm_seen} bytes, checkout ${_pcm_bytes} bytes${_pcm_where})"
         done <"${_pcm_work}/files"

@@ -133,6 +133,13 @@ scratch="${fake}/tmp"
 
 # Placeholders, not archives: one byte that is not a tar header reads as "not a tar" on both
 # GNU tar and bsdtar, so lib.sh's shape check (which only speaks for a real tar) stays out.
+#
+# This directory is handed to every driver call below (see drv), and it has to be: the driver's
+# default is `payloads`, a path relative to the working directory, and the repository's own
+# payloads/ is a build artifact that .gitignore excludes. A CI checkout has no such directory,
+# so a test that let the default stand would find the payloads the developer happens to have
+# built and report GAP (exit 4) everywhere else - it would pass on one machine and be red on
+# every fresh clone, which says nothing about the driver.
 for p in payload-25.12.1.tar payload-25.12.2.tar; do
     printf 'placeholder, not a tar\n' >"${payloads}/${p}"
 done
@@ -580,6 +587,11 @@ reset_machine() {
 }
 
 # drv [args...]: the driver against the stub machine, budgets cut to seconds.
+#
+# --payload-dir is given before "$@", so the two hops carry the placeholders this file wrote
+# into ${payloads} instead of whatever a `payloads/` directory beside the repository happens to
+# hold, and a case that wants another directory (the missing-payload GAP case passes
+# ${tmp}/empty) overrides it from its own arguments.
 drv() {
     PATH="${bin}:${PATH}" \
         STUB_CALLS="${calls}" STUB_STATE="${state}" STUB_ROOT="${fake}" \
@@ -605,7 +617,7 @@ drv() {
         AB_PKGCLASS_NEW_PKG=tmux \
         AB_PKGCLASS_LOCAL_PKG="${LOCAL_PKG-vault-sample}" \
         AB_PKGCLASS_LOCAL_APK="${LOCAL_APK-${local_body}}" \
-        sh "${driver}" "$@" 2>&1
+        sh "${driver}" --payload-dir "${payloads}" "$@" 2>&1
 }
 
 rows() { cut -f1 "${RESULTS:-${results}}" 2>/dev/null | tr '\n' ' '; }
@@ -680,6 +692,15 @@ contains "$(note_of C1)" "new=tmux:install=yes,del=removed" \
     "ac-13 the row records the new package the source had not served yet"
 contains "$(note_of C1)" "world_dropped=none" \
     "ac-12 a hop that pruned nothing says so"
+
+# And the bytes the two hops pushed onto the machine are the placeholders above: the fixture is
+# this file's own, read from ${payloads}, and not one that happened to be lying in the working
+# directory. Without this, the assertions around it would be green on a checkout that has built
+# the base payloads and red on every clone that has not.
+contains "$(cat "${scratch}/payload-25.12.1.tar" 2>/dev/null)" 'placeholder, not a tar' \
+    "ac-12 the first hop installed the payload this file built"
+contains "$(cat "${scratch}/payload-25.12.2.tar" 2>/dev/null)" 'placeholder, not a tar' \
+    "ac-12 and the second hop the one it names"
 
 # The baseline is recorded once for the whole chain, and a later run finds it instead of
 # recording a second one: re-marking after a hop would record the post-hop configuration as the
