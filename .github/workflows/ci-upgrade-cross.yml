@@ -1,4 +1,4 @@
-name: cross-version upgrade
+name: Cross-Version Upgrade
 
 # The seam between two releases: an image built from the previous formal release, upgraded
 # with this release's payload, in one QEMU run.
@@ -28,7 +28,7 @@ jobs:
   # What this release is built from: VERSION and the pin are the tagged line's own facts,
   # so the caller does not have to pass them (and cannot pass them wrong).
   resolve-new:
-    name: resolve this release
+    name: Resolve This Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -61,7 +61,7 @@ jobs:
   # Which release to upgrade from, and which mirror layout it has: both belong to the
   # pipeline, not to the caller, so the caller only says what it is publishing.
   select-previous:
-    name: select the previous release
+    name: Select the Previous Release
     needs: [resolve-new]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -97,7 +97,7 @@ jobs:
           printf 'previous=%s gaps=%s\n' "${previous:-none}" "${gaps:-0}"
 
   resolve-old:
-    name: resolve the previous release
+    name: Resolve the Previous Release
     needs: [select-previous]
     if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
     runs-on: ubuntu-latest
@@ -131,7 +131,7 @@ jobs:
   # no-module-directory (run 43564031421). Every artifact this stage touches takes the suffix
   # below, because the tag line runs this release's own copy of each stage in the same run.
   fetch-old:
-    name: fetch the old upstream files
+    name: Fetch the Old Upstream Files
     needs: [resolve-new, select-previous, resolve-old]
     if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
     uses: ./.github/workflows/ci-fetch.yml
@@ -151,7 +151,7 @@ jobs:
       artifact_suffix: "-old"
 
   old-image:
-    name: build the previous image
+    name: Build the Previous Image
     needs: [resolve-new, select-previous, resolve-old, fetch-old]
     if: ${{ needs.select-previous.outputs.has_previous == 'true' }}
     uses: ./.github/workflows/ci-s3.yml
@@ -168,7 +168,7 @@ jobs:
       platform_version: ${{ needs.resolve-new.outputs.platform_version }}
 
   cross:
-    name: cross-upgrade
+    name: Cross-Upgrade
     needs: [select-previous, old-image]
     runs-on: ubuntu-latest
     # 35 minutes is the whole stage budget: the old image is built in its own job, so this

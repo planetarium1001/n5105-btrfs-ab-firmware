@@ -1,4 +1,4 @@
-name: Firmware CI - debug session
+name: Firmware CI - Debug Session
 
 # MANUAL DEBUGGING ENTRY POINT -- NOT A DELIVERY PIPELINE STAGE.
 #
@@ -45,7 +45,7 @@ concurrency:
 
 jobs:
   debug:
-    name: debug session
+    name: Debug Session
     runs-on: ubuntu-latest
     # The keep-alive step below holds the runner (150 min); the job cap sits above it.
     timeout-minutes: 290

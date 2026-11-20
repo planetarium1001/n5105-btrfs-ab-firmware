@@ -1,4 +1,4 @@
-name: resolve upstream
+name: Resolve Upstream
 
 # Stage 1 - resolve.
 #
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   resolve:
-    name: resolve upstream
+    name: Resolve Upstream
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

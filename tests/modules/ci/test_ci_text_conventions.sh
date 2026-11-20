@@ -34,8 +34,8 @@ trap 'rm -rf "$tmp"' EXIT
 FINGERPRINT="tests/fixtures/ci-structure-fingerprint.txt"
 # The one release title template, rendered with a version for the length and punctuation
 # assertions below.
-TITLE_TEMPLATE="N5105 AB firmware {tag}"
-UPSTREAM_TITLE_TEMPLATE="ImmortalWrt N5105 A/B firmware {tag}"
+TITLE_TEMPLATE="N5105 AB Firmware {tag}"
+UPSTREAM_TITLE_TEMPLATE="ImmortalWrt N5105 AB Firmware {tag}"
 
 # Writing the baseline needs a reason. Refusing here rather than trusting the convention is
 # what keeps a re-baseline reviewable: the header is the only record of why the structure
@@ -83,9 +83,18 @@ VERBS = {
     "Squash", "Stop", "Tag", "Unmount", "Unpack", "Upload", "Verify", "Write",
 }
 MARKER_RE = re.compile(r"^(?:Boot [1-9]|Phase [1-9][a-z]?|Fixture|Preflight) - \S")
-STAGE_JOB_RE = re.compile(r"^S[1-5] [a-z]+ - .+$")
-PHRASE_JOB_RE = re.compile(r"^[a-z][a-z0-9-]*( [a-z0-9/-]+)*( - .+)?$")
-STAGE_WORKFLOW_RE = re.compile(r"^[a-z][a-z0-9 -]*$")
+# Rule 2's capitalisation vocabulary. Every slot of a workflow or job label is Title Case: it
+# opens and closes on a capitalised word, and the short articles, prepositions and conjunctions
+# below may stay lowercase only inside the slot. A hyphen or a slash joins the parts of one
+# word (`Same-Base`, `A/B`), ` - ` remains the one separator, and an all-lowercase slot - the
+# grab-bag spelling - no longer matches anything.
+SMALL_WORDS = r"a|an|the|and|of|for|to|in|on|by|or"
+TITLE_WORD = r"[A-Z][A-Za-z0-9]*(?:[-/][A-Za-z0-9]+)*"
+TITLE_PHRASE = rf"(?:{TITLE_WORD}|{TITLE_WORD}(?: (?:{TITLE_WORD}|(?:{SMALL_WORDS})))* {TITLE_WORD})"
+ENTRY_PREFIX = "Firmware CI - "
+STAGE_JOB_RE = re.compile(rf"^S[1-5] {TITLE_WORD} - {TITLE_PHRASE}$")
+PHRASE_JOB_RE = re.compile(rf"^{TITLE_PHRASE}(?: - {TITLE_PHRASE})?$")
+STAGE_WORKFLOW_RE = re.compile(rf"^{TITLE_PHRASE}$")
 
 # Rule 5: the six header rows. `release.sh` and both workflows render key-value blocks, so a
 # header that spells `item | value` is the same table with a second name for `field`. The
@@ -211,7 +220,7 @@ def workflow_shapes():
                 problems.append(f"{rel(path)}: an entry point is named 'Firmware CI - <role>', not {value!r}")
         elif value.startswith("Firmware CI - "):
             problems.append(f"{rel(path)}: a reusable workflow may not carry the entry point prefix: {value!r}")
-        elif not (re.match(r"^S[1-5] [a-z]+$", value) or STAGE_WORKFLOW_RE.match(value)):
+        elif not (re.match(rf"^S[1-5] {TITLE_WORD}$", value) or STAGE_WORKFLOW_RE.match(value)):
             problems.append(f"{rel(path)}: a reusable workflow is named for its role: {value!r}")
     return problems
 
@@ -244,6 +253,29 @@ def job_shapes():
             if STAGE_JOB_RE.match(value) or PHRASE_JOB_RE.match(value):
                 continue
             problems.append(f"{rel(path)}:{number}: a job is a stage label or a verb phrase: {value!r}")
+    return problems
+
+
+def title_case():
+    """Rule 2's capitalisation half: a workflow and a job label is Title Case.
+
+    The entry-point prefix is a fixed string, so only the role behind it is measured. A step
+    keeps sentence case - it opens with a capitalised verb and the rest stays lowercase - and
+    is checked by its shape in rule 4, not here.
+    """
+    problems = []
+    for path in WORKFLOWS:
+        for number, line in enumerate(lines_of(path), 1):
+            match = WORKFLOW_NAME_RE.match(line) or JOB_RE.match(line)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if value.startswith(ENTRY_PREFIX):
+                value = value[len(ENTRY_PREFIX):]
+            if not PHRASE_JOB_RE.match(value):
+                problems.append(
+                    f"{rel(path)}:{number}: a workflow or job label is Title Case: {value!r}"
+                )
     return problems
 
 
@@ -394,6 +426,7 @@ modes = {
     "non-ascii": non_ascii,
     "scope": scope,
     "labels": bad_labels,
+    "title-case": title_case,
     "lengths": overlong,
     "workflow-shapes": workflow_shapes,
     "step-shapes": step_shapes,
@@ -431,6 +464,12 @@ assert_eq "$([ "${zh_hits:-0}" -gt 0 ] && echo yes || echo no)" "yes" \
 assert_eq "$(text_scan labels)" "" \
   "rule 2 no label ends in a period, an exclamation mark or whitespace"
 
+# The two halves of the rule are two assertions: a label carries no sentence punctuation, and
+# a workflow or job label is Title Case. A step label stays sentence case, which is why this
+# check covers the two label kinds above the step and not the step itself.
+assert_eq "$(text_scan title-case)" "" \
+  "rule 2 a workflow and job label is Title Case; a sentence stays sentence case"
+
 # --------------------------------------------------------------------------- #
 # Rule 3 - length caps
 # --------------------------------------------------------------------------- #
@@ -445,7 +484,7 @@ assert_eq "$(text_scan lengths)" "" \
 assert_eq "$(text_scan workflow-shapes)" "" \
   "rule 4 an entry point is 'Firmware CI - <role>', a reusable file names its stage or role"
 assert_eq "$(text_scan job-shapes)" "" \
-  "rule 4 a stage job is 'S<n> <semantic> - <what it proves>', any other job is a verb phrase"
+  "rule 4 a stage job is 'S<n> <Semantic> - <What It Proves>', any other job is a Title Case role"
 assert_eq "$(text_scan step-shapes)" "" \
   "rule 4 a step is '<Verb phrase>' or '<Marker> - <claim>'"
 
@@ -562,9 +601,9 @@ render_release_title() {
 tagged_title="$(render_release_title v 0.0.8)"
 upstream_title="$(render_release_title bare 25.13.0)"
 assert_eq "${tagged_title}" "${TITLE_TEMPLATE//\{tag\}/0.0.8}" \
-  "rule 6 the publisher renders the tagged line as 'N5105 AB firmware <version>'"
+  "rule 6 the publisher renders the tagged line as 'N5105 AB Firmware <version>'"
 assert_eq "${upstream_title}" "${UPSTREAM_TITLE_TEMPLATE//\{tag\}/25.13.0}" \
-  "rule 6 the publisher renders the automatic line as 'ImmortalWrt N5105 A/B firmware <version>'"
+  "rule 6 the publisher renders the automatic line as 'ImmortalWrt N5105 AB Firmware <version>'"
 assert_eq "$(render_release_title v 0.0.8 'Custom {tag}')" "Custom 0.0.8" \
   "rule 6 an explicit template still wins over the derived one"
 
@@ -576,9 +615,9 @@ title_step="$(sed -n '/- name: Render the release title/,/release_title=%s/p' \
 assert_contains "${title_step}" 'TAG_POLICY' \
   "rule 6 the publisher derives the release title from the tag policy"
 assert_contains "${title_step}" "${TITLE_TEMPLATE}" \
-  "rule 6 the tagged line is titled 'N5105 AB firmware <version>'"
+  "rule 6 the tagged line is titled 'N5105 AB Firmware <version>'"
 assert_contains "${title_step}" "${UPSTREAM_TITLE_TEMPLATE}" \
-  "rule 6 the automatic line is titled 'ImmortalWrt N5105 A/B firmware <version>'"
+  "rule 6 the automatic line is titled 'ImmortalWrt N5105 AB Firmware <version>'"
 for caller in release.yml upstream-watch.yml; do
   assert_eq "$(grep -cE '^ +title: ' ".github/workflows/${caller}" || true)" "0" \
     "rule 6 ${caller} leaves the release title to the publisher"

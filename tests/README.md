@@ -72,7 +72,7 @@ New modules are added as directories under `tests/modules/` and are picked up au
 ## In CI
 
 The suite is a stage check, not an optional report. The `verify` stage
-([`ci-verify.yml`](../.github/workflows/ci-verify.yml), job `static checks`) runs
+([`ci-verify.yml`](../.github/workflows/ci-verify.yml), job `Static Checks`) runs
 [`scripts/ci/verify.sh`](../scripts/ci/verify.sh), and its fifth check is
 `./tests/run.sh` with no arguments - every module, default parallelism:
 
@@ -91,5 +91,5 @@ The suite is a stage check, not an optional report. The `verify` stage
   `GITHUB_STEP_SUMMARY`, `GITHUB_PATH` and `GITHUB_STATE` before running anything: a test
   that inherits a step's channels writes its output into the run instead of stdout, which
   is how three tests once failed on a runner and passed on a laptop.
-- **Budget.** The `static checks` job has 30 minutes, which covers the linters, the design
+- **Budget.** The `Static Checks` job has 30 minutes, which covers the linters, the design
   checks and the whole suite.

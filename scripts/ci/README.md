@@ -14,12 +14,12 @@ lose when it fails.
 
 | Stage | Name | What it proves | What breaks when it fails |
 |---|---|---|---|
-| S1 | probe | kernel loads the official btrfs module closure and mounts btrfs | no later stage can rely on btrfs in initramfs |
-| S2 | image | four-partition geometry, ESP, GPT PARTNAME | nothing can be installed |
-| S3 | boot | overlay root composed and switch_root reached, twice | no slot can boot |
-| S4 | slots | commit, abandon, rollback and the health check, four boots | A/B switching is unproven |
-| S5 | upgrade | payload upgrade, degraded boot and reclamation, four boots | updates are unproven |
-| cross | cross-upgrade | the previous release's image upgraded with this release's payload commits | the seam between two releases is unproven (tags only) |
+| S1 | Probe | kernel loads the official btrfs module closure and mounts btrfs | no later stage can rely on btrfs in initramfs |
+| S2 | Image | four-partition geometry, ESP, GPT PARTNAME | nothing can be installed |
+| S3 | Boot | overlay root composed and switch_root reached, twice | no slot can boot |
+| S4 | Slots | commit, abandon, rollback and the health check, four boots | A/B switching is unproven |
+| S5 | Upgrade | payload upgrade, degraded boot and reclamation, four boots | updates are unproven |
+| cross | Cross-Upgrade | the previous release's image upgraded with this release's payload commits | the seam between two releases is unproven (tags only) |
 
 ## Workflows
 

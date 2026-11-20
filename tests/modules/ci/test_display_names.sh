@@ -20,11 +20,11 @@ WF="$root/.github/workflows"
 # ac-1: the three entry points say what they are
 # --------------------------------------------------------------------------- #
 
-assert_contains "$(cat "$WF/ci.yml")" "name: Firmware CI - build and validate" \
+assert_contains "$(cat "$WF/ci.yml")" "name: Firmware CI - Build and Validate" \
   "ac-1 the validation entry point is named"
-assert_contains "$(cat "$WF/release.yml")" "name: Firmware CI - release" \
+assert_contains "$(cat "$WF/release.yml")" "name: Firmware CI - Release" \
   "ac-1 the release entry point is named"
-assert_contains "$(cat "$WF/ci-debug.yml")" "name: Firmware CI - debug session" \
+assert_contains "$(cat "$WF/ci-debug.yml")" "name: Firmware CI - Debug Session" \
   "ac-1 the manual debugging entry point is named"
 
 # --------------------------------------------------------------------------- #
@@ -32,13 +32,13 @@ assert_contains "$(cat "$WF/ci-debug.yml")" "name: Firmware CI - debug session" 
 # --------------------------------------------------------------------------- #
 
 stages=(1 2 3 4 5)
-sems=(probe image boot slots upgrade)
+sems=(Probe Image Boot Slots Upgrade)
 details=(
-  "kernel mounts btrfs"
-  "four partitions"
-  "layered root"
-  "A/B state machine"
-  "upgrade and reclaim"
+  "Kernel Mounts Btrfs"
+  "Four Partitions"
+  "Layered Root"
+  "A/B State Machine"
+  "Upgrade and Reclaim"
 )
 
 for idx in 0 1 2 3 4; do
@@ -261,7 +261,7 @@ assert_eq "${report}" "" "ac-10 the artifacts and the log uploads follow the voc
 
 # Publishing lives in the reusable workflow now; release.yml only builds and calls it.
 rel_text="$(cat "$WF/release.yml")"
-assert_contains "$rel_text" "    name: verify pipeline - S1 to S5" \
+assert_contains "$rel_text" "    name: Verify Pipeline - S1 to S5" \
   "ac-7 the release build job is named"
 pub_text="$(cat "$WF/release-publish.yml")"
 assert_contains "$pub_text" "      - name: Write the pre-publish summary" \

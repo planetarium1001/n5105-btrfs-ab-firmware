@@ -1,4 +1,4 @@
-name: pipeline report
+name: Pipeline Report
 
 # Stage 5 - report.
 #
@@ -67,7 +67,7 @@ permissions:
 
 jobs:
   report:
-    name: report
+    name: Report
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

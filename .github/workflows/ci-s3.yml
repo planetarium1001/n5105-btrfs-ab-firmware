@@ -1,4 +1,4 @@
-name: S3 boot
+name: S3 Boot
 
 # Stage S3 - layered boot on a version-named writable layer.
 #
@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   s3:
-    name: S3 boot - layered root
+    name: S3 Boot - Layered Root
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

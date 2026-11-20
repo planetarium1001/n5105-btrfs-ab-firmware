@@ -92,7 +92,7 @@ ci_log "extracting the upstream rootfs"
 tar -xzf "${rootfs_tar}" -C "${work}/content/rootfs" --numeric-owner
 
 cat >"${work}/content/rootfs/etc/banner" <<BANNER
-   N5105 AB firmware ${payload_version}
+   N5105 AB Firmware ${payload_version}
    upgraded root, installed by ab-upgrade
 BANNER
 printf 'payload=%s\n' "${payload_version}" >"${work}/content/rootfs/etc/ab-payload-marker"

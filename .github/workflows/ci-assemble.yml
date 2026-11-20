@@ -1,4 +1,4 @@
-name: assemble payload
+name: Assemble Payload
 
 # Stage 3 - assemble (S0 skeleton).
 #
@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   assemble:
-    name: assemble payload
+    name: Assemble Payload
     runs-on: ubuntu-latest
     # The payload now carries boot.tar, so this job also downloads the upstream combined-efi
     # image, gunzips it and loop-mounts its FAT partition (3-6 minutes on a warm runner).

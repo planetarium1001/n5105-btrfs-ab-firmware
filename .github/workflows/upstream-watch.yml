@@ -1,4 +1,4 @@
-name: Firmware CI - upstream watch
+name: Firmware CI - Upstream Watch
 
 # The daily upstream watch: one run that discovers a new upstream formal release, builds it
 # through the ordinary pipeline, moves the pin, merges and publishes - and proves nothing
@@ -69,7 +69,7 @@ jobs:
   # What is published has to be what was proved, so every job that writes says what it
   # writes and nothing else.
   detect:
-    name: detect a new upstream release
+    name: Detect a New Upstream Release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -142,7 +142,7 @@ jobs:
   # repository activity, and a disabled watch is a silent auto-release outage. The tag is
   # activity; its name never matches v*, so it can never trigger the release line either.
   heartbeat:
-    name: heartbeat tag
+    name: Heartbeat Tag
     needs: detect
     if: ${{ needs.detect.outputs.changed != 'true' && needs.detect.outputs.heartbeat == 'would-create' }}
     runs-on: ubuntu-latest
@@ -184,7 +184,7 @@ jobs:
   # The automatic change is a branch and a pull request, never a push to main: every
   # automatic change keeps an auditable diff and a rollback point.
   bump:
-    name: open the pin pull request
+    name: Open the Pin Pull Request
     needs: detect
     if: ${{ needs.detect.outputs.changed == 'true' }}
     runs-on: ubuntu-latest
@@ -294,7 +294,7 @@ jobs:
   # same run, with the new upstream release as its input. Nothing here is a second copy of
   # that graph, and nothing waits for a push or a tag to start it.
   build:
-    name: build the new upstream release
+    name: Build the New Upstream Release
     needs: [detect, bump]
     uses: ./.github/workflows/ci.yml
     permissions:
@@ -316,7 +316,7 @@ jobs:
   # and then *asserted* with CI_LOCK_STRICT=1 - which is the only way to prove the merged
   # tree, not just the built one, agrees with the pin.
   locks:
-    name: move the lockfiles onto the new release
+    name: Move the Lockfiles Onto the New Release
     needs: [detect, bump, build]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -414,7 +414,7 @@ jobs:
   # Squash, not a merge commit: the branch is one automatic change, and a revert of one
   # commit is the rollback.
   merge:
-    name: merge and tag
+    name: Merge and Tag
     needs: [detect, bump, build, locks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -571,7 +571,7 @@ jobs:
           git fetch --no-tags origin "${sha}"
           git config user.name "upstream-watch[bot]"
           git config user.email "upstream-watch@users.noreply.github.com"
-          git tag -a "${VERSION}" -m "ImmortalWrt ${VERSION} through the N5105 A/B pipeline" "${sha}"
+          git tag -a "${VERSION}" -m "ImmortalWrt ${VERSION} through the N5105 AB Firmware pipeline" "${sha}"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${VERSION}"
           echo "tagged ${sha} as ${VERSION}"
 
@@ -598,7 +598,7 @@ jobs:
 
   # Same implementation as the v* release line, same preflight: the two lines cannot drift.
   publish:
-    name: publish
+    name: Publish
     needs: [detect, merge]
     permissions:
       contents: write
@@ -615,7 +615,7 @@ jobs:
   # A red run has to leave one place to look. The title is stable per upstream version, so
   # a second failure updates the issue instead of opening another one.
   issue:
-    name: report the failure
+    name: Report the Failure
     needs: [detect, heartbeat, bump, build, locks, merge, publish]
     if: ${{ failure() || cancelled() }}
     runs-on: ubuntu-latest

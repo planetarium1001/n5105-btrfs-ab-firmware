@@ -1,4 +1,4 @@
-name: Firmware CI - release
+name: Firmware CI - Release
 
 # Publishing is a tag action, never a branch action: pushing to main validates, a tag
 # releases. The build is the ordinary pipeline (ci.yml), so a release is by definition
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   build:
-    name: verify pipeline - S1 to S5
+    name: Verify Pipeline - S1 to S5
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
@@ -45,14 +45,14 @@ jobs:
   # wrapper's cross mode exists for the other caller (the automatic line), where the gate has
   # to be reachable under the same contract as the same-base one.
   cross:
-    name: cross-version upgrade
+    name: Cross-Version Upgrade
     needs: [build]
     permissions:
       contents: read
     uses: ./.github/workflows/ci-upgrade-cross.yml
 
   same-base:
-    name: same-base upgrade
+    name: Same-Base Upgrade
     needs: [build]
     permissions:
       contents: read
@@ -65,7 +65,7 @@ jobs:
       mode: same-base
 
   publish:
-    name: publish
+    name: Publish
     # Input is never a release. Two gates, not one: cross proves an upgrade across whatever
     # the two releases pinned, same-base proves the patch-range claim, and a red gate - or a
     # skipped one, which is not a passed proof - publishes nothing. `needs` has to name every

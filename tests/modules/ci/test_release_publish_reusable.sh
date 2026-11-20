@@ -459,7 +459,7 @@ chmod +x "$stub_bin/gh"
 # The release assets the step globs over and the inputs it reads from its env, prepared
 # the way the job would have left them.
 release_tag="25.12.1"
-release_title="ImmortalWrt N5105 A/B firmware 25.12.1"
+release_title="ImmortalWrt N5105 AB Firmware 25.12.1"
 release_dir="$tmp/release"
 mkdir -p "$release_dir"
 printf 'payload\n' >"$release_dir/payload.tar"
@@ -538,7 +538,7 @@ assert_eq "$(drafts "$state" "$release_title")" "1" \
 # (b) the tag already has a published release: the rehearsal refuses, and touches nothing.
 state="$tmp/state-published"
 state_init "$state" \
-  '[{"isDraft":false,"name":"ImmortalWrt N5105 A/B firmware 25.12.1","tagName":"25.12.1","url":"https://github.com/stub/releases/tag/25.12.1"}]' \
+  '[{"isDraft":false,"name":"ImmortalWrt N5105 AB Firmware 25.12.1","tagName":"25.12.1","url":"https://github.com/stub/releases/tag/25.12.1"}]' \
   "$release_tag"
 rehearsal "$state" "$tmp/out-published.env"
 assert_eq "$rehearsal_status" "1" \
@@ -555,7 +555,7 @@ assert_eq "$(drafts "$state" "$release_title")" "0" \
 # it is replaced, and the release list is never consulted on this path.
 state="$tmp/state-tagged-draft"
 state_init "$state" \
-  '[{"isDraft":true,"name":"ImmortalWrt N5105 A/B firmware 25.12.1","tagName":"25.12.1","url":"https://github.com/stub/releases/tag/25.12.1"}]' \
+  '[{"isDraft":true,"name":"ImmortalWrt N5105 AB Firmware 25.12.1","tagName":"25.12.1","url":"https://github.com/stub/releases/tag/25.12.1"}]' \
   "$release_tag"
 rehearsal "$state" "$tmp/out-tagged.env"
 assert_eq "$rehearsal_status" "0" "ac-6 a draft under the real tag is replaced, as before"

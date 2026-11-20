@@ -915,8 +915,9 @@ feed_point() {
         return 4
     fi
     ev "feed ${_fp_label}: apk-lock ${_fp_lock}"
-    # The token is parsed rather than read from AB_APK_LOCK_WAITED: the wait above runs inside
-    # a command substitution, so the variable it sets there belongs to that subshell.
+    # The token is parsed rather than read from a variable: the wait above runs inside a
+    # command substitution, so anything it set there would belong to that subshell. lib.sh
+    # reports the seconds only through this token for the same reason.
     _fp_waited=$(printf '%s' "${_fp_lock}" | sed -n 's/^apk-lock-waited=\([0-9][0-9]*\)s .*/\1/p')
     case "${_fp_waited}" in
         '' | 0) : ;;

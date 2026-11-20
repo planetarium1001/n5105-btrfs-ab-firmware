@@ -1,4 +1,4 @@
-name: static checks
+name: Static Checks
 
 # Stage 4 - verify.
 #
@@ -33,7 +33,7 @@ permissions:
 # while a manual dispatch neither cancels nor is cancelled by anything.
 jobs:
   verify:
-    name: static checks
+    name: Static Checks
     runs-on: ubuntu-latest
     # Downloading the linter, installing ShellCheck and running the whole test suite:
     # the 10 minutes this job used to allow were not enough for that.

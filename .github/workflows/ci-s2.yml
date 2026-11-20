@@ -1,4 +1,4 @@
-name: S2 image
+name: S2 Image
 
 # Stage S2 - four-partition disk image assembly.
 #
@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   s2:
-    name: S2 image - four partitions
+    name: S2 Image - Four Partitions
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:

@@ -1,4 +1,4 @@
-name: fetch upstream
+name: Fetch Upstream
 
 # Stage 2 - fetch.
 #
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   fetch:
-    name: fetch upstream
+    name: Fetch Upstream
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

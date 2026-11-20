@@ -1,4 +1,4 @@
-name: S5 upgrade
+name: S5 Upgrade
 
 # Stage S5 - upgrade payload, reclamation and the degraded boot.
 #
@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   s5:
-    name: S5 upgrade - upgrade and reclaim
+    name: S5 Upgrade - Upgrade and Reclaim
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:

@@ -1,4 +1,4 @@
-name: S1 probe
+name: S1 Probe
 
 # Stage S1 - upstream-consumption spike.
 #
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   s1:
-    name: S1 probe - kernel mounts btrfs
+    name: S1 Probe - Kernel Mounts Btrfs
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

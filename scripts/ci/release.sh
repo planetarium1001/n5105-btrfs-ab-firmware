@@ -271,9 +271,13 @@ kernel_package="${CI_KERNEL_PACKAGE:-${manifest_kernel}}"
 judge_line="${CI_S5_LINE:-}"
 
 {
-    printf '# N5105 AB firmware %s (upstream %s)\n' "${platform_version}" "${upstream_version}"
+    printf '# N5105 AB Firmware %s (upstream %s)\n' "${platform_version}" "${upstream_version}"
     printf '\n'
-    printf 'Built by CI for the N5105 v5, x86-64, UEFI only, btrfs A/B slots.\n'
+    printf 'This release is the N5105 v5 firmware on ImmortalWrt %s: x86-64, UEFI only,\n' "${upstream_version}"
+    printf 'btrfs A/B slots. The bytes here are the bytes that were built: the image is\n'
+    printf 'decompressed and hashed again after compression, and `SHA256SUMS` lets anyone\n'
+    printf 'check a download before writing it.\n'
+    printf '\n'
     printf 'Tag: `%s`\n' "${tag}"
     printf '\n'
     printf '## Artifacts\n'
@@ -290,53 +294,28 @@ judge_line="${CI_S5_LINE:-}"
             "$(ci_sha256 "${variant_gz}")"
     fi
     printf '\n'
-    if [ -n "${variant_gz}" ]; then
-        printf '## Two images\n'
-        printf '\n'
-        printf 'The default image opens nothing on the WAN side. The `-install-wan-ssh` image is\n'
-        printf 'the same system with one `22/tcp` rule from the WAN (the `allow_ssh_wan` rule),\n'
-        printf 'for a machine that cannot be reached from the LAN and has no keyboard. It prints\n'
-        printf 'how to close that rule on its first boot; `docs/install.md` explains the choice.\n'
-        printf '\n'
-    fi
-    printf '`SHA256SUMS` covers both files:\n'
+    printf '`SHA256SUMS`, as published:\n'
     printf '\n'
     printf '```\n'
     cat "${sums}"
     printf '```\n'
     printf '\n'
-    printf '## File names\n'
+    printf 'The names carry the board, the product line, the upstream base and the role;\n'
+    printf '`docs/install.md` gives the scheme, including the `n5105-ab-<platform>-<upstream>`\n'
+    printf 'form that releases before this one used.\n'
     printf '\n'
-    printf '`%s.img.gz` / `%s.tar`: board, product line, upstream base, role. Releases\n' "${base}" "${base}"
-    printf 'before this naming carry `n5105-ab-<platform>-<upstream>.<ext>` instead, where the\n'
-    printf 'second field was our own release version.\n'
-    printf '\n'
-    printf '## Inputs\n'
-    printf '\n'
-    printf '| field | value |\n'
-    printf '| --- | --- |\n'
-    printf '| Upstream version | `%s` |\n' "${upstream_version}"
-    printf '| Upstream rootfs sha256 | `%s` |\n' "${upstream_rootfs}"
-    printf '| Upstream kernel sha256 | `%s` |\n' "${upstream_kernel}"
-    # No row at all when the kernel package is unknown: feed-index.sh treats a missing
-    # `Kernel package` row as "ask the payload", which is the same answer, while a row with
-    # a sentence in it would be read as a kernel version and stop the index. The omission is
-    # explained below the table so the page is still complete.
-    if [ -n "${kernel_package}" ]; then
-        printf '| Kernel package | `%s` |\n' "${kernel_package}"
-    fi
-    printf '| Platform version | `%s` |\n' "${platform_version}"
-    printf '| Uncompressed image sha256 | `%s` |\n' "${image_sha256}"
-    printf '\n'
-    if [ -z "${kernel_package}" ]; then
-        printf 'Kernel package: %s.\n' "${missing_note}"
-        printf 'The Inputs table omits it, and this release publishes without a feed index:\n'
-        printf 'an index without a kernel would point a machine at a payload it cannot match.\n'
+    if [ -n "${variant_gz}" ]; then
+        printf '## Which image to write\n'
+        printf '\n'
+        printf 'The default image opens nothing on the WAN side. `-install-wan-ssh` is the same\n'
+        printf 'system with one `22/tcp` rule from the WAN (the `allow_ssh_wan` rule), for a machine\n'
+        printf 'that cannot be reached from the LAN and has no keyboard; on its first boot it prints\n'
+        printf 'how to close that rule again. `docs/install.md` explains the choice.\n'
         printf '\n'
     fi
-    printf '## Verification\n'
+    printf '## What was verified\n'
     printf '\n'
-    printf 'The build is accepted when these lines appear in the corresponding runs:\n'
+    printf 'The build is accepted when these four lines appear, each in the run that stages it:\n'
     printf '\n'
     printf '```\n'
     printf 'S2-RESULT=ok\n'
@@ -356,10 +335,10 @@ judge_line="${CI_S5_LINE:-}"
         printf 'line is not repeated here.\n'
     fi
     printf '\n'
-    printf '## Installation\n'
+    printf '## Install\n'
     printf '\n'
-    printf 'See `docs/install.md` for writing the image, the first boot, the acceptance\n'
-    printf 'checklist and the rollback procedure. The short version:\n'
+    printf 'Writing the image, the first boot, the acceptance checklist and the rollback\n'
+    printf 'procedure are in `docs/install.md`. In short:\n'
     printf '\n'
     printf '```\n'
     printf 'gunzip -c %s | sudo dd of=/dev/nvme0n1 bs=4M status=progress conv=fsync\n' "$(basename "${image_gz}")"
@@ -367,6 +346,31 @@ judge_line="${CI_S5_LINE:-}"
     printf '\n'
     printf 'After the first boot run `ab-slot status`; it must report `p4=ok` and a\n'
     printf 'committed slot. Updates use `ab-upgrade` with the payload tar above.\n'
+    printf '\n'
+    printf '## Identity\n'
+    printf '\n'
+    printf '| field | value |\n'
+    printf '| --- | --- |\n'
+    printf '| Upstream version | `%s` |\n' "${upstream_version}"
+    printf '| Upstream rootfs sha256 | `%s` |\n' "${upstream_rootfs}"
+    printf '| Upstream kernel sha256 | `%s` |\n' "${upstream_kernel}"
+    # No row at all when the kernel package is unknown: feed-index.sh treats a missing
+    # `Kernel package` row as "ask the payload", which is the same answer, while a row with
+    # a sentence in it would be read as a kernel version and stop the index. The omission is
+    # explained below the table so the page is still complete.
+    if [ -n "${kernel_package}" ]; then
+        printf '| Kernel package | `%s` |\n' "${kernel_package}"
+    fi
+    printf '| Platform version | `%s` |\n' "${platform_version}"
+    printf '| Uncompressed image sha256 | `%s` |\n' "${image_sha256}"
+    # The blank line belongs to the paragraph, not to the table: the feed index and the
+    # publisher each append a section of their own and open it with the blank line they need.
+    if [ -z "${kernel_package}" ]; then
+        printf '\n'
+        printf 'Kernel package: %s.\n' "${missing_note}"
+        printf 'The row is omitted above, and this release publishes without a feed index:\n'
+        printf 'an index without a kernel would point a machine at a payload it cannot match.\n'
+    fi
 } >"${notes}"
 ci_log "release notes: ${notes}"
 
@@ -432,9 +436,9 @@ if [ "${index_state}" = "generated" ]; then
         printf 'configured fetches `<UPDATE_FEED_URL>/index.txt`, reads the entry for\n'
         printf '`platform %s` / `base %s` / `kernel %s`, and compares it with what it runs.\n' \
             "${platform_version}" "${upstream_version}" "${kernel_index:-${kernel_package}}"
-        printf '\n'
-        printf 'The same three identities are what an update prompt shows side by side; the\n'
-        printf 'risk it reports comes from the `base` difference alone. See `docs/update.md`.\n'
+        printf 'Those are the three identities an update prompt shows side by side; the risk\n'
+        printf 'it reports comes from the `base` difference alone, and `docs/update.md` covers\n'
+        printf 'the rest.\n'
         printf '\n'
         printf '`index.txt` is not covered by `SHA256SUMS`: it describes the release, and the\n'
         printf 'digest it publishes for the payload is the one in `SHA256SUMS`.\n'

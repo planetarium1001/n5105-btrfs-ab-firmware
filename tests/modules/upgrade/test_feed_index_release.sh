@@ -69,7 +69,7 @@ build_release() {
     ( cd "$dir" && sha256sum "n5105-ab-${base}-install.img.gz" "n5105-ab-${base}-upgrade.tar" >SHA256SUMS )
   fi
   {
-    printf '# N5105 AB firmware %s (upstream %s)\n' "$platform" "$base"
+    printf '# N5105 AB Firmware %s (upstream %s)\n' "$platform" "$base"
     printf '\n## Inputs\n\n| field | value |\n| --- | --- |\n'
     printf '| Upstream version | `%s` |\n' "$base"
     printf '| Upstream rootfs sha256 | `not recorded` |\n'

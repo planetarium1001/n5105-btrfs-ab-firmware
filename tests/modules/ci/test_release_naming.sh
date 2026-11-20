@@ -5,8 +5,8 @@
 # Why this file exists: the two release lines share one implementation
 # (release-publish.yml) and differ only in their inputs. They differ by trigger, by tag shape
 # and by who owns VERSION - not by a title spelled at the call site. The publisher derives the
-# title from `tag-policy`: the upstream line publishes "ImmortalWrt N5105 A/B firmware
-# 25.13.0" under a bare 25.13.0 tag, the tagged line publishes "N5105 AB firmware 0.0.8"
+# title from `tag-policy`: the upstream line publishes "ImmortalWrt N5105 AB Firmware
+# 25.13.0" under a bare 25.13.0 tag, the tagged line publishes "N5105 AB Firmware 0.0.8"
 # under v0.0.8. The naming rules are asserted here rather than left to a caller's discipline.
 #
 # The rules that would be violated silently: a v-prefixed tag on the automatic line (it
@@ -69,10 +69,10 @@ assert_contains "$release_text" 'tag: ${{ github.ref_name }}' \
 title_step="$(sed -n '/- name: Render the release title/,/release_title=%s/p' "$publish")"
 assert_contains "${title_step}" 'TAG_POLICY' \
   "ac-4 the title is derived from the tag policy, not from the caller"
-assert_contains "${title_step}" "v) TITLE_TEMPLATE='N5105 AB firmware {tag}'" \
-  "ac-4 the tagged line is titled N5105 AB firmware <version>"
-assert_contains "${title_step}" "*) TITLE_TEMPLATE='ImmortalWrt N5105 A/B firmware {tag}'" \
-  "ac-4 the automatic line is titled ImmortalWrt N5105 A/B firmware <version>"
+assert_contains "${title_step}" "v) TITLE_TEMPLATE='N5105 AB Firmware {tag}'" \
+  "ac-4 the tagged line is titled N5105 AB Firmware <version>"
+assert_contains "${title_step}" "*) TITLE_TEMPLATE='ImmortalWrt N5105 AB Firmware {tag}'" \
+  "ac-4 the automatic line is titled ImmortalWrt N5105 AB Firmware <version>"
 
 # Neither caller passes a title: the flag they already pass decides it.
 for caller in "$release" "$watch"; do
@@ -96,11 +96,11 @@ render_title() {
   local template=$1 bare=${2#v}
   printf '%s\n' "${template//\{tag\}/${bare}}"
 }
-assert_eq "$(render_title "ImmortalWrt N5105 A/B firmware {tag}" "25.13.0")" \
-  "ImmortalWrt N5105 A/B firmware 25.13.0" \
-  "ac-4 the automatic release is titled ImmortalWrt N5105 A/B firmware <ver>"
-assert_eq "$(render_title "N5105 AB firmware {tag}" "v0.0.8")" \
-  "N5105 AB firmware 0.0.8" \
+assert_eq "$(render_title "ImmortalWrt N5105 AB Firmware {tag}" "25.13.0")" \
+  "ImmortalWrt N5105 AB Firmware 25.13.0" \
+  "ac-4 the automatic release is titled ImmortalWrt N5105 AB Firmware <ver>"
+assert_eq "$(render_title "N5105 AB Firmware {tag}" "v0.0.8")" \
+  "N5105 AB Firmware 0.0.8" \
   "ac-4 the tagged line keeps rounding v0.0.8 down to 0.0.8 in the title"
 
 # --------------------------------------------------------------------------- #
@@ -113,8 +113,15 @@ for wf in "$release" "$publish" "$watch"; do
 done
 
 # The tagged line refuses a tag that disagrees with VERSION; the bare line must not require
-# them to agree, because its tag names the upstream release, not the platform version.
-assert_contains "$publish_text" '[ "${TAG#v}" = "${file_platform}" ]' \
+# them to agree, because its tag names the upstream release, not the platform version. A
+# preview tag (v0.1.0-rc.1) carries a suffix over the same bytes, so the comparison is made
+# on the tag's base version and the suffix is stripped first - the assert below pins both
+# halves, because comparing the raw tag would refuse every preview.
+assert_contains "$publish_text" 'tag_base="${TAG#v}"' \
+  "ac-4 the tagged line compares the tag's base version"
+assert_contains "$publish_text" '*-*) tag_base="${tag_base%%-*}"' \
+  "ac-4 a pre-release suffix is stripped before the comparison"
+assert_contains "$publish_text" '[ "${tag_base}" = "${file_platform}" ]' \
   "ac-4 the tagged line asserts that its tag is the platform version"
 assert_contains "$publish_text" 'if [ "${TAG_POLICY}" = "v" ]; then' \
   "ac-4 the VERSION/tag agreement is required for the v policy only"

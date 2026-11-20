@@ -1,4 +1,4 @@
-name: upgrade gates
+name: Upgrade Gates
 
 # The two upgrade gates a release has to pass, in one reusable file so a caller does not
 # have to know which one is which.
@@ -65,7 +65,7 @@ jobs:
   # A caller that misspells the mode used to look green: both gates below are conditional on
   # one of two exact strings, so anything else skips them both and the run proves nothing.
   guard:
-    name: guard - the mode is unknown
+    name: Guard - Unknown Gate Mode
     if: ${{ inputs.mode != 'cross' && inputs.mode != 'same-base' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -78,7 +78,7 @@ jobs:
   # The cross gate, re-used unchanged. The caller's needs already guarantee that the payload
   # this run assembled exists: the stage downloads it and the previous image it builds itself.
   cross:
-    name: cross gate
+    name: Cross Gate
     if: ${{ inputs.mode == 'cross' }}
     permissions:
       contents: read
@@ -89,7 +89,7 @@ jobs:
   # is the QEMU part only: the old image is not rebuilt here, which is what makes this gate
   # affordable next to cross.
   same-base:
-    name: same-base upgrade
+    name: Same-Base Upgrade
     if: ${{ inputs.mode == 'same-base' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25

@@ -383,10 +383,10 @@ AB_APK_DB_LOCK=${AB_APK_DB_LOCK:-/lib/apk/db/lock}
 # busy" and its state is the fact, not something a driver may override.
 AB_APK_LOCK_WAIT=${AB_APK_LOCK_WAIT:-300}
 AB_APK_LOCK_POLL=${AB_APK_LOCK_POLL:-5}
-# What the last wait in *this* shell spent, in seconds. A caller that captures the printed
-# token (the usual form, `if s=$(dev_wait_apk_lock)`) reads the token instead: the assignment
-# inside this file happens in the subshell of that capture and is gone afterwards.
-AB_APK_LOCK_WAITED=0
+# How long the last wait spent is reported as the printed token (`apk-lock-waited=<n>s`), not
+# as a variable: callers capture the output (`if s=$(dev_wait_apk_lock)`), so an assignment
+# made here would land in the subshell of that capture and be gone by the time it matters.
+# Drivers that need the number parse the token - see matrix-rise.sh's feed leg.
 
 # dev_apk_lock_state: free | held | noflock | unknown, in one ssh call and one token.
 # The remote side decides, so the driver does not have to guess at eval, quoting or the
@@ -451,7 +451,6 @@ dev_wait_apk_lock() {
         [ "${_wl_waited}" -le "${_wl_timeout}" ] || _wl_waited=${_wl_timeout}
         _wl_state=$(dev_apk_lock_state)
     done
-    AB_APK_LOCK_WAITED=${_wl_waited}
     if [ "${_wl_state}" = "held" ]; then
         printf 'apk-lock-waited=%ss state=held\n' "${_wl_waited}"
         return 1

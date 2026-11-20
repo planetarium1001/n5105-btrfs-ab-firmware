@@ -1,4 +1,4 @@
-name: release publish
+name: Release Publish
 
 # The publishing half of a release, shared by both release lines.
 #
@@ -82,7 +82,7 @@ permissions:
 
 jobs:
   publish:
-    name: publish the release
+    name: Publish the Release
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -189,10 +189,17 @@ jobs:
             exit 1
           }
           # The tagged line releases VERSION itself: a tag that disagrees with VERSION would
-          # publish a version no artifact carries.
+          # publish a version no artifact carries. A preview tag carries a pre-release suffix
+          # (v0.1.0-rc.1) over the same bytes, so the base version is what has to agree -
+          # VERSION stays MAJOR.MINOR.PATCH, and the full tag stays in bare_version so the
+          # title and the notes name the release, not just the build.
           if [ "${TAG_POLICY}" = "v" ]; then
-            [ "${TAG#v}" = "${file_platform}" ] || {
-              echo "tag ${TAG} disagrees with VERSION ${file_platform}" >&2
+            tag_base="${TAG#v}"
+            case "${tag_base}" in
+              *-*) tag_base="${tag_base%%-*}" ;;
+            esac
+            [ "${tag_base}" = "${file_platform}" ] || {
+              echo "tag ${TAG} disagrees with VERSION ${file_platform} (tag base version ${tag_base})" >&2
               exit 1
             }
           fi
@@ -286,8 +293,8 @@ jobs:
           set -euo pipefail
           if [ -z "${TITLE_TEMPLATE}" ]; then
             case "${TAG_POLICY}" in
-              v) TITLE_TEMPLATE='N5105 AB firmware {tag}' ;;
-              *) TITLE_TEMPLATE='ImmortalWrt N5105 A/B firmware {tag}' ;;
+              v) TITLE_TEMPLATE='N5105 AB Firmware {tag}' ;;
+              *) TITLE_TEMPLATE='ImmortalWrt N5105 AB Firmware {tag}' ;;
             esac
           fi
           title="${TITLE_TEMPLATE//\{tag\}/${BARE_VERSION}}"
@@ -392,8 +399,10 @@ jobs:
         run: |
           set -euo pipefail
           # The notes name the run that proved the release and the two checks this job ran
-          # itself. The stage verdicts stay in that run's report: a sentence here that claimed
-          # "five stages passed" would keep claiming it for a run that proved one.
+          # itself, in a section of their own so the last thing on the page is who signed
+          # for these bytes. The stage verdicts stay in that run's report: a sentence here
+          # that claimed "five stages passed" would keep claiming it for a run that proved one.
+          printf '\n## Provenance\n\n' >>"${RELEASE_DIR}/release-notes.md"
           printf 'Verified by CI run %s: the image is the production build (kind=boot) and the\n' "${RUN_URL}" \
             >>"${RELEASE_DIR}/release-notes.md"
           printf 'release preflight passed on these exact bytes. The stage verdicts are in that\n' \
@@ -405,6 +414,13 @@ jobs:
           if [ -f "${RELEASE_DIR}/index.txt" ]; then
             assets+=("${RELEASE_DIR}/index.txt")
           fi
+          # A preview is published from a tag that carries a pre-release suffix
+          # (v0.1.0-rc.1). It is marked as such so "latest" keeps pointing at the last
+          # full release and nobody's updater mistakes a release candidate for it.
+          prerelease_args=()
+          case "${TAG}" in
+            *-*) prerelease_args=(--prerelease) ;;
+          esac
           if [ "${DRY_RUN}" = "true" ]; then
             # A rehearsal still uploads and checks the bytes; it only refuses to publish.
             # It is repeatable: a draft left behind by an earlier attempt is replaced, a
@@ -439,6 +455,7 @@ jobs:
               --draft \
               --title "${TITLE}" \
               --notes-file "${RELEASE_DIR}/release-notes.md" \
+              "${prerelease_args[@]}" \
               "${assets[@]}"
           elif gh release view "${TAG}" >/dev/null 2>&1; then
             echo "release ${TAG} exists, uploading the artifacts again"
@@ -454,6 +471,7 @@ jobs:
             gh release create "${TAG}" \
               --title "${TITLE}" \
               --notes-file "${RELEASE_DIR}/release-notes.md" \
+              "${prerelease_args[@]}" \
               "${assets[@]}"
           fi
           url="$(gh release view "${TAG}" --json url --jq .url 2>/dev/null || true)"

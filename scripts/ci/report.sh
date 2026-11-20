@@ -140,11 +140,11 @@ ORDER = [
     ("s3", "S3 "),
     ("s4", "S4 "),
     ("s5", "S5 "),
-    ("resolve", "resolve upstream"),
-    ("fetch", "fetch upstream"),
-    ("assemble", "assemble payload"),
-    ("verify", "static checks"),
-    ("report", "report"),
+    ("resolve", "Resolve Upstream"),
+    ("fetch", "Fetch Upstream"),
+    ("assemble", "Assemble Payload"),
+    ("verify", "Static Checks"),
+    ("report", "Report"),
 ]
 
 
@@ -199,15 +199,15 @@ if [ "${overall}" = "success" ]; then
 else
     headline="failed"
     for probe in \
-        "S1 probe:${CI_S1_RESULT:-}" \
-        "S2 image:${CI_S2_RESULT:-}" \
-        "S3 boot:${CI_S3_RESULT:-}" \
-        "S4 slots:${CI_S4_RESULT:-}" \
-        "S5 upgrade:${CI_S5_RESULT:-}" \
-        "resolve upstream:${CI_RESOLVE_RESULT:-}" \
-        "fetch upstream:${CI_FETCH_RESULT:-}" \
-        "assemble payload:${CI_ASSEMBLE_RESULT:-}" \
-        "static checks:${CI_VERIFY_RESULT:-}"; do
+        "S1 Probe:${CI_S1_RESULT:-}" \
+        "S2 Image:${CI_S2_RESULT:-}" \
+        "S3 Boot:${CI_S3_RESULT:-}" \
+        "S4 Slots:${CI_S4_RESULT:-}" \
+        "S5 Upgrade:${CI_S5_RESULT:-}" \
+        "Resolve Upstream:${CI_RESOLVE_RESULT:-}" \
+        "Fetch Upstream:${CI_FETCH_RESULT:-}" \
+        "Assemble Payload:${CI_ASSEMBLE_RESULT:-}" \
+        "Static Checks:${CI_VERIFY_RESULT:-}"; do
         name="${probe%%:*}"
         status="${probe#*:}"
         case "${status}" in
@@ -231,15 +231,15 @@ fi
     printf '\n'
     printf '| stage | verdict | duration | artifact |\n'
     printf '| --- | --- | --- | --- |\n'
-    report_row "resolve upstream" "${CI_RESOLVE_RESULT:-}" "${d_resolve}" "\`upstream-files\` / \`logs-resolve\`"
-    report_row "fetch upstream" "${CI_FETCH_RESULT:-}" "${d_fetch}" "\`upstream-files\` / \`logs-fetch\`"
-    report_row "assemble payload" "${CI_ASSEMBLE_RESULT:-}" "${d_assemble}" "\`payload-upgrade\` / \`logs-assemble\`"
-    report_row "S1 probe" "${CI_S1_RESULT:-}" "${d_s1}" "\`evidence-s1\` / \`logs-s1\`"
-    report_row "S2 image" "${CI_S2_RESULT:-}" "${d_s2}" "\`image-probe\` / \`evidence-s2\` / \`logs-s2\`"
-    report_row "S3 boot" "${CI_S3_RESULT:-}" "${d_s3}" "\`image-install\` / \`evidence-s3\` / \`logs-s3\`"
-    report_row "S4 slots" "${CI_S4_RESULT:-}" "${d_s4}" "\`evidence-s4\` / \`logs-s4\`"
-    report_row "S5 upgrade" "${CI_S5_RESULT:-}" "${d_s5}" "\`payload-upgrade\` / \`evidence-s5\` / \`logs-s5\`"
-    report_row "static checks" "${CI_VERIFY_RESULT:-}" "${d_verify}" "\`logs-verify\`"
+    report_row "Resolve Upstream" "${CI_RESOLVE_RESULT:-}" "${d_resolve}" "\`upstream-files\` / \`logs-resolve\`"
+    report_row "Fetch Upstream" "${CI_FETCH_RESULT:-}" "${d_fetch}" "\`upstream-files\` / \`logs-fetch\`"
+    report_row "Assemble Payload" "${CI_ASSEMBLE_RESULT:-}" "${d_assemble}" "\`payload-upgrade\` / \`logs-assemble\`"
+    report_row "S1 Probe" "${CI_S1_RESULT:-}" "${d_s1}" "\`evidence-s1\` / \`logs-s1\`"
+    report_row "S2 Image" "${CI_S2_RESULT:-}" "${d_s2}" "\`image-probe\` / \`evidence-s2\` / \`logs-s2\`"
+    report_row "S3 Boot" "${CI_S3_RESULT:-}" "${d_s3}" "\`image-install\` / \`evidence-s3\` / \`logs-s3\`"
+    report_row "S4 Slots" "${CI_S4_RESULT:-}" "${d_s4}" "\`evidence-s4\` / \`logs-s4\`"
+    report_row "S5 Upgrade" "${CI_S5_RESULT:-}" "${d_s5}" "\`payload-upgrade\` / \`evidence-s5\` / \`logs-s5\`"
+    report_row "Static Checks" "${CI_VERIFY_RESULT:-}" "${d_verify}" "\`logs-verify\`"
     printf '\n'
     printf '| field | value |\n'
     printf '| --- | --- |\n'

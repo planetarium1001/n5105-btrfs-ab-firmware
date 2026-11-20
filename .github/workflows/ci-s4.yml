@@ -1,4 +1,4 @@
-name: S4 slots
+name: S4 Slots
 
 # Stage S4 - A/B state machine and health check, through the real boot path.
 #
@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   s4:
-    name: S4 slots - A/B state machine
+    name: S4 Slots - A/B State Machine
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:

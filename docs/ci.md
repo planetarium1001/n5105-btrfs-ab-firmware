@@ -46,14 +46,14 @@ the job list.
 
 | Stage | Label | What it proves | What breaks when it fails |
 |---|---|---|---|
-| S1 | `S1 probe - kernel mounts btrfs` | the official kernel loads the official btrfs module closure inside our initramfs and mounts btrfs | no later stage can rely on btrfs before `switch_root` |
-| S2 | `S2 image - four partitions` | the four-partition geometry, the ESP contents and the GPT PARTNAMEs, read back inside the guest | nothing can be installed: the layout the installer writes is wrong |
-| S3 | `S3 boot - layered root` | the boot initramfs composes the overlay root and reaches `switch_root`, twice in a row | no slot can boot, so the image is not installable |
-| S4 | `S4 slots - A/B state machine` | commit, abandon and rollback through four boots, including the health check | A/B switching is unproven: an update could stick to a broken slot |
-| S5 | `S5 upgrade - upgrade and reclaim` | payload upgrade, the degraded boot and reclamation, four boots | updates are unproven, including the case where the writable partition dies |
+| S1 | `S1 Probe - Kernel Mounts Btrfs` | the official kernel loads the official btrfs module closure inside our initramfs and mounts btrfs | no later stage can rely on btrfs before `switch_root` |
+| S2 | `S2 Image - Four Partitions` | the four-partition geometry, the ESP contents and the GPT PARTNAMEs, read back inside the guest | nothing can be installed: the layout the installer writes is wrong |
+| S3 | `S3 Boot - Layered Root` | the boot initramfs composes the overlay root and reaches `switch_root`, twice in a row | no slot can boot, so the image is not installable |
+| S4 | `S4 Slots - A/B State Machine` | commit, abandon and rollback through four boots, including the health check | A/B switching is unproven: an update could stick to a broken slot |
+| S5 | `S5 Upgrade - Upgrade and Reclaim` | payload upgrade, the degraded boot and reclamation, four boots | updates are unproven, including the case where the writable partition dies |
 
-Every stage prints one frozen judge line, `S1-RESULT=` through `S5-RESULT=`. The display names
-may change; the tokens may not.
+Every stage prints one frozen judge line, `S1-RESULT=` through `S5-RESULT=`. The label above
+is fixed text and follows rule 4; the token behind it is frozen, so a rename may never reach it.
 
 ## The cross-version stage
 
@@ -63,7 +63,7 @@ it.
 
 | Stage | Job label | What it proves |
 |---|---|---|
-| cross | `cross-upgrade` | an image built from the previous formal release, upgraded with this release's payload, boots, commits, and carries exactly the kernel and initrd the payload shipped |
+| cross | `Cross-Upgrade` | an image built from the previous formal release, upgraded with this release's payload, boots, commits, and carries exactly the kernel and initrd the payload shipped |
 
 It is expensive - it builds a second image from another upstream release - so the pull-request
 chain never runs it. The selector (`matrix-select.sh`) names the previous release; when it
@@ -214,15 +214,20 @@ it, moves the pin, merges and publishes under the bare upstream version (`25.13.
 | | Tagged line | Upstream line |
 |---|---|---|
 | Trigger | push of a `v*` tag (`release.yml`) | `schedule` (`0 0 * * *`), or `workflow_dispatch` of `upstream-watch.yml` |
-| Tag shape | `v<X.Y.Z>` | bare `<X.Y.Z>` |
+| Tag shape | `v<X.Y.Z>`, or `v<X.Y.Z>-rc.<N>` for a preview | bare `<X.Y.Z>` |
 | `VERSION` | the tag must equal it | not edited by the release; it still carries the platform version the image records |
 | Which upstream is built | the pin in `.github/upstream-pin.conf` | the release `detect` just found, passed as `upstream_version` |
-| Release title | `N5105 AB firmware <tag>` | `ImmortalWrt N5105 A/B firmware <tag>` |
+| Release title | `N5105 AB Firmware <tag>` | `ImmortalWrt N5105 AB Firmware <tag>` |
 | Assets | install image, convenience image, payload, `SHA256SUMS` | install image, payload, `SHA256SUMS` |
 | Where a failure lands | the run on the tag goes red, nothing is published, the tag stays | one issue titled `[auto-release] <version>`, labelled `auto-release` |
 
 Both lines call `release-publish.yml`, which runs `scripts/ci/release-preflight.sh` before
 anything is created. Two callers and one implementation is what keeps the lines from drifting.
+
+A preview is an ordinary release with a pre-release suffix on the tag, `v0.1.0-rc.1`, and
+`VERSION` equal to the same string without the `v`. The suffix is the only thing that makes it
+a preview: the run publishes it as a GitHub pre-release, so `latest` keeps pointing at the last
+full release and an updater reading `latest` never installs a release candidate.
 
 The convenience image differs from the default in one rendered value, `NET_WAN_SSH`: whether
 the firewall gets one `allow_ssh_wan` rule (`22/tcp`) on the WAN side. The kernel, rootfs,
@@ -359,13 +364,19 @@ pressure. Seven rules, asserted by `tests/modules/ci/test_ci_text_conventions.sh
    `.github/actions/*/action.yml` and `scripts/ci/*.sh` is ASCII. Chinese lives only in
    `docs/*.zh-CN.md`.
 2. **A label is not a sentence.** No trailing period or exclamation mark, no leading or
-   trailing space, sentence case.
+   trailing space. A workflow or job label is Title Case: every slot opens and closes on a
+   capitalised word, and only the short articles, prepositions and conjunctions
+   (`a an the and of for to in on by or`) stay lowercase inside it. Step labels and every
+   sentence stay sentence case.
 3. **Length caps.** 40 characters for a workflow or job name, 60 for a step name, 80 for an
    issue, pull request or release title.
 4. **One grammatical slot per level.** Entry points are `Firmware CI - <role>`; reusable files
    are `S<n> <semantic>` or a short role phrase; stage jobs are
    `S<n> <semantic> - <what it proves>`; steps are `<Verb phrase>` or
-   `<Marker> - <claim>`; the separator is exactly ` - `.
+   `<Marker> - <claim>`; the separator is exactly ` - `. Every workflow and job slot is filled
+   in Title Case - each slot opens and closes on a capitalised word, and `a an the and of for
+   to in on by or` stay lowercase inside the slot - while a step keeps its capitalised verb and
+   the rest of the sentence in sentence case.
 5. **Fixed summary tables.** Six headers and no seventh: `stage | verdict | key line |
    artifact and sha256 | next command`, `stage | verdict | duration | artifact`,
    `field | value`, `job | result`, `artifact | size | sha256`, `file | written this run`.
@@ -376,8 +387,9 @@ pressure. Seven rules, asserted by `tests/modules/ci/test_ci_text_conventions.sh
    `tests/fixtures/ci-structure-fingerprint.txt` holds one sorted line per structural token, so
    a wording batch leaves it byte-identical; if it moves, the diff names the key that moved.
 
-Naming in short: one separator ` - `, a stage is `S<n> <semantic>`, a step carries no stage
-number, and a step that does not gate the stage says ` - advisory`.
+Naming in short: one separator ` - `, a stage is `S<n> <semantic>`, every workflow and job
+label is Title Case, a step carries no stage number, and a step that does not gate the stage
+says ` - advisory`.
 
 ## Limits
 

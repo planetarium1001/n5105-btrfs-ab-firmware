@@ -58,7 +58,7 @@ assert_eq "$actual" "$expected" "ac-1 the compressed image round-trips to the bu
 assert_contains "$out" "round trip verified" "ac-1 the round trip is reported"
 
 notes="$(cat "$rel/release-notes.md")"
-assert_contains "$notes" "N5105 AB firmware 0.0.5 (upstream 25.12.2)" "ac-1 the notes name both versions"
+assert_contains "$notes" "N5105 AB Firmware 0.0.5 (upstream 25.12.2)" "ac-1 the notes name both versions"
 assert_contains "$notes" "ab-upgrade" "ac-1 the notes point at the update path"
 assert_contains "$notes" "docs/install.md" "ac-1 the notes point at the install guide"
 assert_contains "$notes" "$expected" "ac-1 the notes record the uncompressed digest"
@@ -82,7 +82,8 @@ assert_eq "$?" "0" "ac-4 a release with the convenience image succeeds"
 assert_file_exists "$rel/n5105-ab-25.12.2-install-wan-ssh.img.gz" "ac-4 the convenience image is published"
 assert_eq "$(wc -l <"$rel/SHA256SUMS" | tr -d ' ')" "3" "ac-4 the checksums cover all three files"
 notes="$(cat "$rel/release-notes.md")"
-assert_contains "$notes" "## Two images" "ac-4 the notes explain the two images"
+assert_contains "$notes" "## Which image to write" "ac-4 the notes explain the two images"
+assert_contains "$notes" 'one `22/tcp` rule from the WAN' "ac-4 the difference is the one WAN rule"
 assert_contains "$notes" "n5105-ab-25.12.2-install-wan-ssh.img.gz" "ac-4 the notes list the convenience image"
 assert_contains "$out" "variant artefact" "ac-4 the variant is reported"
 

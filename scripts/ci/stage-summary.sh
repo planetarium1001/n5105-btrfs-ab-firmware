@@ -67,11 +67,11 @@ done
 # stage_job <stage>: the display name, shared with the workflow and job names.
 stage_job() {
     case "${1:-}" in
-        s1) printf 'S1 probe' ;;
-        s2) printf 'S2 image' ;;
-        s3) printf 'S3 boot' ;;
-        s4) printf 'S4 slots' ;;
-        s5) printf 'S5 upgrade' ;;
+        s1) printf 'S1 Probe' ;;
+        s2) printf 'S2 Image' ;;
+        s3) printf 'S3 Boot' ;;
+        s4) printf 'S4 Slots' ;;
+        s5) printf 'S5 Upgrade' ;;
         *) printf '' ;;
     esac
 }

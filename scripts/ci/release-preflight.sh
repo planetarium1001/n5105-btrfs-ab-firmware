@@ -282,8 +282,11 @@ fi
 tag_regex="${CI_VERSION_RE}"
 tag_policy_note="bare system version"
 if [ "${tag_policy}" = "v" ]; then
-    tag_regex='^v[0-9]+\.[0-9]+\.[0-9]+$'
-    tag_policy_note="v* release tag"
+    # A preview is published from a tag that says so: v0.1.0-rc.1. The suffix is part of
+    # the version (VERSION must equal the tag without its 'v'), so the shape is one
+    # optional pre-release segment on an otherwise plain X.Y.Z - not a free-form tag.
+    tag_regex='^v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|pre)\.[0-9]+)?$'
+    tag_policy_note="v* release tag, optionally with a pre-release suffix (v<X.Y.Z>-rc.<N>)"
 fi
 if printf '%s\n' "${tag}" | grep -Eq "${tag_regex}"; then
     ci_log "2/7 tag ${tag} matches --tag-policy ${tag_policy} (${tag_regex})"
@@ -415,6 +418,13 @@ if [ "${tag_policy}" = "v" ]; then
     # `platform_version` from the same `${GITHUB_REF_NAME#v}`, so the tag is the source
     # of truth and the shipped VERSION file is not compared a second time.
     tag_version="${tag#v}"
+    # A preview tag names the same bytes as the plain one: v0.1.0-rc.1 ships the platform
+    # version 0.1.0, and the suffix marks the release, not the build. VERSION itself stays
+    # MAJOR.MINOR.PATCH - a v0.0.9-rc1 image once reported PLATFORM_VERSION=0.0.8 because
+    # that rule was broken, so the suffix is stripped here instead of pushed into VERSION.
+    case "${tag_version}" in
+        *-*) tag_version="${tag_version%%-*}" ;;
+    esac
     if [ "${image_upstream}" = "${manifest_rootfs}" ]; then
         ci_log "7/7 image upstream_version and payload manifest rootfs agree (${image_upstream})"
     else

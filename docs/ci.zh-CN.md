@@ -42,13 +42,14 @@ Linux 机器上复现。本页是地图：跑哪个文件、每个阶段证明�
 
 | 阶段 | 标签 | 证明什么 | 失败时什么坏掉 |
 |---|---|---|---|
-| S1 | `S1 probe - kernel mounts btrfs` | 官方内核在我们的 initramfs 里加载官方 btrfs 模块闭包并挂载 btrfs | 之后的阶段都不能在 `switch_root` 前依赖 btrfs |
-| S2 | `S2 image - four partitions` | 四分区几何、ESP 内容与 GPT PARTNAME，从客户机内部读回 | 什么都装不了：安装器写下的布局是错的 |
-| S3 | `S3 boot - layered root` | 启动 initramfs 组装 overlay 根并到达 `switch_root`，连续两次 | 没有槽位能启动，镜像不可安装 |
-| S4 | `S4 slots - A/B state machine` | 经过四次启动验证提交、放弃与回滚，含健康检查 | A/B 切换未被证明：升级可能卡在坏槽位上 |
-| S5 | `S5 upgrade - upgrade and reclaim` | payload 升级、降级启动与回收，四次启动 | 升级未被证明，包括可写分区挂掉的情形 |
+| S1 | `S1 Probe - Kernel Mounts Btrfs` | 官方内核在我们的 initramfs 里加载官方 btrfs 模块闭包并挂载 btrfs | 之后的阶段都不能在 `switch_root` 前依赖 btrfs |
+| S2 | `S2 Image - Four Partitions` | 四分区几何、ESP 内容与 GPT PARTNAME，从客户机内部读回 | 什么都装不了：安装器写下的布局是错的 |
+| S3 | `S3 Boot - Layered Root` | 启动 initramfs 组装 overlay 根并到达 `switch_root`，连续两次 | 没有槽位能启动，镜像不可安装 |
+| S4 | `S4 Slots - A/B State Machine` | 经过四次启动验证提交、放弃与回滚，含健康检查 | A/B 切换未被证明：升级可能卡在坏槽位上 |
+| S5 | `S5 Upgrade - Upgrade and Reclaim` | payload 升级、降级启动与回收，四次启动 | 升级未被证明，包括可写分区挂掉的情形 |
 
-每个阶段打印一行固定判据，`S1-RESULT=` 到 `S5-RESULT=`。显示名可以改，token 不可以。
+每个阶段打印一行固定判据，`S1-RESULT=` 到 `S5-RESULT=`。上表的标签是固定文本，遵循规则 4；
+它背后的 token 是冻结的，改名永远不许碰它。
 
 ## 跨版本阶段
 
@@ -57,7 +58,7 @@ Linux 机器上复现。本页是地图：跑哪个文件、每个阶段证明�
 
 | 阶段 | job 标签 | 证明什么 |
 |---|---|---|
-| cross | `cross-upgrade` | 用上一个正式版本构建的镜像，被本版本的 payload 升级后，能启动、能提交，且携带的正是 payload 发布的那个内核与 initrd |
+| cross | `Cross-Upgrade` | 用上一个正式版本构建的镜像，被本版本的 payload 升级后，能启动、能提交，且携带的正是 payload 发布的那个内核与 initrd |
 
 它很贵——要用另一个上游版本再构建一次镜像——所以 PR 链从不跑它。选择器
 （`matrix-select.sh`）指定上一个版本；当它找不到时（`gaps>0`），阶段报告
@@ -197,15 +198,19 @@ pin、合并，并以裸上游版本号（`25.13.0`）发布。
 | | tag 线 | 上游线 |
 |---|---|---|
 | 触发 | 推 `v*` tag（`release.yml`） | `schedule`（`0 0 * * *`），或 `upstream-watch.yml` 的 `workflow_dispatch` |
-| tag 形状 | `v<X.Y.Z>` | 裸 `<X.Y.Z>` |
+| tag 形状 | `v<X.Y.Z>`，预览版为 `v<X.Y.Z>-rc.<N>` | 裸 `<X.Y.Z>` |
 | `VERSION` | tag 必须等于它 | 发布不改它；它仍携带镜像记录的平台版本 |
 | 构建哪个上游 | `.github/upstream-pin.conf` 里的 pin | `detect` 刚发现的版本，作为 `upstream_version` 传入 |
-| 发布标题 | `N5105 AB firmware <tag>` | `ImmortalWrt N5105 A/B firmware <tag>` |
+| 发布标题 | `N5105 AB Firmware <tag>` | `ImmortalWrt N5105 AB Firmware <tag>` |
 | 资产 | 安装镜像、便利镜像、payload、`SHA256SUMS` | 安装镜像、payload、`SHA256SUMS` |
 | 失败落在哪 | tag 上的运行变红，不发布，tag 保留 | 一个标题为 `[auto-release] <version>`、带 `auto-release` 标签的 issue |
 
 两条线都调用 `release-publish.yml`，它在创建任何东西之前先跑
 `scripts/ci/release-preflight.sh`。两个调用方、一个实现，是两条线不漂移的原因。
+
+预览版就是一次普通的发布，只是 tag 带预发布后缀 `v0.1.0-rc.1`，且 `VERSION` 等于去掉 `v`
+的同一个字符串。后缀是它作为预览版的唯一标志：该次运行把它发布为 GitHub pre-release，
+因此 `latest` 仍指向上一个正式版，读 `latest` 的更新器不会装到发布候选。
 
 便利镜像与默认镜像只差一个渲染值 `NET_WAN_SSH`：WAN 侧防火墙是否多一条 `allow_ssh_wan`
 规则（`22/tcp`）。内核、rootfs、平台层与 payload 两者逐字节相同。`scripts/ci/release.sh`
@@ -324,11 +329,15 @@ CI 对人说的每句话都是契约，因为运行页只被读一次，而且�
 
 1. **界面上只用英文。** `.github/workflows/*.yml`、`.github/actions/*/action.yml` 与
    `scripts/ci/*.sh` 里每个非注释行都是 ASCII。中文只出现在 `docs/*.zh-CN.md`。
-2. **标签不是句子。** 结尾没有句号或感叹号，首尾没有空格，句首大写。
+2. **标签不是句子。** 结尾没有句号或感叹号，首尾没有空格。工作流与 job 标签用 Title Case：
+   每个槽都以大写词开头并以大写词结尾，只有 `a an the and of for to in on by or` 这些短
+   冠词、介词与连词在槽内保持小写。步骤标签与所有句子保持句首大写（sentence case）。
 3. **长度上限。** 工作流或 job 名 40 字符，步骤名 60 字符，issue、PR 或发布标题 80 字符。
 4. **每一层一种语法槽。** 入口是 `Firmware CI - <role>`；可复用文件是
    `S<n> <semantic>` 或简短角色短语；阶段 job 是 `S<n> <semantic> - <what it proves>`；
-   步骤是 `<Verb phrase>` 或 `<Marker> - <claim>`；分隔符恰好是 ` - `。
+   步骤是 `<Verb phrase>` 或 `<Marker> - <claim>`；分隔符恰好是 ` - `。工作流与 job 的每个槽
+   都填 Title Case——每个槽以大写词开头、以大写词结尾，`a an the and of for to in on by or`
+   在槽内保持小写；步骤保留动词首字母大写、其余仍是句首大写（sentence case）。
 5. **固定摘要表。** 六个表头，不能有第七个：`stage | verdict | key line | artifact and
    sha256 | next command`、`stage | verdict | duration | artifact`、`field | value`、
    `job | result`、`artifact | size | sha256`、`file | written this run`。
@@ -338,8 +347,8 @@ CI 对人说的每句话都是契约，因为运行页只被读一次，而且�
    结构 token 保存一行排序结果，因此一次措辞批次让它逐字节不变；它若变化，diff 会点名移动
    的那个键。
 
-命名简述：分隔符只有一个 ` - `；阶段是 `S<n> <semantic>`；步骤不带阶段号；不决定阶段成败
-的步骤以 ` - advisory` 结尾。
+命名简述：分隔符只有一个 ` - `；阶段是 `S<n> <semantic>`；每个工作流与 job 标签都是
+Title Case；步骤不带阶段号；不决定阶段成败的步骤以 ` - advisory` 结尾。
 
 ## 限制
 

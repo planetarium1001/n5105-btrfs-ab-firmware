@@ -1,4 +1,4 @@
-name: Firmware CI - build and validate
+name: Firmware CI - Build and Validate
 
 # Single entry point: this file only orchestrates. Every stage is a reusable workflow next
 # to this one, all real logic lives in scripts/ci/, and there is no workflow_run chaining, so
@@ -77,7 +77,7 @@ jobs:
   # itself - every other job is a reusable-workflow call, which accepts no steps and no
   # timeout - so it carries the entry point's own budget.
   versions:
-    name: read the platform version
+    name: Read the Platform Version
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -98,14 +98,14 @@ jobs:
 
   # Stage 1: resolve the upstream release, the platform version and the cache key.
   resolve:
-    name: resolve upstream
+    name: Resolve Upstream
     uses: ./.github/workflows/ci-resolve.yml
     with:
       upstream_version: ${{ inputs.upstream_version || '' }}
 
   # Stage 2: the upstream artifacts every stage except verify needs, so resuming one resumes this.
   fetch:
-    name: fetch upstream
+    name: Fetch Upstream
     needs: resolve
     if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage != 'verify') }}
     uses: ./.github/workflows/ci-fetch.yml
@@ -125,7 +125,7 @@ jobs:
 
   # Stage 3: assemble the update payload (S0 skeleton).
   assemble:
-    name: assemble payload
+    name: Assemble Payload
     needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'assemble') }}
     uses: ./.github/workflows/ci-assemble.yml
@@ -138,7 +138,7 @@ jobs:
 
   # Stage 4: upstream-consumption spike - official kernel, official btrfs modules.
   s1:
-    name: S1 probe - kernel mounts btrfs
+    name: S1 Probe - Kernel Mounts Btrfs
     needs: [resolve, fetch]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's1') }}
     uses: ./.github/workflows/ci-s1.yml
@@ -150,7 +150,7 @@ jobs:
 
   # Stage 5: four-partition disk image assembly (the heaviest stage, 40 min budget).
   s2:
-    name: S2 image - four partitions
+    name: S2 Image - Four Partitions
     needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's2') }}
     uses: ./.github/workflows/ci-s2.yml
@@ -163,7 +163,7 @@ jobs:
 
   # Stage 6: layered boot - the image booted twice proves the writable generation survives.
   s3:
-    name: S3 boot - layered root
+    name: S3 Boot - Layered Root
     needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's3') }}
     uses: ./.github/workflows/ci-s3.yml
@@ -179,7 +179,7 @@ jobs:
   # because the two images differ in one rendered file and nothing else.
   # Stage 7: A/B state machine - commit, abandon and rollback through the ESP state.
   s4:
-    name: S4 slots - A/B state machine
+    name: S4 Slots - A/B State Machine
     needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's4') }}
     uses: ./.github/workflows/ci-s4.yml
@@ -192,7 +192,7 @@ jobs:
 
   # Stage 8: upgrade payload, reclamation and the degraded boot.
   s5:
-    name: S5 upgrade - upgrade and reclaim
+    name: S5 Upgrade - Upgrade and Reclaim
     needs: [resolve, fetch, versions]
     if: ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 's5') }}
     uses: ./.github/workflows/ci-s5.yml
@@ -205,14 +205,14 @@ jobs:
 
   # Stage 9: static checks that need no upstream artifact.
   verify:
-    name: static checks
+    name: Static Checks
     needs: resolve
     if: ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'verify') }}
     uses: ./.github/workflows/ci-verify.yml
 
   # Stage 10: single verdict, rendered as the run summary.
   report:
-    name: report
+    name: Report
     needs: [resolve, fetch, assemble, s1, s2, s3, s4, s5, verify]
     if: ${{ always() }}
     uses: ./.github/workflows/ci-report.yml
