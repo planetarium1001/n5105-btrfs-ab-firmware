@@ -531,7 +531,14 @@ assert_eq "$(asset_env "ab_pkgs_asset_identify '$tmp/htop-9.9.9-r9.apk'")" "tree
 asset_env "ab_pkgs_assets_capture '$fixture_root' '$tmp/minieap-0.94.0_x86-64.apk'" >/dev/null 2>&1
 assert_file_exists "$asset_dir/minieap-0.94.0.apk" \
   "ac-1 the kept body carries the metadata name and version"
-assert_eq "$(ls "$asset_dir" | grep -c 'x86-64' || true)" "0" \
+# A glob rather than `ls | grep`: the count has to be right on a name that is not
+# alphanumeric (shellcheck SC2010), and the only question here is whether one exists.
+_kept_cross=0
+for _kept_one in "$asset_dir"/*x86-64*; do
+  [ -e "$_kept_one" ] || continue
+  _kept_cross=$((_kept_cross + 1))
+done
+assert_eq "$_kept_cross" "0" \
   "ac-1 and never the name it happened to be downloaded as"
 
 # The fast path accepts apk's no-revision shape too, because apk's own metadata may carry none.

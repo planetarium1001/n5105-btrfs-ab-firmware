@@ -528,6 +528,235 @@ FEEDS
 }
 
 # --------------------------------------------------------------------------- #
+# Plugins: the one seam a declared package source enters a transaction through
+#
+# A plugin is data - a directory of key=value lines under /etc/ab/plugins.d - and
+# platform/lib/ab-plugins.sh is the whole vocabulary of what it may say. This library knows
+# exactly one thing about it: an optional hook, `ab_plugins_repos_append <root> <out>`, that
+# appends the feeds of the plugins that are enabled *and* verified *and* unchanged since
+# their check. Everything else here follows from two rules.
+#
+#   * One repository set per transaction. A command that reads the machine's own files today
+#     reads the machine's own files *plus* the declared feeds tomorrow, and it reads them
+#     from one file apk is pointed at with --repositories-file - never from a mix of some
+#     paths that were redirected and some that were not. Two views of the same machine is how
+#     a package appears to exist in one transaction and not in the next.
+#   * Nothing changes when nothing is declared. `--repositories-file` appears only when a
+#     plugin contributes a feed (ac-9): a machine with no plugin sends apk byte for byte the
+#     command line it sent before plugins existed, because the alternative is a machine that
+#     behaves differently depending on which code path asked.
+#
+# The declarations belong to the machine that is running, not to the tree apk is pointed at:
+# a platform upgrade replaces the system tree and leaves /etc/ab alone, so reading the target
+# tree for plugins would read a layer that is about to be replaced. `ab_packages_repos_file
+# <root> <out>` therefore concatenates the *target's* feed files and appends the *running
+# machine's* plugin feeds.
+#
+# Nothing in this section runs apk or reaches the network: it reads declarations, writes one
+# file in /tmp, and the caller decides whether to use it.
+# --------------------------------------------------------------------------- #
+
+# _packages_plugins_root: where the declarations live. The running machine, with one
+# exception - a test or a chroot has to be able to point them at a fixture without writing
+# /etc, and production never sets AB_PLUGINS_ROOT.
+_packages_plugins_root() {
+    printf '%s' "${AB_PLUGINS_ROOT:-/}"
+}
+
+# _packages_plugins_lib_file: the plugin library to source, or nothing when this machine has
+# none - which is a machine without plugins, not a broken one.
+#
+# Order: what the caller named, the copy that ships next to this file (a checkout, and the
+# installed /lib/upgrade + /lib pair), then the installed path. AB_PACKAGES_LIB is how every
+# caller already names this file, so its directory is the one place the sibling is knowable
+# from a purely POSIX shell: a sourced file has no path of its own.
+_packages_plugins_lib_file() {
+    _plf_sibling=""
+    if [ -n "${AB_PACKAGES_LIB:-}" ]; then
+        _plf_sibling=$(dirname "${AB_PACKAGES_LIB}")/../ab-plugins.sh
+    fi
+    for _plf_try in "${AB_PLUGINS_LIB:-}" "${_plf_sibling}" /lib/ab-plugins.sh; do
+        [ -n "${_plf_try}" ] || continue
+        [ -f "${_plf_try}" ] || continue
+        printf '%s' "${_plf_try}"
+        return 0
+    done
+    return 1
+}
+
+# _packages_plugins_load: 0 when the append hook is defined in *this* shell.
+#
+# Loaded on demand rather than when this file is sourced: an image without the plugin library
+# then keeps working exactly as before, and the aligner - which must never see a plugin - does
+# not carry one into every shell that reads this file. The check is on the function, not on a
+# flag, because a caller may have sourced the library already.
+_packages_plugins_load() {
+    command -v ab_plugins_repos_append >/dev/null 2>&1 && return 0
+    _pll_file=$(_packages_plugins_lib_file) || return 1
+    # shellcheck source=/dev/null
+    . "${_pll_file}" 2>/dev/null || return 1
+    command -v ab_plugins_repos_append >/dev/null 2>&1
+}
+
+# _packages_plugins_injected: 0 when a plugin contributes a feed right now.
+#
+# The same predicate the seam itself uses, so "is anything injected" and "does the file hold
+# more than the machine's own feeds" cannot disagree.
+_packages_plugins_injected() {
+    _pji_count=""
+    _packages_plugins_load || return 1
+    _pji_count=$(ab_plugins_active_count "$(_packages_plugins_root)" 2>/dev/null) || return 1
+    case "${_pji_count}" in
+        '' | *[!0-9]* | 0) return 1 ;;
+    esac
+    return 0
+}
+
+# _packages_plugins_tmp: the directory the injected repositories file is written to.
+#
+# Named by mktemp, for one reason: the file this directory holds is opened for truncation by
+# root, so a name anyone can guess - `/tmp/repositories`, or `ab-plugins.$$` - is a name anyone
+# can pre-place as a symlink. mktemp picks the name and creates the directory 0700, so the
+# only thing that can be inside it is what this process put there. The caller removes it with
+# _packages_plugins_tmp_drop once the apk call that needed the file has returned.
+_packages_plugins_tmp() {
+    _ppt_dir=$(mktemp -d "${TMPDIR:-/tmp}/ab-plugins.XXXXXX" 2>/dev/null) || return 1
+    printf '%s' "${_ppt_dir}"
+}
+
+# _packages_plugins_tmp_drop <dir>: remove a directory _packages_plugins_tmp made, and nothing
+# else. The name is checked rather than trusted: a caller after an empty answer would otherwise
+# hand `rm -rf` an empty or arbitrary path.
+_packages_plugins_tmp_drop() {
+    _ppt_drop=${1:-}
+    [ -n "${_ppt_drop}" ] || return 0
+    case "${_ppt_drop}" in
+        "${TMPDIR:-/tmp}"/ab-plugins.*) rm -rf "${_ppt_drop}" 2>/dev/null || : ;;
+    esac
+    return 0
+}
+
+# _packages_plugins_skip <reason>: one journal line for "a declaration wanted to take part and
+# could not".
+#
+# A file that cannot be written under /tmp degrades the transaction to the machine's own feeds.
+# That degradation used to be silent, and silence is the wrong answer here: a prune asked
+# against half the sources reads "the base does not offer this name" about a package a plugin
+# feed carries, and drops the world entry. The journal is where that becomes a fact, and the
+# caller that must not guess (`ab_packages_prune`) refuses instead.
+_packages_plugins_skip() {
+    ab_plugins_journal "${AB_ESP:-/boot}/ab/plugins.journal" "plugin-skip reason=$1"
+    return 0
+}
+
+# ab_packages_repos_file <root> <out>: the repository set one transaction reads, in apk's own
+# order - the root's feed files first (`repositories.d/*.list`, then `distfeeds.list`, then
+# `repositories`), then the declared plugin feeds, one per line, after them: apk reads the
+# file top to bottom and the base must win a tie.
+#
+# <out> is truncated first, so a second call describes the same set once rather than twice.
+# Returns 0 when the result is non-empty, 1 otherwise - the same answer the gate has always
+# read from its own copy, which this replaced.
+ab_packages_repos_file() {
+    _rpf_root=$1
+    _rpf_out=$2
+    : >"${_rpf_out}" 2>/dev/null || return 1
+    while IFS= read -r _rpf_rel; do
+        [ -n "${_rpf_rel}" ] || continue
+        cat "${_rpf_root}/${_rpf_rel}" >>"${_rpf_out}" 2>/dev/null || :
+    done <<FILES
+$(_packages_feed_files "${_rpf_root}")
+FILES
+    if _packages_plugins_load; then
+        # The running machine's declarations, regardless of the root the feeds came from.
+        ab_plugins_repos_append "$(_packages_plugins_root)" "${_rpf_out}" 2>/dev/null || :
+    fi
+    [ -s "${_rpf_out}" ]
+}
+
+# _packages_apk_repos_args <root> [<dir>]: `--repositories-file <file>` when a plugin
+# contributes a feed, and nothing at all when none does.
+#
+# The empty answer is the contract (ac-9). A caller writes
+#
+#   apk ... $(_packages_apk_repos_args "$root") ...
+#
+# and with no plugin the words expand to nothing, so the command line stays byte for byte the
+# one it was before this seam existed. The two words are printed space separated and read
+# back through word splitting, and the path may not contain a blank (it is a mktemp name).
+#
+# <dir> is for the one caller whose apk command line is built once and used by several
+# invocations (ab-slot): it names a directory it made and will remove. Every other caller
+# passes none, and the directory is made here - only after the predicate says a plugin is
+# really in play, so a machine without plugins leaves nothing under /tmp per apk call. The
+# caller that got a pair removes it with _packages_apk_repos_drop.
+#
+# An empty answer has two meanings and the caller must be able to tell them apart: "nothing is
+# declared" is a machine with one feed set, while "a declaration is in play and its file could
+# not be built" is a machine whose apk is about to read half its sources. The second one is
+# journalled here, one line per apk call that loses it, and _packages_plugins_seam_lost is the
+# predicate a caller that must not guess uses.
+_packages_apk_repos_args() {
+    _rpa_root=$1
+    _rpa_tmp=${2:-}
+    _packages_plugins_injected || return 0
+    if [ -z "${_rpa_tmp}" ]; then
+        _rpa_tmp=$(_packages_plugins_tmp) || {
+            _packages_plugins_skip "tmp-unwritable"
+            return 0
+        }
+    fi
+    mkdir -p "${_rpa_tmp}" 2>/dev/null || {
+        _packages_plugins_skip "tmp-unwritable"
+        return 0
+    }
+    if ! ab_packages_repos_file "${_rpa_root}" "${_rpa_tmp}/repositories" 2>/dev/null; then
+        _packages_plugins_tmp_drop "${_rpa_tmp}"
+        _packages_plugins_skip "tmp-unwritable"
+        return 0
+    fi
+    printf '%s %s\n' "--repositories-file" "${_rpa_tmp}/repositories"
+}
+
+# _packages_plugins_seam_lost: 0 when a declared feed is in play and the file that carries it
+# cannot be made. Nothing is journalled here - this is the question, not the event, and the
+# caller that asks it is about to refuse.
+_packages_plugins_seam_lost() {
+    _psl_tmp=""
+    _packages_plugins_injected || return 1
+    _psl_tmp=$(_packages_plugins_tmp) || return 0
+    [ -n "${_psl_tmp}" ] || return 0
+    _packages_plugins_tmp_drop "${_psl_tmp}"
+    return 1
+}
+
+# _packages_apk_repos_drop <seam-args>: remove the private directory behind a
+# `--repositories-file` pair, once the apk call that read the file has returned. The pair is
+# the handle the callers already hold, so no caller has to learn a second return value.
+_packages_apk_repos_drop() {
+    _prd_file=${1:-}
+    [ -n "${_prd_file}" ] || return 0
+    # The last word is the file; the directory holding it is one component up. Removing the
+    # file alone would leave an empty directory behind on every apk call.
+    _prd_file=${_prd_file##* }
+    _packages_plugins_tmp_drop "${_prd_file%/*}"
+}
+
+# _packages_plugins_suspend: one journal line when a transaction that meant to read declared
+# feeds did not reach them (ac-7).
+#
+# It is a note, not a verdict: the verdict stays the record's existing `follow=pending
+# reason=network`, written by the caller. A journal that cannot be written must not turn a
+# network failure into a second failure, and ab_plugins_journal already returns 0 in that
+# case.
+_packages_plugins_suspend() {
+    _packages_plugins_injected || return 0
+    ab_plugins_journal "${AB_ESP:-/boot}/ab/plugins.journal" \
+        "plugin-suspended reason=network"
+    return 0
+}
+
+# --------------------------------------------------------------------------- #
 # Package follow: one controlled reinstall, on the first boot of a new base
 #
 # The alignment above keeps the machine able to *ask* for packages that belong to the
@@ -775,20 +1004,43 @@ _packages_refresh_bounded() {
     return "${_bounded_rc}"
 }
 
+# ab_packages_run_bounded <seconds> <command...>: the same watchdog, published.
+#
+# `ab-packages plugins check` has to cap one HEAD request and one `apk update` the way this
+# library caps its own transactions, and a second copy of these rules is how the two would
+# start disagreeing about what 124 means. A non-numeric or zero cap runs the command
+# unbounded, exactly as _packages_refresh_bounded does.
+ab_packages_run_bounded() {
+    _packages_refresh_bounded "$@"
+}
+
 # _packages_refresh_apk <target-dir> <apk arguments...>: one apk command against the target
 # root. Production passes "/", which is apk's own default; anything else is a sandbox and
 # gets --root, so a transaction can never reach the running root by accident. --timeout is
 # apk's network-inactivity cap; the wall-clock cap is the watchdog around it.
+#
+# It takes the plugin seam's feed set as well, and that is not decoration: the world prune
+# (`_packages_prune_candidates`) asks apk which world entries this release cannot select, and
+# a prune that cannot see a declared feed would answer "no such package" for a package a
+# plugin offers - and drop it from the world. One repository view per machine, including the
+# question of what a source offers.
 _packages_refresh_apk() {
     _apk_root=$1
     shift
+    # shellcheck disable=SC2086  # zero or two single-word arguments by construction
+    _apk_repos=$(_packages_apk_repos_args "${_apk_root}")
     if [ -z "${_apk_root}" ] || [ "${_apk_root}" = "/" ]; then
+        # shellcheck disable=SC2086
         _packages_refresh_bounded "${AB_PACKAGES_REFRESH_TIMEOUT}" \
-            apk --timeout "${AB_PACKAGES_REFRESH_TIMEOUT}" "$@"
+            apk ${_apk_repos} --timeout "${AB_PACKAGES_REFRESH_TIMEOUT}" "$@"
     else
+        # shellcheck disable=SC2086
         _packages_refresh_bounded "${AB_PACKAGES_REFRESH_TIMEOUT}" \
-            apk --root "${_apk_root}" --timeout "${AB_PACKAGES_REFRESH_TIMEOUT}" "$@"
+            apk --root "${_apk_root}" ${_apk_repos} --timeout "${AB_PACKAGES_REFRESH_TIMEOUT}" "$@"
     fi
+    _apk_rc=$?
+    _packages_apk_repos_drop "${_apk_repos}"
+    return "${_apk_rc}"
 }
 
 # _packages_refresh_world <world-file> [full|subset]: the constraints to reinstall, one per
@@ -1007,6 +1259,16 @@ ab_packages_prune() {
     _prune_full=$(_packages_refresh_world "${_prune_world}" full)
     if [ -z "${_prune_full}" ]; then
         return 0
+    fi
+    # A declared feed can carry a world entry the base does not: that is exactly what
+    # `plugins apply` writes into the world. If its file cannot be built, every apk question
+    # below is asked against the machine's own feeds alone, and "this release does not offer
+    # the name" would be an answer about half the sources. That is not a smaller prune, it is
+    # a wrong one, so it is refused the way every unanswerable prune is.
+    if _packages_plugins_seam_lost; then
+        AB_PACKAGES_PRUNE_REASON="prune-unanswerable"
+        printf 'packages: a declared feed is in play and its repositories file cannot be built; nothing is dropped\n' >&2
+        return 2
     fi
     _prune_tmp="${TMPDIR:-/tmp}/ab-packages-prune.$$"
     # shellcheck disable=SC2086  # one word per world constraint by construction
@@ -1493,17 +1755,15 @@ _packages_gate_apk() {
 # feeds invisible, so every package installed from a third-party source would look like one no
 # source offers. The concatenation in apk's own order is the set apk reads on the booted
 # machine, which is what a prediction has to describe.
+#
+# The set is `ab_packages_repos_file`'s, plugin feeds included: the gate is judging the first
+# boot's transaction, and after this change that transaction reads them. With no plugin
+# declared the file is the concatenation above, byte for byte, because the append hook only
+# ever writes when one is.
 _packages_gate_repos() {
     _gr_root=$1
     _gr_out=$2
-    : >"${_gr_out}" 2>/dev/null || return 1
-    while IFS= read -r _gr_rel; do
-        [ -n "${_gr_rel}" ] || continue
-        cat "${_gr_root}/${_gr_rel}" >>"${_gr_out}" 2>/dev/null || :
-    done <<FILES
-$(_packages_feed_files "${_gr_root}")
-FILES
-    [ -s "${_gr_out}" ]
+    ab_packages_repos_file "${_gr_root}" "${_gr_out}"
 }
 
 # _packages_gate_pins <target-root> <sys-root>: P. Returns 0 when they agree, 1 when a pin
@@ -1875,13 +2135,23 @@ FILES
 # _packages_prefetch_apk <root> <cache> <apk args...>: one apk command whose index cache is the
 # same directory the bodies go to. The first boot reads the same directory: the index and the
 # bodies travel together, which is what lets the apply run with no network at all.
+#
+# The feed set is the seam's, so the bodies fetched here are the bodies the first boot's
+# transaction will ask for. With no plugin declared the extra words are absent and this is the
+# command line it always was (ac-9).
 _packages_prefetch_apk() {
     _pa_root=$1
     _pa_cache=$2
     shift 2
+    # shellcheck disable=SC2086  # zero or two single-word arguments by construction
+    _pa_repos=$(_packages_apk_repos_args "${_pa_root}")
+    # shellcheck disable=SC2086
     _packages_refresh_bounded "${AB_PACKAGES_PREFETCH_TIMEOUT}" \
-        apk --root "${_pa_root}" --cache-dir "${_pa_cache}" \
+        apk --root "${_pa_root}" --cache-dir "${_pa_cache}" ${_pa_repos} \
         --timeout "${AB_PACKAGES_PREFETCH_TIMEOUT}" "$@"
+    _pa_rc=$?
+    _packages_apk_repos_drop "${_pa_repos}"
+    return "${_pa_rc}"
 }
 
 # _packages_moving_names <apk-simulate-output>: the packages a simulated transaction would
@@ -1951,6 +2221,10 @@ ab_packages_prefetch() {
     fi
     if ! _pf_idx=$(_packages_prefetch_apk "${_pf_target}" "${_pf_cache}" update 2>&1); then
         printf 'packages: prefetch: the index did not answer, the follow stays pending\n' >&2
+        # A declared feed that could not be read is suspended for this transaction, and the
+        # journal is the only place that says so: the record's `reason=network` cannot tell a
+        # base feed from a plugin one.
+        _packages_plugins_suspend || :
         AB_PACKAGES_PREFETCH_STATE="failed"
         AB_PACKAGES_PREFETCH_REASON="network"
         _packages_follow_publish_pending "network"
@@ -2004,6 +2278,13 @@ ab_packages_prefetch() {
         printf 'packages: prefetch: fetch %s left %s bodies, the follow stays pending\n' \
             "${AB_PACKAGES_PREFETCH_REASON}" "${_pf_n}" >&2
         printf '%s\n' "${_pf_out}" | grep . | head -n 5 | sed 's/^/packages:   /' >&2
+        # A fetch that failed at the transport is the same network answer a failed index is,
+        # so a body a declared feed did not hand over suspends that feed. A fetch that exited
+        # 0 having selected nothing is `no-evidence`, which is not a network claim and gets
+        # none made for it.
+        if [ "${_pf_rc}" -ne 0 ]; then
+            _packages_plugins_suspend || :
+        fi
         # Half a download is worse than none: the first boot would see bodies, take the offline
         # path with an incomplete set, fail the transaction and have no retry. Dropping what was
         # fetched keeps the first boot on the network fallback, where it belongs.
@@ -2057,16 +2338,27 @@ AB_PACKAGES_FOLLOW_KEPT=0
 # _packages_follow_apk <root> <apk args...>: one apk command against the machine that will run
 # the packages. "/" is apk's own default and gets no --root, so a boot worker never passes a
 # flag that would make apk treat the running root as a sandbox.
+#
+# The feed set is the seam's here too, and deliberately for every path this runs on: the
+# prefetch wrote its index into the same cache directory, so the offline apply finds the
+# declared feeds' indexes there and needs no network to use them. With no plugin declared the
+# extra words are absent and the command line is unchanged (ac-9).
 _packages_follow_apk() {
     _fk_root=$1
     shift
+    # shellcheck disable=SC2086  # zero or two single-word arguments by construction
+    _fk_repos=$(_packages_apk_repos_args "${_fk_root}")
+    # shellcheck disable=SC2086
     if [ -z "${_fk_root}" ] || [ "${_fk_root}" = "/" ]; then
         _packages_refresh_bounded "${AB_PACKAGES_FOLLOW_TIMEOUT}" \
-            apk --timeout "${AB_PACKAGES_FOLLOW_TIMEOUT}" "$@"
+            apk ${_fk_repos} --timeout "${AB_PACKAGES_FOLLOW_TIMEOUT}" "$@"
     else
         _packages_refresh_bounded "${AB_PACKAGES_FOLLOW_TIMEOUT}" \
-            apk --root "${_fk_root}" --timeout "${AB_PACKAGES_FOLLOW_TIMEOUT}" "$@"
+            apk --root "${_fk_root}" ${_fk_repos} --timeout "${AB_PACKAGES_FOLLOW_TIMEOUT}" "$@"
     fi
+    _fk_rc=$?
+    _packages_apk_repos_drop "${_fk_repos}"
+    return "${_fk_rc}"
 }
 
 # _packages_follow_kept <constraints> <moved names>: how many world entries this transaction did
@@ -2227,6 +2519,10 @@ ab_packages_follow() {
     if [ "${AB_PACKAGES_FOLLOW_MODE}" = "online" ] && command -v ab_net_probe >/dev/null 2>&1; then
         if ! ab_net_probe; then
             printf 'packages: no usable network, the follow stays pending\n' >&2
+            # The record says `reason=network` for the whole follow; the journal is what
+            # distinguishes "the declared feeds were suspended" from "the machine was offline"
+            # for the operator who asks why a plugin's packages did not move.
+            _packages_plugins_suspend || :
             _packages_follow_publish_pending "network"
             return 1
         fi
@@ -2251,6 +2547,7 @@ ab_packages_follow() {
     else
         if ! _fo_out=$(_packages_follow_apk "${_fo_target}" update 2>&1); then
             printf 'packages: apk update failed, the follow stays pending (network)\n' >&2
+            _packages_plugins_suspend || :
             _packages_follow_publish_pending "network"
             return 1
         fi
@@ -2617,6 +2914,11 @@ _packages_world_report() {
 _packages_fetch_per_package() {
     _pp_dir=$1
     _pp_missing=0
+    # The feed set is the seam's, for the same reason the follow's is: this fetch runs on the
+    # running machine, and a package a declared feed carries is fetched from nowhere else. The
+    # root is the running one (no --root), which is the tree the install of a revert will meet.
+    # shellcheck disable=SC2086  # zero or two single-word arguments by construction
+    _pp_repos=$(_packages_apk_repos_args "")
     # apk-tools 3.0.5 rejects a version pin in `apk fetch` ("unable to select package (or
     # its dependencies)" for every `name=version` tried on the device), so the fetch has to
     # name the package only. That still avoids the one-shot `--recursive` world solve, which
@@ -2627,9 +2929,11 @@ _packages_fetch_per_package() {
     # otherwise the record says payload-incomplete instead of pretending.
     while IFS=' ' read -r _pp_name _pp_ver; do
         [ -n "${_pp_name}" ] || continue
-        if ! apk fetch -o "${_pp_dir}" "${_pp_name}" >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        if ! apk ${_pp_repos} fetch -o "${_pp_dir}" "${_pp_name}" >/dev/null 2>&1; then
             # A fetch that cannot run at all is a feed/network failure: stop here instead of
             # paying a connection timeout for every installed package.
+            _packages_apk_repos_drop "${_pp_repos}"
             return 1
         fi
         if [ -f "${_pp_dir}/${_pp_name}-${_pp_ver}.apk" ]; then
@@ -2644,6 +2948,7 @@ _packages_fetch_per_package() {
     done <<PACKAGES
 $2
 PACKAGES
+    _packages_apk_repos_drop "${_pp_repos}"
     [ "${_pp_missing}" -eq 0 ]
 }
 
@@ -2690,6 +2995,10 @@ PACKAGES
 # apk that disagrees about `name=version` on the command line). Either stage is judged by
 # the files and digests on disk, never by the fetch command's exit status; a set that does
 # not cover every installed package is a `payload-gap`, and its directory is removed.
+#
+# Both stages read the feed set a follow reads, plugin feeds included. A snapshot that could
+# only see the base's feeds would record `payload-gap` for every package a declared feed
+# carries, and the revert that trusts this snapshot would then have no offline way back.
 ab_packages_snapshot() {
     _layer=${1:?ab_packages_snapshot needs a layer}
     _upstream=${2:?ab_packages_snapshot needs the upstream version}
@@ -2782,11 +3091,18 @@ ab_packages_snapshot() {
                 # solve, which is why it is no longer the only attempt.
                 printf 'packages: payload fetch fell back to --recursive (per-package fetch incomplete)\n' >&2
                 _pins=$(printf '%s\n' "${_packages}" | awk '{ print $1 "=" $2 }')
+                # Same seam, same root as the per-package stage: a fallback that read a
+                # narrower feed set than the attempt before it could only fail for a reason
+                # that has nothing to do with the packages.
+                # shellcheck disable=SC2086  # zero or two single-word arguments by construction
+                _snap_repos=$(_packages_apk_repos_args "")
                 # shellcheck disable=SC2086  # one word per pin by construction
-                if apk fetch --recursive -o "${_pdir}" ${_pins} >/dev/null 2>&1; then
+                if apk ${_snap_repos} fetch --recursive -o "${_pdir}" ${_pins} >/dev/null 2>&1; then
+                    _packages_apk_repos_drop "${_snap_repos}"
                     _packages_prune_payloads "${_pdir}" "${_packages}"
                     _missing=$(_packages_payload_record "${_pdir}" "${_apkfiles}" "${_packages}")
                 else
+                    _packages_apk_repos_drop "${_snap_repos}"
                     _fallback_failed=1
                 fi
             fi

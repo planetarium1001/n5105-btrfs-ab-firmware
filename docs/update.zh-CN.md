@@ -320,6 +320,9 @@ pin 的效果：
 是升级的一部分，只问一次（见 [包怎么跟随一个基底](#包怎么跟随一个基底)）；下面这些命令是手动的
 那一半——快照，以及你点名要求的版本。
 
+给自己的机器加一个来源——那是与「把包搬到新基底上」不同的问题——见
+[plugins.zh-CN.md](plugins.zh-CN.md)：一份 feed 与包名的声明，带自己的护栏。
+
 ```sh
 ab-slot packages list            # 本层已有的快照，新的在前
 ab-slot packages snapshot        # 现在记下 world 与每个已装包的版本

@@ -353,6 +353,10 @@ back. Both live on the writable layer. Bringing the packages onto a new base is 
 upgrade and asks once ([How packages follow a base](#how-packages-follow-a-base)); the
 commands below are the manual side - snapshots and versions you ask for by name.
 
+Adding a source of your own, which is a different question from moving packages onto a new
+base, is [plugins.md](plugins.md): a declaration of feeds and package names, with guardrails of
+its own.
+
 ```sh
 ab-slot packages list            # snapshots on this layer, newest first
 ab-slot packages snapshot        # record the world and every installed version now

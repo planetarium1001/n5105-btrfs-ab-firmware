@@ -1148,6 +1148,41 @@ packages_lib() {
     . "${_lib}"
 }
 
+# packages_apk_repos_dir: the private directory the seam's repositories file is written to.
+#
+# It belongs to this shell, not to packages_apk_repos: that function is read through `$( )`, and
+# a directory chosen inside a subshell would be one nobody could remove. cmd_packages makes it
+# once per command and removes it from an EXIT trap, because these commands leave through a
+# refusal, a failed transaction and a partial revert as often as through their last line.
+packages_apk_repos_dir=""
+
+# packages_apk_repos: the extra apk arguments this machine's declared plugins contribute.
+#
+# Empty when no plugin is enabled *and* checked, which is what keeps every command line below
+# byte for byte the one it was (ac-9): the words are expanded unquoted, so an empty answer
+# adds nothing at all rather than an empty argument. The root is "/" because the declarations
+# belong to the machine that is running the transaction - `ab-slot packages` never passes
+# --root, so the tree apk reads and the tree the plugins describe are the same one.
+packages_apk_repos() {
+    [ -n "${packages_apk_repos_dir}" ] || return 0
+    _packages_apk_repos_args "/" "${packages_apk_repos_dir}"
+}
+
+# packages_apk_repos_init: make the directory once, before the first packages_apk_repos call.
+packages_apk_repos_init() {
+    packages_apk_repos_dir=""
+    command -v _packages_plugins_tmp >/dev/null 2>&1 || return 0
+    packages_apk_repos_dir=$(_packages_plugins_tmp) || packages_apk_repos_dir=""
+    return 0
+}
+
+# packages_apk_repos_cleanup: the EXIT trap's work - remove that directory, remove nothing else.
+packages_apk_repos_cleanup() {
+    command -v _packages_plugins_tmp_drop >/dev/null 2>&1 || return 0
+    _packages_plugins_tmp_drop "${packages_apk_repos_dir}"
+    packages_apk_repos_dir=""
+}
+
 # --------------------------------------------------------------------------- #
 # Identity: which version this machine is
 #
@@ -1264,6 +1299,9 @@ cmd_packages() {
     [ "$#" -gt 0 ] && shift
     require_state
     packages_lib
+    # The two commands below hand apk a repositories file that carries the declared feeds; it
+    # lives in a directory mktemp made, and one trap removes it however the command ends.
+    trap 'packages_apk_repos_cleanup' EXIT
     case "${_sub}" in
         list)
             ab_packages_list "$(packages_layer)"
@@ -1275,8 +1313,14 @@ cmd_packages() {
             _snap=$(ab_packages_snapshot "${_layer}" "${_up}" "${_pv}" "$@") || die "snapshot-failed"
             say "$(packages_snapshot_line "${_snap}")"
             ;;
-        upgrade) cmd_packages_upgrade "$@" ;;
-        revert) cmd_packages_revert "$@" ;;
+        upgrade)
+            packages_apk_repos_init
+            cmd_packages_upgrade "$@"
+            ;;
+        revert)
+            packages_apk_repos_init
+            cmd_packages_revert "$@"
+            ;;
         *) say "ab-slot: unknown packages subcommand ${_sub}"; usage ;;
     esac
 }
@@ -1309,15 +1353,16 @@ cmd_packages_upgrade() {
 
     _timeout=""
     command -v timeout >/dev/null 2>&1 && _timeout="timeout 600"
+    _repos="$(packages_apk_repos)"
     _start=$(date +%s)
     say "apk update"
     _rc=0
     # shellcheck disable=SC2086
-    ${_timeout} apk update >>"${LOGDIR}/upgrade.log" 2>&1 || _rc=$?
+    ${_timeout} apk ${_repos} update >>"${LOGDIR}/upgrade.log" 2>&1 || _rc=$?
     if [ "${_rc}" -eq 0 ]; then
         say "apk upgrade"
         # shellcheck disable=SC2086
-        ${_timeout} apk upgrade >>"${LOGDIR}/upgrade.log" 2>&1 || _rc=$?
+        ${_timeout} apk ${_repos} upgrade >>"${LOGDIR}/upgrade.log" 2>&1 || _rc=$?
     fi
     _elapsed=$(( $(date +%s) - _start ))
     if [ "${_rc}" -eq 0 ]; then
@@ -1394,6 +1439,11 @@ cmd_packages_revert() {
     # snapshot was taken of. The digest list is what makes a local .apk trustworthy - the
     # device reports `UNTRUSTED signature` and we do not carry its keyring - so a set that
     # does not verify installs nothing at all rather than half of it.
+    #
+    # Both replay paths below read the same feed set as every other transaction on this
+    # machine (a plugin's source can offer the version the snapshot pins), so the arguments
+    # are resolved once, here, and are empty on a machine without plugins.
+    _repos="$(packages_apk_repos)"
     _pdir="${_dir}/snapshot-${_to}.d/payloads"
     _verify=0
     _verified_files=$(ab_packages_payload_files "${_snap}" "${_pdir}") || _verify=$?
@@ -1410,7 +1460,7 @@ cmd_packages_revert() {
         say "apkfile verified ${_verified} payloads in ${_pdir}"
         _packages_world_report "${_snap}"
         # shellcheck disable=SC2086  # one path per line, expanded into arguments
-        if apk add --allow-untrusted ${_verified_files} >>"${LOGDIR}/upgrade.log" 2>&1; then
+        if apk ${_repos} add --allow-untrusted ${_verified_files} >>"${LOGDIR}/upgrade.log" 2>&1; then
             say "revert result=ok changed=${_total} path=payloads"
             packages_log "revert result=ok changed=${_total} path=payloads snapshot=${_to}"
             return 0
@@ -1431,7 +1481,8 @@ cmd_packages_revert() {
     while IFS=' ' read -r _name _version; do
         [ -n "${_name}" ] || continue
         _attempted=$((_attempted + 1))
-        if apk add "${_name}=${_version}" >>"${LOGDIR}/upgrade.log" 2>&1; then
+        # shellcheck disable=SC2086
+        if apk ${_repos} add "${_name}=${_version}" >>"${LOGDIR}/upgrade.log" 2>&1; then
             say "  ok      ${_name} ${_version}"
         else
             # What apk said is in upgrade.log. Naming a cause here ("not in the feed")
