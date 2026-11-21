@@ -140,7 +140,7 @@ uci commit firewall
 
 ## 文档
 
-十篇文档，每篇是它自己主题的唯一来源；索引在 [docs/](docs/README.zh-CN.md)。
+十二篇文档，每篇是它自己主题的唯一来源；索引在 [docs/](docs/README.zh-CN.md)。
 
 使用这套固件：
 
@@ -150,6 +150,8 @@ uci commit firewall
   引导器
 - [docs/update.zh-CN.md](docs/update.zh-CN.md) —— 从 release feed 升级：配置、风险级别、
   每个拒绝 token，以及状态字段参考
+- [docs/plugins-catalog.zh-CN.md](docs/plugins-catalog.zh-CN.md) —— 我们在真机上跑过的插件配方：
+  每份装什么、读哪些源，以及怎么关掉
 - [docs/backup.zh-CN.md](docs/backup.zh-CN.md) —— 三种备份产物、各自能恢复到什么介质，以及
   恢复决策树
 - [docs/network.zh-CN.md](docs/network.zh-CN.md) —— 首启网络默认值与怎么改

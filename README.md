@@ -155,7 +155,7 @@ never hides another.
 
 ## Documentation
 
-Ten pages, each the single source for one subject; the index is [docs/](docs/README.md).
+Twelve pages, each the single source for one subject; the index is [docs/](docs/README.md).
 
 To use the firmware:
 
@@ -165,6 +165,8 @@ To use the firmware:
   checklist, and rescuing a torn bootloader
 - [docs/update.md](docs/update.md) — updating from a release feed: the configuration, the
   risk levels, every refusal token, and the status field reference
+- [docs/plugins-catalog.md](docs/plugins-catalog.md) — the plugin recipes we have run on a real
+  machine: what each one installs, which sources it reads, and how to turn it off
 - [docs/backup.md](docs/backup.md) — the three backup products, which medium each restores
   to, and the restore decision tree
 - [docs/network.md](docs/network.md) — the first-boot network defaults and how to change them

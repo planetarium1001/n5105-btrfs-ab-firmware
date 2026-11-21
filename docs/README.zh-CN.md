@@ -2,7 +2,7 @@
 
 **中文** | [English](README.md)
 
-十一篇文档，每篇是它自己主题的唯一来源。里面的每个数字都是实测的，或者带有明确理由；每个阈值、
+十二篇文档，每篇是它自己主题的唯一来源。里面的每个数字都是实测的，或者带有明确理由；每个阈值、
 日志字段与契约都由 `python3 scripts/check_design.py all` 断言。
 
 要用这套固件，从 [quickstart.zh-CN.md](quickstart.zh-CN.md) 开始。要改它，读
@@ -16,6 +16,7 @@
 | [install.zh-CN.md](install.zh-CN.md) | 写镜像、控制台上的首启、网络默认值、验收清单、升级运行中的系统、抢救被写坏的引导器 |
 | [update.zh-CN.md](update.zh-CN.md) | 从 release feed 升级：配置文件、三个版本号、风险级别、每个 `reason=` token、状态字段参考、软件包跟随与回滚 |
 | [plugins.zh-CN.md](plugins.zh-CN.md) | 声明自己的包来源：`plugin.conf` 的字段、`plugins list` / `check` / `apply` 与调试用的 `repos`、三条护栏、源不可达意味着什么、怎么关掉一个插件，以及默认关着的 iStore 示例 |
+| [plugins-catalog.zh-CN.md](plugins-catalog.zh-CN.md) | 我们在真机上跑过的插件配方：一张表说清每份配方装什么、读哪些源，iStore 一节给出三个 feed、它的 key、它自己的依赖拉进来的包以及怎么关回去，最后是这份清单的边界 |
 | [backup.zh-CN.md](backup.zh-CN.md) | 三种产物与各自能恢复到什么介质、整盘镜像为什么装不进更小的盘，以及恢复决策树 |
 | [network.zh-CN.md](network.zh-CN.md) | 首启网络生成、随镜像发布的默认值、怎么改它们，以及 WAN SSH 例外 |
 | [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md) | 先读什么、每种现象意味着什么，以及本项目决定不去改变的行为 |

@@ -49,7 +49,7 @@ label 会出现在消息里、出现在 apk 命令行的 `plugin:<label>` 里、
 api = 1
 kind = packages
 enabled = yes
-feed = https://example.org/packages
+feed = https://example.org/packages/packages.adb
 package = luci-app-example
 ```
 
@@ -58,7 +58,7 @@ package = luci-app-example
 | `api` | 是 | `1` | 这个文件实现的契约。为更高 api 写的声明会被拒绝，而不是读到一半 |
 | `kind` | 是 | `source`、`packages` | 它贡献什么。`source` 贡献 feed；`packages` 点名要装的包，也可以同时带 feed |
 | `enabled` | 否，默认 `yes` | `yes`、`no` | 开关。`no` 让插件不进入任何事务，而不必删掉任何东西 |
-| `feed` | `kind = source` 时；可重复 | 一个 `http(s)://` URL，不含空白 | 一个 apk 仓库目录。apk 会自己往后接索引名，所以这里写目录，不写文件 |
+| `feed` | `kind = source` 时；可重复 | 一个 `http(s)://` URL，不含空白 | 一个 apk 仓库，写法与机器自己的 feed 文件一致：索引地址 `.../packages.adb`。在服务器按 apk 要的名字发布索引时，写裸目录也行；本项目在真机上跑过的是索引地址这一种 |
 | `package` | `kind = packages` 时；可重复 | `[A-Za-z0-9][A-Za-z0-9._+-]*`（一个 apk 包名） | `plugins apply` 要装的一个名字 |
 | `key` | 否 | `/etc/apk/keys/<name>.pem` | 这个 feed 本该用哪把钥匙校验。本版本只检查文件在不在，从不导入钥匙 |
 | `arch` | 否，默认 `noarch` | `noarch` | 唯一取值。按架构发布的 feed 会被拒绝，见[护栏](#护栏) |
@@ -319,7 +319,7 @@ iStore 是 OpenWrt 上的第三方应用商店。它在这里出现，是作为�
 api = 1
 kind = packages
 enabled = no
-feed = https://istore.linkease.com/repo/all/store
+feed = https://istore.istoreos.com/repo-apk/all/store/packages.adb
 package = luci-app-store
 ```
 

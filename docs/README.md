@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Eleven pages, each the single source for one subject. Every number in them is measured or has an
+Twelve pages, each the single source for one subject. Every number in them is measured or has an
 explicit rationale, and every threshold, log field and contract is asserted by
 `python3 scripts/check_design.py all`.
 
@@ -17,6 +17,7 @@ Start with [quickstart.md](quickstart.md) if you want to use the firmware. Read
 | [install.md](install.md) | writing an image, the first boot at the console, the network defaults, the acceptance checklist, updating a running system, rescuing a torn bootloader |
 | [update.md](update.md) | updating from a release feed: the configuration file, the three version numbers, the risk levels, every `reason=` token, the status field reference, package follow and rollback |
 | [plugins.md](plugins.md) | declaring a package source of your own: the fields of `plugin.conf`, `plugins list` / `check` / `apply` and the debugging `repos`, the three guardrails, what an unreachable source means, how to turn one off, and iStore as an example that ships disabled |
+| [plugins-catalog.md](plugins-catalog.md) | the plugin recipes we have run on a real machine: one table of what each recipe installs and which sources it reads, iStore in full with its three feeds, its key, the packages its own dependencies pulled and how to turn it off again, and the edge of the list |
 | [backup.md](backup.md) | the three products and the media each one restores to, why a whole-disk image fails on a smaller disk, and the restore decision tree |
 | [network.md](network.md) | the first-boot network generation, the shipped defaults, how to change them, and the WAN SSH exception |
 | [troubleshooting.md](troubleshooting.md) | what to read first, what each symptom means, and the behaviour this project decided not to change |

@@ -58,7 +58,7 @@ place a symlink at, and this tool opens that file as root.
 api = 1
 kind = packages
 enabled = yes
-feed = https://example.org/packages
+feed = https://example.org/packages/packages.adb
 package = luci-app-example
 ```
 
@@ -67,7 +67,7 @@ package = luci-app-example
 | `api` | yes | `1` | the contract this file implements. A declaration written for a later api is refused rather than read half-way |
 | `kind` | yes | `source`, `packages` | what it contributes. `source` contributes feeds; `packages` names packages to install, and may carry feeds as well |
 | `enabled` | no, default `yes` | `yes`, `no` | the switch. `no` keeps the plugin out of every transaction without deleting anything |
-| `feed` | for `kind = source`; repeatable | one `http(s)://` URL, no blanks | one apk repository directory. apk appends its own index names to it, so the URL is the directory, not a file |
+| `feed` | for `kind = source`; repeatable | one `http(s)://` URL, no blanks | one apk repository, written the way the machine's own feed files write it: the index URL, `.../packages.adb`. A bare directory also works where the server publishes the index under the name apk asks for; the index URL is the form this project has run on a machine |
 | `package` | for `kind = packages`; repeatable | `[A-Za-z0-9][A-Za-z0-9._+-]*` (an apk package name) | one name that `plugins apply` installs |
 | `key` | no | `/etc/apk/keys/<name>.pem` | the key the feed is meant to be checked with. This release only checks that the file is present; it never imports a key |
 | `arch` | no, default `noarch` | `noarch` | the only value there is. A feed published per architecture is refused; see [Guardrails](#guardrails) |
@@ -374,7 +374,7 @@ until the person who owns the machine turns it on, reads the verdict, and decide
 api = 1
 kind = packages
 enabled = no
-feed = https://istore.linkease.com/repo/all/store
+feed = https://istore.istoreos.com/repo-apk/all/store/packages.adb
 package = luci-app-store
 ```
 
