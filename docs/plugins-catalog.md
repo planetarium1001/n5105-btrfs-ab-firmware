@@ -25,11 +25,14 @@ is 17 packages in one transaction, and every one of them is a world entry afterw
 ## iStore
 
 **Not endorsed, not enabled.** iStore is a third-party application store for OpenWrt. This
-project does not test it, does not support it, and does not switch it on: the recipe ships with
-`enabled = no` and stays off until the person who owns the machine turns it on, reads the
-verdict, and decides. What follows is the shape of a recipe that worked, not a recommendation.
+project does not test it, does not support it, and does not switch it on. **No plugin
+declaration ships in the image**: an image carries the mechanism, never a source. This page
+keeps the recipe as a file you copy in, at [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf),
+and it arrives `enabled = no` - it stays off until the person who owns the machine turns it on,
+reads the verdict, and decides. What follows is the shape of a recipe that worked, not a
+recommendation.
 
-The declaration, at `/etc/ab/plugins.d/istore/plugin.conf`:
+Copied to `/etc/ab/plugins.d/istore/plugin.conf`, the declaration reads:
 
 ```
 api = 1
@@ -59,8 +62,9 @@ Measured on 2026-11-21, on the base this release line ships:
 
 ### Turning it on
 
-The recipe ships with `enabled = no`. Set `enabled = yes` in that file, then three commands: the
-key, the check, the install.
+Copy the file to `/etc/ab/plugins.d/istore/plugin.conf` (that directory is in the writable
+layer, so an update carries it forward), then three commands: the key, the check, the install.
+The copy starts with `enabled = no`; set `enabled = yes` when you mean it.
 
 ```sh
 wget -O /etc/apk/keys/istore-apk.pem https://istore.istoreos.com/repo-apk/istore-apk.pem

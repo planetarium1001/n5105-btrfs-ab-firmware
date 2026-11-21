@@ -3,7 +3,8 @@
 # The recipes that ship with the platform layer: they are data, so a test is what keeps them
 # from rotting into something the plugin library would refuse.
 #
-# The subject is platform/etc/ab/plugins.d/istore/plugin.conf (prd.md ac-1, ac-4). Two
+# The subject is docs/examples/plugins/istore/plugin.conf, the recipe a machine's owner copies
+# into /etc/ab/plugins.d/ - the image itself carries no declaration. Two
 # properties matter and neither is visible by reading the file:
 #
 #   ac-1 the shape: the declaration validates, ships disabled, names three feeds and one
@@ -24,13 +25,13 @@ source "$root/tests/lib/assert.sh"
 cd "$root" || exit 1
 
 lib="$root/platform/lib/ab-plugins.sh"
-recipe="$root/platform/etc/ab/plugins.d/istore/plugin.conf"
+recipe="$root/docs/examples/plugins/istore/plugin.conf"
 if [ ! -f "$lib" ]; then
   printf 'not ok 1 - the plugin library exists\n' >&2
   exit 1
 fi
 if [ ! -f "$recipe" ]; then
-  printf 'not ok 1 - the iStore recipe ships with the platform layer\n' >&2
+  printf 'not ok 1 - the iStore recipe is documented as an example to copy\n' >&2
   printf '    missing %s\n' "$recipe" >&2
   exit 1
 fi
@@ -49,7 +50,7 @@ cp "$recipe" "$site/etc/ab/plugins.d/istore/plugin.conf"
 
 # --- ac-1: the shipped shape -------------------------------------------------
 assert_eq "$(grep -c '^enabled=no$' "$recipe")" "1" \
-  "the recipe ships disabled: a third-party store is the operator's decision, not a default"
+  "the example arrives disabled: a third-party store is the operator's decision, not a default"
 
 AB_PLUGINS_REASON=""
 if ab_plugins_validate "$site" istore; then
@@ -57,7 +58,7 @@ if ab_plugins_validate "$site" istore; then
 else
   validated="refused:${AB_PLUGINS_REASON}"
 fi
-assert_eq "$validated" "ok" "the shipped declaration passes the static rules"
+assert_eq "$validated" "ok" "the documented declaration passes the static rules"
 assert_eq "$AB_PLUGINS_KIND" "packages" "it is a package set, so apply has something to install"
 assert_eq "$AB_PLUGINS_ENABLED" "no" "and it stays off until someone says otherwise"
 assert_eq "$AB_PLUGINS_FEED_COUNT" "3" "three feeds: store, compat, meta"

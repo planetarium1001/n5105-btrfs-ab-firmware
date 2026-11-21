@@ -366,7 +366,9 @@ not something this project does for you.
 iStore is a third-party application store for OpenWrt. It appears here as the shape of a real
 declaration, not as a recommendation. **This project does not endorse iStore, does not test it,
 and does not enable it on the device it ships.** The example is `enabled = no`, and it stays off
-until the person who owns the machine turns it on, reads the verdict, and decides.
+until the person who owns the machine turns it on, reads the verdict, and decides. The file is
+kept at [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf); copy it to
+`/etc/ab/plugins.d/istore/plugin.conf` on the machine that should have it.
 
 ```
 /etc/ab/plugins.d/istore/plugin.conf

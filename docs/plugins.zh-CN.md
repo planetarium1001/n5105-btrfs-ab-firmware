@@ -312,6 +312,8 @@ feed，于是只有这个 feed 提供的包读作「不提供」，条目被删�
 iStore 是 OpenWrt 上的第三方应用商店。它在这里出现，是作为一份真实声明的形状，而不是推荐。
 **本项目不为 iStore 背书，不测试它，也不在它发布的设备上启用它。** 这个例子是
 `enabled = no`，它会一直关着，直到拥有这台机器的人自己打开它、读一遍 verdict，再做决定。
+文件留在 [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf)，由你复制到要装它的
+机器的 `/etc/ab/plugins.d/istore/plugin.conf`；**镜像里不带任何插件声明**。
 
 ```
 /etc/ab/plugins.d/istore/plugin.conf

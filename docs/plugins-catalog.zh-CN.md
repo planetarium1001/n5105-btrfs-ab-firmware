@@ -22,10 +22,12 @@
 ## iStore
 
 **不背书，也不开启。** iStore 是 OpenWrt 的第三方应用商店。本项目不测它、不支持它、也不会打开
-它：配方随仓库发布时是 `enabled = no`，一直到机器的主人来把它打开、读完 verdict、再做决定为止。
-下面写的是一份跑成功过的配方长什么样，不是推荐。
+它。**镜像里不带任何插件声明**：镜像带的是机制，不是源。这一页把配方留成一个文件，由你复制进去：
+[examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf)，它到手时是
+`enabled = no`——一直到机器的主人来把它打开、读完 verdict、再做决定为止。下面写的是一份跑成功过的
+配方长什么样，不是推荐。
 
-声明文件在 `/etc/ab/plugins.d/istore/plugin.conf`：
+复制到 `/etc/ab/plugins.d/istore/plugin.conf` 之后，声明长这样：
 
 ```
 api = 1
@@ -53,7 +55,8 @@ key = /etc/apk/keys/istore-apk.pem
 
 ### 怎么启用
 
-配方发布时是 `enabled = no`。把那个文件里改成 `enabled = yes`，然后三条命令：key、check、
+把文件复制到 `/etc/ab/plugins.d/istore/plugin.conf`（这个目录在可写层，系统更新会把它带过去），
+然后三条命令：key、check、
 install。
 
 ```sh
