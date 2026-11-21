@@ -48,7 +48,7 @@ cp "$recipe" "$site/etc/ab/plugins.d/istore/plugin.conf"
 : >"$site/etc/apk/keys/istore-apk.pem"
 
 # --- ac-1: the shipped shape -------------------------------------------------
-assert_eq "$(grep -c '^enabled = no$' "$recipe")" "1" \
+assert_eq "$(grep -c '^enabled=no$' "$recipe")" "1" \
   "the recipe ships disabled: a third-party store is the operator's decision, not a default"
 
 AB_PLUGINS_REASON=""
@@ -78,7 +78,7 @@ assert_eq "$(ab_plugins_verdict_state "$site" istore)" "never" \
   "and nothing has been checked, which is the state a fresh machine is in"
 
 # Enabled and checked: this is the state an operator reaches with three documented commands.
-sed -i.bak 's/^enabled = no$/enabled = yes/' "$site/etc/ab/plugins.d/istore/plugin.conf"
+sed -i.bak 's/^enabled=no$/enabled=yes/' "$site/etc/ab/plugins.d/istore/plugin.conf"
 assert_eq "$(ab_plugins_verdict_state "$site" istore)" "never" \
   "enabling alone is not a check: a machine with no verdict still contributes nothing"
 ab_plugins_verdict_write "$site" istore ok none
