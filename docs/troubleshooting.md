@@ -84,10 +84,11 @@ then exists, so no later boot touches it.
 | the writable partition fills up | `df -h /mnt/p4` and `ab-slot gc --dry-run` | which layers are unreferenced and would be reclaimed |
 
 A package transaction is separate from a system update on purpose: `apk` writes into the
-writable layer, the system update replaces a slot. Do the system update first and the package
-upgrade second. `ab-slot packages upgrade` refuses unless `ab-slot status` reports
-`packages=aligned` or `packages=followed`, because upgrading packages behind a stale pin
-installs modules for a kernel the machine is not running.
+writable layer, the system update replaces a slot.
+
+Do the system update first and the package upgrade second. `ab-slot packages upgrade` refuses
+unless `ab-slot status` reports `packages=aligned` or `packages=followed`, because upgrading
+packages behind a stale pin installs modules for a kernel the machine is not running.
 
 ## Interactive SSH on dropbear 2025.89
 
@@ -95,19 +96,21 @@ installs modules for a kernel the machine is not running.
 at end of file - fails on a healthy machine. The client is disconnected at once and the server
 logs three pty errors:
 
-```
+```text
 dropbear[31119]: ioctl(TIOCSCTTY): I/O error
 dropbear[31119]: /dev/pts/0: No such file or directory
 dropbear[31119]: open /dev/tty failed - could not set controlling tty: No such device or address
 ```
 
 Nothing is wrong with the machine or with `/dev`: a person at a terminal, or any client whose
-stdin stays open, logs in and gets a prompt. The image carries dropbear v2025.89, and since
-upstream commit `e28ba1b` (2024.85) dropbear closes the pty master as soon as **either**
-direction of the channel ends. With stdin already at EOF the write direction ends immediately,
-the pty is destroyed, and the child's `setsid()`/`TIOCSCTTY` runs against a tty that no longer
-exists. Upstream report: [mkj/dropbear#365](https://github.com/mkj/dropbear/issues/365), still
-open.
+stdin stays open, logs in and gets a prompt.
+
+The image carries dropbear v2025.89, and since upstream commit `e28ba1b` (2024.85) dropbear
+closes the pty master as soon as **either** direction of the channel ends. With stdin already at
+EOF the write direction ends immediately, the pty is destroyed, and the child's
+`setsid()`/`TIOCSCTTY` runs against a tty that no longer exists.
+
+Upstream report: [mkj/dropbear#365](https://github.com/mkj/dropbear/issues/365), still open.
 
 | Client | stdin | Result |
 |---|---|---|
@@ -145,11 +148,12 @@ they were installed at. From 0.0.13 they are moved onto the new base by their ow
 never rolls back a system update that passed its checks. What that does not cover:
 
 - **No network and no prefetch.** The follow needs package bodies. If the prefetch could not run
-  and the machine is offline on its first boot, the record says `follow=pending
-  reason=network`; the network fallback retries for a day (`follow=abandoned` afterwards) and
-  `ab-packages update` retries on demand. Nothing else moves them.
+  and the machine is offline on its first boot, the record says `follow=pending reason=network`.
+- **The retry has a deadline.** The network fallback retries for a day (`follow=abandoned`
+  afterwards), and `ab-packages update` retries on demand. Nothing else moves them.
 - **A local package with no kept body.** A package installed from a `.apk` file has no source,
-  and apk keeps no copy (`/var` is a tmpfs). It is `NO COPY` in the plan block and
+  and apk keeps no copy (`/var` is a tmpfs).
+- **The plan and the record both say so.** It is `NO COPY` in the plan block and
   `skipped=local:<name>` in the record, and it keeps its version until somebody keeps a body
   with `ab-packages replay <file>`.
 - **A body built for another kernel.** It cannot be replayed onto a base with a different
@@ -158,15 +162,15 @@ never rolls back a system update that passed its checks. What that does not cove
 - **A package upstream dropped.** It keeps working with the files it has, only its own startup
   will tell, and the `world` entry is removed so the next upgrade stops trying.
 - **The prediction can be wrong.** The plan block is rendered from `apk --simulate` against a
-  staged copy, and a feed can change between the question and the boot. The record is the fact;
-  a block that promised 39 packages and a record that says 37 is a prediction and a
-  measurement, not a contradiction.
+  staged copy, and a feed can change between the question and the boot.
+- **The record is the fact.** A block that promised 39 packages and a record that says 37 is a
+  prediction and a measurement, not a contradiction.
 
 ## apk says the database is locked
 
 Symptom: `apk add`, `apk del` or `apk update`, run in the first minutes after an upgrade, fails:
 
-```
+```text
 ERROR: Unable to lock database: Resource temporarily unavailable
 ERROR: Failed to open apk database: Resource temporarily unavailable
 ```
@@ -174,18 +178,19 @@ ERROR: Failed to open apk database: Resource temporarily unavailable
 Cause: the first boot of a new base moves the installed packages onto it with one `apk upgrade`
 over the whole world, in a background worker. That transaction holds the apk database lock for
 its whole run - 168 packages on the reference machine - so any other apk transaction started in
-that window cannot open the database. No package is broken and nothing is lost: the same command
-works once the worker has finished.
+that window cannot open the database.
+
+No package is broken and nothing is lost: the same command works once the worker has finished.
 
 Handling:
 
 - Wait for the worker, then run the command again.
 - `ab-slot status` reports the state: `packages=aligned` (the packages have not moved yet),
   `packages=followed` (they are on the new base) or `packages=limited` (partial metadata, and
-  `packages_reason=` names why). `follow=pending` means the move is still owed,
-  `follow=followed` that it is done, `follow=never` that there was nothing to move, and
-  `follow=failed` or `follow=abandoned` that it did not run; `ab-packages update` retries it on
-  demand.
+  `packages_reason=` names why).
+- `follow=pending` means the move is still owed, `follow=followed` that it is done,
+  `follow=never` that there was nothing to move, and `follow=failed` or `follow=abandoned` that
+  it did not run. `ab-packages update` retries it on demand.
 - `ab-slot log` carries one `stage=packages-refresh slot=<a|b> result=<state> reason=<token>
   version=<base>` line per attempt, and `ps w | grep apk` shows the transaction that holds the
   lock.
@@ -207,16 +212,21 @@ procd starts a service once: `dockerd`'s init script sets no `procd_set_param re
 nothing retried it in that boot. A longer wait does not help, because the instance is never
 respawned.
 
-What the machine does now: after the follow settles, whichever path completed it asks procd
-which services it started and lost, and gives each one new start. Both paths do this - the
-detached first-boot worker, and an interface event that completes a follow the first boot had
-deferred for want of a network. The ring log carries
-`stage=services-reconciled slot=<a|b> result=ok started=<n> failed=none down=<names>`;
-`result=partial` names the services whose own script refused, and
-`result=skipped reason=follow-unsettled|boot-not-settled|no-procd-query` says the repair was
-not attempted, and `reason=already-reconciled` says this boot has repaired them once already. The criterion is procd's instance record - an instance that exists, is not
-running and exited non-zero - not "enabled and not running": a healthy boot has seven such
-services (one-shot scripts, on-demand re-appliers, a disabled daemon) that must not be started.
+What the machine does now:
+
+- After the follow settles, whichever path completed it asks procd which services it started
+  and lost, and gives each one a new start.
+- Both paths do this: the detached first-boot worker, and an interface event that completes a
+  follow the first boot had deferred for want of a network.
+- The ring log carries
+  `stage=services-reconciled slot=<a|b> result=ok started=<n> failed=none down=<names>`.
+- `result=partial` names the services whose own script refused.
+- `result=skipped reason=follow-unsettled|boot-not-settled|no-procd-query` says the repair was
+  not attempted; `reason=already-reconciled` says this boot has repaired them once already.
+- The criterion is procd's instance record - an instance that exists, is not running and exited
+  non-zero - not "enabled and not running".
+- A healthy boot has seven such services (one-shot scripts, on-demand re-appliers, a disabled
+  daemon) that must not be started.
 
 What it does not cover: a daemon that procd accepted and that then died again, and a daemon
 whose own configuration is the reason it is down. If a service is still down after such a boot,
@@ -251,16 +261,18 @@ feed is filed under the kernel segment, and the segment changes with every kerne
 
 A feed line taken from an older release therefore offers the user-space packages and none of
 the kmods: `htop` is in that release's index, `kmod-usb-storage` is not, and the kmod directory
-for the running kernel's segment answers 404. The aligner rewrites every `/releases/<x>/` and
-`/kmods/<segment>/` in `distfeeds.list` and `repositories.d/*.list` to the release the slot now
-runs, and a feed that still names another release makes the follow record
-`packages=limited packages_reason=feeds-stale`.
+for the running kernel's segment answers 404.
 
-Workaround: put a historical feed in `/etc/apk/repositories.d/customfeeds.list` - the aligner
-and the follow's feed probe both skip that file - take kmods by segment, and when a segment is
-no longer served, mirror its index, `.sig` and apks into a local HTTPS feed and point
-`customfeeds.list` at it ([update.md](update.md#build-your-own-feed)). `ab-packages sources
-<name>` names the source that offers a package, with the full URL.
+The aligner rewrites every `/releases/<x>/` and `/kmods/<segment>/` in `distfeeds.list` and
+`repositories.d/*.list` to the release the slot now runs, and a feed that still names another
+release makes the follow record `packages=limited packages_reason=feeds-stale`.
+
+Workaround: put a historical feed in `/etc/apk/repositories.d/customfeeds.list`. The aligner
+and the follow's feed probe both skip that file. Take kmods by segment. When a segment is no
+longer served, mirror its index, `.sig` and apks into a local HTTPS feed and point
+`customfeeds.list` at it ([update.md](update.md#build-your-own-feed)).
+
+`ab-packages sources <name>` names the source that offers a package, with the full URL.
 
 ## Packages the target release does not publish
 
@@ -286,8 +298,9 @@ the index still offers the name.
   configuration; an upgrade carries the writable layer over and never re-applies them, so a
   changed default only reaches a machine written fresh.
 - **The convenience image opens `22/tcp` on the WAN and nothing closes it for you.** Only
-  `n5105-ab-<upstream>-install-wan-ssh.img.gz` carries `allow_ssh_wan`, and `dropbear` there
-  accepts password authentication with whatever root password the image carries.
+  `n5105-ab-<upstream>-install-wan-ssh.img.gz` carries `allow_ssh_wan`.
+- **The rule is the only thing in front of `dropbear`.** That image's `dropbear` accepts
+  password authentication with whatever root password the image carries.
 - **Images written before 0.0.7 have no first-boot network.** They come up with no address on
   any port and the only way in is the console. Reflash instead of patching an older image.
 - **A bench machine may run with the whole WAN zone open.** That is a debugging state
@@ -320,9 +333,13 @@ When the machine cannot be reached at all, mount the ESP (`PARTNAME ab-esp`, FAT
 of the running boot) and `ab/log/resize.log` (the first-boot growth). Those three files need no
 boot, no SSH and no console.
 
-A useful report carries: the `sha256sum -c SHA256SUMS` transcript, a photo or serial capture of
-the first boot including the `stage=net-seed` lines, `ab-slot status` before and after the
-change, the filled-in port mapping table, and every failure verbatim with its `reason=` token.
+A useful report carries:
+
+- the `sha256sum -c SHA256SUMS` transcript;
+- a photo or serial capture of the first boot, including the `stage=net-seed` lines;
+- `ab-slot status` before and after the change;
+- the filled-in port mapping table;
+- every failure verbatim, with its `reason=` token.
 
 ## Limits
 

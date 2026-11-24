@@ -14,10 +14,12 @@ holding the payloads to jump between.
 
 One line: the 25.x / apk line. A release older than 25 is refused, and so is anything built
 from an opkg-era tree, because the two eras do not share a package manager, a firewall model or
-a kernel-module layout. `scripts/ci/upstream-watch.sh` already refuses to pin anything below
-major 25, and the matrix is held to the same rule: `matrix.sh` checks the payload's
-`platform-release` and refuses a `-` payload with an explicit line rather than letting it run
-and fail somewhere that looks like a product bug.
+a kernel-module layout.
+
+`scripts/ci/upstream-watch.sh` already refuses to pin anything below major 25, and the matrix is
+held to the same rule. `matrix.sh` checks the payload's `platform-release`. It refuses a `-`
+payload with an explicit line rather than letting it run and fail somewhere that looks like a
+product bug.
 
 ## What it asserts after every jump
 
@@ -55,8 +57,8 @@ The environment comes from `AB_HOST` and `AB_KEY`. The SSH call always uses `Con
 `ControlPath=none` and an ignored `known_hosts`: a reflashed machine presents a new host key,
 and the sandbox that runs the driver has no writable `~/.ssh`.
 
-An interactive login is a separate question from these non-interactive calls, and it has its
-own driver: `scripts/device/login-probe.sh` keeps the client stdin open for the whole session,
+An interactive login is a separate question from these non-interactive calls. It has its own
+driver: `scripts/device/login-probe.sh` keeps the client stdin open for the whole session,
 because a probe that redirects `/dev/null` into `ssh -tt` reports a false failure on this image
 (dropbear 2025.89; see [troubleshooting.md](troubleshooting.md)).
 
@@ -77,13 +79,13 @@ settings - does a version jump keep all of that, and does the software still run
 
 Two rules make those cases honest:
 
-- **Nothing is judged by an old format.** Package names come from the release's own apk index,
-  and the configuration is written as a minimal change on the shipped files, because the
-  23/24-era snippets in circulation describe opkg and a different firewall model.
+- **Nothing is judged by an old format.** Package names come from the release's own apk index.
+- **The configuration is a minimal change on the shipped files.** The 23/24-era snippets in
+  circulation describe opkg and a different firewall model.
 - **The machine keeps a way back.** S2 schedules its own revert before it reloads, with
-  `setsid` (or `start-stop-daemon -b` on an image without it), confirmed by
-  `/tmp/ab-scen-net.ok`; a machine that can schedule neither does not reload at all and the
-  skipped half is recorded as a FINDING rather than as a pass that did not look.
+  `setsid` (or `start-stop-daemon -b` on an image without it), confirmed by `/tmp/ab-scen-net.ok`.
+- **A machine that can schedule neither does not reload at all.** The skipped half is recorded
+  as a FINDING rather than as a pass that did not look.
 
 ABI is reported, not judged: a kmod built against another kernel is normal in the apk world, so
 a mismatch is recorded as `FINDING:` with the reinstall list and never changes a verdict on its
@@ -93,29 +95,32 @@ own.
 
 The A/B transaction was first proved on a machine whose only extra software was the five
 packages the suite itself installs. A real machine is not that machine: people install a LuCI
-theme, a software store, a proxy app, and edit those apps' own `/etc/config` files. This round
-puts that layer on the machine and jumps it, to answer one question: does the transaction still
-commit, and do the samples keep their own configuration?
+theme, a software store, a proxy app, and edit those apps' own `/etc/config` files.
+
+This round puts that layer on the machine and jumps it, to answer one question: does the
+transaction still commit, and do the samples keep their own configuration?
 
 - `scripts/device/software-probe.sh` installs the samples listed in
   `tests/fixtures/software-samples.json` (`--manifest` overrides the list, `--sample` narrows
-  it). Each sample row is PASS with the version it landed on, or GAP with the reason and the
-  command to retry: a third-party source that is down, or a kernel module whose ABI does not
-  match this kernel, is a GAP and never a pass.
+  it).
+- Each sample row is PASS with the version it landed on, or GAP with the reason and the command
+  to retry. A third-party source that is down, or a kernel module whose ABI does not match this
+  kernel, is a GAP and never a pass.
 - `--baseline <tag>` before a hop and `--compare <tag>` after it record and compare the
   samples' own configuration (values, not just file hashes) through the same snapshot helper
   the other drivers use.
 - `--cleanup` removes the samples, their config and the source it added, so the machine goes
-  back to the product baseline. The third-party source is written only to the device's
-  `/etc/apk/repositories.d/`, never to the image, the payload or
-  `scripts/ci/net-defaults.conf.in`.
+  back to the product baseline.
+- The third-party source is written only to the device's `/etc/apk/repositories.d/`, never to
+  the image, the payload or `scripts/ci/net-defaults.conf.in`.
 - `scripts/device/badconfig-probe.sh` writes broken configurations of the kind a person can
-  produce (a bad `daemon.json`, a bad UCI section, a firewall rule fw4 warns about, a fake
-  subscription URL) and judges two things separately: who refused or restored it, and whether
-  anything else reacted.
+  produce: a bad `daemon.json`, a bad UCI section, a firewall rule fw4 warns about, a fake
+  subscription URL.
+- It judges two things separately: who refused or restored it, and whether anything else
+  reacted.
 
-Two limits, stated up front: the sample list is 25.x only, and the samples are test fixtures,
-not product contents - nothing in this repository depends on them, and the release assets are
+Two limits, stated up front. The sample list is 25.x only, and the samples are test fixtures,
+not product contents. Nothing in this repository depends on them, and the release assets are
 byte-identical whether or not the samples were installed.
 
 ## The whole suite: one order, one verdict
@@ -141,20 +146,24 @@ files to one verdict:
 The order is a dependency order:
 
 - **`feed-install` runs before `matrix` and `scenarios`.** The feed has to offer something
-  newer than what runs, and matrix and scenarios bring the machine up to the newest release, so
-  a feed-install after them fails on a perfectly healthy machine by construction.
+  newer than what runs.
+- **Matrix and scenarios bring the machine up to the newest release.** A feed-install after
+  them fails on a perfectly healthy machine by construction.
 - **`docker` is two phases around the version jumps, and still one script.** D1 takes the
   baseline before matrix and scenarios, because those are the jumps the baseline exists to
-  survive; D2 and D3 judge the same store immediately after them. Both windows name the same
+  survive.
+- **D2 and D3 judge the same store immediately after them.** Both windows name the same
   `<results>/docker-snapshots` directory: D1 writes `before.snapshot`, docker-after reads it
-  back and writes `after.snapshot`. It stays one driver because the capture and the comparator
-  must be the same code on both sides of the hop.
+  back and writes `after.snapshot`.
+- **It stays one driver.** The capture and the comparator must be the same code on both sides
+  of the hop.
 - **`release` runs after the machine phases.** It never reaches a machine, but its rows are
   part of the same verdict.
-- **`docker`, `docker-after` and `release` are not destructive**: D1 keeps two images, one
+- **`docker`, `docker-after` and `release` are not destructive.** D1 keeps two images, one
   container, one committed image and one named volume in the docker store (`@docker`, under
-  `/opt/docker`) plus logs under `/tmp`, and writes no slot, no ESP entry and no boot decision.
-  None of them switches a slot or reboots, so they run without `--yes`.
+  `/opt/docker`) plus logs under `/tmp`.
+- **D1 writes no slot, no ESP entry and no boot decision.**
+- **None of them switches a slot or reboots**, so they run without `--yes`.
 
 `power-cut` writes the two files the boot path reads - the candidate marker and the interruption
 record - in exactly the form the boot path writes them, and then reboots. That is an injected
@@ -170,9 +179,10 @@ product.
 
 An install writes the slot the machine is **not** running. The driver refuses to install unless
 the running slot is the committed one and no candidate is queued, and it aborts the whole run
-(`exit 3`) at any moment when there is no committed healthy slot to fall back to. Destructive
-cases are ordered after the reversible ones, and a case that fails is recorded and left alone:
-the recovery path is `ab-slot`, not an edit of `ab/state.json`.
+(`exit 3`) at any moment when there is no committed healthy slot to fall back to.
+
+Destructive cases are ordered after the reversible ones, and a case that fails is recorded and
+left alone: the recovery path is `ab-slot`, not an edit of `ab/state.json`.
 
 A machine that does not come back at all has no automatic recovery. That is what the
 `image-install` artifact is for: flash it and start over.

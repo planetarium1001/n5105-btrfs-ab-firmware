@@ -20,7 +20,7 @@
 sha256sum -c SHA256SUMS
 ```
 
-`sha256sum -c` 会给每个产物打印一行 `<文件>: OK`。出现别的结果就说明下载坏了：什么都别写，重新取一份，因为这种载荷即使写进去，后面的 `ab-upgrade` 也会以
+`sha256sum -c` 会给每个产物打印一行 `<文件>: OK`。出现别的结果就说明下载坏了：什么都别写，重新取一份。这样的载荷即使写进去，后面的 `ab-upgrade` 也会以
 `reason=digest-mismatch-<成员>` 拒绝。
 
 真机测试还要准备：显示器与 USB 键盘（N5105 v5 板子带 HDMI）、一根接上游路由器的网线、另一根网线加一台笔记本用于 LAN 侧、以及记录用的纸笔。验收清单里那张端口对照表就是本次结果的一部分。
@@ -52,7 +52,7 @@ uci commit firewall
 # 3. 重新写进「关」的那份镜像：n5105-ab-<upstream>-install.img.gz
 ```
 
-这条规则只在「生成网络配置」的那次启动上被添加，之后不再叠加：升级带着可写层一起走、不会重新应用默认值，所以刷了「关」镜像的机器之后不会自己长出这条规则，而刷了便利镜像的机器会一直留着它，直到你删掉。
+这条规则只在「生成网络配置」的那次启动上被添加，之后不再叠加。升级带着可写层一起走，不会重新应用默认值。所以刷了「关」镜像的机器之后不会自己长出这条规则，而刷了便利镜像的机器会一直留着它，直到你删掉。
 
 文件名带的是板型、产品线、上游基线与角色，不带我们自己的发版计数器 —— 那个在 GitHub release 上。
 更早的发布把同一份字节叫 `n5105-ab-<platform>-<upstream>.img.gz` 与 `.tar`；如果你的脚本还在用
@@ -68,20 +68,17 @@ release 上读回来，并回答一致不一致：
 ./scripts/device/release-verify.sh --tag v0.1.0-rc.2   # 预览版：VERSION 仍是 0.1.0
 ```
 
-它每条断言打一行 `release-verify check=... result=...` —— tag 与它携带的 `VERSION`、四件资产、
-`SHA256SUMS` 的每一行、index 声明的 `platform` / `base` —— 最后一行是
-`release-verify result=pass|fail`，只有全部断言通过才退出 0。预览 tag 按发布端的同一规则判定 ——
-`-` 之前的那段版本必须等于 `VERSION`，且行里会打出 `preview=rc.2`，让证据自己说明这是哪个预览。
-`--dir <path>` 用同样的断言核对你自己
-下载下来的文件，`AB_DRY_RUN=1` 则一个网络包都不发。请在 `dd` 之前跑它：摘要与 `SHA256SUMS` 不一致的
-时候，这是最后一个代价很小的止步点。
+它每条断言打一行 `release-verify check=... result=...`。断言的种类：tag 与它携带的 `VERSION`、四件资产、`SHA256SUMS` 的每一行、index 声明的 `platform` / `base`。最后一行是 `release-verify result=pass|fail`，只有全部断言通过才退出 0。
 
-镜像自己会说明身份：挂上 ESP（`PARTNAME ab-esp`，FAT），读 `ab/image.json` —— `"kind": "boot"`
-才是可写的，`"kind": "probe"` 是 CI 夹具。发布作业会拒绝 `kind` 不是 `boot` 的镜像，并且会把
+预览 tag 按发布端的同一规则判定。`-` 之前的那段版本必须等于 `VERSION`，且行里会打出 `preview=rc.2`，让证据自己说明这是哪个预览。
+
+`--dir <path>` 用同样的断言核对你自己下载下来的文件，`AB_DRY_RUN=1` 则一个网络包都不发。请在 `dd` 之前跑它：摘要与 `SHA256SUMS` 不一致的时候，这是最后一个代价很小的止步点。
+
+镜像自己会说明身份。挂上 ESP（`PARTNAME ab-esp`，FAT），读 `ab/image.json`。里面 `"kind": "boot"` 才是可写的，`"kind": "probe"` 是 CI 夹具。发布作业会拒绝 `kind` 不是 `boot` 的镜像，并且会把
 镜像里的 `initrd-a` 解出来确认它是生产 init。
 
 镜像是普通 GPT 布局：一个 EFI 系统分区、两个槽文件系统、一个存放可写层的共享 btrfs 分区。只支持 x86-64 UEFI
-启动，不支持传统 BIOS。目标机器需要 N5105 v5 的板型与四分区布局，或者任何一台你想用来测试的 x86-64 机器，因为镜像本身是自包含的。
+启动，不支持传统 BIOS。目标机器需要 N5105 v5 的板型与四分区布局，或者任何一台你想用来测试的 x86-64 机器。镜像本身是自包含的。
 
 ## 写入镜像
 
@@ -126,29 +123,28 @@ ab-slot log | grep net-seed
 
 刚写好的盘上，第二条会打印种子的结论行：
 
-```
+```text
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
 ```
 
 便利镜像会在它前面多打四行 —— 它开了什么，以及三条关闭路径：
 
-```
+```text
 stage=net-seed wan-ssh=open port=22 proto=tcp
 stage=net-seed wan-ssh-close: LuCI -> Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan
 stage=net-seed wan-ssh-close: or uci delete firewall.allow_ssh_wan && uci commit firewall && /etc/init.d/firewall reload
 stage=net-seed wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-install.img.gz)
 ```
 
-`ab-slot log | tail` 是同一次启动的快速读法：最后几行就是健康检查与决定（`stage=healthcheck-done`，然后是 `stage=commit`）。
+`ab-slot log | tail` 是同一次启动的快速读法。最后几行就是健康检查与决定（`stage=healthcheck-done`，然后是 `stage=commit`）。
 
-之后再启动只打印一行：`stage=net-seed result=skip reason=seeded`。判定依据是 marker
-`/etc/config/.ab-net-seed`，不是配置文件在不在：配置存在但不是这个钩子写的，会被原样保留并报
-`result=skip reason=foreign-config`。幂等就是这件事，你自己用 `uci` 改的东西、升级带过来的配置
-也因此不会被覆盖。
+之后再启动只打印一行：`stage=net-seed result=skip reason=seeded`。判定依据是 marker `/etc/config/.ab-net-seed`，不是配置文件在不在。
+
+配置存在但不是这个钩子写的，会被原样保留并报 `result=skip reason=foreign-config`。幂等就是这件事，你自己用 `uci` 改的东西、升级带过来的配置也因此不会被覆盖。
 
 健康机器上 `ab-slot status` 只打印一行：
 
-```
+```text
 slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid boot=ok esp=ok packages=unknown packages_reason=unknown
 ```
 
@@ -167,8 +163,9 @@ slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data
 如果 `p4` 显示 `p4=degraded`，先读下面的降级小节，再做别的事。`packages=` 在下面有单独一节：它说的是
 `apk` 能不能给这个槽正在跑的内核装模块。
 
-种子失败时启动照样完成，原因留在控制台上：`stage=net-seed result=fail reason=board-detect`、
-`reason=config-generate`、`reason=config-generate-empty` 或 `reason=no-ethernet`。要先进机器、不等排障，就手工给一个口配地址——这条不留存，正是它的用处：
+种子失败时启动照样完成，原因留在控制台上。可能是 `stage=net-seed result=fail reason=board-detect`。也可能是 `reason=config-generate` 或 `reason=config-generate-empty`。也可能是 `reason=no-ethernet`。
+
+要先进机器、不等排障，就手工给一个口配地址——这条不留存，正是它的用处：
 
 ```sh
 ip link set eth1 up
@@ -179,7 +176,10 @@ ip addr add 192.168.100.1/24 dev eth1
 
 ## 已知限制
 
-* **`0.0.7` 之前刷的镜像首启没有网络。** `0.0.6` 及更早的版本里，刚写好的盘没有 `/etc/config/network`，所以在任何口上都没有地址、LAN 上没有 DHCP 服务，`dropbear` 还绑在一个不存在的接口上。唯一进去的路是控制台加手工 `uci`。这类镜像上健康检查还会报 `probe=wan-present result=fail`、永远写不出 `stage=commit`，但机器照样起来（`action=stay`）。`0.0.7` 是第一个自己生成网络的发布：重新刷镜像，不要在老镜像上打补丁。
+* **`0.0.7` 之前刷的镜像首启没有网络。** `0.0.6` 及更早的版本里，刚写好的盘没有 `/etc/config/network`。
+* **这样一台机器不会自己长出地址。** 任何口上都没有地址，LAN 上没有 DHCP 服务，`dropbear` 还绑在一个不存在的接口上。
+* **这类镜像只能从控制台进去，手工敲 `uci`。** 健康检查还会报 `probe=wan-present result=fail`、永远写不出 `stage=commit`，但机器照样起来（`action=stay`）。
+* **重新刷镜像，不要在老镜像上打补丁。** `0.0.7` 是第一个自己生成网络的发布。
 * **口名是内核给的，不是丝印给的。** `eth0` 到 `eth3` 不一定对应机壳上的标号，镜像里也没有任何猜硬件的地方。每台机器都要做一遍下面的对照，并记下来。
 * **单口机不是路由器。** 种子会把它降级成 LAN-only（`stage=net-seed result=lan-only`）：唯一的口进 `br-lan`，`wan` 段被删掉。于是 `wan-present` 探针找不到 WAN 设备，那次启动不会提交该槽（`action=stay`）；LAN 侧照常可用。
 * **默认值只叠加一次。** 它们属于"生成配置的那次启动"。升级带着可写层一起走，不会重新叠加——这是有意的（你的改动优先），代价是改过的默认值只对重新写盘的机器生效。
@@ -230,15 +230,17 @@ uci commit firewall
 /etc/init.d/firewall reload
 ```
 
-LuCI 里同一条规则是 **网络 → 防火墙 → 通信规则**（Network → Firewall → Traffic Rules）里名为 `allow_ssh_wan` 的那一条：删掉它，按 **保存并应用**。然后确认它真的没了：
+LuCI 里同一条规则叫 `allow_ssh_wan`，位置是 **网络 → 防火墙 → 通信规则**。英文界面是 **Network → Firewall → Traffic Rules**。删掉它，按 **保存并应用**。然后确认它真的没了：
 
 ```sh
 uci show firewall | grep allow_ssh_wan     # 没有输出
 ```
 
-关掉它不影响 LAN 侧，从 LAN 的 SSH 照旧能用，因为 `dropbear` 仍在桥上监听。这里的每个默认值同时也是构建期常量：平台层里的 `/etc/net-defaults.conf` 由
-`scripts/ci/net-defaults.conf.in` 渲染而来（`NET_WAN_DEV`、`NET_LAN_DEVS`、`NET_LAN_ADDR`、`NET_LAN_PREFIX`、`NET_WAN_SSH`）。默认镜像就是
-`NET_WAN_SSH=closed` 那份渲染；便利镜像是同一条流水线带 `CI_NET_WAN_SSH=open` 跑一次，发布阶段会在它的文件名后加 `-wan-ssh`。完整说明见 [network.md](network.md)。
+关掉它不影响 LAN 侧，从 LAN 的 SSH 照旧能用，因为 `dropbear` 仍在桥上监听。
+
+这里的每个默认值同时也是构建期常量。平台层里的 `/etc/net-defaults.conf` 由 `scripts/ci/net-defaults.conf.in` 渲染而来。用到的变量见括号：`NET_WAN_DEV`、`NET_LAN_DEVS`、`NET_LAN_ADDR`。另外两个是 `NET_LAN_PREFIX` 与 `NET_WAN_SSH`。
+
+默认镜像就是 `NET_WAN_SSH=closed` 那份渲染。便利镜像是同一条流水线带 `CI_NET_WAN_SSH=open` 跑一次，发布阶段会在它的文件名后加 `-wan-ssh`。完整说明见 [network.md](network.md)。
 
 ## 验收清单
 
@@ -265,8 +267,7 @@ uci show firewall | grep allow_ssh_wan     # 没有输出
 `ip -brief address` 里不会有 `wan` 这个接口：WAN 接口绑在设备上（`option device eth0`），地址就显示在 `eth0` 上。所以 WAN 那一行要先用 `uci` 读出设备名。`nft list ruleset` 更全也更慢，接一个
 `grep -A3 'dport 22'` 就够留下值得回传的那一小段 —— 默认镜像上是空输出，而空输出正是通过。
 
-最后一行的意义：`ab-slot pending` 会拒绝内核或 initramfs 不在 ESP 上的槽，所以这一步失败说明的是备份槽的载荷缺失，
-而不是当前运行的槽有问题。
+最后一行的意义：`ab-slot pending` 会拒绝内核或 initramfs 不在 ESP 上的槽。所以这一步失败说明的是备份槽的载荷缺失，而不是当前运行的槽有问题。
 
 ## 把四个物理口对上 eth0..eth3
 
@@ -289,7 +290,7 @@ done
 |  |  |  |  |
 
 默认 `eth0` 是 WAN，其余 `eth*` 都是 `br-lan` 的端口，所以角色列对名叫 `eth0` 的接口写 `WAN`，其余写 `LAN`。如果你希望朝上游路由器的那只口不是内核叫 `eth0` 的那个，要么用上面那段
-`uci` 换角色，要么在下次构建时改 `NET_WAN_DEV`——并且在报告里写清用了哪种，因为这两种做法得到的不是同一台机器。
+`uci` 换角色，要么在下次构建时改 `NET_WAN_DEV`。并且在报告里写清用了哪种，因为这两种做法得到的不是同一台机器。
 
 ## 从 LAN 侧连 LuCI 与 SSH
 
@@ -311,17 +312,17 @@ uci commit firewall
 
 默认镜像上，从 WAN 侧的尝试根本到不了守护进程：连接被 `wan` zone 拒掉，没有口令提示可答。
 
-如果在便利镜像上规则还在、WAN 侧却被拒，就去看守护进程的绑定：`uci show dropbear` 里不该有 `Interface` 选项（要是它又出现了，`uci delete
-dropbear.@dropbear[0].Interface; uci commit dropbear`），`logread | grep
-dropbear` 会告诉你守护进程到底有没有在监听。
+如果在便利镜像上规则还在、WAN 侧却被拒，就去看守护进程的绑定。`uci show dropbear` 里不该有 `Interface` 选项，`logread | grep dropbear` 会告诉你守护进程到底有没有在监听。
+
+要是那个选项又出现了，跑 `uci delete dropbear.@dropbear[0].Interface; uci commit dropbear`。
 
 ## 升级运行中的系统
 
 升级写入非活动槽并把它标记为待验证，全程不碰运行中的槽，所以出问题机器照样能用。
 
-能访问发布 feed 的机器自己去取 payload：`ab-upgrade --feed-check` 报告上游有什么，
-`ab-upgrade --feed` 下载、校验，然后走这条完全相同的路径安装。配置文件、三个版本号、
-风险级别以及各自的确认强度见 [update.zh-CN.md](update.zh-CN.md)。
+能访问发布 feed 的机器自己去取 payload。`ab-upgrade --feed-check` 报告上游有什么，`ab-upgrade --feed` 下载、校验，然后走这条完全相同的路径安装。
+
+配置文件、三个版本号、风险级别以及各自的确认强度见 [update.zh-CN.md](update.zh-CN.md)。
 
 ```sh
 ab-upgrade --check /root/n5105-ab-<upstream>-upgrade.tar
@@ -331,9 +332,9 @@ ab-slot conflicts
 ab-slot log --upgrade
 ```
 
-`--check` 只校验、什么都不写，所以坏载荷在动非活动槽之前就被发现。真正写入时 `ab-upgrade` 再校验一遍：manifest 形状、逐成员摘要、initramfs 里所有模块是否来自同一次内核构建、可写分区余量、
-载荷带的引导器、以及冲突报告。拒绝时退出状态为 74 且什么都不写。成功后状态里另一个槽变成 `pending`，
-`ab-slot status` 的 `next=` 也会指向它，下次启动会试它：
+`--check` 只校验、什么都不写，所以坏载荷在动非活动槽之前就被发现。真正写入时 `ab-upgrade` 再校验一遍：manifest 形状、逐成员摘要、initramfs 里所有模块是否来自同一次内核构建。还会查可写分区余量、载荷带的引导器、以及冲突报告。
+
+拒绝时退出状态为 74 且什么都不写。成功后状态里另一个槽变成 `pending`，`ab-slot status` 的 `next=` 也会指向它。下次启动会试它：
 
 * 启动后对新槽跑健康检查；
 * 全部探针通过则提交该槽，机器留在新槽上；
@@ -344,16 +345,13 @@ ab-slot log --upgrade
 真机上第一次升级请补两条断言：重启前 `ab-slot status` 显示 `pending=<另一个槽>` 与 `next=<另一个槽>`；重启后那个槽是
 `committed=`、`pending=none`、`generation=` 变大、`p4=ok`。载荷带的是一版不同的上游版本时，`upper=` 也会跟着变，因为层的名字取自它被种下的那个版本。`/data` 下的文件两个槽共用，原地不动。
 
-如果槽已经暂存好、但 `boot/grub/ab-slot.cfg` 没指向它，升级会以 `reason=next-boot-not-<槽>` 失败：
-少了这个文件机器会一直启动旧槽，升级永远试不到。
+如果槽已经暂存好、但 `boot/grub/ab-slot.cfg` 没指向它，升级会以 `reason=next-boot-not-<槽>` 失败。少了这个文件机器会一直启动旧槽，升级永远试不到。
 
 载荷和你都改动过的文件会列在 `ab-slot conflicts` 里。它们从不阻断升级：载荷照样写入新文件，报告告诉你该看哪几个。
 
 ### 选项
 
-选项可以出现在命令行任何位置：`ab-upgrade --no-bootloader /root/n5105-ab-<upstream>-upgrade.tar`
-与 `ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar --no-bootloader` 是同一条命令。给两个位置参数，
-或者 `--bootloader` 与 `--no-bootloader` 同时给，都是用法错误，退出 2，还没读任何东西就结束。
+选项可以出现在命令行任何位置。`ab-upgrade --no-bootloader /root/n5105-ab-<upstream>-upgrade.tar`。它和 `ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar --no-bootloader` 是同一条命令。给两个位置参数，或者 `--bootloader` 与 `--no-bootloader` 同时给，都是用法错误，退出 2，还没读任何东西就结束。
 
 | 选项 | 什么时候用 | 代价是什么 |
 | --- | --- | --- |
@@ -363,13 +361,12 @@ ab-slot log --upgrade
 | `--force` | 重装同一个版本，用来修一个槽 | 跳过 `74 payload-already-installed` 这道闸，于是留在机器上的载荷可以拿你正在试的槽去覆盖健康槽 |
 | `--check` | 每次安装之前 | 只校验、什么都不写：不写槽、不写 `ab/state.json`、ESP 上也不放冲突报告。引导器的规则同样跑（成员在不在、manifest 块全不全、两个摘要、ESP 余量、`esp=` 健康度），所以校验过了而安装会拒绝的情况不存在 |
 
-同一个上游基线上的普通升级**不需要任何开关**。那道闸问的是"这台机器是不是已经在跑这一个发布"，
-而一个发布由**上游基线**与**本项目的平台版本**共同构成：`0.0.10` 与 `0.0.11` 同基线、平台版本不同，
-所以照常安装，并打印 `base unchanged, platform 0.0.10 -> 0.0.11`。只有两者都相同的载荷才被拒绝，
-以 `74`、token `payload-already-installed` 报出，并在提示里点名 `--force` 是绕过它的办法。
+同一个上游基线上的普通升级**不需要任何开关**。那道闸问的是"这台机器是不是已经在跑这一个发布"，而一个发布由**上游基线**与**本项目的平台版本**共同构成。
 
-不声明平台版本的载荷回答不了这个问题，因此以 `74`、token `payload-platform-unknown` 拒绝，而不是装上去：
-一个旧格式的残留载荷，不该因为"没人说得清它是哪个发布"就获得覆盖健康槽的资格。
+`0.0.10` 与 `0.0.11` 同基线、平台版本不同，所以照常安装。它打印 `base unchanged, platform 0.0.10 -> 0.0.11`。只有两者都相同的载荷才被拒绝，以 `74`、token `payload-already-installed` 报出，并在提示里点名 `--force` 是绕过它的办法。
+
+不声明平台版本的载荷回答不了这个问题，因此以 `74`、token `payload-platform-unknown` 拒绝，而不是装上去。一个旧格式的残留载荷，不该因为"没人说得清它是哪个发布"就获得覆盖健康槽的资格。
+
 这条只对**同基线**成立：**跨基线**的载荷本来就不是"已安装"，有没有这个字段都照装。
 
 > 这道闸属于**执行它的那台机器**。还停在 `0.0.10` 的机器带的是 `0.0.10` 的代码，
@@ -385,9 +382,9 @@ ab-slot log --upgrade
 | `1` | 校验通过之后某个执行步骤失败 | 槽可能写了一半；这次运行写过的引导器会先从 `@boot-backup/<version>` 回滚。连这次回滚都失败时，ESP 可能已经带着新加载器而槽还是旧的那个，所以它必须以失败而不是拒绝的形式离开 |
 | `74` | 写之前就被拒绝 | 槽里什么都没写，`ab/state.json` 也没变；被拒绝的是载荷，或机器的状态 |
 
-每次拒绝都打印一行，并镜像到控制台：`74` 是 `ab-upgrade: refused, reason=<token>`，`1` 是
-`ab-upgrade: failed, reason=<token>`。`ab-slot log --upgrade` 打印的是 ESP 上的 `ab/log/upgrade.log`，
-而那个文件没有任何东西替你写，想把这次运行留在盘上就自己接住输出：
+每次拒绝都打印一行，并镜像到控制台。`74` 是 `ab-upgrade: refused, reason=<token>`。`1` 是 `ab-upgrade: failed, reason=<token>`。
+
+`ab-slot log --upgrade` 打印的是 ESP 上的 `ab/log/upgrade.log`，而那个文件没有任何东西替你写。想把这次运行留在盘上，就自己接住输出：
 
 ```sh
 { ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar 2>&1; echo "exit=$?"; } | tee /boot/ab/log/upgrade.log
@@ -406,11 +403,11 @@ ab-slot log --upgrade
 | `bootloader-esp-dirty` | initramfs 判定这次启动时 ESP 是脏的 | 在那上面写 FAT 就是把一台能用的机器换成一台没验证过的机器；`--no-bootloader` 是文档给出的绕法 |
 | `bootloader-esp-unreadable` | initramfs 读不了这个 ESP | 先查分区，再用 `--no-bootloader` |
 
-`74` 是对槽和状态文件的承诺，不是对 ESP 的承诺。写入已经开始时，`ab-upgrade` 会先从
-`@boot-backup/<version>` 把 ESP 恢复回去再拒绝；如果连恢复都失败，日志里是
-`upgrade: RESTORE ALSO FAILED, the ESP bootloader may be damaged`，下面的救援小节就是为这种情况写的。
-`bootloader-rollback-failed` 是这一族里唯一退出 `1` 而不是 `74` 的，因为它意味着 ESP 可能已经带着新加载器、
-而槽还是旧的那个。
+`74` 是对槽和状态文件的承诺，不是对 ESP 的承诺。写入已经开始时，`ab-upgrade` 会先从 `@boot-backup/<version>` 把 ESP 恢复回去再拒绝。
+
+如果连恢复都失败，日志里是 `upgrade: RESTORE ALSO FAILED, the ESP bootloader may be damaged`。下面的救援小节就是为这种情况写的。
+
+`bootloader-rollback-failed` 是这一族里唯一退出 `1` 而不是 `74` 的，因为它意味着 ESP 可能已经带着新加载器、而槽还是旧的那个。
 
 这些 token 住在两个文件里。在仓库检出里，这一条就能把整族列出来：
 
@@ -418,15 +415,13 @@ ab-slot log --upgrade
 grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade/platform.sh | sort -u
 ```
 
-`bootloader-esp-` 是个前缀而不是 token：它后面那两个是 `bootloader-esp-dirty` 与 `bootloader-esp-unreadable`。
+`bootloader-esp-` 是个前缀而不是 token。它后面那两个是 `bootloader-esp-dirty` 与 `bootloader-esp-unreadable`。
 
 ### 当软件包遮蔽升级适配器
 
-`/lib/upgrade/platform.sh` 既是本项目的升级适配器（在 platform 层里），也是上游 sysupgrade 的脚本名。
-运行根是 platform 层叠在 `@sys` 上的 overlay，可写层里的同名文件优先于两者。`apk upgrade` 一旦重写
-`/lib/upgrade/*`，就会在 upper 里留下上游副本；从那次启动起，`ab-upgrade` source 到的是没有
-`platform_upgrade_begin` 的库：所有校验都通过，然后安装以 `platform_upgrade_begin: not found`、
-`reason=` 为空失败。
+`/lib/upgrade/platform.sh` 既是本项目的升级适配器（在 platform 层里），也是上游 sysupgrade 的脚本名。运行根是 platform 层叠在 `@sys` 上的 overlay，可写层里的同名文件优先于两者。
+
+`apk upgrade` 一旦重写 `/lib/upgrade/*`，就会在 upper 里留下上游副本。从那次启动起，`ab-upgrade` source 到的是没有 `platform_upgrade_begin` 的库。所有校验都通过，然后安装以 `platform_upgrade_begin: not found`、`reason=` 为空失败。
 
 0.0.11 起 `ab-upgrade` 不再被这种遮蔽打败：
 
@@ -469,9 +464,11 @@ AB_LIB=/tmp/ab-platform/lib/upgrade/platform.sh \
 | `/boot/EFI/BOOT/BOOTX64.EFI.prev` 与 `/boot/boot/grub/grub.cfg.prev` | 上一次写入之前 ESP 上的字节，就放在新文件旁边，因此可写分区挂不上时也够得着 |
 | `/mnt/p4/@boot-backup/<version>/` 加 `SHA256SUMS` | 两个文件加它们的摘要，放在可写分区上，补齐 `.prev` 可能缺的那份 |
 
-`.prev` 是这么来的：写入在 rename 覆盖之前先把现有文件复制一份，那是取旧副本唯一还来得及的窗口。ESP 没地方
-放这份副本时，日志会说 `could not keep ...prev (no room on the ESP?)`，写入照常进行——这就是 p4 上的备份
-在每次尝试开头都重建的原因：它描述的永远是这次尝试可能要撤销的那个状态。`ab-upgrade` 只保留最近两份备份。
+`.prev` 是这么来的：写入在 rename 覆盖之前先把现有文件复制一份，那是取旧副本唯一还来得及的窗口。
+
+ESP 没地方放这份副本时，日志会说 `could not keep ...prev (no room on the ESP?)`，写入照常进行。这就是 p4 上的备份在每次尝试开头都重建的原因：它描述的永远是这次尝试可能要撤销的那个状态。
+
+`ab-upgrade` 只保留最近两份备份。
 
 在机器上自救：GRUB 菜单里的 recovery 项用已提交槽加只读可写层启动，进去以后 ESP 就挂在 `/boot`。
 
@@ -488,9 +485,9 @@ sync
 `sha256sum -c` 那一行才是关键：它拿 ESP 上的两个文件与"动它们之前"记下的摘要比对，每个文件打印一个 `OK`。
 别的输出都说明 `.prev` 不是记录里描述的那一份，那就改从 `@boot-backup/<version>/` 恢复，而不是从 `.prev`。
 
-同一套步骤也可以把盘接到另一台 Linux 上做。下面这些节点名是这台机器的，USB 适配器可能把盘枚举成
-别的名字，所以先确认：`blkid -L ESP` 打印的是文件系统 label 为 `ESP` 的那个分区的节点，p4 则是同一块盘
-的第四个分区：
+同一套步骤也可以把盘接到另一台 Linux 上做。下面这些节点名是这台机器的，USB 适配器可能把盘枚举成别的名字，所以先确认。
+
+`blkid -L ESP` 打印的是文件系统 label 为 `ESP` 的那个分区的节点。p4 则是同一块盘的第四个分区：
 
 ```sh
 sudo blkid -L ESP                             # 要挂到 /mnt/esp 的那个节点
@@ -505,8 +502,7 @@ sync
 sudo umount /mnt/esp /mnt/p4
 ```
 
-然后开机。下次升级之前，把引导器放在一边：`ab-upgrade --check` 只验载荷、什么都不写，`--no-bootloader`
-只换系统，让你刚修好的引导器保持原样。
+然后开机。下次升级之前，把引导器放在一边。`ab-upgrade --check` 只验载荷、什么都不写，`--no-bootloader` 只换系统，让你刚修好的引导器保持原样。
 
 ## 怎么读 packages= 与 packages_reason=
 
@@ -518,8 +514,9 @@ sudo umount /mnt/esp /mnt/p4
 | `limited` | 不是。机器照样启动、照常运行，但在元数据修好之前，装与本内核匹配的包会失败 |
 | `unknown` | 没有记录，或记录讲的是另一个槽，或记录读不出来。绝不报成 `aligned`，因为这个字段存在的意义就是不让没有证据的话被当成结论 |
 
-`packages_reason=` 说的是为什么。它就是对齐器发布在 ESP 的 `ab/packages` 里的那个 token，一行
-`packages=<state> reason=<token> version=<ver> kernel=<id> slot=<a|b>`。值得认得的 token：
+`packages_reason=` 说的是为什么。它就是对齐器发布在 ESP 的 `ab/packages` 里的那个 token。
+
+格式是一行 `packages=<state> reason=<token> version=<ver> kernel=<id> slot=<a|b>`。值得认得的 token：
 
 | token | 含义 |
 | --- | --- |
@@ -540,10 +537,13 @@ ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(boot|esp|packages|packages
 cat /boot/ab/packages
 ```
 
-`ab-slot` 对同一个判定还会打印一句人话，写报告时引这一句：`ab-slot: packages limited, package metadata is limited (<reason>): installing packages for this kernel needs it fixed first`。
+`ab-slot` 对同一个判定还会打印一句人话，写报告时引这一句：
 
-包升级与对应的包级回退是另一组命令：`ab-slot packages upgrade` 与 `ab-slot packages revert`，见
-[update.zh-CN.md](update.zh-CN.md)。
+```text
+ab-slot: packages limited, package metadata is limited (<reason>): installing packages for this kernel needs it fixed first
+```
+
+包升级与对应的包级回退是另一组命令：`ab-slot packages upgrade` 与 `ab-slot packages revert`。说明见 [update.zh-CN.md](update.zh-CN.md)。
 
 
 
@@ -568,8 +568,7 @@ cat /root/powercut-layer
 ab-slot log
 ```
 
-还是同一个槽被提交，`p4=ok`，两个痕迹都在，日志是一次干净启动（`stage=btrfs-check result=ok`，然后 `stage=commit`）。如果有写入者死在锁上，下次启动会自己接管这把锁并记下
-`stage=lock action=stale-lock-taken`；这种情况下的通过条件就是这一行，而不是当成失败。
+还是同一个槽被提交，`p4=ok`，两个痕迹都在。日志是一次干净启动（`stage=btrfs-check result=ok`，然后 `stage=commit`）。如果有写入者死在锁上，下次启动会自己接管这把锁并记下 `stage=lock action=stale-lock-taken`。这种情况下的通过条件就是这一行，而不是当成失败。
 
 第二次，在升级窗口里拔电：跑 `ab-upgrade` 装上载荷，在"本该试新槽的那次重启"之前拔电。再上电，用上面同样四条命令加上 `ab-slot pending` 断言：
 
@@ -602,7 +601,7 @@ ab-slot abandon
 共享分区挂不上时启动不会失败：upper 层移到内存，系统照常起来，控制台与 `ab-slot status` 都会显示 `p4=degraded`。
 机器能用，但本次启动之后写入的东西重启就没了，而且 `ab-upgrade` 会拒绝执行：
 
-```
+```text
 ab-upgrade: refused, reason=writable-layer-degraded
 ```
 
@@ -629,9 +628,10 @@ mkdir -p /data/evidence
 } >/data/evidence/first-boot.log 2>&1
 ```
 
-如果机器完全连不上，盘上已经带齐解释问题所需的东西：挂上 ESP（`PARTNAME ab-esp`，FAT），读
-`ab/net.json`（首启网络的决定：模式、看到的网口、是否只是推迟）、`ab/log/boot-0.log`（本次启动的
-环形日志）与 `ab/log/resize.log`（首启扩容）。这三份文件不需要开机、不需要 SSH、不需要 console；
+如果机器完全连不上，盘上已经带齐解释问题所需的东西。挂上 ESP（`PARTNAME ab-esp`，FAT），读 `ab/net.json`：首启网络的决定，包括模式、看到的网口、是否只是推迟。
+
+再读 `ab/log/boot-0.log`（本次启动的环形日志）与 `ab/log/resize.log`（首启扩容）。这三份文件不需要开机、不需要 SSH、不需要 console。
+
 GRUB 也帮不上忙——ESP 上那个 standalone EFI 二进制里没有 `cat` 模块。
 
 在笔记本上：
@@ -689,11 +689,10 @@ ab-slot log --prev
 `VERSION` 是 `0.0.13`，上游基线 `25.12.2`。这是**测试版**，不是 `0.1.0`：上游基线没变。它新增
 一件用户看得见的行为 —— 包跟着新基底一起走 —— 以及让这句话能被验证的机制：
 
-* **换基底只问一次，然后连包一起搬。** `ab-upgrade` 先打印一份英文计划块
-  （`Update` / `Packages` / `Config`），逐个点出会被留下的包与原因，再问
-  `Proceed and follow N packages? [y/N]`。只有 `y` 前进；回车、`n`、打错、输入结束都算拒绝且
-  一个字节都不写；没有终端又没有 `--yes` 时以 74 拒绝。`--system-only`（或 `--no-follow`）只换
-  系统，包原地不动。
+* **换基底只问一次，然后连包一起搬。** `ab-upgrade` 先打印一份英文计划块（`Update` / `Packages` / `Config`）。
+* **计划块逐个点出会被留下的包与原因。** 然后它问 `Proceed and follow N packages? [y/N]`。
+* **只有 `y` 前进。** 回车、`n`、打错、输入结束都算拒绝，且一个字节都不写。没有终端又没有 `--yes` 时以 74 拒绝。
+* **`--system-only`（或 `--no-follow`）只换系统，包原地不动。**
 * **本体在换基底之前就下好，首启不需要网络。** 实测一次 39 包的跟随下载 3,445,041 字节，首启直接安装
   这些本体、完全不用网络，认证页与家庭断网都不在关键路径上。预取失败绝不会让升级失败：记录写
   `follow=pending reason=network`，首启回落到联网兜底重试。
@@ -704,11 +703,9 @@ ab-slot log --prev
   本地安装的包在 `/etc/apk/ab/local/` 留一份本体供以后的基底重放；上游出现同名包时由上游接管并淘汰。
 * **`0.0.12` 之后发现的缺陷连同覆盖它们的验收一起打包：**
 
-* **apk 保护规则按前提判定。** `scripts/device/apk-protection-probe.sh` 用
-  `apk audit --backup` 问一句：apk 是否把某个受保护路径视作未被改动 —— 这正是
-  `/etc/apk/protected_paths.d/` 里 `+` 规则成立的前提。注定不会触发的规则会当场被点出来，而不是
-  等某次升级之后才以「适配器被遮蔽」的形式暴露。device 脚本统一为 POSIX `sh`，也就是
-  `scripts/ci/verify.sh` 检查它们时用的那个方言。
+* **apk 保护规则按前提判定。** `scripts/device/apk-protection-probe.sh` 用 `apk audit --backup` 问一句：apk 是否把某个受保护路径视作未被改动。
+* **这正是 `/etc/apk/protected_paths.d/` 里 `+` 规则成立的前提。** 注定不会触发的规则会当场被点出来，而不是等某次升级之后才以「适配器被遮蔽」的形式暴露。
+* **device 脚本统一为 POSIX `sh`，** 也就是 `scripts/ci/verify.sh` 检查它们时用的那个方言。
 * **A/B 换槽改看槽实际产出的数据。** `scripts/device/lib.sh` 从归档的真机数据里导出三组字段 ——
   stable、identity、monitored —— matrix 与 scenarios 不再把 `committed`、`pending`、`generation`
   混作一类。`ab-slot packages snapshot` 不再对无法解析的记录给出 `packages=0`，commit 路径会把
@@ -719,11 +716,9 @@ ab-slot log --prev
 * **验收只需一条命令。** `scripts/device/full-test.sh` 把 S8 的四类坏配置、真实 docker 负载
   D1/D2/D3、版本固定 `--case pin`、包回退 P3/P4 与发布字节校验排进同一个顺序，给出同一个结论。
 
-这道守卫本身是 `0.0.11` 引入的，至今未变：它同时比较上游基线与**平台版本**，于是
-`0.0.10` -> `0.0.11` 不再被 `74 payload-already-installed` 拒绝，放行时打印
-`base unchanged, platform 0.0.10 -> 0.0.11`；同基线但不声明平台版本的载荷会被
-`74 payload-platform-unknown` 拒绝。还停在 `0.0.10` 的机器带的是 `0.0.10` 的代码，所以那一跳仍需
-**一次性** `--force`；同基线发布门出于同样的理由用 `--force` 安装。
+这道守卫本身是 `0.0.11` 引入的，至今未变。它同时比较上游基线与**平台版本**。于是 `0.0.10` -> `0.0.11` 不再被 `74 payload-already-installed` 拒绝。放行时打印 `base unchanged, platform 0.0.10 -> 0.0.11`。
+
+同基线但不声明平台版本的载荷会被 `74 payload-platform-unknown` 拒绝。还停在 `0.0.10` 的机器带的是 `0.0.10` 的代码，所以那一跳仍需**一次性** `--force`。同基线发布门出于同样的理由用 `--force` 安装。
 
 启动这条路与 `0.0.8` 相同，首启自动生成网络配置与 `0.0.7` 相同。那几版的内容，仍然是现在这一版的内容：
 
@@ -731,7 +726,9 @@ ab-slot log --prev
   `/bin/board_detect` 与 `/bin/config_generate`——就是官方 ImmortalWrt 镜像从 preinit 里跑的那两个程序。本镜像不等那条路，自己跑一遍，所以刚写好的盘一定有地址。因此 `system` 里的主机名与时区是上游的。
 * **四个口，一个 WAN。** `eth0` 做 WAN（`dhcp`，另有 `wan6`），`eth1` 到 `eth3` 进 `br-lan`。端口集合读自 `/sys/class/net`，所以口少的机器得到更小的桥，单口机降级为 LAN-only。
 * **LAN 上是 `192.168.100.1/24`**，由上游的 dnsmasq 发地址。这个网段刻意避开 `192.168.1.0/24`。
-* **WAN 侧只有便利镜像才放行 `22/tcp`。** 默认镜像什么都不开：`wan` zone 保持 `input 'REJECT'`，`dropbear` 保持上游的绑定 `lan`。`-wan-ssh` 镜像多一条 `allow_ssh_wan` 规则并把 `dropbear.Interface` 置空，好让规则真的能摸到守护进程。两个镜像里 LuCI 的 `80/tcp` 都不进 WAN。这是构建期常量：便利镜像就是同一条流水线带 `CI_NET_WAN_SSH=open`。
+* **WAN 侧只有便利镜像才放行 `22/tcp`。** 默认镜像什么都不开：`wan` zone 保持 `input 'REJECT'`，`dropbear` 保持上游的绑定 `lan`。
+* **`-wan-ssh` 镜像多一条 `allow_ssh_wan` 规则，** 并把 `dropbear.Interface` 置空，好让规则真的能摸到守护进程。两个镜像里 LuCI 的 `80/tcp` 都不进 WAN。
+* **这是构建期常量：** 便利镜像就是同一条流水线带 `CI_NET_WAN_SSH=open`。
 * **生成出来的东西不会被覆盖。** 触发条件只有"`/etc/config/network` 不存在"这一条，所以用户的改动、夹具注入的配置、升级带过来的配置都能活下来。
 
 其余部分与 `0.0.6` 相同：四个 128 MiB 分区、overlay 层、健康检查、环形日志，以及本文描述的 `ab-slot` 与 `ab-upgrade` 行为。产物名没变，

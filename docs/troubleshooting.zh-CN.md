@@ -19,7 +19,7 @@ cat /boot/ab/state.json           # 槽位状态，即事实
 cat /boot/ab/packages             # 软件包记录
 ```
 
-`ab-slot status` 打印一行 `field=value` token，摘要走 stderr，所以
+`ab-slot status` 打印一行 `field=value` token，摘要走 stderr。所以
 `ab-slot status 2>/dev/null` 只剩那一行。字段说明见 [update.md](update.md#field-reference)；
 当没有任何记录时，`boot=`、`esp=` 与 `packages=` 读作 `unknown`，而不是一个让人安心的默认值。
 
@@ -77,17 +77,18 @@ ip addr add 192.168.100.1/24 dev eth1
 | `packages_reason=` 是 `other-slot`，或某个包字段是 `unknown` | `ab-slot status` 与 `cat /boot/ab/packages` | 记录描述的是另一个槽位，或没有槽位；下次升级或回滚会重新指向 |
 | 可写分区写满 | `df -h /mnt/p4` 与 `ab-slot gc --dry-run` | 哪些层已无引用、会被回收 |
 
-软件包事务与系统升级刻意分开：`apk` 写进可写层，系统升级替换一个槽位。先做系统升级，再做
-软件包升级。除非 `ab-slot status` 报告 `packages=aligned` 或 `packages=followed`，
-`ab-slot packages upgrade` 会拒绝，因为在过时的 pin 后面升级软件包会装上与当前内核不匹配的
-模块。
+软件包事务与系统升级刻意分开：`apk` 写进可写层，系统升级替换一个槽位。
+
+先做系统升级，再做软件包升级。除非 `ab-slot status` 报告 `packages=aligned` 或
+`packages=followed`。否则 `ab-slot packages upgrade` 会拒绝。在过时的 pin 后面升级软件包，会装上
+与当前内核不匹配的模块。
 
 ## dropbear 2025.89 上的交互式 SSH
 
 `ssh -tt <host> '<command>' </dev/null`——看起来是交互式会话，但 stdin 已经到文件末尾——
 在健康的机器上会失败。客户端立刻被断开，服务端记下三行 pty 错误：
 
-```
+```text
 dropbear[31119]: ioctl(TIOCSCTTY): I/O error
 dropbear[31119]: /dev/pts/0: No such file or directory
 dropbear[31119]: open /dev/tty failed - could not set controlling tty: No such device or address
@@ -121,15 +122,17 @@ sleep 8 | ssh -tt -i <key> root@<host> 'readlink /proc/$$/fd/0'
 sleep 8 | ssh -tt -i <key> root@<host>
 ```
 
-本项目不修它：打 dropbear 补丁意味着每次 dropbear 升级都要带着补丁走，而换成 OpenSSH 意味着
+本项目不修它。打 dropbear 补丁意味着每次 dropbear 升级都要带着补丁走。换成 OpenSSH 意味着
 多一个守护进程、多一套认证故事，而这个镜像的重点是"上游加 A/B"。若这个取舍改变，三条出路
 是：装 OpenSSH、给 dropbear 打补丁、等上游修复。
 
 ## 只有跟随能跑时软件包才会跟随 base
 
 升级替换系统树；软件包住在可写层里，保持安装时的版本。从 0.0.13 起，它们在 base 切换后由
-自己的事务（对整个 world 做一次 `apk upgrade`）搬到新 base，因此搬不动的软件包不会回滚一次
-已通过检查的系统升级。这仍不覆盖：
+自己的事务（对整个 world 做一次 `apk upgrade`）搬到新 base。因此搬不动的软件包不会回滚一次
+已通过检查的系统升级。
+
+这仍不覆盖：
 
 - **没有网络也没有预取。** 跟随需要包体。如果预取没能跑、且首启时机器离线，记录会说
   `follow=pending reason=network`；网络回退会重试一天（之后 `follow=abandoned`），
@@ -148,7 +151,7 @@ sleep 8 | ssh -tt -i <key> root@<host>
 
 现象：升级后的头几分钟里执行 `apk add`、`apk del` 或 `apk update`，得到：
 
-```
+```text
 ERROR: Unable to lock database: Resource temporarily unavailable
 ERROR: Failed to open apk database: Resource temporarily unavailable
 ```
@@ -162,9 +165,9 @@ worker 里。这个事务在整段运行期间持有 apk 数据库锁——参�
 
 - 等 worker 结束，再执行一次命令。
 - `ab-slot status` 报告状态：`packages=aligned`（包还没搬）、`packages=followed`（已经在新 base
-  上）或 `packages=limited`（元数据不全，`packages_reason=` 说明原因）。`follow=pending` 表示
-  搬动仍待执行，`follow=followed` 表示已完成，`follow=never` 表示没有需要搬的，`follow=failed` 或
-  `follow=abandoned` 表示没有跑成；`ab-packages update` 可按需重试。
+  上）或 `packages=limited`（元数据不全，`packages_reason=` 说明原因）。
+- `follow=pending` 表示搬动仍待执行，`follow=followed` 表示已完成，`follow=never` 表示没有需要
+  搬的，`follow=failed` 或 `follow=abandoned` 表示没有跑成。`ab-packages update` 可按需重试。
 - `ab-slot log` 每次尝试留一行 `stage=packages-refresh slot=<a|b> result=<state>
   reason=<token> version=<base>`，`ps w | grep apk` 显示持有锁的事务。
 - worker 自己的输出在 `/tmp/ab-packages-follow.log`。
@@ -179,19 +182,23 @@ worker 里。这个事务在整段运行期间持有 apk 数据库锁——参�
 ## 新 base 的首启可能让服务留在停止状态
 
 升级后的首次启动会搬动软件包集合，procd 就在这个窗口里启动引导脚本。在内核模块正被替换时
-初始化的守护进程可能失败，而 procd 只启动服务一次：`dockerd` 的 init 脚本没有设
+初始化的守护进程可能失败，而 procd 只启动服务一次。`dockerd` 的 init 脚本没有设
 `procd_set_param respawn`，所以那次启动里没有任何东西重试它。等更久也没用，因为实例从未被
 respawn。
 
-机器现在的做法：跟随安定之后，**完成跟随的那条路径**向 procd 询问它启动过又丢失了哪些服务，
-并各给一次新的启动。两条路径都做——分离的首启 worker，以及把首启因缺网络而推迟的跟随真正完成
-的那个网络接口事件。环形日志记录
-`stage=services-reconciled slot=<a|b> result=ok started=<n> failed=none down=<names>`；
-`result=partial` 点名脚本自己拒绝的服务，`result=skipped
-reason=follow-unsettled|boot-not-settled|no-procd-query` 说明没有尝试修复，
-`reason=already-reconciled` 说明本次启动已经修复过一遍。判据是 procd 的
-实例记录——实例存在、未运行且以非零退出——而不是"已启用但没在跑"：一次健康的启动有七个这类
-服务（一次性脚本、按需重放状态的程序、被禁用的守护进程），它们绝不能被启动。
+机器现在的做法：
+
+- 跟随安定之后，**完成跟随的那条路径**向 procd 询问它启动过又丢失了哪些服务，并各给一次新的
+  启动。
+- 两条路径都做：分离的首启 worker，以及把首启因缺网络而推迟的跟随真正完成的那个网络接口事件。
+- 环形日志记录
+  `stage=services-reconciled slot=<a|b> result=ok started=<n> failed=none down=<names>`。
+- `result=partial` 点名脚本自己拒绝的服务。
+- `result=skipped reason=follow-unsettled|boot-not-settled|no-procd-query` 说明没有尝试修复；
+  `reason=already-reconciled` 说明本次启动已经修复过一遍。
+- 判据是 procd 的实例记录——实例存在、未运行且以非零退出——而不是"已启用但没在跑"。
+- 一次健康的启动有七个这类服务（一次性脚本、按需重放状态的程序、被禁用的守护进程），它们绝不能
+  被启动。
 
 它不覆盖：procd 接受之后又死掉的守护进程，以及配置本身就是它停止原因的守护进程。这样的启动
 之后服务仍然停着，就把机器重启一次。
@@ -221,15 +228,19 @@ apk audit --backup /etc/config            # apk 数据库认为不同的文件
 | 25.12.1 | `6.12.94` | `6.12.94-r1` | 与 25.12.2 相同字节 |
 | 25.12.2 | `6.12.103` | `6.12.103-r1` | 与 25.12.0 相同字节 |
 
-因此取自旧版本的 feed 行会提供用户空间软件包，却一个 kmod 都没有：`htop` 在那个版本的索引
-里，`kmod-usb-storage` 不在，而当前内核段的 kmod 目录在该版本下返回 404。对齐器会把
-`distfeeds.list` 与 `repositories.d/*.list` 里每个 `/releases/<x>/` 和 `/kmods/<segment>/`
-改写成槽位当前运行的版本；若 feed 仍点名另一个版本，跟随记录会是
-`packages=limited packages_reason=feeds-stale`。
+因此取自旧版本的 feed 行会提供用户空间软件包，却一个 kmod 都没有。`htop` 在那个版本的索引
+里，`kmod-usb-storage` 不在，而当前内核段的 kmod 目录在该版本下返回 404。
 
-绕法：把历史 feed 放进 `/etc/apk/repositories.d/customfeeds.list`——对齐器与跟随的 feed 探针
-都会跳过该文件——按段取 kmod，当某个段不再被提供时，把它的索引、`.sig` 与 apk 镜像到本地
-HTTPS feed 并让 `customfeeds.list` 指向它（[update.md](update.md#build-your-own-feed)）。
+对齐器会改写两个文件里的版本路径：`distfeeds.list` 与 `repositories.d/*.list`。它把每个
+`/releases/<x>/` 和 `/kmods/<segment>/` 改写成槽位当前运行的版本。若 feed 仍点名另一个版本，
+跟随记录会是 `packages=limited packages_reason=feeds-stale`。
+
+绕法：把历史 feed 放进 `/etc/apk/repositories.d/customfeeds.list`。对齐器与跟随的 feed 探针
+都会跳过该文件。按段取 kmod。
+
+某个段不再被提供时，把它的索引、`.sig` 与 apk 镜像到本地 HTTPS feed。然后把
+`customfeeds.list` 指向它（[update.md](update.md#build-your-own-feed)）。
+
 `ab-packages sources <name>` 会给出提供某个包的源及完整 URL。
 
 ## 目标版本不发布的软件包
@@ -279,13 +290,17 @@ mkdir -p /data/evidence
 } >/data/evidence/first-boot.log 2>&1
 ```
 
-完全够不到机器时，挂载 ESP（`PARTNAME ab-esp`，FAT）读 `ab/net.json`（种子做了什么决定、看到
-了哪些网口）、`ab/log/boot-0.log`（正在运行那次启动的环形日志）与 `ab/log/resize.log`
-（首启扩容）。这三个文件不需要启动、不需要 SSH、也不需要控制台。
+完全够不到机器时，挂载 ESP（`PARTNAME ab-esp`，FAT），再读三个文件。`ab/net.json` 记着种子
+做了什么决定、看到了哪些网口。`ab/log/boot-0.log` 是正在运行那次启动的环形日志，
+`ab/log/resize.log` 是首启扩容。这三个文件不需要启动、不需要 SSH、也不需要控制台。
 
-有用的报告包含：`sha256sum -c SHA256SUMS` 的记录，首启的照片或串口抓取（含 `stage=net-seed`
-行），改动前后的 `ab-slot status`，填好的网口映射表，以及每个失败的原样输出与其 `reason=`
-token。
+有用的报告包含：
+
+- `sha256sum -c SHA256SUMS` 的记录；
+- 首启的照片或串口抓取，含 `stage=net-seed` 行；
+- 改动前后的 `ab-slot status`；
+- 填好的网口映射表；
+- 每个失败的原样输出与其 `reason=` token。
 
 ## 限制
 

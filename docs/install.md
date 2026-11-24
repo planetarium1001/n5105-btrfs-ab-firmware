@@ -1,11 +1,12 @@
 # Installing and updating the firmware
 
 This page is the operator view: how to put the image on a disk, what to do at the console on
-the first boot, what to check before you trust the machine with a network, how to update it
-and how to get back. It is written to be followed on a real N5105 with a monitor, a keyboard
-and a cable in a socket, so every step says what the command is and what the output has to
-say. The design behind it is in [architecture.md](architecture.md) and
-[network.md](network.md).
+the first boot, and what to check before you trust the machine with a network. It also covers
+how to update it and how to get back.
+
+It is written to be followed on a real N5105 with a monitor, a keyboard and a cable in a
+socket, so every step says what the command is and what the output has to say. The design
+behind it is in [architecture.md](architecture.md) and [network.md](network.md).
 
 ## What you need
 
@@ -29,9 +30,11 @@ broken: write nothing and fetch it again, because a payload that fails this chec
 `ab-upgrade` later with `reason=digest-mismatch-<member>` anyway.
 
 For a real device, also have at hand: a monitor and a USB keyboard (HDMI on the N5105 v5
-boards), an Ethernet cable to the upstream router, one more cable and a laptop for the LAN
-side, and a way to note things down. The port mapping you write down in the checklist is part
-of the result.
+boards), an Ethernet cable to the upstream router, and one more cable plus a laptop for the
+LAN side.
+
+Bring a way to note things down. The port mapping you write in the checklist is part of the
+result.
 
 ### Which artifact to write
 
@@ -67,10 +70,11 @@ uci commit firewall
 # 3. reflash the closed image: n5105-ab-<upstream>-install.img.gz
 ```
 
-The rule is added on the boot that generates the network and never again: an upgrade carries
-the writable layer over and does not re-apply the defaults, so a machine flashed with the
-closed image does not grow the rule later, and one flashed with the convenience image keeps it
-until you delete it.
+The rule is added on the boot that generates the network, and never again. An upgrade carries
+the writable layer over and does not re-apply the defaults. A machine flashed with the closed
+image therefore does not grow the rule later.
+
+One flashed with the convenience image keeps it until you delete it.
 
 File names carry the board, the product line, the upstream base and the role - not our own
 release counter, which lives on the GitHub release instead. Earlier releases named the
@@ -89,15 +93,18 @@ whether they do:
 ./scripts/device/release-verify.sh --tag v0.1.0-rc.2   # a preview: VERSION still says 0.1.0
 ```
 
-It prints one `release-verify check=... result=...` line per claim - the tag against the
+It prints one `release-verify check=... result=...` line per claim: the tag against the
 `VERSION` it carries, each of the four assets, every line of `SHA256SUMS`, and the
-`platform` / `base` the index declares - and ends with a `release-verify result=pass|fail`
-line, exiting 0 only when every check passed. A preview tag is judged the way the publisher
-judges it - the version before the `-` suffix is what has to equal `VERSION`, and the row
-prints `preview=rc.2` so the evidence says which preview the bytes are. `--dir <path>` runs the same checks over
-files you downloaded by hand, and `AB_DRY_RUN=1` sends nothing over the network at all.
-Run it before `dd`: a digest that disagrees with `SHA256SUMS` is the last cheap moment to
-stop.
+`platform` / `base` the index declares. The last line is `release-verify result=pass|fail`,
+and the run exits 0 only when every check passed.
+
+A preview tag is judged the way the publisher judges it. The version before the `-` suffix is
+what has to equal `VERSION`, and the row prints `preview=rc.2`, so the evidence says which
+preview the bytes are.
+
+`--dir <path>` runs the same checks over files you downloaded by hand. `AB_DRY_RUN=1` sends
+nothing over the network at all. Run it before `dd`: a digest that disagrees with
+`SHA256SUMS` is the last cheap moment to stop.
 
 Which one an image carries is recorded inside it: mount the ESP (`PARTNAME ab-esp`, FAT) and
 read `ab/image.json` - `"kind": "boot"` is writable, `"kind": "probe"` is a CI fixture. The
@@ -121,10 +128,11 @@ gunzip -c n5105-ab-<upstream>-install.img.gz | sudo dd of=/dev/nvme0n1 bs=4M sta
 sudo sync
 ```
 
-Read `lsblk` before the `dd`: the device you pass to `of=` has to be the disk you mean, with
-the size you expect, and nothing else on the machine may have that name at the time. `dd`
-exits 0 and prints the byte count; `sync` returns after the writes have left the kernel. Do
-not cut the power between the two.
+Read `lsblk` before the `dd`. The device you pass to `of=` has to be the disk you mean, with
+the size you expect, and nothing else on the machine may have that name at the time.
+
+A `dd` exits 0 and prints the byte count; a `sync` returns after the writes have left the
+kernel. Do not cut the power between the two.
 
 The result is 514 MiB with four 128 MiB partitions. Nothing else has to be created by hand:
 the ESP carries the kernel and initramfs for both slots, the bootloader configuration
@@ -168,14 +176,14 @@ ab-slot log | grep net-seed
 
 On a freshly written disk the second command prints the seed's result line:
 
-```
+```text
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
 ```
 
 The convenience image prints four more lines ahead of it - what it opened and the three ways to
 close it:
 
-```
+```text
 stage=net-seed wan-ssh=open port=22 proto=tcp
 stage=net-seed wan-ssh-close: LuCI -> Network -> Firewall -> Traffic Rules -> delete allow_ssh_wan
 stage=net-seed wan-ssh-close: or uci delete firewall.allow_ssh_wan && uci commit firewall && /etc/init.d/firewall reload
@@ -185,16 +193,17 @@ stage=net-seed wan-ssh-close: or reflash the closed image (n5105-ab-<upstream>-i
 `ab-slot log | tail` is the quick read of the same boot: the last lines are the health check
 and the decision (`stage=healthcheck-done`, then `stage=commit`).
 
-Every later boot prints one line instead: `stage=net-seed result=skip reason=seeded`.
-The mark that decides this is `/etc/config/.ab-net-seed`, not the presence of a
-configuration file: a configuration that exists and was not written by this hook is left
-alone and reported as `result=skip reason=foreign-config`. That is the whole idempotence
-story, and it is also what keeps your own `uci` changes and an upgrade's configuration
-intact.
+Every later boot prints one line instead: `stage=net-seed result=skip reason=seeded`. The
+mark that decides this is `/etc/config/.ab-net-seed`, not the presence of a configuration
+file.
+
+A configuration that exists and was not written by this hook is left alone, and reported as
+`result=skip reason=foreign-config`. That is the whole idempotence story, and it is also what
+keeps your own `uci` changes and an upgrade's configuration intact.
 
 `ab-slot status` prints exactly one line on a healthy machine:
 
-```
+```text
 slot=a upper=@overlay-<version> generation=1 committed=a pending=none p4=ok data=ok docker=ok swap=ok next=a disk=/dev/nvme0n1 method=partuuid boot=ok esp=ok packages=unknown packages_reason=unknown
 ```
 
@@ -211,8 +220,9 @@ The field order is the order `ab-slot` prints them in, and every field is one to
 | `packages=`, `packages_reason=` | the package-metadata verdict the last upgrade left; both read `unknown` on a disk that has never been updated, which is honest rather than good |
 
 If `p4` says `degraded`, read the degraded section below before you do anything else.
-`packages=` has a section of its own further down: it is the field that says whether
-`apk` can install a module for the kernel this slot runs.
+
+The `packages=` field has a section of its own further down. It says whether `apk` can
+install a module for the kernel this slot runs.
 
 Package upgrades and the package-level rollback that goes with them are a separate
 command: `ab-slot packages upgrade` and `ab-slot packages revert`, both documented in
@@ -237,33 +247,37 @@ reflash if you would rather start from the defaults again.
 
 ## Known limitations
 
-* **Images written before `0.0.7` have no first-boot network.** `0.0.6` and earlier leave a freshly
-  written disk without `/etc/config/network`, so it comes up with no address on any port, no DHCP server on the LAN, and `dropbear` bound to an
-  interface that does not exist. The only way in is the console and `uci` by hand. On such an
-  image the health check also reports `probe=wan-present result=fail`, never writes
-  `stage=commit`, and the machine stays up anyway (`action=stay`). `0.0.7` is the first
-  release that generates the network itself; reflash instead of patching an older image.
+* **Images written before `0.0.7` have no first-boot network.** `0.0.6` and earlier leave a
+  freshly written disk without `/etc/config/network`.
+* **No address comes up on its own.** No port has an address, the LAN has no DHCP server, and
+  `dropbear` is bound to an interface that does not exist.
+* **Such an image is reachable only from the console, with `uci` by hand.** The health check
+  also reports `probe=wan-present result=fail`, never writes `stage=commit`, and the machine
+  stays up anyway (`action=stay`).
+* **Reflash instead of patching an old image.** `0.0.7` is the first release that generates the
+  network itself.
 * **The port names are the kernel's, not the silkscreen's.** `eth0` through `eth3` do not have
   to follow the labels on the case, and nothing in the image guesses hardware. Record the
   mapping on every machine, with the checklist step below.
 * **A single-port machine is not a router.** The seed degrades it to LAN-only
-  (`stage=net-seed result=lan-only`): the single port joins `br-lan`, `wan` is removed. There
-  is then no `network.wan` for the `wan-present` probe to find, so that boot does not commit
-  the slot (`action=stay`); the LAN side works normally.
+  (`stage=net-seed result=lan-only`): the single port joins `br-lan`, `wan` is removed.
+* **That boot does not commit the slot.** With no `network.wan` for the `wan-present` probe to
+  find, the boot ends in `action=stay`. The LAN side works normally.
 * **The defaults are applied once.** They belong to the boot that generated the
   configuration. An upgrade carries the writable layer over and never re-applies them, which
-  is deliberate — your changes win — but it also means a changed default only reaches a
-  machine that is written fresh.
+  is deliberate: your changes win.
+* **A changed default reaches only a machine that is written fresh.**
 * **The convenience image opens `22/tcp` on the WAN, and nothing closes it for you.** Only
   `n5105-ab-<upstream>-install-wan-ssh.img.gz` carries the `allow_ssh_wan` rule; the default
-  image carries no WAN rule at all. On the convenience image the rule and the unbound
-  `dropbear` stay until you delete them, and `dropbear` accepts password authentication with
-  whatever root password the image carries. Close it as soon as the LAN side answers.
+  image carries no WAN rule at all.
+* **The rule and the unbound `dropbear` stay until you delete them.** `dropbear` accepts
+  password authentication with whatever root password the image carries. Close it as soon as
+  the LAN side answers.
 * **A `</dev/null` interactive ssh probe reports a healthy machine as broken.** dropbear
-  2025.89 closes the pty master as soon as either direction of the channel ends, so
-  `ssh -tt host cmd </dev/null` is dropped while a person logging in on the same machine gets a
-  prompt. [troubleshooting.md](troubleshooting.md) has the errno-level reason, the three
-  ways out, and the form a probe has to use instead.
+  2025.89 closes the pty master as soon as either direction of the channel ends.
+* **That drops `ssh -tt host cmd </dev/null`.** A person logging in on the same machine gets a
+  prompt. [troubleshooting.md](troubleshooting.md) has the errno-level reason, the three ways
+  out, and the form a probe has to use instead.
 
 ## Network defaults on a real machine
 
@@ -314,20 +328,25 @@ uci commit firewall
 ```
 
 In LuCI the same rule is the entry named `allow_ssh_wan` under **Network → Firewall → Traffic
-Rules** (网络 → 防火墙 → 通信规则): delete it and press **Save & Apply**. Then confirm it is
-gone:
+Rules**. Delete it and press **Save & Apply**.
+
+The same two controls in the Chinese UI are **网络 → 防火墙 → 通信规则** and **保存并应用**.
+Then confirm the rule is gone:
 
 ```sh
 uci show firewall | grep allow_ssh_wan     # no output
 ```
 
 Closing it leaves the LAN side untouched, and SSH from the LAN keeps working because
-`dropbear` still listens on the bridge. Every default here is a build-time constant:
-`/etc/net-defaults.conf` in the platform layer is rendered from `scripts/ci/net-defaults.conf.in`
-(`NET_WAN_DEV`, `NET_LAN_DEVS`, `NET_LAN_ADDR`, `NET_LAN_PREFIX`, `NET_WAN_SSH`). The default
-image is the render with `NET_WAN_SSH=closed`; the convenience image is the same pipeline run
-with `CI_NET_WAN_SSH=open`, and the release stage appends `-wan-ssh` to its file name.
-[network.md](network.md) has the long form.
+`dropbear` still listens on the bridge.
+
+Every default here is a build-time constant. `/etc/net-defaults.conf` in the platform layer is
+rendered from `scripts/ci/net-defaults.conf.in`, with `NET_WAN_DEV`, `NET_LAN_DEVS`,
+`NET_LAN_ADDR`, `NET_LAN_PREFIX` and `NET_WAN_SSH`.
+
+The default image is the render with `NET_WAN_SSH=closed`. The convenience image is the same
+pipeline run with `CI_NET_WAN_SSH=open`, and the release stage appends `-wan-ssh` to its file
+name. [network.md](network.md) has the long form.
 
 ## Acceptance checklist
 
@@ -351,15 +370,18 @@ Run these on the machine before you trust it with anything:
 | the other slot is intact | `ab-slot pending b` then `ab-slot abandon` | the first succeeds, the second clears it |
 | the next boot is what you expect | `ab-slot next` | `next=<the committed slot>` after the abandon |
 
-There is no `wan` interface in `ip -brief address`: the WAN interface is bound to a device
+There is no `wan` interface in `ip -brief address`. The WAN interface is bound to a device
 (`option device eth0`), so its address shows on `eth0`. That is why the WAN row reads the
-device name out of `uci` first. `nft list ruleset` is the wider, slower command; piping it into
-`grep -A3 'dport 22'` gives the one excerpt worth keeping - empty output on the default image,
-and that empty output is the pass.
+device name out of `uci` first.
 
-The last row proves the inactive slot still has its kernel and initramfs on the ESP:
-`ab-slot pending` refuses a slot whose payload is missing, so a failure there is a
-warning about the backup slot, not about the running one.
+The `nft list ruleset` command is the wider, slower one. Piping it into `grep -A3 'dport 22'`
+gives the one excerpt worth keeping: empty output on the default image, and that empty output
+is the pass.
+
+The last row proves the inactive slot still has its kernel and initramfs on the ESP.
+
+`ab-slot pending` refuses a slot whose payload is missing. So a failure there is a warning
+about the backup slot, not about the running one.
 
 ## Mapping the four ports to eth0..eth3
 
@@ -385,19 +407,22 @@ in this table:
 |  |  |  |  |
 |  |  |  |  |
 
-`eth0` is the WAN by default and every other `eth*` is a `br-lan` port, so the role column is
-`WAN` for the interface named `eth0` and `LAN` for the rest. If the socket you want facing the
-upstream router is not the one the kernel calls `eth0`, either move the role with the `uci`
-block above or change `NET_WAN_DEV` for the next build — and say which you did in the report,
-because the two are not the same machine afterwards.
+`eth0` is the WAN by default and every other `eth*` is a `br-lan` port. So the role column is
+`WAN` for the interface named `eth0` and `LAN` for the rest.
+
+If the socket you want facing the upstream router is not the one the kernel calls `eth0`,
+either move the role with the `uci` block above or change `NET_WAN_DEV` for the next build. Say
+which you did in the report, because the two are not the same machine afterwards.
 
 ## LuCI and SSH from the LAN
 
 From the laptop plugged into a LAN socket, or any client on `192.168.100.0/24`, open
-`http://192.168.100.1`. LuCI listens on `80/tcp` and the firewall keeps it off the WAN; there
-is no HTTP exception on the WAN side of this build. The image ships the upstream root account
-with an empty password, so log in as `root` and press Enter, then set a password before the
-machine leaves the bench — LuCI: **System → Administration**, or `passwd` on the console.
+`http://192.168.100.1`. LuCI listens on `80/tcp` and the firewall keeps it off the WAN. There
+is no HTTP exception on the WAN side of this build.
+
+The image ships the upstream root account with an empty password, so log in as `root` and
+press Enter. Set a password before the machine leaves the bench: LuCI's
+**System → Administration**, or `passwd` on the console.
 
 SSH is the same account over `22/tcp`:
 
@@ -420,10 +445,11 @@ On the default image the WAN-side attempt never reaches the daemon: the connecti
 refused by the `wan` zone, so there is no password prompt to answer.
 
 If the WAN-side login is refused on the convenience image while the rule exists, check the
-daemon's binding:
-`uci show dropbear` must show no `Interface` option (`uci delete
-dropbear.@dropbear[0].Interface; uci commit dropbear` if it came back), and `logread | grep
+daemon's binding. `uci show dropbear` must show no `Interface` option, and `logread | grep
 dropbear` says whether the daemon is listening at all.
+
+If the option came back, run
+`uci delete dropbear.@dropbear[0].Interface; uci commit dropbear`.
 
 ## Updating a running system
 
@@ -445,27 +471,31 @@ ab-slot log --upgrade
 ```
 
 `--check` validates the payload and writes nothing, so a bad download is found before the
-inactive slot is touched. `ab-upgrade` validates again while it writes: manifest shape,
-per-member digests, that every module inside the initramfs comes from one kernel build, free
-space on the writable partition, the bootloader the payload carries and the conflict report.
-A refusal exits with status 74 and writes nothing. On success the state shows the other slot
-as `pending`, `ab-slot status` reports the new slot as `next=<slot>`, and the next boot tries
-it:
+inactive slot is touched. `ab-upgrade` validates again while it writes. It checks the manifest
+shape, the per-member digests, and that every module inside the initramfs comes from one
+kernel build.
+
+It also checks free space on the writable partition, the bootloader the payload carries and
+the conflict report. A refusal exits with status 74 and writes nothing.
+
+On success the state shows the other slot as `pending`. The `ab-slot status` command then
+reports the new slot as `next=<slot>`, and the next boot tries it:
 
 * the boot runs the health check on the new slot;
 * if every probe passes, the slot is committed and the machine stays on it;
 * if any probe fails, the pending slot is abandoned and the machine reboots into the
   committed slot;
 * if the new slot fails even earlier, in the boot initramfs, the failure path clears
-  `pending` itself before it powers off (`action=fail-safe-abandon` in the log), so the
-  next boot comes back to the committed slot instead of retrying the broken one.
+  `pending` before it powers off (`action=fail-safe-abandon` in the log);
+* in that case the next boot comes back to the committed slot, not to the broken one.
 
-On the real device, add these assertions to the first upgrade: `ab-slot status` before the
-reboot shows `pending=<the other slot>` and `next=<the other slot>`; after the reboot it shows
-that slot as `committed=`, `pending=none`, a higher `generation=` and `p4=ok`. When the payload
-carries a different upstream version, `upper=` changes with it, because the layer is named after
-the version it was seeded from. Files under `/data` are shared by both slots and stay where
-they are.
+On the real device, add these assertions to the first upgrade. Before the reboot,
+`ab-slot status` shows `pending=<the other slot>` and `next=<the other slot>`. After it, the
+slot shows `committed=`, `pending=none`, a higher `generation=` and `p4=ok`.
+
+When the payload carries a different upstream version, `upper=` changes with it, because the
+layer is named after the version it was seeded from. Files under `/data` are shared by both
+slots and stay where they are.
 
 The upgrade fails with `reason=next-boot-not-<slot>` when the slot is staged but
 `boot/grub/ab-slot.cfg` does not point at it: without that file the machine would keep
@@ -493,22 +523,25 @@ exits 2 before anything is read.
 
 An ordinary update on the same upstream base needs no flag. The guard asks whether the
 machine already runs *this release*, and a release is its upstream base **and** this
-project's platform version: `0.0.10` over `0.0.11` share the base and differ in the
-platform, so the install goes ahead and prints `base unchanged, platform 0.0.10 -> 0.0.11`.
-Only a payload that matches both is refused, with `74` and reason
-`payload-already-installed` naming `--force` as the way past it.
+project's platform version.
+
+`0.0.10` over `0.0.11` share the base and differ in the platform, so the install goes ahead
+and prints `base unchanged, platform 0.0.10 -> 0.0.11`. Only a payload that matches both is
+refused, with `74` and reason `payload-already-installed` naming `--force` as the way past it.
 
 A payload on the **same base** that declares no platform version cannot answer that
 question, so it is refused with `74` and reason `payload-platform-unknown` rather than
-installed: a leftover payload of an older format must not be able to rewrite the healthy
-slot just because nobody can tell which release it is. A payload for a **different base**
-is unaffected — it is never "already installed", and it installs whether or not the field
-is there.
+installed. A leftover payload of an older format must not rewrite the healthy slot just
+because nobody can tell which release it is.
+
+A payload for a **different base** is unaffected: it is never "already installed", and it
+installs whether or not the field is there.
 
 > The guard belongs to the system that runs it. A machine still on `0.0.10` carries the
-> `0.0.10` code, so installing `0.0.11` over it is refused until that one machine is
-> updated once with `--force`; from `0.0.11` onwards the hop needs no flag. `ab-upgrade
-> --feed` was never affected, because the feed path recognises a platform-only update by
+> `0.0.10` code, so installing `0.0.11` over it is refused. That one machine has to be
+> updated once with `--force`; from `0.0.11` onwards the hop needs no flag.
+
+> `ab-upgrade --feed` was never affected: the feed path recognises a platform-only update by
 > itself and does not ask.
 
 ### Exit status
@@ -519,10 +552,11 @@ is there.
 | `1` | an execution step failed after validation passed | the slot may be half written, and a bootloader write this run performed is rolled back from `@boot-backup/<version>` first. When even that rollback fails, the ESP may carry the new loader while the slot is still the old one, which is why this leaves as a failure and not as a refusal |
 | `74` | refused before anything was written | nothing in the slot and nothing in `ab/state.json`; the payload, or the state of the machine, was refused |
 
-Every refusal prints one line and mirrors it to the console. The line is
-`ab-upgrade: refused, reason=<token>` for `74`, and `ab-upgrade: failed, reason=<token>` for
-`1`. `ab-slot log --upgrade` prints the ESP's `ab/log/upgrade.log`, and nothing fills that
-file in for you, so keep the run's output if you want it on the disk:
+Every refusal prints one line and mirrors it to the console. For `74` the line is
+`ab-upgrade: refused, reason=<token>`; for `1` it is `ab-upgrade: failed, reason=<token>`.
+
+The `ab-slot log --upgrade` command prints the ESP's `ab/log/upgrade.log`, and nothing fills
+that file in for you. Keep the run's output if you want it on the disk:
 
 ```sh
 { ab-upgrade /root/n5105-ab-<upstream>-upgrade.tar 2>&1; echo "exit=$?"; } | tee /boot/ab/log/upgrade.log
@@ -545,10 +579,13 @@ on the device:
 
 `74` is a promise about the slot and the state file, not about the ESP. When a write had
 already started, `ab-upgrade` restores the ESP from `@boot-backup/<version>` before it
-refuses; if that restore also fails, the log says `upgrade: RESTORE ALSO FAILED, the ESP
-bootloader may be damaged` and the rescue below is the way out. `bootloader-rollback-failed`
-is the one reason in this family that exits `1` rather than `74`, because it means the ESP may
-carry the new loader while the slot is still the old one.
+refuses.
+
+If that restore also fails, the log says `upgrade: RESTORE ALSO FAILED, the ESP bootloader may
+be damaged`, and the rescue below is the way out.
+
+The `bootloader-rollback-failed` reason is the one in this family that exits `1` rather than
+`74`, because it means the ESP may carry the new loader while the slot is still the old one.
 
 The tokens live in two files. From a repository checkout, this lists the whole family:
 
@@ -563,17 +600,20 @@ grep -rho 'bootloader-[a-z-]*' platform/usr/sbin/ab-upgrade platform/lib/upgrade
 
 `/lib/upgrade/platform.sh` is the name of both this project's upgrade adapter (shipped in the
 platform layer) and upstream's sysupgrade script. The running root is an overlay of the
-platform layer over `@sys`, and a file in the writable layer wins over both. An `apk upgrade`
-that rewrites `/lib/upgrade/*` therefore leaves an upstream copy in the upper layer, and from
-that boot on `ab-upgrade` sources a library that has no `platform_upgrade_begin`: validation
-passes, then the install dies with `platform_upgrade_begin: not found` and an empty `reason=`.
+platform layer over `@sys`, and a file in the writable layer wins over both.
+
+An `apk upgrade` that rewrites `/lib/upgrade/*` therefore leaves an upstream copy in the upper
+layer. From that boot on, `ab-upgrade` sources a library that has no `platform_upgrade_begin`.
+Validation passes, then the install dies with `platform_upgrade_begin: not found` and an empty
+`reason=`.
 
 From 0.0.11 on `ab-upgrade` refuses to be defeated by that:
 
 * the adapter is checked before it is sourced. A file that is not this project's is skipped,
-  and the loader falls back to the running slot's read-only `@platform` subvolume, then to the
-  platform layer inside the payload; `upgrade: platform adapter source=` names the copy it
-  settled on, and a shadowed file also logs `warning adapter-shadowed path=...`.
+  and the loader falls back to the read-only `@platform` subvolume, then to the platform layer
+  in the payload;
+* `upgrade: platform adapter source=` names the copy it settled on, and a shadowed file also
+  logs `warning adapter-shadowed path=...`.
 * if none of the three can be loaded, the run refuses with `74`, reason
   `platform-layer-shadowed`, prints the commands below and writes nothing.
 * `platform_copy_rootfs` moves upper copies of `lib/upgrade/{platform.sh,fwtool.sh,stage2,tar.sh}`
@@ -613,12 +653,15 @@ Two copies of the bootloader exist by design, in two places for two reasons:
 | `/boot/EFI/BOOT/BOOTX64.EFI.prev` and `/boot/boot/grub/grub.cfg.prev` | the bytes that were on the ESP just before the last write, kept next to the new file so they are reachable even when the writable partition cannot be mounted |
 | `/mnt/p4/@boot-backup/<version>/` with `SHA256SUMS` | both files plus their digests, on the writable partition, complete with what `.prev` may be missing |
 
-`.prev` exists because the write copies the file aside before it renames the new one over it,
-which is the only window in which the old copy can still be taken. If the ESP had no room for
-that copy, the log says `could not keep ...prev (no room on the ESP?)` and the write goes ahead
-without it, which is why the backup on p4 is refreshed at the start of every attempt: it always
-describes the state that attempt may have to undo. `ab-upgrade` keeps the two most recent
-backups.
+`.prev` exists because the write copies the file aside before it renames the new one over it.
+That is the only window in which the old copy can still be taken.
+
+If the ESP had no room for that copy, the log says
+`could not keep ...prev (no room on the ESP?)` and the write goes ahead without it. That is why
+the backup on p4 is refreshed at the start of every attempt: it always describes the state that
+attempt may have to undo.
+
+The `ab-upgrade` command keeps the two most recent backups.
 
 Rescue from the machine itself: the GRUB menu's recovery entry boots the committed slot with
 a read-only writable layer, and there the ESP is mounted at `/boot`.
@@ -638,9 +681,11 @@ digests recorded before they were touched, and prints one `OK` per file. Anythin
 the `.prev` copy is not the one the record describes, so restore from `@boot-backup/<version>/`
 instead of from `.prev`.
 
-The same steps from another Linux, with the disk in a USB adapter. The node names below are
-this machine's, and an adapter can enumerate the disk under different ones, so confirm them
-first: `blkid -L ESP` prints the node of the partition whose filesystem label is `ESP`, and
+The same steps work from another Linux, with the disk in a USB adapter. The node names below
+are this machine's, and an adapter can enumerate the disk under different ones, so confirm
+them first.
+
+The `blkid -L ESP` output prints the node of the partition whose filesystem label is `ESP`.
 p4 is the fourth partition of the same disk:
 
 ```sh
@@ -685,9 +730,10 @@ tokens worth recognising:
 
 `aligned` is a statement about metadata, not about the network. The alignment is offline on
 purpose and never runs `apk`, so a machine that upgrades with no cable plugged in is still
-`aligned` - and a machine with a perfect network can still be `limited`. `limited` blocks
-neither the upgrade nor the boot: the slot comes up, it just cannot install a module matched
-to its kernel until `world` and `distfeeds` are fixed.
+`aligned`. A machine with a perfect network can still be `limited`.
+
+`limited` blocks neither the upgrade nor the boot. The slot comes up; it just cannot install a
+module matched to its kernel until `world` and `distfeeds` are fixed.
 
 Read both fields straight off the status line, and read the record itself:
 
@@ -768,7 +814,7 @@ moves to memory, the system comes up, and both the console and `ab-slot status` 
 `p4=degraded`. The machine works, but nothing written since the boot survives a
 reboot, and `ab-upgrade` refuses to run:
 
-```
+```text
 ab-upgrade: refused, reason=writable-layer-degraded
 ```
 
@@ -799,11 +845,13 @@ mkdir -p /data/evidence
 ```
 
 When the machine cannot be reached at all, the disk carries everything needed to explain
-why: mount the ESP (`PARTNAME ab-esp`, FAT) and read `ab/net.json` (what the seed decided,
-which ports it saw, whether it was a deferral), then `ab/log/boot-0.log` (the ring log of
-the running boot) and `ab/log/resize.log` (the first-boot growth). Those three files need
-no boot, no SSH and no console; GRUB itself cannot help here - the standalone EFI binary on
-the ESP has no `cat` module.
+why. Mount the ESP (`PARTNAME ab-esp`, FAT) and read `ab/net.json`: what the seed decided,
+which ports it saw, whether it was a deferral.
+
+Then read `ab/log/boot-0.log` (the ring log of the running boot) and `ab/log/resize.log` (the
+first-boot growth). Those three files need no boot, no SSH and no console.
+
+GRUB itself cannot help here: the standalone EFI binary on the ESP has no `cat` module.
 
 From the laptop:
 
@@ -867,71 +915,83 @@ the upstream base is unchanged. It adds one user-visible behaviour — the packa
 new base — and the machinery that makes that sentence honest:
 
 * **The switch asks once and then moves the packages with it.** `ab-upgrade` prints one
-  English plan block (`Update` / `Packages` / `Config`), names every package it will hold back
-  and why, and asks `Proceed and follow N packages? [y/N]`. Only `y` goes ahead; Enter, `n`,
-  a typo or end-of-input decline and write nothing at all, and a run with no terminal refuses
-  with exit 74 unless `--yes` is given. `--system-only` (or `--no-follow`) replaces the system
-  and leaves the packages where they are.
-* **The bodies are fetched before the switch, so the first boot needs no network.** The
-  download is 3,445,041 bytes for the measured 39-package follow; the first boot then installs
-  those files with no network at all, which keeps a captive portal or a home outage off the
-  critical path. A prefetch that fails never fails the
-  upgrade: the record says `follow=pending reason=network` and the boot falls back to retrying.
+  English plan block (`Update` / `Packages` / `Config`).
+* **The plan names every package it will hold back and why.** Then it asks
+  `Proceed and follow N packages? [y/N]`.
+* **Only `y` goes ahead.** Enter, `n`, a typo or end-of-input declines and writes nothing at
+  all. A run with no terminal refuses with exit 74 unless `--yes` is given.
+* **`--system-only` (or `--no-follow`) replaces the system and leaves the packages alone.**
+* **The bodies are fetched before the switch.** The download is 3,445,041 bytes for the
+  measured 39-package follow.
+* **The first boot then needs no network.** It installs those files itself, which keeps a
+  captive portal or a home outage off the critical path.
+* **A prefetch that fails never fails the upgrade.** The record says
+  `follow=pending reason=network`, and the boot falls back to retrying.
 * **A package that cannot follow says why, once.** `UNREACHABLE`, `NO COPY`, `ABI STALE`,
-  `DROPPED` and `PINNED` are the only five answers, `ab-slot status` prints the one line
-  (`packages=` / `follow=` / `hint=`) and `ab-packages status` prints the detail. The plan block
-  is a prediction; the record on the ESP is the fact.
+  `DROPPED` and `PINNED` are the only five answers.
+* **`ab-slot status` prints the one line** (`packages=` / `follow=` / `hint=`), and
+  `ab-packages status` prints the detail. The plan block is a prediction; the record on the ESP
+  is the fact.
 * **Your configuration is not the package's.** apk keeps your file and writes the package copy
-  as `*.apk-new`; that is asserted, not assumed. Locally installed packages keep a copy under
-  `/etc/apk/ab/local/` so a later base can replay them, and an upstream package with the same
-  name supersedes that copy.
+  as `*.apk-new`; that is asserted, not assumed.
+* **A local package keeps a copy under `/etc/apk/ab/local/`** so a later base can replay it.
+  An upstream package with the same name supersedes that copy.
 * **The defects found after `0.0.12` are packaged with the acceptance that covers them:**
 
-* **An apk protection rule is judged by its premise.** `scripts/device/apk-protection-probe.sh`
-  asks `apk audit --backup` whether apk sees a protected path as unmodified, which is exactly
-  the premise a `+` rule in `/etc/apk/protected_paths.d/` depends on: a rule that cannot fire
-  is reported on the spot, instead of showing up as a shadowed adapter after an upgrade. The
-  device drivers are POSIX `sh` throughout, the dialect `scripts/ci/verify.sh` lints them in.
+* **An apk protection rule is judged by its premise.**
+  `scripts/device/apk-protection-probe.sh` asks `apk audit --backup` whether apk sees a
+  protected path as unmodified.
+* **That is the premise a `+` rule depends on,** in `/etc/apk/protected_paths.d/`. A rule that
+  cannot fire is reported on the spot, instead of showing up as a shadowed adapter after an
+  upgrade.
+* **The device drivers are POSIX `sh` throughout,** the dialect `scripts/ci/verify.sh` lints
+  them in.
 * **An A/B slot switch is judged by the data it produces.** `scripts/device/lib.sh` exports
-  three field groups read from archived real-device runs — stable, identity and monitored — so
-  the matrix and scenario drivers no longer fold `committed`, `pending` and `generation` into
-  one class. `ab-slot packages snapshot` stops answering `packages=0` for a record it cannot
-  parse, and the commit path retargets the package record at the slot it committed.
+  three field groups read from archived real-device runs: stable, identity and monitored.
+* **The matrix and scenario drivers no longer fold fields into one class.** `committed`,
+  `pending` and `generation` are read apart now.
+* **`ab-slot packages snapshot` stops answering `packages=0`** for a record it cannot parse.
+  The commit path retargets the package record at the slot it committed.
 * **The daily upstream watch fails when discovery fails**, so a broken mirror or index is a red
   job instead of a green one that watched nothing.
 * **The release page is built from the payload manifest.** The kernel version and the upstream
   digests come from the manifest inside the payload, so a value the release itself carries is
   no longer printed as `not recorded`.
-* **The acceptance suite is one command.** `scripts/device/full-test.sh` puts the four broken
-  configurations of S8, the real docker load D1/D2/D3, the version pin (`--case pin`), the
-  package rollback P3/P4 and the release byte checks in one order, under one verdict.
+* **The acceptance suite is one command.** `scripts/device/full-test.sh` runs the four broken
+  configurations of S8, the real docker load D1/D2/D3 and the version pin (`--case pin`).
+* **The same run covers the package rollback P3/P4 and the release byte checks,** in one
+  order, under one verdict.
 
-The guard this page describes arrived in `0.0.11` and is unchanged: it judges the upstream base
-**and** the platform version, so `0.0.10` -> `0.0.11` stopped being refused with
-`74 payload-already-installed` and prints `base unchanged, platform 0.0.10 -> 0.0.11` when it
-lets the install through, while a payload of the same base that carries no platform version is
-refused with `74 payload-platform-unknown`. A machine still on `0.0.10` carries the `0.0.10`
-code, so that one hop needs `--force` once; the same-base release gate installs with `--force`
-for the same reason.
+The guard this page describes arrived in `0.0.11` and is unchanged. It judges the upstream base
+**and** the platform version. So `0.0.10` -> `0.0.11` stopped being refused with
+`74 payload-already-installed`, and prints `base unchanged, platform 0.0.10 -> 0.0.11` when it
+lets the install through.
+
+A payload of the same base that carries no platform version is refused with
+`74 payload-platform-unknown`. A machine still on `0.0.10` carries the `0.0.10` code, so that
+one hop needs `--force` once. The same-base release gate installs with `--force` for the same
+reason.
 
 The boot path is unchanged from `0.0.8`, and the first-boot network generation from
 `0.0.7` is unchanged. The content of those versions, still current:
 
 * **First-boot generation, the upstream way.** `ab-net-seed`, at `S16` ahead of `S20network`,
-  runs `/bin/board_detect` and `/bin/config_generate` when `/etc/config/network` is absent —
-  the same two programs an official ImmortalWrt image runs from preinit. This image runs
-  them itself instead of depending on that path, so a freshly written disk always has an
-  address. `system` therefore carries upstream's hostname and timezone.
-* **Four ports, one WAN.** `eth0` is the WAN (`dhcp`, plus `wan6`), `eth1` through `eth3` join
-  `br-lan`. The port set is read from `/sys/class/net`, so a machine with fewer ports gets a
-  smaller bridge and a single-port machine degrades to LAN-only.
+  runs `/bin/board_detect` and `/bin/config_generate` when `/etc/config/network` is absent.
+* **Those are the same two programs an official ImmortalWrt image runs from preinit.** This
+  image runs them itself, so a freshly written disk always has an address. `system` therefore
+  carries upstream's hostname and timezone.
+* **Four ports, one WAN.** `eth0` is the WAN (`dhcp`, plus `wan6`); `eth1` through `eth3` join
+  `br-lan`.
+* **The port set is read from `/sys/class/net`.** A machine with fewer ports gets a smaller
+  bridge, and a single-port machine degrades to LAN-only.
 * **`192.168.100.1/24` on the LAN**, with upstream's dnsmasq serving the pool. The subnet is
   deliberately not `192.168.1.0/24`.
 * **`22/tcp` from the WAN only on the convenience image.** The default image opens nothing:
-  the `wan` zone keeps `input 'REJECT'` and `dropbear` keeps upstream's binding to `lan`. The
-  `-wan-ssh` image adds one `allow_ssh_wan` rule and empties `dropbear.Interface` so the rule
-  can reach the daemon. LuCI's `80/tcp` stays off the WAN in both. The choice is a build-time
-  constant: the convenience image is the same pipeline with `CI_NET_WAN_SSH=open`.
+  the `wan` zone keeps `input 'REJECT'` and `dropbear` keeps upstream's binding to `lan`.
+* **The `-wan-ssh` image adds one `allow_ssh_wan` rule** and empties `dropbear.Interface`, so
+  the rule can reach the daemon. LuCI's `80/tcp` stays off the WAN in both.
+* **The choice is a build-time constant:** the convenience image is the same pipeline with
+  `CI_NET_WAN_SSH=open`.
 * **Nothing generated is overwritten.** The trigger is the absence of `/etc/config/network` and
   nothing else, so a user edit, a fixture and a configuration carried over by an upgrade all
   survive.

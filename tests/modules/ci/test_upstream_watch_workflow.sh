@@ -36,29 +36,37 @@ job_block() {
 
 assert_contains "$text" "on:
   schedule:" "ac-2 the watch runs on a schedule"
-# The cron is anchored at UTC midnight: the schedule states the intent (one run per UTC day
-# at 00:00) and does not shift the nominal time to compensate for GitHub's queue. The old
-# anchor is asserted out below, because it came with a four-hour compensation reasoning that
-# made the run page claim a start time nothing could guarantee.
-assert_contains "$text" 'cron: "0 0 * * *"' \
-  "ac-7 the watch runs at UTC midnight, not at a time shifted for the queue delay"
+# The cron is anchored at UTC 16:00, which is Beijing midnight: UTC+8 and no daylight
+# saving, so the two clocks never drift apart. The anchor is the intent (one run per Beijing
+# day, at 00:00) and nothing shifts it to compensate for GitHub's queue delay.
+assert_contains "$text" 'cron: "0 16 * * *"' \
+  "ac-1 the watch runs at UTC 16:00, which is Beijing midnight"
 assert_eq "$(grep -c 'cron:' "$watch")" "1" \
-  "ac-7 one cron, not a pair: a second daily run buys a hit rate and costs a full build"
+  "ac-1 one cron, not a pair: a second daily run buys a hit rate and costs a full build"
 schedule_comment=$(sed -n '/^  schedule:/,/^    - cron:/p' "$watch")
 assert_contains "$schedule_comment" "best-effort" \
-  "ac-7 the comment above the cron still says the start time is best-effort, not a guarantee"
-assert_contains "$schedule_comment" "UTC midnight" \
-  "ac-7 the comment states the anchor instead of a compensation for the queue delay"
-# The literal is assembled rather than written out: a test that contains the string it
-# searches for matches itself, and that is exactly the pattern grepped for in the next step.
-old_cron="0 16 $(printf '%s %s %s' '*' '*' '*')"
+  "ac-1 the comment above the cron says the start time is best-effort, not a guarantee"
+assert_contains "$schedule_comment" "Beijing midnight" \
+  "ac-1 the comment names the local time the anchor is meant to be"
+assert_contains "$schedule_comment" "UTC 16:00" \
+  "ac-1 ... and the UTC spelling it is actually written in"
+assert_contains "$schedule_comment" "no daylight saving" \
+  "ac-1 the comment says why the offset never needs a seasonal correction"
+# `timezone:` would be the other spelling of the same intent, and it is refused: the
+# actionlint this repository pins at 1.7.7 may not know a newer trigger key, and a workflow
+# that fails to parse stops a run before it starts.
+assert_eq "$(grep -cE '^ +timezone:' "$watch" || true)" "0" \
+  "ac-1 the schedule declares no timezone field: the offset lives in the cron"
+# The old anchor is asserted out: a run at UTC midnight was 08:00 in Beijing, the morning
+# this anchor deliberately moves away from. The literal is assembled rather than written out,
+# because a test that contains the string it searches for matches itself.
+old_cron="0 0 $(printf '%s %s %s' '*' '*' '*')"
 assert_eq "$(grep -cF "${old_cron}" "$watch" || true)" "0" \
-  "ac-7 the workflow declares no 16:00 UTC cron any more"
+  "ac-1 the workflow declares no UTC-midnight cron any more"
 # The tests are the other half of the same claim. The bracket forms keep this file from
 # matching its own pattern: what is grepped for is the literal text, not this regex.
-assert_eq "$(grep -rEn '0 16 [*] [*] [*]|four hours earl[y]' tests/modules/ci 2>/dev/null \
-  | wc -l | tr -d ' ')" "0" \
-  "ac-7 no CI test still asserts the old anchor or the reasoning behind it"
+assert_eq "$(grep -rEn '0 0 [*] [*] [*]' tests/modules/ci 2>/dev/null | wc -l | tr -d ' ')" \
+  "0" "ac-1 no CI test still asserts the old anchor"
 assert_contains "$text" "  workflow_dispatch:" "ac-2 the watch can be dispatched by hand"
 assert_eq "$(grep -c '^  push:' "$watch")" "0" \
   "ac-2 the watch is not triggered by a push: a push by GITHUB_TOKEN would not trigger it anyway"
@@ -90,10 +98,16 @@ assert_contains "$(job_block merge)" "tags are immutable" \
 
 assert_contains "$(job_block bump)" "needs.detect.outputs.changed == 'true'" \
   "ac-2 the branch is only opened when a release was detected"
-assert_contains "$(job_block heartbeat)" "needs.detect.outputs.changed != 'true'" \
-  "ac-2 a heartbeat only happens on a run that found nothing"
-assert_contains "$(job_block heartbeat)" "would-create" \
-  "ac-2 the heartbeat tag is only created when it is due"
+# The quiet day is no longer a tag. The keepalive job runs on the schedule and lets the
+# script decide (24 days out of 25 answer `skipped` and write nothing), and the audit row
+# only exists when a release was detected - so "nothing new" still leaves the graph green
+# and the two record files untouched.
+assert_contains "$(job_block keepalive)" "github.event_name == 'schedule'" \
+  "ac-2 the keepalive runs on the schedule, where a disabled watch is the risk"
+assert_contains "$(job_block audit)" "changed == 'true'" \
+  "ac-2 the audit row is only written when a release was detected"
+assert_eq "$(grep -c 'heartbeat' "$watch" || true)" "0" \
+  "ac-4 the heartbeat tag job is gone from the graph"
 
 # The side effects that may not happen on a quiet day: one place each, and every one of them
 # inside a job that the detection gates.
@@ -121,8 +135,23 @@ assert_contains "$(job_block bump)" 'branch="auto/upstream-${VERSION}"' \
   "ac-2 the automatic branch is named auto/upstream-<ver>"
 assert_contains "$(job_block bump)" 'git push --force-with-lease' \
   "ac-2 the branch is pushed so a re-run updates it instead of failing"
-assert_eq "$(grep -cE 'push.*refs/heads/(main|master)"' "$watch")" "0" \
-  "ac-2 no job pushes straight to main"
+assert_eq "$(grep -cE 'push.*refs/heads/(main|master)"' <<<"$(job_block bump)" || true)" "0" \
+  "ac-2 the pin change is never pushed straight to main"
+assert_eq "$(grep -c 'gh pr create' <<<"$(job_block bump)")" "1" \
+  "ac-2 the pin change is a pull request"
+# Two jobs do push to the default branch, and each pushes exactly one record file. That is
+# the one exception to the rule above, and it is the opposite case: a keepalive line or an
+# audit row that waited for a pull request would arrive days after the event it records.
+# The pin, the lockfiles and VERSION are still never part of such a push.
+for job in keepalive audit; do
+  _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
+  block=$(job_block "$job")
+  case "${block}" in
+    *"git add .github/keepalive.log"* | *"git add .github/automation-log.md"*)
+      printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-2 the $job job commits only its record file" ;;
+    *) _assert_fail "ac-2 the $job job commits only its record file" "no record-file git add in the job" ;;
+  esac
+done
 assert_contains "$(job_block bump)" 'main|master) echo "a dry run may not open a PR against' \
   "ac-2 a rehearsal may not open a pull request against main"
 
@@ -132,7 +161,7 @@ assert_contains "$(job_block bump)" 'main|master) echo "a dry run may not open a
 
 # The discovery, the build, the merge, the tag and the publish are jobs of this workflow,
 # linked by `needs`. Nothing waits for a push or a tag to start the next step.
-for job in detect bump build locks merge publish; do
+for job in detect keepalive bump build locks merge publish audit; do
   _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
   if [ -n "$(job_block "$job")" ]; then
     printf 'ok %d - %s\n' "$_ASSERT_COUNT" "ac-3 the watch graph carries the $job job"
@@ -244,26 +273,24 @@ assert_contains "$(sed -n '/^permissions:/,/^$/p' "$watch")" "contents: read" \
 assert_eq "$(grep -c 'permissions:' "$watch" | awk '{print ($1 >= 6) ? "yes" : "no"}')" "yes" \
   "ac-2 every writing job narrows the grant itself"
 
-# The heartbeat decides from tag history and from the commit that last touched the pin.
-# `detect` is where that decision runs, so `detect` is the checkout that has to carry the
-# tags and the history; the `heartbeat` job keeps its own for the push-time recheck.
-assert_contains "$(job_block detect)" "fetch-tags: true" \
-  "ac-1 the detect job fetches the tags the heartbeat decision reads"
-# The depth is the whole answer: `git log -1 -- <pin>` can only see what the clone carries,
-# so a depth that is an empirical number under the current commit density silently ages the
-# baseline. `0` is the full history, which for this repository is a few megabytes.
+# What each checkout has to carry is what its job reads. `detect` answers "where did this
+# release stop" from the pin the *base branch* carries, so it needs the branches, not the
+# tags; the tag state comes from the remote. `keepalive` needs the history its rebase-and-
+# retry rebases onto. Neither of them needs an empirical depth.
 assert_contains "$(job_block detect)" "fetch-depth: 0" \
-  "ac-5 the detect job fetches the full history, so the pin commit has a real age"
-assert_contains "$(job_block heartbeat)" "fetch-tags: true" \
-  "ac-5 the heartbeat job fetches the tags it decides from"
-assert_contains "$(job_block heartbeat)" "fetch-depth: 0" \
-  "ac-5 the heartbeat job fetches the full history its own recheck decides from"
+  "ac-5 the detect job fetches the full history, so origin/<base> is readable"
+assert_eq "$(grep -c 'fetch-tags: true' "$watch" || true)" "0" \
+  "ac-5 no checkout fetches tags any more: the tag state is read from the remote"
+assert_contains "$(job_block keepalive)" "fetch-depth: 0" \
+  "ac-5 the keepalive job fetches the history its rebase retry needs"
 assert_eq "$(grep -c 'fetch-depth: 50' "$watch" || true)" "0" \
   "ac-5 no checkout declares depth 50: an empirical depth drifts with commit density"
-# The dead parameter: heartbeat-tag.sh never reads CI_MATRIX_CANDIDATES, so passing it looked
-# like wiring while carrying nothing.
+# The dead parameter: the heartbeat script never read CI_MATRIX_CANDIDATES, so passing it
+# looked like wiring while carrying nothing - and the step itself is gone.
 assert_eq "$(grep -c 'CI_MATRIX_CANDIDATES: \${{ steps.matrix' "$watch")" "0" \
-  "ac-1 the detect heartbeat step does not pass a variable the script never reads"
+  "ac-1 the detect job does not pass a variable no script reads"
+assert_eq "$(grep -c 'steps.heartbeat' "$watch" || true)" "0" \
+  "ac-4 no job still reads the deleted heartbeat step's outputs"
 
 # The tag has to name what the merge produced, not whatever the branch points at now.
 assert_contains "$(job_block merge)" "mergeCommit" \
@@ -277,8 +304,12 @@ assert_contains "$(job_block merge)" "mergeCommit" \
 # a schedule run is empty rather than "false", so it is normalised once, at job level.
 assert_contains "$(job_block merge)" 'DRY_RUN: ${{ inputs.dry-run }}' \
   "ac-2 the merge job normalises the rehearsal switch once"
-assert_eq "$(grep -c 'env.DRY_RUN != .true.' "$watch")" "2" \
-  "ac-2 exactly the two publishing steps are gated on the rehearsal switch"
+# The two publishing steps, plus the audit commit: a rehearsal may publish a draft release
+# and write its row in the workspace, but it may not move the default branch.
+assert_eq "$(grep -c 'env.DRY_RUN != .true.' "$watch")" "3" \
+  "ac-2 the two publishing steps and the audit commit are gated on the rehearsal switch"
+assert_contains "$(job_block audit)" "if: env.DRY_RUN != 'true'" \
+  "ac-6 a rehearsal does not push its audit row to the default branch"
 assert_contains "$(job_block merge)" "if: steps.state.outputs.skip_merge != 'true' && env.DRY_RUN != 'true'" \
   "ac-2 a rehearsal does not squash-merge"
 assert_contains "$(job_block merge)" "if: steps.state.outputs.skip_tag != 'true' && env.DRY_RUN != 'true'" \
@@ -343,6 +374,14 @@ assert_contains "$(job_block issue)" 'CI_TAG_EXISTS: ${{ needs.detect.outputs.ta
   "ac-3 the failure issue is told whether the tag was pushed"
 assert_contains "$(job_block issue)" "The merge already landed" \
   "ac-3 a post-merge failure says the merge landed instead of pretending it did not"
+
+# The two record jobs are part of "a red run leaves one place to look": a keepalive commit
+# that could not be pushed, or an audit row that could not be written, is a failure like any
+# other, and the issue body's job table names it instead of blaming `detect`.
+assert_contains "$(job_block issue)" "keepalive" \
+  "ac-4 the failure issue is told what the keepalive job did"
+assert_contains "$(job_block issue)" "audit" \
+  "ac-6 the failure issue is told what the audit job did"
 
 # The detect job reads tags and the merge commit, so it needs to see them: the remote URL is
 # how it reads a tag this checkout did not fetch, and the PR read permission is how it reads

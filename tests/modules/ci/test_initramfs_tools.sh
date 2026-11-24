@@ -74,7 +74,13 @@ trap 'rm -rf "$tmp"' EXIT
 #   cleared:<name>            an exception whose gap is gone; harmless, kept for review
 # --------------------------------------------------------------------------- #
 
-report=$(python3 - "$root" <<'PY'
+# The program is written to a file and then run, rather than fed to `python3 -` through a
+# here-document inside `$( )`: bash 3.2 - the /bin/bash of every macOS host, and therefore
+# of this suite's `#!/usr/bin/env bash` - cannot parse a here-document nested in a command
+# substitution. It gives up on the whole file with "syntax error near unexpected token" and
+# points at the program's first bracket or array subscript, which reads like a shell bug in
+# code that has none. Keep every here-document here at top level for the same reason.
+cat >"$tmp/report.py" <<'PY'
 import json
 import re
 import sys
@@ -564,7 +570,7 @@ info("mandated_missing", sum(1 for name in MANDATED if name not in provided and 
 for line in problems:
     print(line)
 PY
-)
+report=$(python3 "$tmp/report.py" "$root")
 
 info_of() { printf '%s\n' "$report" | sed -n "s/^info:$1=//p"; }
 field() { printf '%s\n' "$report" | sed -n "s/^$1://p"; }

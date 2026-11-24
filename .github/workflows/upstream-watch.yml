@@ -9,9 +9,10 @@ name: Firmware CI - Upstream Watch
 # it" is therefore not a design that can work; the discovery, the build, the merge, the tag
 # and the publish all have to happen inside this run graph.
 #
-#   detect ─┬─ heartbeat (no update, due)                          -> done, success
-#           └─ bump -> build -> locks -> merge -> publish         -> done, success
-#                            └─ any failure -> issue              -> done, failure
+#   keepalive (schedule only; a quiet month)                      -> done, success
+#
+#   detect ─┬─ bump -> build -> locks -> merge -> publish -> audit -> done, success
+#           └─ any failure -> issue                               -> done, failure
 #
 # A failed run is recovered by dispatching this workflow with the same version and a
 # `resume` stage: `merge` re-runs the graph for a failure before the merge, `publish`
@@ -29,11 +30,18 @@ name: Firmware CI - Upstream Watch
 defaults: {run: {shell: bash}}  # -eo pipefail, so a gate piped into tee can fail its step
 on:
   schedule:
-    # Anchored at UTC midnight: the schedule states the intent - one run per UTC day, at
-    # 00:00 - and does not shift the nominal time to compensate for GitHub's queue. The
-    # `schedule` trigger is best-effort, not a guarantee: a queued run can start hours after
-    # the nominal time, so nothing downstream may depend on the exact hour it starts.
-    - cron: "0 0 * * *"
+    # UTC 16:00 is Beijing midnight: UTC+8 and no daylight saving, so the offset needs no
+    # seasonal correction and the two clocks never drift apart. Midnight leaves the working
+    # day intact - a run that finds a new upstream release builds for about 18 minutes while
+    # the people who read the result are asleep, and the result is on the run page when they
+    # are not.
+    #
+    # The `schedule` trigger is best-effort, not a guarantee: GitHub queues these runs and
+    # measured delays are hours, so nothing downstream may depend on the hour a run starts.
+    # The offset is written into the cron instead of a `timezone:` field because the
+    # actionlint this repository pins (1.7.7) is not guaranteed to know the newer key, and a
+    # workflow that fails to parse stops a run before it starts.
+    - cron: "0 16 * * *"
   workflow_dispatch:
     inputs:
       version:
@@ -83,7 +91,6 @@ jobs:
       current_pin: ${{ steps.detect.outputs.current_pin }}
       candidates: ${{ steps.matrix.outputs.candidates }}
       gaps: ${{ steps.matrix.outputs.gaps }}
-      heartbeat: ${{ steps.heartbeat.outputs.action }}
       mode: ${{ steps.detect.outputs.mode }}
       resume-stage: ${{ steps.detect.outputs.resume_stage }}
       # The reason a discovery failed, when it did. The issue body is the only thing a
@@ -94,18 +101,16 @@ jobs:
       tag-exists: ${{ steps.detect.outputs.tag_exists }}
       tag-sha: ${{ steps.detect.outputs.tag_sha }}
     steps:
-      # The heartbeat decides from tag history and from the commit that last touched the
-      # pin, and the diff guard in `merge` needs a common ancestor: neither works on
-      # actions/checkout's default depth-1, tag-less clone. A shallow checkout makes the
-      # pin's commit its own root, so `days_since` is always 0 and the heartbeat is never
-      # due - that is why this checkout carries the same tags and depth as `heartbeat`.
-      # The depth is 0, not a number: any fixed depth is an estimate of how many commits
-      # separate the pin bump from HEAD, correct only for the commit density it was measured
-      # at. This repository's whole history is a few megabytes, so "all of it" costs less
-      # than re-measuring the estimate and is right at every density.
+      # The full history is what makes the recovery path readable: `detect` answers "where
+      # did this release stop" from the pin the *base branch* carries, and actions/checkout
+      # with a depth fetches only the ref that triggered the run - a recovery dispatched
+      # from main could not see the rehearsal base branch's pin at all. The tags are not
+      # fetched: the tag state is read from the remote (CI_REMOTE_URL), which is the only
+      # way to tell "this run did not fetch it" from "it does not exist". The depth is 0
+      # rather than a number because any fixed depth is an estimate of how far the branch
+      # point is, correct only at the commit density it was measured at.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-tags: true
           fetch-depth: 0
           persist-credentials: false
       - name: Prepare the runner
@@ -134,55 +139,82 @@ jobs:
           VERSION: ${{ steps.detect.outputs.version }}
         run: bash scripts/ci/matrix-select.sh --version "${VERSION}" 2>&1 | tee -a "${CI_LOG_DIR}/matrix.log"
 
-      - name: Decide whether a heartbeat tag is due
-        id: heartbeat
-        run: bash scripts/ci/heartbeat-tag.sh --dry-run 2>&1 | tee -a "${CI_LOG_DIR}/heartbeat.log"
-
   # A scheduled workflow in a public repository is disabled after 60 days without
-  # repository activity, and a disabled watch is a silent auto-release outage. The tag is
-  # activity; its name never matches v*, so it can never trigger the release line either.
-  heartbeat:
-    name: Heartbeat Tag
-    needs: detect
-    if: ${{ needs.detect.outputs.changed != 'true' && needs.detect.outputs.heartbeat == 'would-create' }}
+  # repository activity, and a disabled watch is a silent auto-release outage. This job is
+  # what keeps the repository active when upstream is idle: one appended line in
+  # .github/keepalive.log, then one commit on the default branch.
+  #
+  # Why a commit and not a tag: a commit is the strongest in-repo activity signal there is,
+  # it shows up in the history and in the diff, and it can be audited a year later. The tag
+  # this replaced was invisible and its effect on the 60-day rule was never proved either,
+  # so it bought nothing a commit does not also buy.
+  #
+  # The job runs on every scheduled run, not only on the quiet ones: the decision belongs to
+  # the script, which answers `skipped` for 24 days out of 25 and writes nothing at all.
+  # A release day needs no keepalive because the merge is a commit of its own.
+  keepalive:
+    name: Keepalive Commit
+    if: ${{ github.event_name == 'schedule' && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      # The tags have to be here: the script decides from the tag history whether a
-      # heartbeat is due, and actions/checkout is a shallow, tag-less clone by default.
-      # Without `fetch-tags` a month that already has its heartbeat is tagged again and the
-      # push fails on the remote. The depth is the full history for the same reason as in
-      # `detect`: the commit that last touched the pin has to have a real date, not the
-      # boundary of whatever depth was guessed.
+      # The full history is what a rebase-and-retry needs: the push retries below rebase
+      # onto whatever the default branch carries by then, and a shallow clone would make
+      # that rebase a guess about the common ancestor.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-tags: true
           fetch-depth: 0
           persist-credentials: false
       - name: Prepare the runner
         uses: ./.github/actions/setup-ci
-      - name: Create the heartbeat tag
-        id: heartbeat
-        run: bash scripts/ci/heartbeat-tag.sh 2>&1 | tee -a "${CI_LOG_DIR}/heartbeat.log"
+      - name: Write the keepalive line
+        id: keepalive
+        run: bash scripts/ci/keepalive.sh run 2>&1 | tee -a "${CI_LOG_DIR}/keepalive.log"
 
-      - name: Push the heartbeat tag
+      # Nothing to push on the 24 days out of 25 that answer `skipped`: a job that pushed an
+      # empty commit every night would be the noise this replace-the-tag decision is meant
+      # to remove.
+      - name: Commit and push the keepalive line
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.heartbeat.outputs.tag }}
-          ACTION: ${{ steps.heartbeat.outputs.action }}
+          ACTION: ${{ steps.keepalive.outputs.action }}
+          DAYS_SINCE: ${{ steps.keepalive.outputs.days_since }}
+          LAST_COMMIT: ${{ steps.keepalive.outputs.last_commit }}
         run: |
           set -euo pipefail
-          [ "${ACTION}" = "created" ] || { echo "no heartbeat tag to push (${ACTION})"; exit 0; }
-          [ -n "${TAG}" ] || { echo "heartbeat-tag.sh reported no tag" >&2; exit 1; }
-          case "${TAG}" in
-            v*) echo "refusing to push ${TAG}: a v* tag would trigger the release line" >&2; exit 1 ;;
-          esac
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG}"
+          [ "${ACTION}" = "created" ] || { echo "no keepalive line to push (${ACTION})"; exit 0; }
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "upstream-watch[bot]"
+          git config user.email "upstream-watch@users.noreply.github.com"
+          git add .github/keepalive.log
+          git commit -m "chore(ci): keepalive ${LAST_COMMIT:0:7} was ${DAYS_SINCE} days old"
+          # The default branch can move between the checkout and the push - another run, a
+          # human, the release merge - and a rejected push must not lose the line. Rebase
+          # onto the branch as it is now and try again, a bounded number of times: a retry
+          # loop that cannot end is a job that hangs, and three attempts is already more
+          # than one collision needs.
+          attempt=1
+          while [ "${attempt}" -le 3 ]; do
+            if git push "${remote}" "HEAD:refs/heads/${GITHUB_REF_NAME}"; then
+              echo "pushed the keepalive commit on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "the keepalive commit could not be pushed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "push rejected; rebasing onto the default branch (attempt ${attempt})" >&2
+            git fetch --no-tags "${remote}" "refs/heads/${GITHUB_REF_NAME}"
+            git rebase "FETCH_HEAD"
+            attempt=$((attempt + 1))
+          done
 
-  # The automatic change is a branch and a pull request, never a push to main: every
-  # automatic change keeps an auditable diff and a rollback point.
+  # The automatic pin change is a branch and a pull request, never a push to main: the change
+  # that decides what the pipeline builds keeps an auditable diff and a rollback point. The
+  # keepalive line above and the audit row below are the one exception, and their reason is
+  # the opposite one - a record that waited for review would arrive after the event.
   bump:
     name: Open the Pin Pull Request
     needs: detect
@@ -612,11 +644,102 @@ jobs:
       extra-notes: ${{ needs.detect.outputs.candidates }}
       dry-run: ${{ inputs.dry-run }}
 
+  # The audit row is written after the release exists, because both halves of it - the
+  # upstream version that was detected and the release that was published - are only true
+  # once `publish` has returned. The table lives in .github/automation-log.md and is
+  # append-only: the history is the value, and a rewrite would erase it.
+  #
+  # A rehearsal writes the `upstream` row with its result saying so, and no `release` row:
+  # a draft release nobody published is not a release, and a log that called it one would
+  # be the file a reader trusts and cannot check.
+  audit:
+    name: Record the Upstream Event
+    needs: [detect, publish]
+    if: ${{ success() && needs.detect.outputs.changed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    # The rehearsal switch lives at job level for the same reason as in `merge`: a step
+    # `if:` reads `env`, and `inputs.dry-run` is empty rather than "false" on a schedule.
+    env:
+      DRY_RUN: ${{ inputs.dry-run }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+
+      - name: Record the release rows
+        id: audit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          OLD_PIN: ${{ needs.detect.outputs.current_pin }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The release URL is the thing a reader wants to click; the run URL is the fallback
+          # when the API cannot answer, and a row without a link is not an audit row.
+          link="$(gh release view "${VERSION}" --json url --jq .url 2>/dev/null || true)"
+          [ -n "${link}" ] || link="${RUN_URL}"
+          result="released"
+          [ "${DRY_RUN}" != "true" ] || result="rehearsed"
+          bash scripts/ci/automation-log.sh append --event upstream \
+            --version "${VERSION}" --old-pin "${OLD_PIN}" --result "${result}" --link "${link}" \
+            2>&1 | tee -a "${CI_LOG_DIR}/audit.log"
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "rehearsal: the release row is not written, there is no published release"
+            exit 0
+          fi
+          assets="$(gh release view "${VERSION}" --json assets --jq '.assets | length' 2>/dev/null || true)"
+          [ -n "${assets}" ] || assets=0
+          bash scripts/ci/automation-log.sh append --event release \
+            --version "${VERSION}" --assets "${assets}" --result published --link "${link}" \
+            2>&1 | tee -a "${CI_LOG_DIR}/audit.log"
+
+      # A rehearsal writes its row in the workspace and stops there: it proves the writer
+      # works and it publishes a draft release, but it may not move the default branch.
+      - name: Commit and push the automation log
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "upstream-watch[bot]"
+          git config user.email "upstream-watch@users.noreply.github.com"
+          git add .github/automation-log.md
+          if git diff --cached --quiet; then
+            echo "the automation log already carries this release"
+            exit 0
+          fi
+          git commit -m "chore(ci): record upstream ${VERSION:-release} in the automation log"
+          # Same bounded rebase-and-retry as the keepalive: the default branch moves during a
+          # release run (the squash merge does exactly that), so a first push often loses.
+          attempt=1
+          while [ "${attempt}" -le 3 ]; do
+            if git push "${remote}" "HEAD:refs/heads/main"; then
+              echo "pushed the automation log on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "the automation log could not be pushed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "push rejected; rebasing onto the default branch (attempt ${attempt})" >&2
+            git fetch --no-tags "${remote}" "refs/heads/main"
+            git rebase FETCH_HEAD
+            attempt=$((attempt + 1))
+          done
+
   # A red run has to leave one place to look. The title is stable per upstream version, so
   # a second failure updates the issue instead of opening another one.
   issue:
     name: Report the Failure
-    needs: [detect, heartbeat, bump, build, locks, merge, publish]
+    needs: [detect, keepalive, bump, build, locks, merge, publish, audit]
     if: ${{ failure() || cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -637,8 +760,10 @@ jobs:
           BUMP: ${{ needs.bump.result }}
           BUILD: ${{ needs.build.result }}
           LOCKS: ${{ needs.locks.result }}
+          KEEPALIVE: ${{ needs.keepalive.result }}
           MERGE: ${{ needs.merge.result }}
           PUBLISH: ${{ needs.publish.result }}
+          AUDIT: ${{ needs.audit.result }}
           PR: ${{ needs.bump.outputs.pr }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_UPSTREAM_VERSION: ${{ needs.detect.outputs.version }}
@@ -658,7 +783,7 @@ jobs:
         run: |
           set -euo pipefail
           failed=""
-          for pair in "bump:${BUMP}" "build:${BUILD}" "locks:${LOCKS}" "merge:${MERGE}" "publish:${PUBLISH}"; do
+          for pair in "keepalive:${KEEPALIVE}" "bump:${BUMP}" "build:${BUILD}" "locks:${LOCKS}" "merge:${MERGE}" "publish:${PUBLISH}" "audit:${AUDIT}"; do
             job="${pair%%:*}"; result="${pair#*:}"
             case "${result}" in
               failure|cancelled) failed="${failed} ${job}" ;;
@@ -679,8 +804,8 @@ jobs:
             | tee -a "${CI_LOG_DIR}/issue.log"
           {
             printf '\n## Jobs\n\n| job | result |\n| --- | --- |\n'
-            printf '| bump | %s |\n| build | %s |\n| locks | %s |\n| merge | %s |\n| publish | %s |\n\n' \
-              "${BUMP}" "${BUILD}" "${LOCKS}" "${MERGE}" "${PUBLISH}"
+            printf '| keepalive | %s |\n| bump | %s |\n| build | %s |\n| locks | %s |\n| merge | %s |\n| publish | %s |\n| audit | %s |\n\n' \
+              "${KEEPALIVE}" "${BUMP}" "${BUILD}" "${LOCKS}" "${MERGE}" "${PUBLISH}" "${AUDIT}"
             # The sentence has to match the state: after the merge it is no longer true that
             # the release stopped before publishing, and saying so would hide the tag.
             if [ "${CI_PIN_IN_BASE:-}" = "${VERSION}" ] || [ "${CI_TAG_EXISTS:-false}" = "true" ]; then

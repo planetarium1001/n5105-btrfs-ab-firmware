@@ -96,11 +96,13 @@ STAGE_JOB_RE = re.compile(rf"^S[1-5] {TITLE_WORD} - {TITLE_PHRASE}$")
 PHRASE_JOB_RE = re.compile(rf"^{TITLE_PHRASE}(?: - {TITLE_PHRASE})?$")
 STAGE_WORKFLOW_RE = re.compile(rf"^{TITLE_PHRASE}$")
 
-# Rule 5: the six header rows. `release.sh` and both workflows render key-value blocks, so a
-# header that spells `item | value` is the same table with a second name for `field`. The
+# Rule 5: the seven header rows. `release.sh` and both workflows render key-value blocks, so
+# a header that spells `item | value` is the same table with a second name for `field`. The
 # sixth is the change table of the automatic pull request: it is not a key-value block (one
 # column is a file, the other what was written to it), and folding it into `field | value`
-# would read like a key-value pair that it is not.
+# would read like a key-value pair that it is not. The seventh is the automation audit log:
+# one row per event, and the link is the reason the row exists at all, so it is neither a
+# key-value block nor one of the stage tables.
 HEADERS = {
     "| stage | verdict | key line | artifact and sha256 | next command |",
     "| stage | verdict | duration | artifact |",
@@ -108,11 +110,12 @@ HEADERS = {
     "| job | result |",
     "| artifact | size | sha256 |",
     "| file | written this run |",
+    "| time | event | detail | result | link |",
 }
 # How many header rows exist on the surface today. The number is the guard against a scan
 # that silently stops reaching the tables - which is exactly how this assertion was empty
 # once. Adding a table means raising it, deliberately.
-HEADER_ROWS_EXPECTED = 11
+HEADER_ROWS_EXPECTED = 12
 PRINTF_RE = re.compile(r"printf '([^']*)'")
 DIVIDER_CELLS = re.compile(r"^\|( *-{3,} *\|)+$")
 
@@ -493,7 +496,7 @@ assert_eq "$(text_scan step-shapes)" "" \
 # --------------------------------------------------------------------------- #
 
 assert_eq "$(text_scan headers)" "" \
-  "rule 5 every one of the 11 table headers is one of the six allowed rows"
+  "rule 5 every one of the 12 table headers is one of the seven allowed rows"
 
 assert_contains "$(cat scripts/ci/stage-summary.sh)" \
   "| stage | verdict | key line | artifact and sha256 | next command |" \

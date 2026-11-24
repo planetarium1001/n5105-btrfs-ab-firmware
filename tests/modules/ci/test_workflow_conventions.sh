@@ -268,7 +268,17 @@ assert_eq "$uncommented" "" "ac-10 every pinned action names the release it pins
 # gate). Extracting the ~76 shell-body lines left in the file would still leave the workflow
 # over 2600 and would put step orchestration - which belongs to a workflow - into a script.
 # So the ceiling moves with the stage, with this record, which is what the number is for.
-CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2860}
+#
+# Raised 2860 -> 2998 for the two record jobs of task 20261125-01, not for a stage: ci.yml
+# gained `schedule-state` (asks the API whether the daily watch is still enabled, and fails
+# the run when it is not) and `audit` (one row in .github/automation-log.md when a push to
+# main touched platform/, initramfs/, VERSION or the pin), and it now declares
+# `defaults: {run: {shell: bash}}` because both new steps pipe into tee. The keepalive and
+# audit jobs of upstream-watch.yml are not counted here - this ceiling only reads ci*.yml -
+# and no existing stage changed. Measured 2973; the ceiling keeps the same ~25 lines of
+# headroom as the raise above, so an unrelated fix is still not forced through a budget
+# change.
+CI_WORKFLOW_LINE_CEILING=${CI_WORKFLOW_LINE_CEILING:-2998}
 line_total=$(cat .github/workflows/ci*.yml | wc -l | tr -d ' ')
 _ASSERT_COUNT=$((_ASSERT_COUNT + 1))
 if [ "$line_total" -le "${CI_WORKFLOW_LINE_CEILING}" ]; then

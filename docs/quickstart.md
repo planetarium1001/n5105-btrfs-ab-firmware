@@ -131,10 +131,11 @@ package transaction are separate on purpose ([update.md](update.md#package-updat
    carries over ([install.md](install.md#first-boot-at-the-console)).
 
 The package and this value live in the writable layer. `packages=` is the field that says whether a
-kernel module can be installed for the running slot: `aligned` is "yes", `limited` is "not until
-the metadata is fixed", and `unknown` is "no verdict yet"
-([install.md](install.md#reading-packages-and-packages_reason)). `unknown` on a fresh disk does not
-block `apk add`, and it does block `ab-slot packages upgrade`
+kernel module can be installed for the running slot.
+
+`aligned` is "yes", `limited` is "not until the metadata is fixed", and `unknown` is "no verdict
+yet" ([install.md](install.md#reading-packages-and-packages_reason)). `unknown` on a fresh disk
+does not block `apk add`, and it does block `ab-slot packages upgrade`
 ([update.md](update.md#package-updates)). Step 4 is what writes a verdict.
 
 A community application installs the same way: the same `apk add <name>` and the same

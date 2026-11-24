@@ -45,7 +45,7 @@ GPT 容差只有 `lastlba - 33` 个扇区，所以"标称容量相同、来自�
 只有回答"是"，逐字节那几条路才成立。回答"否"时，唯一的路是 B——
 原因见 §2：没有任何工具能让整盘镜像变小装进去。
 
-```
+```text
 Q1  目标盘容量 >= 原盘容量 吗？
  |- 否  -> 路径 B：安装镜像 + data 包
  '- 是  -> Q2 原盘还能开机吗？
@@ -68,9 +68,9 @@ sha256sum -c /data/data-*.tar.gz.sha256
 ab-restore /data/data-<hostname>-<UTC>.tar.gz
 ```
 
-`期望看到：` 第一条命令打印 `backup=<path>`、`entries data=... etc=... docker=...`
-与 `consistency=snapshot`；`sha256sum -c` 打印 `OK`。恢复时每一类打一行 `restored=`，
-并把当前槽的 `etc/config` 一起放回去。
+`期望看到：` 第一条命令打印 `backup=<path>` 与 `consistency=snapshot`。
+`entries data=... etc=... docker=...` 也由它打印，`sha256sum -c` 打印 `OK`。
+恢复时每一类打一行 `restored=`，并把当前槽的 `etc/config` 一起放回去。
 
 `不可用时：` Q1 回答"否"——改用路径 B；原机已经开不了机——那是路径 C 与 D。
 
@@ -121,11 +121,11 @@ btrfs subvolume list /mnt/img
 rsync -aHAX /mnt/img/@data/ /srv/rescue/
 ```
 
-`期望看到：` `losetup` 打印 loop 设备，`partx`/`blkid` 显示四个分区，
+`期望看到：` `losetup` 打印 loop 设备，`partx`/`blkid` 显示四个分区。
 `btrfs subvolume list` 列出 `@data`，救出目录里是数据。
 
-`不可用时：` 想把镜像写回**更小**的盘——双向都不行：这种场景下镜像只是数据来源，
-目标盘必须按路径 B 重建。（把镜像写到更大的盘是允许的，那是 Q1 的"是"。）
+`不可用时：` 目标盘比镜像来源盘**更小**。把镜像写到不小于原盘的盘上可以，那正是 Q1 的"是"。
+对更小的盘，镜像只是数据来源，目标盘必须按路径 B 重建。
 
 ## 4. `ab-backup` 与 `ab-restore`
 
@@ -151,8 +151,8 @@ rsync -aHAX /mnt/img/@data/ /srv/rescue/
 | | `--data-only` | 只解 `data/`：`docker/`、`etc/config/` 与 `meta/` 都不动 |
 | | `--force` | 允许恢复进非空的 `@data` |
 
-两个工具都在 stdout 给机器可读的行（`backup=`、`entries`、`consistency=`、`restored=`），
-拒绝走 stderr、带 `refuse:` 前缀、退出码 3。拒绝意味着**什么都没写**：
+两个工具都在 stdout 给机器可读的行：`backup=`、`entries`、`consistency=`、`restored=`。
+拒绝走 stderr，带 `refuse:` 前缀，退出码 3。拒绝意味着**什么都没写**：
 空间检查、摘要检查、成员检查与非空检查都在解包第一个字节之前完成。
 
 一致性：`ab-backup` 先对 `@data` 做只读快照再归档快照，所以包是一个时间点。

@@ -6,7 +6,9 @@ name: Firmware CI - Build and Validate
 #
 #   resolve ──┬── fetch ──┬── assemble ──┐
 #             │           ├── s1..s5 ────┤
-#             └── verify ────────────────┴── report
+#             └── verify ────────────────┴── report ── audit (main push)
+#
+#   schedule-state (push, pull_request, dispatch; asks the API whether the watch is still on)
 #
 # workflow_dispatch resumes a failed run where it stopped and lets the slow QEMU probe run on
 # its own.
@@ -65,9 +67,17 @@ on:
 permissions:
   contents: read
 
+# The runner's default shell drops a pipeline's exit status, so a gate piped into tee would
+# report tee's. `bash -eo pipefail` is what lets the steps below that pipe into tee fail
+# their step; it is one workflow-level line because the rule is per file, so a new piped
+# gate cannot be added without it.
+defaults: {run: {shell: bash}}
+
 # Manual and automatic runs never cancel each other: a dispatch used to be killed by the next
-# push to the same ref, and a push by a dispatch. The composite refactor of this file also
-# removed the per-job `permissions:` repeats - the top-level block covers them.
+# push to the same ref, and a push by a dispatch. The composite refactor of this file removed
+# the per-job `permissions:` blocks that only repeated `contents: read`; a job that needs more
+# than the top-level block still declares its own - `report` and `schedule-state` read the
+# API, `audit` writes a log row.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
@@ -272,3 +282,111 @@ jobs:
       design_checks_status: ${{ needs.verify.outputs.design_checks_status }}
       design_checks_problems: ${{ needs.verify.outputs.design_checks_problems }}
       shellcheck_status: ${{ needs.verify.outputs.shellcheck_status }}
+
+  # A scheduled workflow in a public repository is disabled after 60 days without activity,
+  # and a disabled watch is a silent auto-release outage: no stage of this pipeline would
+  # ever notice it. This job asks the API for the watch's state and fails when it is not
+  # `active`, so the run page says why the releases stopped instead of nothing happening.
+  #
+  # It skips a `schedule` event: this file has no schedule trigger of its own, so a
+  # `schedule` here can only be upstream-watch.yml calling it as a reusable workflow, and a
+  # called run has no business grading the caller's schedule. A `workflow_call` event name
+  # never reaches the runner - the original trigger does - which is why the gate names the
+  # three events this file is actually started by.
+  schedule-state:
+    name: Schedule State
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: read
+      # The workflow state is read through the API; the token needs nothing else.
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: {persist-credentials: false}
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+      - name: Check the scheduled watch is enabled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/schedule-health.sh 2>&1 | tee -a "${CI_LOG_DIR}/schedule-health.log"
+
+  # The platform row of .github/automation-log.md: a commit that touched platform/,
+  # initramfs/, VERSION or the upstream pin is the kind of change a later release has to be
+  # read against, and the commit itself is the only place that fact can be recorded. Every
+  # other push writes nothing - the log is a record of the changes that matter, not a mirror
+  # of the history.
+  #
+  # `always()` because a red pipeline is exactly the case that needs the row: the run URL in
+  # it is where a reader finds out why. Its own failure makes the run red, so a log that
+  # silently stopped accepting rows cannot pass for a log that was never needed.
+  audit:
+    name: Record the Platform Change
+    needs: [report]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Two commits, because the diff is `HEAD^1..HEAD`: a deeper clone buys nothing here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prepare the runner
+        uses: ./.github/actions/setup-ci
+
+      - name: Record the platform row
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT: ${{ needs.report.result }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          hit="$(printf '%s\n' "${changed}" \
+            | grep -E '^(platform/|initramfs/|VERSION$|\.github/upstream-pin\.conf$)' || true)"
+          if [ -z "${hit}" ]; then
+            echo "no platform, initramfs, VERSION or pin path in this push: nothing to record"
+            exit 0
+          fi
+          echo "recording the platform change to:"
+          printf '%s\n' "${hit}"
+          bash scripts/ci/automation-log.sh append --event platform \
+            --sha "${GITHUB_SHA}" --subject "$(git log -1 --format=%s)" \
+            --result "ci ${REPORT}" --link "${RUN_URL}" \
+            2>&1 | tee -a "${CI_LOG_DIR}/audit.log"
+
+      - name: Commit and push the automation log
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "ci[bot]"
+          git config user.email "upstream-watch@users.noreply.github.com"
+          git add .github/automation-log.md
+          if git diff --cached --quiet; then
+            echo "this push was already recorded in the automation log"
+            exit 0
+          fi
+          git commit -m "chore(ci): record ${GITHUB_SHA:0:7} in the automation log"
+          # The default branch can move between the checkout and the push. Rebase and retry a
+          # bounded number of times: a retry loop that cannot end is a job that hangs, and a
+          # log row is never worth a hung run.
+          attempt=1
+          while [ "${attempt}" -le 3 ]; do
+            if git push "${remote}" "HEAD:refs/heads/main"; then
+              echo "pushed the automation log on attempt ${attempt}"
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "the automation log could not be pushed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "push rejected; rebasing onto the default branch (attempt ${attempt})" >&2
+            git fetch --no-tags "${remote}" "refs/heads/main"
+            git rebase FETCH_HEAD
+            attempt=$((attempt + 1))
+          done

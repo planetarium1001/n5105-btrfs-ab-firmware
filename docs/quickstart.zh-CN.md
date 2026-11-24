@@ -3,8 +3,8 @@
 [English](quickstart.md) | **简体中文**
 
 本页是这个产品的最短路径：写一次镜像、启动一次、装一个包、从发布 feed 升级一次、再回退一次。
-每一步给出命令和判断这一步成功的结果，每一步背后的细节都在 [install.zh-CN.md](install.zh-CN.md)
-与 [update.zh-CN.md](update.zh-CN.md)，所以本页保持成一张清单。
+每一步给出命令和判断这一步成功的结果，所以本页保持成一张清单。细节分别见
+[install.zh-CN.md](install.zh-CN.md) 与 [update.zh-CN.md](update.zh-CN.md)。
 
 五步按顺序执行，机器放在台面上，并且盘里没有你还需要的东西。
 
@@ -24,8 +24,8 @@
 
 ## 第一步：写盘
 
-先选资产，再写盘。两个安装镜像带着同一个内核、同一个 rootfs 与同一份升级载荷，唯一不同的值是
-WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写哪一个文件)）。
+先选资产，再写盘。两个安装镜像带着同一个内核、同一个 rootfs 与同一份升级载荷。
+唯一不同的值是 WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写哪一个文件)）。
 
 | 资产 | 什么时候取它 |
 | --- | --- |
@@ -53,8 +53,9 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
 `<upstream>` 是这次发布的上游基底（base），例如 `25.12.2`。`of=` 里的设备是参考机器上那块盘的
 节点，请把它换成 `lsblk` 为你这块盘打印的节点。
 
-写盘会销毁目标盘上的全部内容。结果是 514 MiB、四个 128 MiB 分区，其余都不用手工创建。用
-`-wan-ssh` 镜像时，首启会打印三种关掉 WAN 规则的办法，LAN 侧一能应答就应当把规则关掉
+写盘会销毁目标盘上的全部内容。结果是 514 MiB、四个 128 MiB 分区，其余都不用手工创建。
+
+用 `-wan-ssh` 镜像时，首启会打印三种关掉 WAN 规则的办法。LAN 侧一能应答，就应当把规则关掉
 （[install.zh-CN.md](install.zh-CN.md#该写哪一个文件)）。
 
 ## 第二步：首次启动
@@ -70,7 +71,7 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    ```sh
    ab-slot log | grep net-seed
    ```
-   预期：`stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24`。
+   - 预期：`stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24`。
 2. 读状态行。
    ```sh
    ab-slot status
@@ -84,9 +85,10 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    预期：出现登录提示。LuCI 在 `http://192.168.100.1` 上应答同一个地址，镜像带的是上游的 root
    账号且口令为空，所以请在机器离开台面之前设一个口令。
 
-新写的盘上 `packages=` 读作 `unknown`，一块从未更新过的盘没有别的答案
-（[install.zh-CN.md](install.zh-CN.md#怎么读-packages-与-packages_reason)）。种子失败时，控制台
-会留下 `stage=net-seed result=fail reason=<token>`，
+新写的盘上 `packages=` 读作 `unknown`。一块从未更新过的盘没有别的答案。原因见
+[install.zh-CN.md](install.zh-CN.md#怎么读-packages-与-packages_reason)。
+
+种子失败时，控制台会留下 `stage=net-seed result=fail reason=<token>`。
 [install.zh-CN.md](install.zh-CN.md#控制台上的首次启动) 给了一条不必等修复的进门办法。
 
 ## 第三步：装一个包
@@ -99,7 +101,7 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    ```sh
    apk update
    ```
-   预期：退出码 0，说明 feed 应答了。从未跑过这一步的机器根本没有索引，那时 `apk add` 只会回答
+   预期：退出码 0，说明 feed 应答了。从未跑过这一步的机器根本没有索引。那时 `apk add` 只会回答
    `(no such package)`（[update.zh-CN.md](update.zh-CN.md#包更新)）。
 2. 装一个不依赖内核的包。
    ```sh
@@ -119,19 +121,26 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    uci commit system
    uci get system.@system[0].hostname
    ```
-   预期：读回来打印 `bench-n5105`，说明这个值已经落在升级会一起带走的那个文件里
+   预期：读回来打印 `bench-n5105`。这说明值已经落在升级会一起带走的那个文件里
    （[install.zh-CN.md](install.zh-CN.md#控制台上的首次启动)）。
 
-这个包与这条值都住在可写层里。`packages=` 说的是「当前这个槽能不能装内核模块」：`aligned` 是
-「能」，`limited` 是「元数据修好之前不能」，`unknown` 是「还没有结论」
-（[install.zh-CN.md](install.zh-CN.md#怎么读-packages-与-packages_reason)）。新盘上的 `unknown`
-不挡 `apk add`，但会挡住 `ab-slot packages upgrade`
+这个包与这条值都住在可写层里。`packages=` 说的是「当前这个槽能不能装内核模块」。
+
+`aligned` 是「能」，`limited` 是「元数据修好之前不能」，`unknown` 是「还没有结论」。三个词的出处见
+[install.zh-CN.md](install.zh-CN.md#怎么读-packages-与-packages_reason)。
+
+新盘上的 `unknown` 不挡 `apk add`。但它会挡住 `ab-slot packages upgrade`
 （[update.zh-CN.md](update.zh-CN.md#包更新)）。第四步就是写出结论的那一步。
 
 社区应用走的是同一条路：同样一条 `apk add <name>`，同样看一条装完之后的事实，而这条事实不总是
-版本号。本项目实测的样本，以及每个样本看的是哪条事实，在
-`tests/fixtures/software-samples.json` 与 `tests/fixtures/follow-samples.json` 里
-（[troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)）。
+版本号。
+
+本项目实测的样本与每个样本看的事实，分别记在这两个文件里：
+
+- `tests/fixtures/software-samples.json`
+- `tests/fixtures/follow-samples.json`
+
+那份清单的背景见 [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)。
 
 ## 第四步：升级一次
 
@@ -149,8 +158,10 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    ```sh
    ab-upgrade --feed
    ```
-   预期：一个 `Update` 块，先是 `base`、`kernel`、`platform`，再是 `Change`、`Tested`、`Risk`，
-   最后是 `Proceed? [y/N]`。载荷带包计划时，它后面还跟一个 `Packages` 块与
+   预期：一个 `Update` 块。先是 `base`、`kernel`、`platform`。再是 `Change`、`Tested`、`Risk`，
+   最后是 `Proceed? [y/N]`。
+
+   载荷带包计划时，它后面还跟一个 `Packages` 块与
    `Proceed and follow N packages? [y/N]`。只有明确的 `y` 才算同意，回车、`n` 与输入结束都算
    拒绝，且什么都不写（[update.zh-CN.md](update.zh-CN.md#确认提示)）。
 3. 读这次安装留下的状态。
@@ -172,7 +183,7 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(packages|packages_reason|follow)='
    ```
    预期：包搬到新基底上时，这里是 `packages=followed` 与 `follow=followed`。若是
-   `packages=aligned` 配 `follow=pending reason=network`，说明元数据已经对上、包还没有搬
+   `packages=aligned` 配 `follow=pending reason=network`。这说明元数据已经对上，包还没有搬
    （[update.zh-CN.md](update.zh-CN.md#包怎么跟随一个基底)）。
 
 ## 第五步：回退一次
@@ -205,8 +216,8 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    ab-slot status
    ```
    预期：`committed=<上一个槽>`、`pending=none`、`next=` 与它相等、`p4=ok`。`generation=` 停在
-   原地，因为回退移动的是指针，而不是造出一个新的代
-   （[architecture.zh-CN.md](architecture.zh-CN.md#升级事务)、`scripts/device/recovery-probe.sh`）。
+   原地，因为回退移动的是指针，而不是造出一个新的代。依据见
+   [architecture.zh-CN.md](architecture.zh-CN.md#升级事务)。探针见 `scripts/device/recovery-probe.sh`。
 4. 读你回退到的那个槽的包结论。
    ```sh
    ab-slot status 2>/dev/null | tr ' ' '\n' | grep -E '^(packages|packages_reason)='
@@ -215,7 +226,7 @@ WAN 侧的 `22/tcp` 是否被接受（[install.zh-CN.md](install.zh-CN.md#该写
    `packages_reason=no-record`。下一次系统更新会为正在跑的槽写出结论
    （[update.zh-CN.md](update.zh-CN.md#包更新)）。
 
-`/data` 下的文件由两个槽共用，原地不动。更新之后写下的内容留在被向前滚动的那一层里，只要还有槽
+`/data` 下的文件由两个槽共用，原地不动。更新之后写下的内容留在被向前滚动的那一层里。只要还有槽
 引用它，`ab-slot gc` 就不会删（[install.zh-CN.md](install.zh-CN.md#回退)）。
 
 ## 读状态行

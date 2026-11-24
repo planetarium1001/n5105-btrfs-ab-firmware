@@ -14,14 +14,14 @@
 
 插件就是一个目录加里面一份声明；一次 check 会在旁边再留下一个文件。除此之外什么都不读：
 
-```
+```text
 /etc/ab/plugins.d/<label>/plugin.conf     声明，由人写
 /etc/ab/plugins.d/<label>/.verdict       由 `plugins check` 写，不由人手写
 ```
 
-`<label>` 就是目录名，也是每条命令称呼这个插件用的名字。它必须匹配 `[a-z0-9][a-z0-9_-]*`：
+`<label>` 就是目录名，也是每条命令称呼这个插件用的名字。它必须匹配 `[a-z0-9][a-z0-9_-]*`。
 label 会出现在消息里、出现在 apk 命令行的 `plugin:<label>` 里、出现在 `/tmp` 下的路径里，所以
-只允许在任何地方都不需要加引号的字符。
+只允许任何地方都不需要加引号的字符。
 
 这个目录在 `/etc/ab` 下，也就是可写层。系统更新替换的是系统树，不会搬动 `/etc/ab`，所以声明
 能活过一次升级，升级也不会从 payload 里带进来一份。
@@ -30,10 +30,13 @@ label 会出现在消息里、出现在 apk 命令行的 `plugin:<label>` 里、
 词汇只有「若干个 apk feed」和「若干个包名」。这是一条刻意的边界，而不是没做完的功能：插件能
 做错的事被它能说出口的话限住，插件声明的任何东西都不会在升级之前、之中、之后被执行。
 
-插件进入 apk 的方式只有一条。每次 apk 调用前，在 `/tmp` 下拼出一个 repositories 文件：机器
-自己的 feed 文件按 apk 的顺序（`repositories.d/*.list`，然后 `distfeeds.list`，然后
-`repositories`），后面接上这次事务可以读的每个插件的 feed。apk 从上往下读一个 repositories
-文件，平局时基底必须赢，所以插件的行排在最后。
+插件进入 apk 的方式只有一条。每次 apk 调用前，在 `/tmp` 下拼出一个 repositories 文件：
+
+- 机器自己的 feed 文件按 apk 的顺序：`repositories.d/*.list`，然后 `distfeeds.list`，然后
+  `repositories`；
+- 后面接上这次事务可以读的每个插件的 feed。
+
+apk 从上往下读一个 repositories 文件，平局时基底必须赢，所以插件的行排在最后。
 
 那些机器自己的文件是只读的，不会被写。这里什么都不编辑 `/etc/apk/repositories.d` 或
 `distfeeds.list`，所以对齐器与跟随看到的仍然是它们为之而建的那个基底；插件源也不会因为自己
@@ -45,7 +48,7 @@ label 会出现在消息里、出现在 apk 命令行的 `plugin:<label>` 里、
 
 ## 声明文件
 
-```
+```text
 api = 1
 kind = packages
 enabled = yes
@@ -74,11 +77,17 @@ package = luci-app-example
 
 `#` 开始一行注释，空行被忽略，`=` 两边的空格是习惯而非语法——解析器两边都会去掉。
 
-静态规则管的也不只是键名，还有取值：label 不是 `[a-z0-9][a-z0-9_-]*`、`api` 不是 `1`、
-`kind` 不在两个取值里、`enabled` 既不是 `yes` 也不是 `no`、`kind = source` 却没有 `feed`、
-`kind = packages` 却没有 `package`、URL 不是 `http(s)` 或带空白、`package` 不是 apk 包名、
-key 路径不在 `/etc/apk/keys/` 下、key 文件不存在。每一种都有[reason 表](#reason-表)里自己的
-token，而一份错在两处的声明永远回答同一个「第一个」失败项，所以脚本可以拿这个答案做分支。
+静态规则管的也不只是键名，还有取值。以下每一种都是拒绝：
+
+- label 不是 `[a-z0-9][a-z0-9_-]*`；
+- `api` 不是 `1`，`kind` 不在两个取值里，`enabled` 既不是 `yes` 也不是 `no`；
+- `kind = source` 却没有 `feed`，或 `kind = packages` 却没有 `package`；
+- URL 不是 `http(s)`，或带空白；
+- `package` 不是 apk 包名；
+- key 路径不在 `/etc/apk/keys/` 下，或 key 文件不存在。
+
+每一种都有[reason 表](#reason-表)里自己的 token。一份错在两处的声明永远回答同一个「第一个」
+失败项，所以脚本可以拿这个答案做分支。
 
 其中两条取值规则值得单独说，因为它们都是为了不让一份声明比它写出来的意思更大：
 
@@ -104,10 +113,10 @@ ab-packages plugins repos                # 一次事务会读的那个 repositor
 | `apply` | 一次事务装上声明点名的包，前面照样是这块计划块与那个提问 | apk 自己的状态；不写 `/boot/ab/packages` | 不，除了 apk 自己要做的事 |
 | `repos` | 把一次事务会读的文件按将要写出的样子打印：机器自己的 feed 在前，被放行的插件 feed 在后 | 什么都不写（`/tmp` 下一个文件，命令返回时删掉） | 不 |
 
-`list` 是一张表，因为人们问它的问题就是关于列的：开没开（`enabled=`）、check 过没有
-（`checked=`）、被拒的话为什么（`reason=`）。一行长这样：
+`list` 是一张表，因为人们问它的问题就是关于列的。列有三个：开没开（`enabled=`）、check 过
+没有（`checked=`）、被拒的话为什么（`reason=`）。一行长这样：
 
-```
+```text
 label=istore kind=packages enabled=no checked=stale reason=none feeds=1 packages=1
 ```
 
@@ -115,23 +124,27 @@ label=istore kind=packages enabled=no checked=stale reason=none feeds=1 packages
 看到的事实，而不是从「某个包怎么没出现」推出来的结论。它还在 stderr 上说一句解释，说明上面
 那些行里有几行来自插件。
 
-`ab-packages sources <name>` 是归因出现的地方：属于某个已启用插件 feed 的来源打印成
-`source=plugin:<label>`，而不是 `source=feed`，于是一个来自别人自家树的包不会被读成本项目发布的
-包。回答的是 apk，而 apk 只认 `/etc/apk` 下的文件——插件的 feed 按设计不在那里。所以只要有插件
-在贡献，同一个问题会再问一次，问的是「一次事务会读的那个文件」（机器自己的 feed 在前，插件的在
-后），两个答案合并。什么都没声明时，这条命令问的和它历来问的完全一样。
+`ab-packages sources <name>` 是归因出现的地方。属于某个已启用插件 feed 的来源打印成
+`source=plugin:<label>`，而不是 `source=feed`。于是一个来自别人自家树的包不会被读成本项目发布
+的包。
 
-`apply` 遵守本项目所有写操作的同一条规矩：先打印计划块，问这里每一次写操作都在问的那个问题
-`Proceed and follow <n> packages? [y/N] `（`<n>` 是声明点名的包数），只有 `y`（或脚本用的
-`--yes`）才开始事务。拒绝（回答 `n`）什么都不写，退出码 `0`。一份没有点名任何包的
-声明回答 `plugin-nothing-to-install` 并以 `0` 退出，因为只有源的插件是一个能用的插件，只是
-本来就没有东西可装。
+回答的是 apk，而 apk 只认 `/etc/apk` 下的文件——插件的 feed 按设计不在那里。所以只要有插件在
+贡献，同一个问题会再问一次，问的是「一次事务会读的那个文件」。那个文件里机器自己的 feed 在前、
+插件的在后，两个答案合并。什么都没声明时，这条命令问的和它历来问的完全一样。
+
+`apply` 遵守本项目所有写操作的同一条规矩。它先打印计划块，问这里每一次写操作都在问的那个问题：
+`Proceed and follow <n> packages? [y/N] `。其中 `<n>` 是声明点名的包数。只有 `y`（或脚本用的
+`--yes`）才开始事务，拒绝（回答 `n`）什么都不写，退出码 `0`。
+
+一份没有点名任何包的声明回答 `plugin-nothing-to-install` 并以 `0` 退出。只有源的插件是一个能用
+的插件，只是本来就没有东西可装。
 
 `apply` 只受静态规则约束，别的不受。shadow 与可达性是 `check` 的问题：它们是关于**跟随**的
-问题，而跟随会搬动没人点名的包；`apply` 只搬写下来的那些。所以在 `apply` 里点名一个插件，就是
-决定执行它——包会从这个声明所点名的 feed 装上，无论它有没有 verdict——先跑
-`plugins check <label>` 只是让这个决定变成有依据的决定，而不是唯一可读的那个。计划块在提问之前
-就把插件和每一个包都列出来了，所以事务永远不会比屏幕上那几行更宽。
+问题，而跟随会搬动没人点名的包。`apply` 只搬写下来的那些。
+
+所以在 `apply` 里点名一个插件，就是决定执行它。包会从这个声明所点名的 feed 装上，无论它有没有
+verdict。先跑 `plugins check <label>` 只是让这个决定变成有依据的决定，而不是唯一可读的那个。
+计划块在提问之前就把插件和每一个包都列出来了，所以事务永远不会比屏幕上那几行更宽。
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -144,27 +157,29 @@ label=istore kind=packages enabled=no checked=stale reason=none feeds=1 packages
 [update.zh-CN.md](update.zh-CN.md)）；一个插件的包清单不是那句话。
 
 world 是另一个文件，而 `apply` 确实碰到它——通过 apk，不是自己动手。`apk add` 会把装上的每个
-名字记进 `/etc/apk/world`，apk 正是靠它记住这个名字是被点名要的，而 `plugins apply` 跑的就是
-一次普通的 `apk add`。所以插件装上的包从那一刻起就有 world 条目，而关掉插件之后它会怎样，见
+名字记进 `/etc/apk/world`，apk 正是靠它记住这个名字是被点名要的。`plugins apply` 跑的就是一次
+普通的 `apk add`。
+
+所以插件装上的包从那一刻起就有 world 条目。关掉插件之后它会怎样，见
 [关掉一个插件](#关掉一个插件)。
 
 ## check 是这台机器唯一联网的地方
 
 没有任何事务会去问 feed 在不在、会不会 shadow 什么。它读的是一次 check 写下的 verdict。这正
-是升级与跟随路径保持离线、不会卡在超时上的原因，也是为什么 `check` 是唯一带挂钟上限的命令
+是升级与跟随路径保持离线、不会卡在超时上的原因。它也是为什么 `check` 是唯一带挂钟上限的命令
 （`AB_PLUGINS_CHECK_TIMEOUT`，默认 180 秒）。
 
-一次 check 按这个顺序做四件事：
+一次 check 按这个顺序做五件事：
 
 1. 上一节那些静态规则。一份用不起来的声明永远不会产生一次请求。
 2. 对每个声明的 feed 做一次 HEAD，用的取件工具与超时和跟随自己的探测完全一致。不回答的 feed
    是 `feed-unreachable`，check 就停在这里：已经没有别的东西可比了。
 3. 往 `/tmp` 下的缓存做一次 `apk update`，再对 world 里的裸包名跑一次 `apk policy`，两次都
-   对着这个插件将要贡献的那个 repositories 文件。哪个来源赢是 apk 自己的事，所以两个版本谁
-   大是问 apk 的，而不是在这里再实现一遍。
-4. 写 verdict 到 `.verdict`：
+   对着这个插件将要贡献的那个 repositories 文件。
+4. 哪个来源赢是 apk 自己的事，所以两个版本谁大是问 apk 的，而不是在这里再实现一遍。
+5. 写 verdict 到 `.verdict`：
 
-```
+```text
 verdict=ok
 reason=none
 checked=2026-11-21T03:12:44Z
@@ -172,17 +187,20 @@ conf=3f2a7c1d4e5b8091a2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607182
 ```
 
 verdict 才是答案，屏幕上那行不是：它是之后每个事务读的文件。所以写不下去的 check 会说
-`plugin=<label> verdict=ok reason=verdict-unwritable` 并以非零退出——一个屏幕上写着 `ok`、背后
-却没有文件的答案，是一句没人兑现的承诺，下一次事务读到的只会是上一次留下的东西。写不下去的
-**blocked** verdict 会保留它查到的 token，并在同一行加上 `verdict-write=failed`：拒绝仍然是答案，
-缺的只是这条答案的记录。
+`plugin=<label> verdict=ok reason=verdict-unwritable`，并以非零退出。
+
+一个屏幕上写着 `ok`、背后却没有文件的答案，是一句没人兑现的承诺。下一次事务读到的只会是上一次
+留下的东西。
+
+写不下去的 **blocked** verdict 会保留它查到的 token。它还在同一行加上
+`verdict-write=failed`：拒绝仍然是答案，缺的只是这条答案的记录。
 
 一个插件的 feed 要同时满足三件事才进入事务：`enabled = yes`、verdict 是 `ok`、verdict 里记的
 摘要等于当前声明的摘要。任何一条不成立，feed 就会在 apk 调用那一刻被挡在外面，而且不吭声——
 对于一个不许靠联网来决定的步骤，「fail closed」只能这么实现。
 
 摘要正是**改过的声明必须重新 check** 的原因。改一行，旧 verdict 就不再代表这个文件：
-`plugins list` 报 `checked=stale`，feed 在下一次 apk 调用时就已经不在 repositories 文件里，
+`plugins list` 报 `checked=stale`。feed 在下一次 apk 调用时就已经不在 repositories 文件里，
 既没有浪费时间也没有发出请求。跑一次 `plugins check` 写下新的 verdict，插件就又被放行。
 
 `list` 一行里的 `checked=` 是四个词之一：
@@ -203,42 +221,50 @@ stale 不是要机器去修的故障状态：它是这份声明在请求再看�
 是写在声明里的许可，剩下那一条没有别的取值。
 
 `allow-shadow = no` 是默认值，它回答插件源带来的那个问题：它是否提供 world 里已经有的某个包
-的**更高**版本？如果是，check 用 `shadow:<name>` 挡住它，并说出是哪个名字、哪两个版本。理由：
-跟随是用一次 `apk upgrade` 搬动整个世界；一个悄悄提供 `htop 3.4` 而基底是 `3.3` 的 feed，
-就是「没人提过的包在下次启动时动了」的来路，而发现这件事的机器是刚跨过一次发布的那台。
+的**更高**版本？如果是，check 用 `shadow:<name>` 挡住它，并说出是哪个名字、哪两个版本。
+
+理由：跟随是用一次 `apk upgrade` 搬动整个世界。一个悄悄提供 `htop 3.4` 而基底是 `3.3` 的
+feed，就是「没人提过的包在下次启动时动了」的来路，而发现这件事的机器是刚跨过一次发布的那台。
+
 `allow-shadow = yes` 放行它，并在 verdict 里记 `shadow-allowed` 而不是 `none`，于是「这是
 被有意接受的」留在记录上。通常比允许 shadow 更好的做法是：在 world 里把基底版本钉住。
 
-`allow-kmod = no` 是默认值。包名以 `kmod-` 开头的包、以及 URL 里含 `/kmods/` 的 feed，分别
-被 `plugin-package-kmod` 与 `plugin-feed-kmods` 拒绝。理由：这块设备的核模块放在每次构建各
-一个的目录里（`releases/<version>/kmods/<build hash>/kmods`），为另一个核构建的模块装得上、
-然后加载不了。看得见的损失不是那个模块，而是下次换基底之后起不来的那台机器。
-`allow-kmod = yes` 是给读过这个代价、并且有理由的人准备的。
+`allow-kmod = no` 是默认值。包名以 `kmod-` 开头的包被 `plugin-package-kmod` 拒绝。URL 里含
+`/kmods/` 的 feed 被 `plugin-feed-kmods` 拒绝。
 
-`arch = noarch` 是默认值，也是本版本唯一接受的取值。URL 里带架构段的 feed（`/x86_64/`、
-`/x86_64_*/`、`/i386_*/`、`/aarch64_*/`、`/arm_*/`、`/mips*/`、`/riscv64*/`）被
-`plugin-feed-arch` 拒绝。理由：按架构发布的树是照着那个架构的基底构建的，而本项目只在一个
-发布线上出这一个目标。取一棵为别的基底构建的树，正是对齐器与跟随存在的意义所在，所以默认是
-拒绝而不是警告。
+理由：这块设备的核模块放在每次构建各一个的目录里，即
+`releases/<version>/kmods/<build hash>/kmods`。为另一个核构建的模块装得上、然后加载不了。看得见的损失不是那个模块，而是下次换基底之后起不来
+的那台机器。`allow-kmod = yes` 是给读过这个代价、并且有理由的人准备的。
 
-还有两条更小的边界也在这里：`key` 必须指向 `/etc/apk/keys/` 下确实存在的文件
-（`plugin-key-outside`、`plugin-key-missing`），而且没有任何声明能导入一把钥匙。本系统不管理
+`arch = noarch` 是默认值，也是本版本唯一接受的取值。URL 里带架构段的 feed 被
+`plugin-feed-arch` 拒绝：
+
+- `/x86_64/`、`/x86_64_*/`、`/i386_*/`、`/aarch64_*/`
+- `/arm_*/`、`/mips*/`、`/riscv64*/`
+
+理由：按架构发布的树是照着那个架构的基底构建的，而本项目只在一个发布线上出这一个目标。取一棵
+为别的基底构建的树，正是对齐器与跟随存在的意义所在，所以默认是拒绝而不是警告。
+
+还有两条更小的边界也在这里。`key` 必须指向 `/etc/apk/keys/` 下确实存在的文件
+（`plugin-key-outside`、`plugin-key-missing`）。而且没有任何声明能导入一把钥匙。本系统不管理
 keyring，插件也没法让它开始管理。
 
 ## 源不回答的时候
 
 有三种不同的故障，各有各的答案。
 
-**check 时不回答的 feed** 是一次被拒绝的 check：`plugin=<label> verdict=blocked
-reason=feed-unreachable`，退出码 `74`。插件什么都不贡献，`plugins list` 会一直这么说，直到
-再 check 一次。
+**check 时不回答的 feed** 是一次被拒绝的 check。它会说
+`plugin=<label> verdict=blocked reason=feed-unreachable`，退出码 `74`。插件什么都不贡献，
+`plugins list` 会一直这么说，直到再 check 一次。
 
 **check 时还好、事务时不可达的 feed** 不会让任何新东西失败。verdict 还是 `ok`，feed 还在
-repositories 文件里，apk 从它那儿取不到东西，于是这次事务的结局与「一次没有网络的跟随」历来
-的结局完全一样：记录保持 `follow=pending reason=network`，`ab-slot status` 打印那两行让你用
-`ab-packages update` 重试，同时往 `/boot/ab/plugins.journal` 追加一行：
+repositories 文件里，apk 从它那儿取不到东西。
 
-```
+于是这次事务的结局与「一次没有网络的跟随」历来的结局完全一样。记录保持
+`follow=pending reason=network`，`ab-slot status` 打印那两行让你用 `ab-packages update` 重试。
+同时往 `/boot/ab/plugins.journal` 追加一行：
+
+```text
 2026-11-21T03:20:07Z plugin-suspended reason=network
 ```
 
@@ -250,42 +276,50 @@ repositories 文件里，apk 从它那儿取不到东西，于是这次事务的
 而且它不沉默。事务用机器自己的 feed 跑完，`/boot/ab/plugins.journal` 里每次丢掉这套 feed 的 apk
 调用各留一行：
 
-```
+```text
 2026-11-21T03:20:07Z plugin-skip reason=tmp-unwritable
 ```
 
 只有一条命令是拒绝而不是继续：跟随里的 world prune。缺了声明的 feed，它分不清「这个发布不提供
-这个名字」和「插件的 feed 提供」，而凭半个答案删掉一个 world 条目，等于把别人有意装上的包
-「取消点名」了——所以它回答 `prune-unanswerable`，一个条目都不删。
+这个名字」和「插件的 feed 提供」。
+
+而凭半个答案删掉一个 world 条目，等于把别人有意装上的包「取消点名」了。所以它回答
+`prune-unanswerable`，一个条目都不删。
 
 这些故障都不写 `/etc/apk/repositories.d`、`distfeeds.list` 或任何 world 条目。插件的 feed
-活在 `/tmp` 下那个每次 apk 调用都重新拼一遍的文件里，所以一个消失的来源在机器自己的包状态里
-什么都不留——下一次网络正常的事务直接把它再读一遍就是。
+活在 `/tmp` 下那个每次 apk 调用都重新拼一遍的文件里。所以一个消失的来源在机器自己的包状态里
+什么都不留，下一次网络正常的事务直接把它再读一遍就是。
 
 ## 关掉一个插件
 
 两种办法，任何一种都是完整的：
 
-```
+```text
 enabled = no                        # 写在 plugin.conf 里
 rm -rf /etc/ab/plugins.d/<label>     # 或者删掉整个目录
 ```
 
 两者都不需要重新 check。`enabled = no` 让插件在下一次 apk 调用时不进入任何事务，删掉的目录
-则没有声明可读。`plugins list` 会继续打印被关掉的插件——一行 `enabled=no`——因为「声明了但
-关着」和「从来没有过」是两个不同的事实，而后者不是需要修的毛病。
+则没有声明可读。
+
+`plugins list` 会继续打印被关掉的插件——一行 `enabled=no`——因为「声明了但关着」和「从来没有
+过」是两个不同的事实。而后者不是需要修的毛病。
 
 两者都不做的是卸载：那些包是 apk 的，它们留在机器上。删掉目录同时删掉了 verdict，所以以后
 再打开这个插件时它是 `checked=never`，在重新 check 之前什么都不贡献。
 
 **world 条目不会随开关一起消失，而有一条路径会把它拿掉。** `apply` 装上的名字留在
-`/etc/apk/world` 里，跟随会继续从任何提供它的来源维护它们。真正会删条目的是跟随里的 prune
-（`ab_packages_follow`，由新基底的首次启动和 `ab-packages update` 跑）：它删的是**这个发布不
-提供**的 world 条目，判断基于一次事务会读的那套 feed。插件关掉之后，那套 feed 里就不再有它的
-feed，于是只有这个 feed 提供的包读作「不提供」，条目被删掉——包本身仍然装着、配置也还在，
-`apk add <name>`（或一次 revert）就能把条目放回来。这条规则对每一个 world 条目都一样，从来不是
-插件专属；这也正是「插件的 feed 不是第二份包状态」的意思：它们决定一个名字从哪来，不决定 world
-有没有资格忘掉它。
+`/etc/apk/world` 里，跟随会继续从任何提供它的来源维护它们。
+
+真正会删条目的是跟随里的 prune（`ab_packages_follow`，由新基底的首次启动和
+`ab-packages update` 跑）。它删的是**这个发布不提供**的 world 条目，判断基于一次事务会读的
+那套 feed。
+
+插件关掉之后，那套 feed 里就不再有它的 feed，于是只有这个 feed 提供的包读作「不提供」，条目被
+删掉。包本身仍然装着、配置也还在，`apk add <name>`（或一次 revert）就能把条目放回来。
+
+这条规则对每一个 world 条目都一样，从来不是插件专属。这也正是「插件的 feed 不是第二份包状态」
+的意思：它们决定一个名字从哪来，不决定 world 有没有资格忘掉它。
 
 ## 撤销插件装上的东西
 
@@ -300,8 +334,10 @@ feed，于是只有这个 feed 提供的包读作「不提供」，条目被删�
 | 整个上一套系统（含包） | `ab-slot rollback` | 回到另一个槽和它自己的那一层包；跨基底是这个，不是包回退 |
 
 `ab-slot packages snapshot` 记录这台机器，并且（除非给了 `--no-payloads`）把一次 revert 会装的
-本体取下来。这次取件读的是跟随读的同一套 feed——插件的 feed 也在里面——所以只有某个声明 feed
-提供的包也能在快照里有本体，而不是记一个 `payload-gap`，离线的回退对它们同样存在。
+本体取下来。这次取件读的是跟随读的同一套 feed，插件的 feed 也在里面。
+
+所以只有某个声明 feed 提供的包也能在快照里有本体，而不是记一个 `payload-gap`。离线的回退对
+它们同样存在。
 
 它们都不删除包。从插件装上的包，不会因为插件而以任何「命令能挑出来撤销」的方式被挂住：包上
 没有记插件名，同一个包也可能来自任何地方。删掉一个包是 apk 自己的操作——`apk del <name>`，
@@ -310,12 +346,13 @@ feed，于是只有这个 feed 提供的包读作「不提供」，条目被删�
 ## 一个例子：iStore
 
 iStore 是 OpenWrt 上的第三方应用商店。它在这里出现，是作为一份真实声明的形状，而不是推荐。
-**本项目不为 iStore 背书，不测试它，也不在它发布的设备上启用它。** 这个例子是
-`enabled = no`，它会一直关着，直到拥有这台机器的人自己打开它、读一遍 verdict，再做决定。
-文件留在 [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf)，由你复制到要装它的
-机器的 `/etc/ab/plugins.d/istore/plugin.conf`；**镜像里不带任何插件声明**。
+**本项目不为 iStore 背书，不测试它，也不在它发布的设备上启用它。**
 
-```
+这个例子是 `enabled = no`，它会一直关着，直到拥有这台机器的人自己打开它、读一遍 verdict，再
+做决定。文件留在 [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf)。由你
+复制到要装它的机器的 `/etc/ab/plugins.d/istore/plugin.conf`。**镜像里不带任何插件声明**。
+
+```text
 /etc/ab/plugins.d/istore/plugin.conf
 
 api = 1

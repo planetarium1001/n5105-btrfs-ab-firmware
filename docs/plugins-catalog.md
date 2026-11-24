@@ -26,15 +26,16 @@ is 17 packages in one transaction, and every one of them is a world entry afterw
 
 **Not endorsed, not enabled.** iStore is a third-party application store for OpenWrt. This
 project does not test it, does not support it, and does not switch it on. **No plugin
-declaration ships in the image**: an image carries the mechanism, never a source. This page
-keeps the recipe as a file you copy in, at [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf),
-and it arrives `enabled = no` - it stays off until the person who owns the machine turns it on,
-reads the verdict, and decides. What follows is the shape of a recipe that worked, not a
-recommendation.
+declaration ships in the image**: an image carries the mechanism, never a source.
+
+This page keeps the recipe as a file you copy in, at
+[examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf), and it arrives
+`enabled = no`. It stays off until the person who owns the machine turns it on, reads the
+verdict, and decides. What follows is the shape of a recipe that worked, not a recommendation.
 
 Copied to `/etc/ab/plugins.d/istore/plugin.conf`, the declaration reads:
 
-```
+```text
 api = 1
 kind = packages
 enabled = no
@@ -80,41 +81,45 @@ will read before the transaction, `ab-packages plugins repos` prints it.
 
 `key` is a presence check, not an import: with no file at that path the check refuses with
 `plugin-key-missing` before it fetches anything. The file is the store's own public key,
-published at `https://istore.istoreos.com/repo-apk/istore-apk.pem`. This project does not manage
-a keyring and does not import one ([plugins.md](plugins.md#guardrails)), so a feed's assurance is
-an `https://` address and whatever apk itself checks - nothing more.
+published at `https://istore.istoreos.com/repo-apk/istore-apk.pem`.
+
+This project does not manage a keyring and does not import one
+([plugins.md](plugins.md#guardrails)), so a feed's assurance is an `https://` address and
+whatever apk itself checks - nothing more.
 
 ### Risks and what it does not do
 
 * **Versions follow the source.** Nothing here pins a version: what the tree publishes today is
-  what `apply` installs and what a later follow maintains. `allow-shadow = no` is the bound. If
-  the tree starts offering a *higher* version of a package the world already holds, `check`
+  what `apply` installs and what a later follow maintains. `allow-shadow = no` is the bound.
+* If the tree starts offering a *higher* version of a package the world already holds, `check`
   blocks it with `shadow:<name>` instead of letting the next follow move a package nobody named.
 * **It writes a conffile of its own.** `luci-app-store` installs
-  `/etc/apk/repositories.d/compat.list`. That is the package's own behaviour, not the plugin's:
-  the plugin writes nothing under `/etc/apk`, and none of its three feeds appear in any machine
-  feed file. It is worth knowing because that file outlives the recipe - remove it if you remove
-  the store.
+  `/etc/apk/repositories.d/compat.list`. That is the package's own behaviour, not the plugin's.
+* The plugin writes nothing under `/etc/apk`, and none of its three feeds appear in any machine
+  feed file.
+* It is worth knowing because that file outlives the recipe - remove it if you remove the store.
 * **The recipe is one URL away from breaking.** A tree that reorganises its paths answers
   something other than `verdict=ok` on the next check, and a feed that stops answering is
-  `feed-unreachable`. That is the recipe failing honestly, rather than an install that fails
-  halfway.
+  `feed-unreachable`.
+* That is the recipe failing honestly, rather than an install that fails halfway.
 * **What it does not do.** The store is installed and reachable; nothing about it is supported by
-  this project. No dependency handling between plugins, no key import, no GUI, no uninstall. A
-  recipe cannot hook a boot, an install or an upgrade step, and `plugins apply` does not write
+  this project. No dependency handling between plugins, no key import, no GUI, no uninstall.
+* A recipe cannot hook a boot, an install or an upgrade step, and `plugins apply` does not write
   `/boot/ab/packages` - one plugin's package list is not the follow's verdict.
 
 ### Turning it off
 
-```
+```text
 enabled = no
 ```
 
 or `rm -rf /etc/ab/plugins.d/istore`. Either one is complete and neither needs a new check. Both
 leave the 17 packages installed: they are apk's, and removing one is `apk del <name>`'s job, not
-this project's. A switched-off plugin also stops contributing its feeds, so a later follow's
-prune can drop a world entry that only this tree offered - the package stays installed, with its
-configuration - and turning the recipe back on and checking it again puts the feeds back
+this project's.
+
+A switched-off plugin also stops contributing its feeds, so a later follow's prune can drop a
+world entry that only this tree offered. The package stays installed, with its configuration, and
+turning the recipe back on and checking it again puts the feeds back
 ([plugins.md](plugins.md#turning-a-plugin-off)).
 
 ## Writing your own recipe
@@ -122,9 +127,10 @@ configuration - and turning the recipe back on and checking it again puts the fe
 A recipe is a declaration, and the field table is in
 [plugins.md](plugins.md#the-declaration): eight keys, of which `api`, `kind` and one of
 `feed` / `package` are the minimum. The four commands and what each one answers are in
-[plugins.md](plugins.md#the-four-commands). Nothing on this page is a template to copy blind -
-the fields are a contract and the guardrails apply to a declaration you wrote exactly as they
-apply to the one above.
+[plugins.md](plugins.md#the-four-commands).
+
+Nothing on this page is a template to copy blind. The fields are a contract, and the guardrails
+apply to a declaration you wrote exactly as they apply to the one above.
 
 What a recipe of your own has that this list cannot give it is a check. Run
 `ab-packages plugins check <label>` before `ab-packages plugins apply <label>`: the first is the

@@ -15,5 +15,11 @@ __pycache__/
 
 tests/.out/
 
+# The keepalive record is a tracked repository file, not a build log: the upstream-watch
+# keepalive job commits `.github/keepalive.log` with a plain `git add`, so the `*.log` rule
+# in the WORKFLOW block above must not swallow it. The exception is deliberately written
+# outside that block: `workflow install` regenerates the block and would drop it.
+!.github/keepalive.log
+
 # Built payloads (release artifacts, re-fetchable from CI/releases)
 payloads/

@@ -524,6 +524,41 @@ def check_debug_ssh(problems: Problems) -> None:
         problems.add(where, f"line {number}: {message}")
 
 
+STYLE_MODULE = None
+
+
+def _docs_style():
+    """Import scripts/check_docs_style.py once, next to this file.
+
+    The page-level command and this check share one implementation on purpose: two copies
+    of the style rules would drift, and the copy that nobody runs is the one that rots.
+    """
+    import importlib.util
+
+    global STYLE_MODULE
+    if STYLE_MODULE is None:
+        path = SELF.parent / "check_docs_style.py"
+        spec = importlib.util.spec_from_file_location("check_docs_style", path)
+        module = importlib.util.module_from_spec(spec)
+        # dataclasses resolve their string annotations through sys.modules, so the module
+        # has to be registered before it is executed.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        STYLE_MODULE = module
+    return STYLE_MODULE
+
+
+def check_docs_style(problems: Problems) -> None:
+    """Every page obeys docs/style.md's limits, spacing, links and section pairs."""
+    try:
+        style = _docs_style()
+    except Exception as exc:  # noqa: BLE001 - report instead of crashing
+        problems.add("docs-style", f"cannot load scripts/check_docs_style.py: {exc!r}")
+        return
+    for violation in style.collect_violations(style.default_targets(ROOT), root=ROOT):
+        problems.add(violation.path, f"line {violation.line}: {violation.message}")
+
+
 CHECKS = {
     "partitions": check_partitions,
     "esp-data-only": check_esp_data_only,
@@ -538,6 +573,7 @@ CHECKS = {
     "retired-names": check_retired_tokens,
     "debug-ssh": check_debug_ssh,
     "workflow-expressions": check_workflow_expressions,
+    "docs-style": check_docs_style,
 }
 
 

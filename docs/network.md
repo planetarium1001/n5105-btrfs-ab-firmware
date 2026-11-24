@@ -11,7 +11,7 @@ result. Everything you change afterwards lives in the writable layer and is left
 
 Two hooks, in this order:
 
-```
+```text
 S15 ab-boot            A/B bookkeeping, no network
 S16 ab-net-seed        board_detect + config_generate + project defaults (first try)
 S20 network            netifd brings up br-lan and wan, dnsmasq serves the LAN
@@ -19,12 +19,14 @@ S25 ab-net-reconcile   second try, only if S16 could not finish
 ```
 
 What decides it is a **marker**, `/etc/config/.ab-net-seed`, not the presence of the
-configuration file. That distinction is not pedantic: the upstream `99-default-settings`
+configuration file. That distinction is not pedantic. The upstream `99-default-settings`
 uci-defaults runs at `S10`, before this hook, and creates a network file that carries
-nothing but `config globals`. A seed that trusted "the file exists" skipped itself forever,
-which is exactly what a v0.0.7 machine did - it kept the generator default
-(`br-lan{eth0}`, `192.168.1.1/24`, `wan eth1`), served no WAN at all, and logged
-`result=skip reason=network-present` on every boot.
+nothing but `config globals`.
+
+A seed that trusted "the file exists" skipped itself forever, which is exactly what a v0.0.7
+machine did. That machine kept the generator default (`br-lan{eth0}`, `192.168.1.1/24`,
+`wan eth1`), served no WAN at all, and logged `result=skip reason=network-present` on every
+boot.
 
 The decision, in words:
 
@@ -38,9 +40,11 @@ The decision, in words:
 
 The NICs may not exist yet at `S16` (the igc ports on the N5105 appear around thirteen
 seconds in). When `no eth*` is found the seed writes **no marker** and logs
-`result=pending reason=no-ethernet`; `S25 ab-net-reconcile` runs again after netifd and
-reloads the network once, so the machine heals itself in the same boot. A failure never
-blocks the boot: the reason goes to the ring log and `rcS` continues.
+`result=pending reason=no-ethernet`.
+
+`S25 ab-net-reconcile` runs again after netifd and reloads the network once, so the machine
+heals itself in the same boot. A failure never blocks the boot: the reason goes to the ring
+log and `rcS` continues.
 
 Every attempt also writes `ab/net.json` onto the ESP - `result`, `mode`, `wan`,
 `lan_ports`, the wired devices it saw, whether the marker exists - so a disk pulled out of
@@ -58,11 +62,13 @@ a machine explains its own network without anybody booting it.
 | WAN inbound | nothing; only the `-wan-ssh` image adds one `22/tcp` rule, `allow_ssh_wan` | the project defaults |
 | SSH binding | upstream's binding to `lan`; the `-wan-ssh` image removes `dropbear.@dropbear[0].Interface` so the daemon listens on every address | the project defaults |
 
-The port set is not a constant. It comes from `/sys/class/net`: every `eth*` with a `device`
-link, minus the WAN device, joins the bridge. A two-port machine therefore bridges one port,
-and a one-port machine degrades to LAN-only -- `wan` removed, the single port in `br-lan`, and
-`stage=net-seed result=ok mode=lan-only` in the ring log. `board_detect` supplies `system` and
-the upstream names; it does not decide which port plays which role.
+The port set is not a constant. It comes from `/sys/class/net`. Every `eth*` with a `device`
+link, minus the WAN device, joins the bridge.
+
+A two-port machine therefore bridges one port. A one-port machine degrades to LAN-only:
+`wan` removed, the single port in `br-lan`, and `stage=net-seed result=ok mode=lan-only` in
+the ring log. `board_detect` supplies `system` and the upstream names; it does not decide
+which port plays which role.
 
 The values themselves come from `/etc/net-defaults.conf`, rendered at build time from
 `scripts/ci/net-defaults.conf.in`: `NET_WAN_DEV`, `NET_LAN_DEVS`, `NET_LAN_ADDR`,
@@ -81,7 +87,7 @@ nft list ruleset | grep 'dport 22'         # nothing, unless the image was built
 
 A fresh install writes one line per run to the ring log on `/boot/ab/log/boot-0.log`:
 
-```
+```text
 stage=net-seed result=ok mode=router wan=eth0 lan-ports=eth1 eth2 eth3 addr=192.168.100.1/24
 ```
 
@@ -141,11 +147,13 @@ firewall is what keeps it off the WAN, and the `wan` zone keeps `input 'REJECT'`
 `22/tcp` rule, so an SSH attempt from the WAN side is refused before it reaches `dropbear`.
 
 One image is different. `n5105-ab-<upstream>-install-wan-ssh.img.gz` adds exactly one rule,
-`allow_ssh_wan` (`22/tcp`), and removes `dropbear.@dropbear[0].Interface` so the daemon can
-accept the connection the rule lets through. It exists for the position this box is often in --
-behind a main router you cannot see, with no keyboard and no monitor -- and the price is real:
-the WAN side of a shared network is not necessarily clean, and `dropbear` accepts password
-authentication with whatever root password the image carries.
+`allow_ssh_wan` (`22/tcp`). It also removes `dropbear.@dropbear[0].Interface`, so the daemon
+can accept the connection the rule lets through.
+
+That image exists for the position this box is often in: behind a main router you cannot see,
+with no keyboard and no monitor. The price is real. The WAN side of a shared network is not
+necessarily clean, and `dropbear` accepts password authentication with whatever root password
+the image carries.
 
 So this is a step only the convenience image needs: close the rule once the box is reachable
 from the LAN.
@@ -157,8 +165,8 @@ uci commit firewall
 ```
 
 In LuCI the same rule is the entry named `allow_ssh_wan` under **Network -> Firewall ->
-Traffic Rules** (网络 -> 防火墙 -> 通信规则); delete it and press **Save & Apply**. Then check
-that it is gone:
+Traffic Rules**. The Chinese UI names that path 网络 -> 防火墙 -> 通信规则. Delete the
+entry and press **Save & Apply**. Then check that it is gone:
 
 ```sh
 uci show firewall | grep allow_ssh_wan     # no output
@@ -181,8 +189,8 @@ Closing it leaves the LAN side untouched, and SSH from the LAN keeps working eit
 ## Two builds: WAN 22 closed by default, open on request
 
 Whether the `allow_ssh_wan` rule exists is a build-time constant, not a runtime decision.
-`scripts/ci/net-defaults.conf.in` carries the `NET_*` lines with `@...@` placeholders; the
-build renders them into `/etc/net-defaults.conf` in the platform layer, and a placeholder left
+`scripts/ci/net-defaults.conf.in` carries the `NET_*` lines with `@...@` placeholders. The
+build renders them into `/etc/net-defaults.conf` in the platform layer. A placeholder left
 unreplaced fails the build instead of shipping a literal `@NET_...@` to the device.
 
 | `NET_WAN_SSH` | Effect | Image |
@@ -192,7 +200,8 @@ unreplaced fails the build instead of shipping a literal `@NET_...@` to the devi
 
 Neither is a runtime switch, and no command turns one into the other: the value is baked into
 the platform layer at build time. The open build is the same pipeline run with
-`CI_NET_WAN_SSH=open`, one rendered value apart from the default, and the release stage appends
-`-wan-ssh` to its file name so the two can never be confused on a downloads page. Both consume
-the same upstream input and ship the same update payload. [install.md](install.md) covers
-choosing between them and the first boot on a real device.
+`CI_NET_WAN_SSH=open`, one rendered value apart from the default. The release stage appends
+`-wan-ssh` to its file name so the two can never be confused on a downloads page.
+
+Both consume the same upstream input and ship the same update payload.
+[install.md](install.md) covers choosing between them and the first boot on a real device.

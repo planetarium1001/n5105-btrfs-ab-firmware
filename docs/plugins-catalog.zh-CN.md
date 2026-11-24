@@ -22,14 +22,18 @@
 ## iStore
 
 **不背书，也不开启。** iStore 是 OpenWrt 的第三方应用商店。本项目不测它、不支持它、也不会打开
-它。**镜像里不带任何插件声明**：镜像带的是机制，不是源。这一页把配方留成一个文件，由你复制进去：
-[examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf)，它到手时是
-`enabled = no`——一直到机器的主人来把它打开、读完 verdict、再做决定为止。下面写的是一份跑成功过的
-配方长什么样，不是推荐。
+它。**镜像里不带任何插件声明**：镜像带的是机制，不是源。
+
+这一页把配方留成一个文件，由你复制进去：
+
+- [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf)
+
+它到手时是 `enabled = no`，一直到机器的主人来把它打开、读完 verdict、再做决定为止。下面写的
+是一份跑成功过的配方长什么样，不是推荐。
 
 复制到 `/etc/ab/plugins.d/istore/plugin.conf` 之后，声明长这样：
 
-```
+```text
 api = 1
 kind = packages
 enabled = no
@@ -55,9 +59,8 @@ key = /etc/apk/keys/istore-apk.pem
 
 ### 怎么启用
 
-把文件复制到 `/etc/ab/plugins.d/istore/plugin.conf`（这个目录在可写层，系统更新会把它带过去），
-然后三条命令：key、check、
-install。
+把文件复制到 `/etc/ab/plugins.d/istore/plugin.conf`。这个目录在可写层，系统更新会把它带过去。
+然后三条命令：key、check、install。
 
 ```sh
 wget -O /etc/apk/keys/istore-apk.pem https://istore.istoreos.com/repo-apk/istore-apk.pem
@@ -71,10 +74,11 @@ ab-packages plugins apply istore
 ### 先放 key
 
 `key` 是一次存在性检查，不是导入：那个路径下没有文件时，check 在取任何东西之前就以
-`plugin-key-missing` 拒绝。这个文件是商店自己的公钥，发布在
-`https://istore.istoreos.com/repo-apk/istore-apk.pem`。本项目不管 keyring，也不导入
-（见 [plugins.zh-CN.md](plugins.zh-CN.md#护栏)），所以一个 feed 的保证就是一个 `https://`
-地址加上 apk 自己做的那些检查——仅此而已。
+`plugin-key-missing` 拒绝。这个文件是商店自己的公钥。它发布在
+`https://istore.istoreos.com/repo-apk/istore-apk.pem`。
+
+本项目不管 keyring，也不导入（见 [plugins.zh-CN.md](plugins.zh-CN.md#护栏)）。所以一个 feed
+的保证就是一个 `https://` 地址加上 apk 自己做的那些检查——仅此而已。
 
 ### 风险与不做的事
 
@@ -94,26 +98,28 @@ ab-packages plugins apply istore
 
 ### 怎么关掉
 
-```
+```text
 enabled = no
 ```
 
 或者 `rm -rf /etc/ab/plugins.d/istore`。两种任选一种就够，都不需要重新 check。两种都不会卸
-掉那 17 个包：包是 apk 的，删掉其中一个是 `apk del <name>` 的事，不是本项目的事。关掉的插件
-也不再贡献它的 feed，所以之后某次跟随的 prune 可能丢掉只有这棵树提供过的 world 条目——包仍然
-装着、配置也在——而把配方重新打开、再 check 一次，feed 就回来了
+掉那 17 个包：包是 apk 的，删掉其中一个是 `apk del <name>` 的事，不是本项目的事。
+
+关掉的插件也不再贡献它的 feed，所以之后某次跟随的 prune 可能丢掉只有这棵树提供过的 world
+条目。包仍然装着、配置也在。把配方重新打开、再 check 一次，feed 就回来了
 （见 [plugins.zh-CN.md](plugins.zh-CN.md#关掉一个插件)）。
 
 ## 写自己的配方
 
-一份配方就是一份声明，字段表在 [plugins.zh-CN.md](plugins.zh-CN.md#声明文件)：八个键，其中
+一份配方就是一份声明。字段表在 [plugins.zh-CN.md](plugins.zh-CN.md#声明文件)。八个键，其中
 `api`、`kind` 与 `feed` / `package` 之一是最小集。四个命令与各自回答什么在
-[plugins.zh-CN.md](plugins.zh-CN.md#四个命令)。本页没有任何东西是可以闭眼照抄的模板——字段是
-契约，护栏对你写的声明和上面那份声明一样生效。
+[plugins.zh-CN.md](plugins.zh-CN.md#四个命令)。
 
-你自己的配方有的、而这份清单给不了的东西，是一次 check。在 `ab-packages plugins apply <label>`
-之前先跑 `ab-packages plugins check <label>`：前者是问「这个来源在这台机器上到底能不能用」，
-后者才是决定用它。
+本页没有任何东西是可以闭眼照抄的模板。字段是契约，护栏对你写的声明和上面那份声明一样生效。
+
+你自己的配方有的、而这份清单给不了的东西，是一次 check。先跑
+`ab-packages plugins check <label>`，再跑 `ab-packages plugins apply <label>`。前者是问「这个
+来源在这台机器上到底能不能用」，后者才是决定用它。
 
 ## 这份清单的边界
 

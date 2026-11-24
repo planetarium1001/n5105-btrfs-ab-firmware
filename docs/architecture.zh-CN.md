@@ -30,12 +30,15 @@ p1 到 p3 从不移动。
 | GPT PARTNAME | `ab-esp`、`ab-slot-a`、`ab-slot-b`、`ab-data` | 启动代码，与 `/sys/class/block/*/uevent` 比对 |
 | 文件系统 LABEL | `ESP`、`slot-a`、`slot-b`、`data` | 人，以及镜像阶段里 `blkid` / `lsblk` 的断言 |
 
-PARTNAME 保留 `ab-` 前缀，因为磁盘发现要遍历机器上每个块设备：一个裸的 `data` 或 `esp`
-迟早会匹配到无关磁盘并挂载错分区。四条代码路径解析这些名字（`initramfs/boot/init`、
-`/etc/init.d/ab-boot`、`/etc/init.d/ab-commit`、`lib/upgrade/platform.sh`），各自在没有
-PARTNAME 匹配时回退到 1/2/3/4 的顺序，所以漏改一个名字会藏在回退里而不是在启动时失败。
-LABEL 不带版本：`@overlay-<version>`、`/etc/platform-release` 与 `ab/state.json` 已经
-是版本的三处权威位置，每次发布都改标签会多一次可能被断电打断的超级块写入。
+- PARTNAME 保留 `ab-` 前缀，因为磁盘发现要遍历机器上每个块设备。
+- 一个裸的 `data` 或 `esp` 迟早会匹配到无关磁盘并挂载错分区。
+- 四条代码路径解析这些名字，各自在没有 PARTNAME 匹配时回退到 1/2/3/4 的顺序：
+  `initramfs/boot/init`、`/etc/init.d/ab-boot`、`/etc/init.d/ab-commit`、
+  `lib/upgrade/platform.sh`。
+- 所以漏改一个名字会藏在回退里，而不是在启动时失败。
+- LABEL 不带版本：`@overlay-<version>`、`/etc/platform-release` 与 `ab/state.json` 已经是
+  版本的三处权威位置。
+- 每次发布都改标签会多一次可能被断电打断的超级块写入。
 
 p1 只存数据，绝不存放可执行脚本：FAT32 没有权限位和符号链接，没有日志，且放在 ESP 上的
 脚本不会随槽位一起回滚。
@@ -90,11 +93,15 @@ p1 只存数据，绝不存放可执行脚本：FAT32 没有权限位和符号�
 所有子卷都是顶层子卷。不存在二级或嵌套子卷。`@docker` 与 `@swap` 必须保持独立：快照不
 递归进嵌套子卷，而活动的 swapfile 会阻止快照。
 
-镜像断言：从镜像读回的 GPT PARTNAME 与文件系统 LABEL 与本页表格一致；p1 带有
-`boot/grub/ab-slot.cfg`，其中恰有一行 `set default=` 和一行 `set fallback=`，且没有
-`load_env`/`save_env` 调用；p1 带有 `ab/device.json`，含 GPT 磁盘 GUID 与四个互不相同、
-与分区表一致的 PARTUUID；p2/p3 使用率低于 50%；`btrfs subvolume list` 的每一项共享同一
-顶层；`mkfs` 参数与本页完全一致。
+镜像断言，每张镜像都要重新核对：
+
+- 从镜像读回的 GPT PARTNAME 与文件系统 LABEL 与本页表格一致。
+- p1 带有 `boot/grub/ab-slot.cfg`，其中恰有一行 `set default=` 和一行 `set fallback=`，且没有
+  `load_env`/`save_env` 调用。
+- p1 带有 `ab/device.json`，含 GPT 磁盘 GUID 与四个互不相同、与分区表一致的 PARTUUID。
+- p2/p3 使用率低于 50%。
+- `btrfs subvolume list` 的每一项共享同一顶层。
+- `mkfs` 参数与本页完全一致。
 
 ## p4 首启扩容
 
@@ -136,7 +143,7 @@ initramfs 这一半，按发生顺序：
 
 结果是一行写在 `<p4 根子卷>/.ab/grow`：
 
-```
+```text
 result=<token> last_lba=<n>
 ```
 
@@ -152,17 +159,24 @@ result=<token> last_lba=<n>
 单阶段固件写下的记录仍能正确读取：`done` 与 `already-full` 含义不变，已退役的 `fail:`
 token 读作"未被证实"。已经扩过容的机器在首次启动这套固件时报告 `already-full`。
 
-`ab-boot` 在运行时收尾：读取 `<p4>/.ab/grow`，在 initramfs 没能完成时重试
-`btrfs filesystem resize max /mnt/p4`（p4 恰好挂载一次，btrfs-progs 来自平台层），并在 p1
-环形日志里记录 `stage=resize result=<ok|fail:<token>> source=ab-boot`。initramfs 扩容失败
-的机器在同一次启动里仍能到达磁盘末尾。
+`ab-boot` 在运行时收尾：
 
-死在半路的启动留下的证据：`ab-boot` 把本次启动的环形日志写入 `ab/log/boot-0.log`，并在
-下次启动的第一件事把它轮转为 `boot-1.log`。写分区表的那次启动到不了 `ab-boot`，所以它的
-证据在 `.ab/grow`、只追加的 `.ab/grow.log`，以及随后一次上电后的 `boot-1.log` 里；事后
-分析读 `ab-slot log --prev`，`boot-0.log` 只用于正在运行的这次启动。改动前的分区表保存在
-`.ab/partitions.before`，因为只活在 initramfs 里的副本会随它一起消失。记录放在 p4 根子卷
-上而不是某一代可写层里，因此比 `@overlay-<version>` 活得久。
+- 它读取 `<p4>/.ab/grow`。
+- initramfs 没能完成时，它重试 `btrfs filesystem resize max /mnt/p4`（p4 恰好挂载一次，
+  btrfs-progs 来自平台层）。
+- 它把 `stage=resize result=<ok|fail:<token>> source=ab-boot` 记进 p1 环形日志。
+
+initramfs 扩容失败的机器在同一次启动里仍能到达磁盘末尾。
+
+死在半路的启动留下的证据：
+
+- `ab-boot` 把本次启动的环形日志写入 `ab/log/boot-0.log`，并在下次启动的第一件事把它轮转为
+  `boot-1.log`。
+- 写分区表的那次启动到不了 `ab-boot`，所以它的证据在 `.ab/grow`、只追加的 `.ab/grow.log`，
+  以及随后一次上电后的 `boot-1.log` 里。
+- 事后分析读 `ab-slot log --prev`；`boot-0.log` 只用于正在运行的这次启动。
+- 改动前的分区表保存在 `.ab/partitions.before`，因为只活在 initramfs 里的副本会随它一起消失。
+- 记录放在 p4 根子卷上而不是某一代可写层里，因此比 `@overlay-<version>` 活得久。
 
 扩容只放大 p4，且幂等。记录唯一决定的是循环保护：如果存在一条 `table-written` 记录，其
 磁盘末尾正好是本次启动想写的末尾，而盘上的分区表仍更短，说明写入丢在了文件系统之下；
@@ -185,7 +199,7 @@ kind 比对。
 
 ### 设备身份
 
-启动路径上任何东西都不能假定 `/dev/vda`：这个名字只在 virtio 上存在，而目标板子呈现
+启动路径上任何东西都不能假定 `/dev/vda`。这个名字只在 virtio 上存在，而目标板子呈现
 `/dev/sda`、`/dev/nvme0n1` 或 `/dev/mmcblk0`。"哪块盘是我们的"只有一个实现：
 `platform/lib/disk-identity.sh`，在启动 initramfs 与平台层里以同样的字节发布。
 
@@ -199,12 +213,17 @@ kind 比对。
 | 4 | 挂载反查 | 运行系统中的 `/boot`、`/mnt/p4`、`/data`；以及 initramfs 已挂载的 ESP |
 | 5 | 唯一候选 | 唯一一块其分区带有四个文件系统 LABEL 的不可移动磁盘 |
 
-父盘总是从 sysfs 推导：`/sys/class/block/<part>/partition` 说明该节点是分区，上一层目录的
-`DEVNAME` 是磁盘；没有代码从名字里去掉一个 `p` 或补一位数字。只有 sysfs 报告
-`DEVTYPE=disk` 且 `removable=0` 的盘才算数。四个分区必须解析到同一块盘：分散在两块盘上是
-`partitions-split`，出现两份是 `ambiguous-disk`，两者都不动分区表并让启动继续。结果记录为
-`stage=device disk=<dev> method=<cmdline|partuuid|partname|mount|unique>`；识别不出启动盘的
-那次启动会报告原因，并在不扩容、不挂载 p4 的情况下继续，而不是关机。
+父盘总是从 sysfs 推导：
+
+- `/sys/class/block/<part>/partition` 说明该节点是分区，上一层目录的 `DEVNAME` 是磁盘。
+- 没有代码从名字里去掉一个 `p` 或补一位数字。
+- 只有 sysfs 报告 `DEVTYPE=disk` 且 `removable=0` 的盘才算数。
+- 四个分区必须解析到同一块盘。
+  - 分散在两块盘上是 `partitions-split`。
+  - 出现两份是 `ambiguous-disk`。
+  - 两者都不动分区表并让启动继续。
+- 结果记录为 `stage=device disk=<dev> method=<cmdline|partuuid|partname|mount|unique>`。
+- 识别不出启动盘的那次启动会报告原因，并在不扩容、不挂载 p4 的情况下继续，而不是关机。
 
 ### 层与挂载组装
 
@@ -216,7 +235,7 @@ kind 比对。
 
 `@platform` 随槽位一起版本化：升级时写入，随槽位回滚。
 
-```
+```text
 / = overlay(
       lowerdir=/mnt/@platform:/mnt/@sys,
       upperdir=/mnt/p4/@overlay-25.12.2/upper,
@@ -250,9 +269,13 @@ p4 先挂载，因为 `compress=` 只由文件系统的首次挂载生效；先�
 
 这里挂载失败会报告 `p4-partial`，启动继续；`ab-slot status` 在 `p4=` 旁显示三个标记。
 
-`@platform` 镜像最终文件系统路径：`/usr/sbin/ab-slot`、`/usr/sbin/ab-upgrade`、
-`/etc/init.d/ab-boot`、`/etc/init.d/ab-commit`、`/lib/ab-slot-cfg.sh`、
-`/lib/ab-partitions.sh`、`/usr/sbin/btrfs` 及其运行时库闭包、`/etc/uci-defaults/`。
+`@platform` 镜像这些最终文件系统路径：
+
+- `/usr/sbin/ab-slot`、`/usr/sbin/ab-upgrade`、`/etc/init.d/ab-boot`、`/etc/init.d/ab-commit`。
+- `/lib/ab-slot-cfg.sh`、`/lib/ab-partitions.sh`。
+- `/usr/sbin/btrfs` 及其运行时库闭包。
+- `/etc/uci-defaults/`。
+
 因为 overlayfs 会合并目录，procd 从合并视图读取 `/etc/init.d/*`，钩子正常运行而 `@sys`
 保持不变。
 
@@ -284,16 +307,17 @@ GRUB 读不了它，所以引导器只拿到一个派生值，写在单独的文
 
 `boot/grub/ab-slot.cfg` 恰好包含两条 GRUB 命令，顺序如下：
 
-```
+```text
 set fallback=<已提交槽位>
 set default=<待定槽位，没有待定槽位时为已提交槽位>
 ```
 
-每个写入方都通过同一实现（`platform/lib/ab-slot-cfg.sh`）从状态文件推导这两个值，因此
-构建、状态命令、启动钩子与启动失败路径不可能互相矛盾。这里没有环境块：ESP 上的 GRUB 是
-内建模块的独立 EFI 二进制，没有 `env` 模块。`source` 读取的两行文件在该二进制上可用，而
-`scripts/ci/grub-render.sh --verify-esp` 会在允许镜像启动前断言引导器确实带有 `source`、
-`test` 与 `serial`。
+每个写入方都通过同一实现（`platform/lib/ab-slot-cfg.sh`）从状态文件推导这两个值。因此构建、
+状态命令、启动钩子与启动失败路径不可能互相矛盾。
+
+这里没有环境块：ESP 上的 GRUB 是内建模块的独立 EFI 二进制，没有 `env` 模块。`source`
+读取的两行文件在该二进制上可用。`scripts/ci/grub-render.sh --verify-esp` 在允许镜像启动前
+断言引导器带有三个命令。引导器必须真的有 `source`、`test` 与 `serial`。
 
 菜单先定义三个条目、把已提交槽位设为构建时默认值与 fallback，然后才 source 提示文件。
 GRUB 遇到第一个错误就停止读取脚本，因此提示文件缺失、被截断或格式错误都不会让机器失去
@@ -327,10 +351,15 @@ GRUB 遇到第一个错误就停止读取脚本，因此提示文件缺失、被
 ## 升级事务
 
 可写层以它所属的上游版本命名：`@overlay-<version>`，例如 `@overlay-25.12.2`。每次升级都
-新建一层，任何子卷从不改名。同一上游版本被重建时加序号后缀 `@overlay-25.12.2-r2`，因为
-平台层可以在 base 不动的情况下重建。名字是给人看的；顺序来自 `ab/state.json` 里只增不减
-的整数 `generation`，回收按该数字排序。推论：即使系统从未重启过也能创建新层；回滚只移动
-指针；稳态恰好需要两层，每个槽位一层。
+新建一层，任何子卷从不改名。
+
+- 同一上游版本被重建时加序号后缀 `@overlay-25.12.2-r2`，因为平台层可以在 base 不动的情况
+  下重建。
+- 名字是给人看的。顺序来自 `ab/state.json` 里只增不减的整数 `generation`，回收按该数字排
+  序。
+- 即使系统从未重启过也能创建新层。
+- 回滚只移动指针。
+- 稳态恰好需要两层，每个槽位一层。
 
 | 事件 | p4 | p1 状态 |
 |---|---|---|
@@ -363,7 +392,7 @@ GRUB 遇到第一个错误就停止读取脚本，因此提示文件缺失、被
 方式注入自己的配置。
 
 任何探针运行之前，先读 `/proc/cmdline`、`/proc/mounts` 与 `/sys/class/net`。一个没有
-`/proc` 就起来的升级槽位会因同一个原因让三个探针都失败，所以该原因单独占一行
+`/proc` 就起来的升级槽位会因同一个原因让三个探针都失败。所以该原因单独占一行
 （`stage=preflight … reason=proc-cmdline-unreadable`），而不是三次匿名失败。
 
 ## 回收
@@ -410,7 +439,7 @@ GRUB 遇到第一个错误就停止读取脚本，因此提示文件缺失、被
 
 记录字段固定为 `key=value`：
 
-```
+```text
 stage=<stage> slot=<a|b> upper=<layer> rootfs=<version> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail> [reason=<token>]
 stage=preflight slot=<a|b> result=fail reason=<proc-cmdline-unreadable|proc-mounts-unreadable|sysfs-missing>
@@ -419,8 +448,10 @@ action=<commit|reboot-to-committed|degraded-boot>
 next=<a|b>
 ```
 
-命令：`ab-slot status`、`ab-slot log [--prev|--upgrade]`、`ab-slot conflicts`、
-`ab-slot gc [--dry-run]`、`ab-slot rollback`、`ab-slot next [--write]`。
+命令：
+
+- `ab-slot status`、`ab-slot log [--prev|--upgrade]`、`ab-slot conflicts`
+- `ab-slot gc [--dry-run]`、`ab-slot rollback`、`ab-slot next [--write]`
 
 ## 冲突与处置
 
@@ -432,7 +463,7 @@ next=<a|b>
 | `B` | 新槽位 `@sys` 里的文件（新默认） |
 | `U` | 可写层里同一路径（用户版本） |
 
-```
+```text
 UpstreamChanged = { f : A[f] != B[f] }
 UserChanged     = { f : U exists and U[f] != A[f] }
 Conflicts       = UpstreamChanged ∩ UserChanged
@@ -466,11 +497,13 @@ Conflicts       = UpstreamChanged ∩ UserChanged
 | `manifest.json` | 本项目 | 1 396 B（1.4 KiB） |
 
 六个成员合计 23 494 762 B；承载它们的 payload tar 是 23 500 800 B（22.41 MiB），差值来自
-tar 的块填充。因此一个升级 payload 略高于 20 MiB，整盘镜像只用于首次安装。这些大小是实测
-而非估算：它们是已发布 `v0.0.8` payload 的成员，`tar -tvf n5105-ab-<upstream>-upgrade.tar`
-在你自己的副本上会打印同一份清单。大小随版本变化，形状不变。
+tar 的块填充。因此一个升级 payload 略高于 20 MiB，整盘镜像只用于首次安装。
 
-`manifest.json` 记录每个成员的大小与 sha256，以及 `format`、`rootfs` 版本、`platform`
+这些大小是实测而非估算：它们是已发布 `v0.0.8` payload 的成员。
+`tar -tvf n5105-ab-<upstream>-upgrade.tar` 在你自己的副本上会打印同一份清单。
+大小随版本变化，形状不变。
+
+`manifest.json` 记录每个成员的大小与 sha256。它还记录 `format`、`rootfs` 版本、`platform`
 版本与 `kernel` 软件包 id。
 
 ### 引导器成员
@@ -482,16 +515,20 @@ tar 的块填充。因此一个升级 payload 略高于 20 MiB，整盘镜像只
 | `EFI/BOOT/BOOTX64.EFI` | 上游独立的 GRUB EFI 二进制，与 ESP 得到的逐字节一致 |
 | `boot/grub/grub.cfg` | 本项目的槽位菜单，由 `scripts/ci/grub-render.sh` 从 `scripts/ci/grub.cfg.in` 渲染 |
 
-manifest 用一个 `bootloader` 块描述这些字节：`member`、`loader`、`menu`、`loader_bytes`
-（ESP 余量规则是 `loader_bytes / 1024 + 4096` KiB 可用）、`loader_sha256` 与
-`menu_sha256`（设备在写入前后比对的摘要）、`grub_version`（摘要旁的可读证据，从不作为
-决策），以及 `source_image` / `source_sha256`（来源）。没有引导源的构建不产生 `boot.tar`
-并写 `"bootloader": null`；这是合法 payload，`ab-upgrade` 会打印
-`bootloader absent-in-payload` 而不是静默安装。`CI_REQUIRE_BOOTLOADER=1` 会把缺失的引导源
-变成构建失败。
+manifest 用一个 `bootloader` 块描述这些字节：
 
-该成员只定义一次，在 `scripts/ci/boot-member.sh` 里，由 `scripts/ci/payload-build.sh` 与
-`scripts/ci/assemble.sh` 共用，因此测试 payload 与发布 payload 不可能不一致。
+- `member`、`loader` 与 `menu`。
+- `loader_bytes`：ESP 余量规则是 `loader_bytes / 1024 + 4096` KiB 可用。
+- `loader_sha256` 与 `menu_sha256`：设备在写入前后比对的摘要。
+- `grub_version`：摘要旁的可读证据，从不作为决策。
+- `source_image` / `source_sha256`：来源。
+
+没有引导源的构建不产生 `boot.tar`，并写 `"bootloader": null`。这是合法 payload，
+`ab-upgrade` 会打印 `bootloader absent-in-payload` 而不是静默安装。
+`CI_REQUIRE_BOOTLOADER=1` 会把缺失的引导源变成构建失败。
+
+该成员只定义一次，在 `scripts/ci/boot-member.sh` 里。`scripts/ci/payload-build.sh` 与
+`scripts/ci/assemble.sh` 共用它。因此测试 payload 与发布 payload 不可能不一致。
 
 不借助设备核对 payload 身份：
 
@@ -516,10 +553,13 @@ bash scripts/ci/grub-render.sh --check-loader /tmp/payload/EFI/BOOT/BOOTX64.EFI 
 
 ### 构建输入与适配器
 
-流水线不编译内核，只消费官方产物：`immortalwrt-<ver>-x86-64-rootfs.tar.gz`、
-`immortalwrt-<ver>-x86-64-generic-kernel.bin`，以及
-`kmods/<kernel-ver>-<hash>/kmod-fs-btrfs.apk` 及其依赖。预检：kmods 目录名里的 hash 必须
-等于 `kernel` 软件包版本里内嵌的 hash。
+流水线不编译内核，只消费官方产物：
+
+- `immortalwrt-<ver>-x86-64-rootfs.tar.gz`
+- `immortalwrt-<ver>-x86-64-generic-kernel.bin`
+- `kmods/<kernel-ver>-<hash>/kmod-fs-btrfs.apk` 及其依赖
+
+预检：kmods 目录名里的 hash 必须等于 `kernel` 软件包版本里内嵌的 hash。
 
 | 适配器 | 行为 |
 |---|---|

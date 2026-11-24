@@ -3,7 +3,7 @@
 # change must leave every line below byte-identical.
 # Regenerate: CI_TEXT_FINGERPRINT_WRITE=1 CI_TEXT_FINGERPRINT_REASON=<why> \
 #   bash tests/modules/ci/test_ci_text_conventions.sh
-# reason: the cross-upgrade fixture answers the package plan: ab-upgrade has asked a [y/N] question since 0.0.13 and refuses with exit 74 when the guest's rc.local cannot answer it, so the install line gains --yes (release run 44364963148 failed reason=pending-already-none without it)
+# reason: ci: keepalive/audit jobs replace the heartbeat tag; automation-log/schedule-health scripts and the ci.yml record jobs
 judge .github/workflows/ci-s1.yml S1-RESULT=
 judge .github/workflows/ci-s2.yml S2-RESULT=
 judge .github/workflows/ci-s3.yml S3-RESULT=
@@ -50,6 +50,17 @@ sh-flag scripts/ci/assemble.sh --check
 sh-flag scripts/ci/assemble.sh --group
 sh-flag scripts/ci/assemble.sh --numeric-owner
 sh-flag scripts/ci/assemble.sh --owner
+sh-flag scripts/ci/automation-log.sh --assets
+sh-flag scripts/ci/automation-log.sh --event
+sh-flag scripts/ci/automation-log.sh --help
+sh-flag scripts/ci/automation-log.sh --link
+sh-flag scripts/ci/automation-log.sh --old-pin
+sh-flag scripts/ci/automation-log.sh --reason
+sh-flag scripts/ci/automation-log.sh --result
+sh-flag scripts/ci/automation-log.sh --sha
+sh-flag scripts/ci/automation-log.sh --stage
+sh-flag scripts/ci/automation-log.sh --subject
+sh-flag scripts/ci/automation-log.sh --version
 sh-flag scripts/ci/boot-member.sh --check
 sh-flag scripts/ci/boot-member.sh --group
 sh-flag scripts/ci/boot-member.sh --numeric-owner
@@ -108,14 +119,6 @@ sh-flag scripts/ci/grub-render.sh --id
 sh-flag scripts/ci/grub-render.sh --partscan
 sh-flag scripts/ci/grub-render.sh --show
 sh-flag scripts/ci/grub-render.sh --verify-esp
-sh-flag scripts/ci/heartbeat-tag.sh --dry-run
-sh-flag scripts/ci/heartbeat-tag.sh --format
-sh-flag scripts/ci/heartbeat-tag.sh --git-dir
-sh-flag scripts/ci/heartbeat-tag.sh --help
-sh-flag scripts/ci/heartbeat-tag.sh --is-shallow-repository
-sh-flag scripts/ci/heartbeat-tag.sh --now
-sh-flag scripts/ci/heartbeat-tag.sh --quiet
-sh-flag scripts/ci/heartbeat-tag.sh --verify
 sh-flag scripts/ci/image-verify.sh --check-initrd
 sh-flag scripts/ci/image-verify.sh --find
 sh-flag scripts/ci/image-verify.sh --no-dereference
@@ -133,6 +136,13 @@ sh-flag scripts/ci/initramfs.sh --help
 sh-flag scripts/ci/initramfs.sh --null
 sh-flag scripts/ci/initramfs.sh --stage
 sh-flag scripts/ci/initramfs.sh --toolset
+sh-flag scripts/ci/keepalive.sh --dry-run
+sh-flag scripts/ci/keepalive.sh --format
+sh-flag scripts/ci/keepalive.sh --git-dir
+sh-flag scripts/ci/keepalive.sh --help
+sh-flag scripts/ci/keepalive.sh --now
+sh-flag scripts/ci/keepalive.sh --quiet
+sh-flag scripts/ci/keepalive.sh --verify
 sh-flag scripts/ci/kmods.sh --json-out
 sh-flag scripts/ci/kmods.sh --kver
 sh-flag scripts/ci/kmods.sh --out
@@ -203,6 +213,10 @@ sh-flag scripts/ci/s5-phase.sh --serial
 sh-flag scripts/ci/s5-phase.sh --show
 sh-flag scripts/ci/s5-phase.sh --slot
 sh-flag scripts/ci/s5-phase.sh --version
+sh-flag scripts/ci/schedule-health.sh --help
+sh-flag scripts/ci/schedule-health.sh --jq
+sh-flag scripts/ci/schedule-health.sh --repo
+sh-flag scripts/ci/schedule-health.sh --workflow
 sh-flag scripts/ci/stage-summary.sh --artifact
 sh-flag scripts/ci/stage-summary.sh --artifact-file
 sh-flag scripts/ci/stage-summary.sh --help
@@ -259,6 +273,12 @@ sh-fn scripts/ci/apk-crosscheck.sh emit
 sh-fn scripts/ci/assemble.sh assemble_member
 sh-fn scripts/ci/assemble.sh cleanup_p4
 sh-fn scripts/ci/assemble.sh on_error
+sh-fn scripts/ci/automation-log.sh al_cell
+sh-fn scripts/ci/automation-log.sh al_die
+sh-fn scripts/ci/automation-log.sh al_header
+sh-fn scripts/ci/automation-log.sh al_log
+sh-fn scripts/ci/automation-log.sh al_now
+sh-fn scripts/ci/automation-log.sh al_usage
 sh-fn scripts/ci/boot-member.sh ci_boot_member_menu
 sh-fn scripts/ci/boot-member.sh ci_boot_member_stage
 sh-fn scripts/ci/boot-member.sh ci_boot_member_version
@@ -317,9 +337,6 @@ sh-fn scripts/ci/fetch.sh fetch_member
 sh-fn scripts/ci/grub-render.sh check_grub
 sh-fn scripts/ci/grub-render.sh on_error
 sh-fn scripts/ci/grub-render.sh slot_cfg_check
-sh-fn scripts/ci/heartbeat-tag.sh note_baseline
-sh-fn scripts/ci/heartbeat-tag.sh to_epoch
-sh-fn scripts/ci/heartbeat-tag.sh usage
 sh-fn scripts/ci/image-identity.sh ii_image_json
 sh-fn scripts/ci/image-identity.sh ii_kind_known
 sh-fn scripts/ci/image-identity.sh ii_refuse_probe
@@ -335,6 +352,11 @@ sh-fn scripts/ci/initramfs.sh on_error
 sh-fn scripts/ci/initramfs.sh require_musl_only
 sh-fn scripts/ci/initramfs.sh require_toolset_programs
 sh-fn scripts/ci/initramfs.sh tools_field
+sh-fn scripts/ci/keepalive.sh ka_die
+sh-fn scripts/ci/keepalive.sh ka_emit
+sh-fn scripts/ci/keepalive.sh ka_epoch_of_date
+sh-fn scripts/ci/keepalive.sh ka_log
+sh-fn scripts/ci/keepalive.sh ka_usage
 sh-fn scripts/ci/kmods.sh lock_die
 sh-fn scripts/ci/kmods.sh locked_lines
 sh-fn scripts/ci/kmods.sh resolved_lines
@@ -411,6 +433,9 @@ sh-fn scripts/ci/s5-phase.sh esp_write_probe
 sh-fn scripts/ci/s5-phase.sh fail_phase
 sh-fn scripts/ci/s5-phase.sh fat_damage_evidence
 sh-fn scripts/ci/s5-phase.sh mount_esp
+sh-fn scripts/ci/schedule-health.sh sh_error
+sh-fn scripts/ci/schedule-health.sh sh_log
+sh-fn scripts/ci/schedule-health.sh sh_usage
 sh-fn scripts/ci/stage-summary.sh judge_from_log
 sh-fn scripts/ci/stage-summary.sh run_url
 sh-fn scripts/ci/stage-summary.sh sha256_prefix
@@ -478,6 +503,9 @@ sh-var scripts/ci/assemble.sh CI_REQUIRE_BOOTLOADER
 sh-var scripts/ci/assemble.sh CI_SCRIPT_DIR
 sh-var scripts/ci/assemble.sh CI_TMP_ROOT
 sh-var scripts/ci/assemble.sh CI_UPSTREAM_VERSION
+sh-var scripts/ci/automation-log.sh CI_AUTOMATION_LOG
+sh-var scripts/ci/automation-log.sh CI_AUTOMATION_LOG_REL
+sh-var scripts/ci/automation-log.sh CI_REPO_ROOT
 sh-var scripts/ci/boot-member.sh CI_BOOTLOADER_CFG
 sh-var scripts/ci/boot-member.sh CI_BOOTLOADER_VERSION
 sh-var scripts/ci/boot-member.sh CI_BOOT_BLOCK
@@ -571,13 +599,6 @@ sh-var scripts/ci/grub-render.sh CI_SCRIPT_DIR
 sh-var scripts/ci/grub-render.sh CI_SLOT_CFG_OUT
 sh-var scripts/ci/grub-render.sh CI_SLOT_CFG_PATH
 sh-var scripts/ci/grub-render.sh CI_TMP_ROOT
-sh-var scripts/ci/heartbeat-tag.sh CI_HEARTBEAT_INTERVAL_DAYS
-sh-var scripts/ci/heartbeat-tag.sh CI_HEARTBEAT_USER_EMAIL
-sh-var scripts/ci/heartbeat-tag.sh CI_HEARTBEAT_USER_NAME
-sh-var scripts/ci/heartbeat-tag.sh CI_OUTPUT_ENV
-sh-var scripts/ci/heartbeat-tag.sh CI_REPO_ROOT
-sh-var scripts/ci/heartbeat-tag.sh CI_SCRIPT_DIR
-sh-var scripts/ci/heartbeat-tag.sh CI_TMP_ROOT
 sh-var scripts/ci/image-identity.sh CI_ALLOW_PROBE_INIT
 sh-var scripts/ci/image-identity.sh CI_INITRAMFS_KIND
 sh-var scripts/ci/image-verify.sh AB_CI_HOOKS
@@ -619,6 +640,11 @@ sh-var scripts/ci/initramfs.sh CI_KMODS_OUT
 sh-var scripts/ci/initramfs.sh CI_REPO_ROOT
 sh-var scripts/ci/initramfs.sh CI_SCRIPT_DIR
 sh-var scripts/ci/initramfs.sh CI_TMP_ROOT
+sh-var scripts/ci/keepalive.sh CI_KEEPALIVE_DEFAULT_INTERVAL_DAYS
+sh-var scripts/ci/keepalive.sh CI_KEEPALIVE_INTERVAL_DAYS
+sh-var scripts/ci/keepalive.sh CI_KEEPALIVE_LOG_REL
+sh-var scripts/ci/keepalive.sh CI_OUTPUT_ENV
+sh-var scripts/ci/keepalive.sh CI_REPO_ROOT
 sh-var scripts/ci/kmods.sh CI_KMODS_CLOSURE
 sh-var scripts/ci/kmods.sh CI_KMODS_DIR
 sh-var scripts/ci/kmods.sh CI_KMODS_OUT
@@ -854,6 +880,7 @@ sh-var scripts/ci/verify.sh CI_LOG_DIR
 sh-var scripts/ci/verify.sh CI_PYTHON
 sh-var scripts/ci/verify.sh CI_REPO_ROOT
 sh-var scripts/ci/verify.sh CI_SCRIPT_DIR
+sh-var scripts/ci/verify.sh CI_SH_BIN
 sh-var scripts/ci/verify.sh CI_STAGE
 sh-var scripts/ci/verify.sh CI_TMP_ROOT
 yaml .github/actions/actionlint/action.yml inputs = 
@@ -2363,6 +2390,7 @@ yaml .github/workflows/ci-verify.yml permissions =
 yaml .github/workflows/ci.yml concurrency = 
 yaml .github/workflows/ci.yml concurrency.cancel-in-progress = ${{ github.event_name != 'workflow_dispatch' }}
 yaml .github/workflows/ci.yml concurrency.group = ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}-${{ github.ref }}
+yaml .github/workflows/ci.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/ci.yml jobs = 
 yaml .github/workflows/ci.yml jobs.assemble.if = ${{ needs.fetch.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'assemble') }}
 yaml .github/workflows/ci.yml jobs.assemble.needs = [resolve, fetch, versions]
@@ -2373,6 +2401,22 @@ yaml .github/workflows/ci.yml jobs.assemble.with.kmods_dir = ${{ needs.resolve.o
 yaml .github/workflows/ci.yml jobs.assemble.with.platform_version = ${{ needs.versions.outputs.platform_version }}
 yaml .github/workflows/ci.yml jobs.assemble.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
 yaml .github/workflows/ci.yml jobs.assemble.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.audit.if = ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+yaml .github/workflows/ci.yml jobs.audit.needs = [report]
+yaml .github/workflows/ci.yml jobs.audit.permissions = 
+yaml .github/workflows/ci.yml jobs.audit.runs-on = ubuntu-latest
+yaml .github/workflows/ci.yml jobs.audit.steps = 
+yaml .github/workflows/ci.yml jobs.audit.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci.yml jobs.audit.steps.[0].with = 
+yaml .github/workflows/ci.yml jobs.audit.steps.[0].with.fetch-depth = 2
+yaml .github/workflows/ci.yml jobs.audit.steps.[0].with.persist-credentials = false
+yaml .github/workflows/ci.yml jobs.audit.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci.yml jobs.audit.steps.[2].env = 
+yaml .github/workflows/ci.yml jobs.audit.steps.[2].env.REPORT = ${{ needs.report.result }}
+yaml .github/workflows/ci.yml jobs.audit.steps.[2].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/ci.yml jobs.audit.steps.[3].env = 
+yaml .github/workflows/ci.yml jobs.audit.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/ci.yml jobs.audit.timeout-minutes = 10
 yaml .github/workflows/ci.yml jobs.fetch.if = ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage != 'verify') }}
 yaml .github/workflows/ci.yml jobs.fetch.needs = resolve
 yaml .github/workflows/ci.yml jobs.fetch.uses = ./.github/workflows/ci-fetch.yml
@@ -2492,6 +2536,16 @@ yaml .github/workflows/ci.yml jobs.s5.with.kmods_dir = ${{ needs.resolve.outputs
 yaml .github/workflows/ci.yml jobs.s5.with.platform_version = ${{ needs.versions.outputs.platform_version }}
 yaml .github/workflows/ci.yml jobs.s5.with.upstream_base_url = ${{ needs.resolve.outputs.upstream_base_url }}
 yaml .github/workflows/ci.yml jobs.s5.with.upstream_version = ${{ needs.resolve.outputs.upstream_version }}
+yaml .github/workflows/ci.yml jobs.schedule-state.if = ${{ github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+yaml .github/workflows/ci.yml jobs.schedule-state.permissions = 
+yaml .github/workflows/ci.yml jobs.schedule-state.runs-on = ubuntu-latest
+yaml .github/workflows/ci.yml jobs.schedule-state.steps = 
+yaml .github/workflows/ci.yml jobs.schedule-state.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/ci.yml jobs.schedule-state.steps.[0].with = {persist-credentials: false}
+yaml .github/workflows/ci.yml jobs.schedule-state.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/ci.yml jobs.schedule-state.steps.[2].env = 
+yaml .github/workflows/ci.yml jobs.schedule-state.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/ci.yml jobs.schedule-state.timeout-minutes = 5
 yaml .github/workflows/ci.yml jobs.verify.if = ${{ needs.resolve.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.stage == 'all' || inputs.stage == 'verify') }}
 yaml .github/workflows/ci.yml jobs.verify.needs = resolve
 yaml .github/workflows/ci.yml jobs.verify.uses = ./.github/workflows/ci-verify.yml
@@ -2664,6 +2718,28 @@ yaml .github/workflows/release.yml on =
 yaml .github/workflows/release.yml permissions = 
 yaml .github/workflows/upstream-watch.yml defaults = {run: {shell: bash}}
 yaml .github/workflows/upstream-watch.yml jobs = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.env = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.env.DRY_RUN = ${{ inputs.dry-run }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.if = ${{ success() && needs.detect.outputs.changed == 'true' }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.needs = [detect, publish]
+yaml .github/workflows/upstream-watch.yml jobs.audit.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[0].with = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[0].with.fetch-depth = 0
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[0].with.persist-credentials = false
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[2].env.OLD_PIN = ${{ needs.detect.outputs.current_pin }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[2].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[2].env.VERSION = ${{ needs.detect.outputs.version }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[2].id = audit
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.audit.steps.[3].if = env.DRY_RUN != 'true'
+yaml .github/workflows/upstream-watch.yml jobs.audit.timeout-minutes = 10
 yaml .github/workflows/upstream-watch.yml jobs.build.needs = [detect, bump]
 yaml .github/workflows/upstream-watch.yml jobs.build.permissions = 
 yaml .github/workflows/upstream-watch.yml jobs.build.uses = ./.github/workflows/ci.yml
@@ -2706,7 +2782,6 @@ yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.changed = ${{ step
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.current_pin = ${{ steps.detect.outputs.current_pin }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.detect-error = ${{ steps.detect.outputs.detect_error }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.gaps = ${{ steps.matrix.outputs.gaps }}
-yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.heartbeat = ${{ steps.heartbeat.outputs.action }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.merged-sha = ${{ steps.detect.outputs.merged_sha }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.mode = ${{ steps.detect.outputs.mode }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.outputs.pin-in-base = ${{ steps.detect.outputs.pin_in_base }}
@@ -2720,7 +2795,6 @@ yaml .github/workflows/upstream-watch.yml jobs.detect.steps =
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with = 
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-depth = 0
-yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.fetch-tags = true
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[0].with.persist-credentials = false
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[2].env = 
@@ -2734,27 +2808,9 @@ yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].env =
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].env.VERSION = ${{ steps.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].id = matrix
 yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[3].if = ${{ steps.detect.outputs.changed == 'true' }}
-yaml .github/workflows/upstream-watch.yml jobs.detect.steps.[4].id = heartbeat
 yaml .github/workflows/upstream-watch.yml jobs.detect.timeout-minutes = 10
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.if = ${{ needs.detect.outputs.changed != 'true' && needs.detect.outputs.heartbeat == 'would-create' }}
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.needs = detect
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.permissions = 
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.runs-on = ubuntu-latest
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps = 
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with = 
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-depth = 0
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.fetch-tags = true
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[0].with.persist-credentials = false
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[1].uses = ./.github/actions/setup-ci
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[2].id = heartbeat
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env = 
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env.ACTION = ${{ steps.heartbeat.outputs.action }}
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.steps.[3].env.TAG = ${{ steps.heartbeat.outputs.tag }}
-yaml .github/workflows/upstream-watch.yml jobs.heartbeat.timeout-minutes = 10
 yaml .github/workflows/upstream-watch.yml jobs.issue.if = ${{ failure() || cancelled() }}
-yaml .github/workflows/upstream-watch.yml jobs.issue.needs = [detect, heartbeat, bump, build, locks, merge, publish]
+yaml .github/workflows/upstream-watch.yml jobs.issue.needs = [detect, keepalive, bump, build, locks, merge, publish, audit]
 yaml .github/workflows/upstream-watch.yml jobs.issue.permissions = 
 yaml .github/workflows/upstream-watch.yml jobs.issue.runs-on = ubuntu-latest
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps = 
@@ -2762,6 +2818,7 @@ yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[0].uses = actions/ch
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[0].with = {persist-credentials: false}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[1].uses = ./.github/actions/setup-ci
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env = 
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.AUDIT = ${{ needs.audit.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUILD = ${{ needs.build.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.BUMP = ${{ needs.bump.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CHANGED = ${{ needs.detect.outputs.changed }}
@@ -2775,6 +2832,7 @@ yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_TAG_EXISTS
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_TAG_SHA = ${{ needs.detect.outputs.tag-sha }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.CI_UPSTREAM_VERSION = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.KEEPALIVE = ${{ needs.keepalive.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.LOCKS = ${{ needs.locks.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.MERGE = ${{ needs.merge.result }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.PR = ${{ needs.bump.outputs.pr }}
@@ -2782,6 +2840,22 @@ yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.PUBLISH = ${{
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.RUN_URL = ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.steps.[2].env.VERSION = ${{ needs.detect.outputs.version }}
 yaml .github/workflows/upstream-watch.yml jobs.issue.timeout-minutes = 10
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.if = ${{ github.event_name == 'schedule' && !cancelled() }}
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.permissions = 
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.runs-on = ubuntu-latest
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps = 
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[0].uses = actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[0].with = 
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[0].with.fetch-depth = 0
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[0].with.persist-credentials = false
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[1].uses = ./.github/actions/setup-ci
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[2].id = keepalive
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[3].env = 
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[3].env.ACTION = ${{ steps.keepalive.outputs.action }}
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[3].env.DAYS_SINCE = ${{ steps.keepalive.outputs.days_since }}
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[3].env.GH_TOKEN = ${{ secrets.GITHUB_TOKEN }}
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.steps.[3].env.LAST_COMMIT = ${{ steps.keepalive.outputs.last_commit }}
+yaml .github/workflows/upstream-watch.yml jobs.keepalive.timeout-minutes = 10
 yaml .github/workflows/upstream-watch.yml jobs.locks.needs = [detect, bump, build]
 yaml .github/workflows/upstream-watch.yml jobs.locks.permissions = 
 yaml .github/workflows/upstream-watch.yml jobs.locks.runs-on = ubuntu-latest

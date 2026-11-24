@@ -25,7 +25,7 @@ lose when it fails.
 
 | Workflow | Stage |
 |---|---|
-| `.github/workflows/ci.yml` | entry point: triggers, stage selection, final verdict |
+| `.github/workflows/ci.yml` | entry point: triggers, stage selection, the schedule-health gate, the platform audit row, final verdict |
 | `.github/workflows/ci-resolve.yml` | resolve |
 | `.github/workflows/ci-fetch.yml` | fetch |
 | `.github/workflows/ci-assemble.yml` | assemble |
@@ -36,7 +36,7 @@ lose when it fails.
 | `.github/workflows/ci-s5.yml` | s5 (upgrade payload, reclamation, degraded boot) |
 | `.github/workflows/release.yml` | tag-triggered publisher, calls `ci.yml` and `release-publish.yml` |
 | `.github/workflows/release-publish.yml` | reusable publisher: preflight, artifacts, `gh release`; both release lines call it |
-| `.github/workflows/upstream-watch.yml` | daily watch: discover, build, move the pin and the lockfiles, merge, tag, publish |
+| `.github/workflows/upstream-watch.yml` | daily watch: discover, build, move the pin and the lockfiles, merge, tag, publish, then the keepalive line and the audit rows |
 | `.github/workflows/ci-verify.yml` | verify |
 | `.github/workflows/ci-report.yml` | report |
 
@@ -54,9 +54,11 @@ GitHub does not support reusable workflows in subdirectories of that directory, 
 | `assemble.sh` | assemble | build the payload directory and `manifest.json` (S0 skeleton) |
 | `upstream-watch.sh` | watch | decide whether a new upstream formal release exists, move the pin through `ci_write_upstream_pin`, render the automatic PR and failure-issue bodies |
 | `matrix-select.sh` | watch | the candidate list of an automatic release: the new version plus the previous three formal releases, with the gap recorded |
-| `heartbeat-tag.sh` | watch | keep the scheduled workflow alive with a `heartbeat-YYYYMM` tag every ≥50 days |
+| `keepalive.sh` | watch | append the monthly keepalive line to `.github/keepalive.log` once the default branch has been quiet for 25 days (`CI_KEEPALIVE_INTERVAL_DAYS`) |
+| `automation-log.sh` | watch, ci | append one `upstream` / `release` / `platform` / `failure` row to `.github/automation-log.md`, escaping any cell that carries a `|` |
 | `release-preflight.sh` | publish | refuse to publish unless the image record, the payload manifest, the tag and the bootloader agree |
 | `verify.sh` | verify | `bash -n`/`sh -n`, ShellCheck, `python3 scripts/check_design.py all` |
+| `schedule-health.sh` | ci | ask the API whether the scheduled watch is `active`; exit 0 active, 1 disabled, 2 an error |
 | `kmods.sh` | s1 | fetch, verify and unpack the btrfs module closure against the lockfile |
 | `apk_extract.py` | s1 | unpack `.ko` files out of apk-tools v3 (ADB) containers |
 | `initramfs.sh` | s1, s2, s3, s4, s5 | build the initramfs for one toolset (`probe`/`boot`/`assert`) |
@@ -94,10 +96,13 @@ The names say which, so nobody has to remember:
 | release `*.img.gz` | release (from `image-install`) | production boot init | yes |
 
 The image records its own identity in `ab/image.json` on the ESP (`"kind": "boot"|"probe"`).
-Three gates depend on it: `disk.sh` refuses to build a probe image without
-`CI_ALLOW_PROBE_INIT=1`, `image-verify.sh` cross-checks the record against what the build
-installed, and the release job re-opens the ESP, reads `ab/image.json` and greps `initrd-a`
-for the production init before publishing anything.
+
+Three gates depend on it:
+
+- `disk.sh` refuses to build a probe image without `CI_ALLOW_PROBE_INIT=1`;
+- `image-verify.sh` cross-checks the record against what the build installed;
+- the release job re-opens the ESP, reads `ab/image.json` and greps `initrd-a` for the
+  production init before publishing anything.
 
 Why this exists: v0.0.6 and v0.0.7 published s2's probe image. Every QEMU stage was green
 because s3/s4/s5 each rebuild the image for themselves - no stage ever booted the published
@@ -106,7 +111,7 @@ artifact - and the first real machine shut down at the GRUB menu with
 
 ## Stage graph
 
-```
+```text
 resolve ──┬── fetch ── assemble ──┐
           └── verify ─────────────┴── report
 ```
@@ -126,7 +131,7 @@ version and cache key that the report needs.
 
 ## Cache key
 
-```
+```text
 cache_key = upstream-<version>-<sha256(key material)[0..16]>
 key material = upstream_version, kmods_dir, kernel_package,
                rootfs/kernel/btrfs-module sha256,
@@ -169,18 +174,24 @@ on macOS.
 ## Building a release other than the pin
 
 `workflow_dispatch` takes an `upstream_version` input, and the same value reaches
-`resolve`, `fetch`, `assemble` and S1–S5 as `CI_UPSTREAM_VERSION`. That is enough for the
-pipeline to fetch a different release, but not for the three lockfiles to stay honest:
-`kmod-closure.json`, `initramfs-tools.lock.json` and `runtime-closure.json` each pin the
-programs of one release, and a different release ships different kernels, modules and
-`btrfs-progs` by construction.
+`resolve`, `fetch`, `assemble` and S1–S5 as `CI_UPSTREAM_VERSION`.
+
+That is enough for the pipeline to fetch a different release, but not for the three lockfiles
+to stay honest. These each pin the programs of one release:
+
+- `kmod-closure.json`
+- `initramfs-tools.lock.json`
+- `runtime-closure.json`
+
+A different release ships different kernels, modules and `btrfs-progs` by construction.
 
 A build that names another release therefore **derives its own lockfile** under
 `$CI_TMP_ROOT/locks/`, asserts against that copy and warns in the step log and on the run
-page. The committed lockfiles are untouched, so a green stage for another release never
-claims the pin was verified, and the pin keeps its drift contract. `CI_LOCK_STRICT=1`
-turns the drift back into a hard failure for every release, which is what a bisect of the
-pin itself needs.
+page.
+
+The committed lockfiles are untouched, so a green stage for another release never claims the
+pin was verified. The pin keeps its drift contract. `CI_LOCK_STRICT=1` turns the drift back
+into a hard failure for every release, which is what a bisect of the pin itself needs.
 
 ```sh
 gh workflow run ci.yml --ref main -f stage=assemble -f upstream_version=25.12.1
@@ -196,14 +207,14 @@ The upstream kernel is built without `CONFIG_KERNEL_BTRFS_FS`, so btrfs only exi
 `kmod-fs-btrfs`. S1 proves that the official kernel loads the official module set inside
 our own initramfs and mounts a btrfs filesystem.
 
-```
+```text
 kmods.sh ──> initramfs.sh ──> qemu-smoke.sh ──> judge line
 ```
 
 1. `kmods.sh` resolves the closure, verifies every package against the release
    `sha256sums`, unpacks the `.ko` files and asserts the result against
-   `scripts/ci/kmod-closure.json`. Drift fails the stage; refresh deliberately with
-   `bash scripts/ci/kmods.sh --write-lock`.
+   `scripts/ci/kmod-closure.json`.
+   - Drift fails the stage; refresh deliberately with `bash scripts/ci/kmods.sh --write-lock`.
 2. `initramfs.sh` stages a static (or library-carrying) busybox, `initramfs/init` and
    the modules, then packs a `newc` cpio archive.
 3. `qemu-smoke.sh` builds a 64 MiB btrfs image with a marker file, boots the kernel
@@ -213,7 +224,7 @@ kmods.sh ──> initramfs.sh ──> qemu-smoke.sh ──> judge line
 
 `initramfs/init` prints exactly one of these and powers off:
 
-```
+```text
 S1-RESULT=ok kernel=<vermagic> modules=<n> btrfs=mounted
 S1-RESULT=fail reason=<token>
 ```
@@ -224,9 +235,10 @@ field means versioning the line, not editing it.
 ### apk-tools v3 packaging
 
 The kmods are apk-tools v3 containers: 4-byte magic `ADBd`, then a raw-deflate stream
-holding the metadata and the file data. `tar`, `bsdtar` and `ar` all reject them, so
+holding the metadata and the file data. `tar`, `bsdtar` and `ar` all reject them. So
 `apk_extract.py` inflates the payload, locates each ELF image, derives its exact length
 from its own section header table, and maps it to the module path in the file table.
+
 The result is byte-identical to what the official image installs: extracting
 `kmod-lib-crc32c` reproduces the `libcrc32c.ko` shipped in the upstream rootfs.
 
@@ -257,16 +269,17 @@ The image is verified twice:
    second initramfs) reads the same image through the kernel and prints the frozen
    judge line:
 
-```
+```text
 S2-RESULT=ok parts=4 images=<bytes>
 S2-RESULT=fail reason=<token>
 ```
 
 Both slots currently carry the S1 probe initramfs as `initrd-a`/`initrd-b` so the ESP
-is complete; S3 replaces them with the real initramfs mount chain. The ESP itself
-comes from the upstream combined-EFI image, which is why the stage needs no GRUB
-build dependency: upstream types that ESP as a plain Linux filesystem, so the
-partition is found by probing for a FAT signature rather than by trusting the GUID.
+is complete; S3 replaces them with the real initramfs mount chain.
+
+The ESP itself comes from the upstream combined-EFI image, which is why the stage needs no
+GRUB build dependency. Upstream types that ESP as a plain Linux filesystem, so the partition
+is found by probing for a FAT signature rather than by trusting the GUID.
 
 ## S3: the layered boot initramfs
 
@@ -285,54 +298,61 @@ The read-only layers are mounted under `@`-names so the overlay command line car
 both layer names verbatim, which is what the judge line reports as `lower=platform:sys`.
 
 `switch_root` then hands control to `/s3-post.sh`, which re-checks everything from
-inside the composed root: `/` is the overlay, `@platform` and `@sys` both contribute files,
-probe writes appear in `<generation>/upper` and in neither read-only layer, and the
-probe written by the previous boot is still there. It ends by executing `/sbin/init`,
-so the boot proves the root is a working system; the harness stops the machine as soon
-as the judge line appears.
+inside the composed root. There `/` is the overlay, `@platform` and `@sys` both contribute
+files, probe writes appear in `<generation>/upper` and in neither read-only layer, and the
+probe written by the previous boot is still there.
+
+It ends by executing `/sbin/init`, so the boot proves the root is a working system; the
+harness stops the machine as soon as the judge line appears.
 
 `/s3-post.sh` is a CI artefact, not part of the product: it enters an initramfs only when
 the build sets `AB_CI_HOOKS=1` (`vars.AB_CI_HOOKS` in `ci-assemble.yml`, and set by
-`ci-s3.yml` on its assertion build alone). A production build - `kind=boot`, the flag
-unset - carries an `initrd-a`/`initrd-b` without it, and `scripts/ci/image-verify.sh`
-asserts that mechanically: `assert_no_ci_hooks` reads the member table of both initrds
-back with `cpio -t` and fails the build on any `s3-` entry. The test and debug pipelines
-(`ci-debug.yml`, `ci-s4.yml`, `ci-s5.yml`) keep injecting it unconditionally on purpose:
-their images are supposed to carry the probe, and none of them publishes an install image.
+`ci-s3.yml` on its assertion build alone).
 
-```
+A production build - `kind=boot`, the flag unset - carries an `initrd-a`/`initrd-b` without
+it, and `scripts/ci/image-verify.sh` asserts that mechanically: `assert_no_ci_hooks` reads the
+member table of both initrds back with `cpio -t` and fails the build on any `s3-` entry.
+
+The test and debug pipelines (`ci-debug.yml`, `ci-s4.yml`, `ci-s5.yml`) keep injecting it
+unconditionally on purpose: their images are supposed to carry the probe, and none of them
+publishes an install image.
+
+```text
 S3-RESULT=ok slot=<a|b> upper=<@overlay-version> lower=<platform:sys> root=<overlay>
 S3-RESULT=fail reason=<token>
 ```
 
 The stage boots the same disk image twice (`wf.boot=1`, then `wf.boot=2`) and both
 boots must pass. Those two boots load a second initramfs built with `AB_CI_HOOKS=1`
-(`ci-hooks.cpio.gz`), because the image's own `initrd-a`/`initrd-b` are the production
-archive and stay free of CI members; the firmware boot (the third one) runs the image's
-own initrd, so the production archive is still exercised end to end. Probe markers
-(`.s3-probe`, `.s3-new-<n>`, `.s3-post`) stay in the generation's upper directory, which
-is what makes the second boot meaningful.
+(`ci-hooks.cpio.gz`). The image's own `initrd-a`/`initrd-b` are the production archive and
+stay free of CI members.
+
+The firmware boot (the third one) runs the image's own initrd, so the production archive is
+still exercised end to end. Probe markers (`.s3-probe`, `.s3-new-<n>`, `.s3-post`) stay in the
+generation's upper directory, which is what makes the second boot meaningful.
 
 Two consequences worth knowing:
 
 - the ESP needs `vfat`, which the upstream kernel does not build in, so the module
   closure carries `kmod-fs-vfat` (fat.ko, vfat.ko) plus `kmod-nls-cp437` and
-  `kmod-nls-iso8859-1`; `kmod-nls-base` is virtual. `scripts/ci/kmod-closure.json`
-  therefore pins 18 packages / 20 modules.
+  `kmod-nls-iso8859-1`; `kmod-nls-base` is virtual.
+- `scripts/ci/kmod-closure.json` therefore pins 18 packages / 20 modules.
 - `ab/state.json` ships in the image with the installation state (both slots on
-  `@overlay-<version>`, generation 1, slot `a` committed). S4 starts updating it; the
-  parser in `initramfs/lib/wf.sh` fails on an unreadable state rather than falling back
-  to a default slot. The writable layer is named after the upstream release
-  (`@overlay-25.12.2`, or `@overlay-25.12.2-r2` for a re-release); `generation` stays
-  an integer because version strings do not sort correctly.
+  `@overlay-<version>`, generation 1, slot `a` committed). S4 starts updating it.
+- The parser in `initramfs/lib/wf.sh` fails on an unreadable state rather than falling back
+  to a default slot.
+- The writable layer is named after the upstream release (`@overlay-25.12.2`, or
+  `@overlay-25.12.2-r2` for a re-release). `generation` stays an integer because version
+  strings do not sort like integers.
 
 ### The programs in the initramfs
 
 The initramfs runs before the platform layer is mounted, so it carries its own copy of
-busybox, the partition tools and their libraries. Those programs are **not** taken from
-the build host: a `ubuntu-latest` runner supplies glibc binaries whose versions drift
-with the runner image, and a boot path that changes because a runner was upgraded is not
-reproducible. They come from the same ImmortalWrt release as the rest of the image, and
+busybox, the partition tools and their libraries. Those programs are **not** taken from the
+build host. A `ubuntu-latest` runner supplies glibc binaries whose versions drift with the
+runner image, and a boot path that changes because a runner was upgraded is not reproducible.
+
+They come from the same ImmortalWrt release as the rest of the image, and
 `scripts/ci/initramfs-tools.lock.json` is the contract.
 
 | Program | Package (feed) | Why it is in the initramfs |
@@ -352,12 +372,14 @@ reproducible. They come from the same ImmortalWrt release as the rest of the ima
 Two consequences are worth knowing before touching this:
 
 - **busybox cannot be run on the build host.** It is a musl binary, so `busybox --list`
-  would need `/lib/ld-musl-x86_64.so.1` on the runner. The applet list is therefore read
-  from the applet table inside the package image (`apk_tools.py lock`) and stored in the
-  lockfile; the build links exactly those names and never executes the host busybox.
+  would need `/lib/ld-musl-x86_64.so.1` on the runner.
+- The applet list is therefore read from the applet table inside the package image
+  (`apk_tools.py lock`) and stored in the lockfile. The build links exactly those names and
+  never executes the host busybox.
 - **there is no `mdev`.** The upstream busybox does not compile that applet in, so the
-  initramfs takes `/dev` from devtmpfs alone (every kernel this image ships has it) and
-  prints `/proc/filesystems` plus the `/dev` listing when the block device never appears.
+  initramfs takes `/dev` from devtmpfs alone (every kernel this image ships has it).
+- When the block device never appears, the init prints `/proc/filesystems` plus the `/dev`
+  listing.
 
 `initramfs.sh` also refuses to finish when a glibc artifact (`ld-linux*`, `libc.so.6`,
 `x86_64-linux-gnu`, `libreadline`, `libtinfo`, `libudev`) is anywhere in the tree, and
@@ -401,17 +423,19 @@ and is mirrored onto the final filesystem paths:
 `ab-slot` reads `ab/state.json` from the ESP (`/boot` by default, `AB_ESP` overrides
 it for tests) and writes it atomically: temporary file in the same directory, `sync`,
 rename, `sync`. Concurrent writers are excluded by a directory lock, because `mkdir`
-is atomic on vfat. The running slot comes from `ab.slot=<a|b>` on the kernel command
-line, which is what GRUB sets per menu entry; without it the committed slot is
-assumed.
+is atomic on vfat.
+
+The running slot comes from `ab.slot=<a|b>` on the kernel command line, which is what GRUB
+sets per menu entry; without it the committed slot is assumed.
 
 ### Health check
 
 `ab-commit` runs after `done` with a 150 second budget and logs every probe in the
 frozen format (`probe=<name> result=<pass|fail> [reason=<token>]`). Every probe runs even
-after one has failed, so a single boot names every fault; the writable layer is the root
-itself, because the initramfs mounts `@overlay-<version>` as the upper and `switch_root`s
-into it, and there is no separate `/overlay` mount:
+after one has failed, so a single boot names every fault.
+
+The writable layer is the root itself, because the initramfs mounts `@overlay-<version>` as
+the upper and `switch_root`s into it, and there is no separate `/overlay` mount:
 
 | Probe | Passes when |
 |---|---|
@@ -421,12 +445,14 @@ into it, and there is no separate `/overlay` mount:
 
 Two notes on `fw4-present`: on this upstream `fw4` is a one-shot renderer — `fw4
 start` pipes the rendered ruleset into `nft` and exits — so there is normally no
-`fw4` process to find. The probe therefore passes when either the `inet fw4` table
-exists or an `fw4` process is running, and it logs which one it saw. `wan-present`
-also needs a `network.wan` interface, and the upstream rootfs ships no
-`/etc/config/network` at all: S5 owns the production config, so the S4 harness writes
-a documented fixture into the writable layer instead of the probe silently passing on
-nothing.
+`fw4` process to find.
+
+The probe therefore passes when either the `inet fw4` table exists or an `fw4` process is
+running, and it logs which one it saw.
+
+`wan-present` also needs a `network.wan` interface, and the upstream rootfs ships no
+`/etc/config/network` at all. S5 owns the production config, so the S4 harness writes a
+documented fixture into the writable layer instead of the probe silently passing on nothing.
 
 ### GRUB
 
@@ -452,7 +478,7 @@ so `ab-commit` would never run and the abandon path would never be exercised; a 
 itself: each boot stops on the `ab-commit` decision line and `ab-phase.sh` then reads
 the ESP back and prints the frozen line:
 
-```
+```text
 S4-RESULT=ok phase=<commit|abandon> slot=<a|b>
 S4-RESULT=fail reason=<token>
 ```
@@ -481,9 +507,10 @@ update tooling treats as "refuse to write"); execution failures exit 1.
 
 `/etc` files that the payload changes *and* the user changed in the writable layer are
 reported into `ab/conflicts.log` (with the documented 32 KiB truncation and
-`TRUNCATED=1` marker) and never block the update. `/etc/config` is excluded: uci has
-its own grammar, and the payload's uci changes arrive as idempotent
-`/etc/uci-defaults/` scripts, which are counted and reported instead. `ab-slot
+`TRUNCATED=1` marker) and never block the update.
+
+`/etc/config` is excluded: uci has its own grammar, and the payload's uci changes arrive as
+idempotent `/etc/uci-defaults/` scripts, which are counted and reported instead. `ab-slot
 conflicts` reads the report back.
 
 ### Reclamation and the log ring
@@ -491,15 +518,16 @@ conflicts` reads the report back.
 `ab-slot gc` keeps the layers referenced by both slots and by `pending`, never deletes
 a mounted layer, deletes with `btrfs subvolume delete -C` followed by a sync, and never
 balances. It runs after a successful upgrade and again early in `ab-boot` (best
-effort: a failure is logged and the boot continues). Log files keep the documented
-budget: `boot-0/1/2.log` rotate on every boot, `upgrade.log` and `conflicts.log` are
-overwritten by the next update, and every writer truncates at 32 KiB with
-`TRUNCATED=1`.
+effort: a failure is logged and the boot continues).
+
+Log files keep the documented budget: `boot-0/1/2.log` rotate on every boot, `upgrade.log`
+and `conflicts.log` are overwritten by the next update, and every writer truncates at 32 KiB
+with `TRUNCATED=1`.
 
 ### Degraded boot
 
 When the writable partition cannot be mounted the boot initramfs composes the root with
-a tmpfs upper instead of failing: the system comes up read-only in practice, the serial
+a tmpfs upper instead of failing. The system comes up read-only in practice, the serial
 log carries `action=degraded-boot p4=degraded`, `ab-slot status` reports `p4=degraded`,
 and `ab-upgrade` refuses to run.
 
@@ -512,7 +540,7 @@ and `ab-upgrade` refuses to run.
 | 3 | `ab.slot=b` | probes pass, `committed=b`, the orphan layer is reclaimed, only referenced layers remain |
 | 4 | writable partition destroyed | degraded boot, userspace still reached |
 
-```
+```text
 S5-RESULT=ok upgrade=<slot> conflicts=<n> reclaimed=<n>
 S5-RESULT=fail reason=<token>
 ```
@@ -527,7 +555,7 @@ The upstream root filesystem ships no btrfs user space tooling, yet snapshot, de
 create and list are what the slot state machine, reclamation and the degraded boot all
 depend on. The tool therefore travels in the platform layer:
 
-```
+```text
 @platform/usr/sbin/btrfs            (plus a btrfsck symlink, which the multicall binary handles)
 @platform/usr/lib/liblzo2.so.2
 ```
@@ -556,7 +584,9 @@ never reaches an image.
 the package files, their digests and the exact files installed. The feed publishes no
 `sha256sums` for the package repository, so the digests are recorded on first download
 — that is the one place where the project trusts the mirror once and then holds it to
-that. Refresh deliberately with `platform-runtime.sh --write-lock`.
+that.
+
+Refresh deliberately with `platform-runtime.sh --write-lock`.
 
 Two budget assertions protect the slot space: the runtime tree must stay under
 `CI_RUNTIME_LIMIT_MIB` (8 MiB) in the runtime stage, and `disk.sh` re-measures the
@@ -568,10 +598,11 @@ Two budget assertions protect the slot space: the runtime tree must stay under
 `ab-slot gc` prints `reason=btrfs-tool-missing` and exits non-zero instead of reporting
 an empty, successful pass. `ab-boot` runs `btrfs --version` and `btrfs subvolume list /`
 first, prints `ab-boot: btrfs=ok subvolume-list=ok` to `/dev/console`, and only then
-starts the early reclamation; if the tool is broken the log records
-`stage=btrfs-check result=fail reason=...` and reclamation is skipped with the same
-reason. The S5 run gates on that console line (`s5-phase.sh --phase toolchain`), so a
-platform layer without a working tool cannot pass.
+starts the early reclamation.
+
+If the tool is broken the log records `stage=btrfs-check result=fail reason=...` and
+reclamation is skipped with the same reason. The S5 run gates on that console line
+(`s5-phase.sh --phase toolchain`), so a platform layer without a working tool cannot pass.
 
 ## S6: payload production, conflicts and releases
 
@@ -580,27 +611,34 @@ platform layer without a working tool cannot pass.
 `assemble` used to publish a manifest that admitted which members were missing. It now
 builds the real payload — upstream rootfs and kernel, the boot initramfs, and the
 platform layer with the btrfs tooling — then unpacks the payload's own `platform.tar` and
-hands the tar to *that* `usr/sbin/ab-upgrade --check`. The shipped copy is the one that
-decides, so the bytes a device will unpack are the bytes that were accepted. The checker is
-the only definition of a valid payload: manifest shape, member digests, one kernel build
-across the initramfs modules, free space, conflict report. A payload that passes here is one the device would accept,
-and there is no second copy of the rules to drift.
+hands the tar to *that* `usr/sbin/ab-upgrade --check`.
+
+The shipped copy is the one that decides, so the bytes a device will unpack are the bytes
+that were accepted. The checker is the only definition of a valid payload: manifest shape,
+member digests, one kernel build across the initramfs modules, free space, conflict report.
+
+A payload that passes here is one the device would accept, and there is no second copy of the
+rules to drift.
 
 The stage needs a mounted writable partition because the checker asks btrfs about `p4` and
-the scratch state names the writable layer it must find; it creates a 256 MiB sparse image,
-formats it btrfs, mounts it and unmounts it afterwards. A tmpfs is not enough: it has no
-subvolumes to name.
+the scratch state names the writable layer it must find. It creates a 256 MiB sparse image,
+formats it btrfs, mounts it and unmounts it afterwards.
+
+A tmpfs is not enough: it has no subvolumes to name.
 
 ### Conflicts: what was wrong
 
-The report always said `conflicts=0`. The comparison itself was right, but its baseline
-was not: it looked for the running slot at `/mnt/slots/<slot>/@sys`, a path the boot
-initramfs never leaves behind — it mounts the slot subvolumes for itself and those
-mounts vanish at `switch_root`. The loop was therefore skipped and the count stayed
-zero. `ab-upgrade` now mounts the running slot's filesystem when that path is absent,
-and records `baseline=ok` or `baseline=unreadable` in the report header so a skipped
-comparison can never again look like a clean one. Three directions are tested: changed
-on both sides (reported, upgrade proceeds), payload only (silent), user only (silent).
+The report always said `conflicts=0`. The comparison itself was right, but its baseline was
+not. It looked for the running slot at `/mnt/slots/<slot>/@sys`, a path the boot initramfs
+never leaves behind: it mounts the slot subvolumes for itself, and those mounts vanish at
+`switch_root`.
+
+The loop was therefore skipped and the count stayed zero. `ab-upgrade` now mounts the running
+slot's filesystem when that path is absent. It records `baseline=ok` or `baseline=unreadable`
+in the report header, so a skipped comparison can never again look like a clean one.
+
+Three directions are tested: changed on both sides (reported, upgrade proceeds), payload only
+(silent), user only (silent).
 
 `S5` now fails with `reason=conflicts-not-detected` or `reason=conflict-baseline-unreadable`
 if the fixture's deliberate conflict does not show up, so the path stays covered.
@@ -609,12 +647,14 @@ if the fixture's deliberate conflict does not show up, so the path stays covered
 
 `release.sh` turns a verified build into `n5105-ab-<upstream>-install.img.gz`, the
 matching `-upgrade.tar`, `SHA256SUMS`, `release-notes.md` and - when the kernel package
-version is known - `index.txt`, the update feed the release page also serves. The index
-is built by `feed-index.sh` from `SHA256SUMS` and the payload next to it, so the digest a
-machine reads can never drift from the digest the release publishes. The firmware version is a
-release counter, not part of the file name: the release page's tag already names it. The
-compressed image is
-decompressed again and compared with the raw image digest before it is published.
+version is known - `index.txt`, the update feed the release page also serves.
+
+The index is built by `feed-index.sh` from `SHA256SUMS` and the payload next to it, so the
+digest a machine reads can never drift from the digest the release publishes.
+
+The firmware version is a release counter, not part of the file name: the release page's tag
+already names it. The compressed image is decompressed again and compared with the raw image
+digest before it is published.
 
 `.github/workflows/release.yml` runs on `v*` tags only, calls the ordinary pipeline
 (`ci.yml` gained `workflow_call`) and grants `contents: write` to the publishing job
@@ -626,11 +666,14 @@ built.
 
 The first S6 run reported `conflicts=0` with `payload-same=215`: every file in the
 payload's `etc` was byte identical to the baseline. The baseline was right — the
-*payload was already installed*. The update fixture installs `ab-upgrade` through
-`/etc/rc.local`, the update snapshots the running layer, and the snapshot inherited
-that `rc.local`, so the next boot ran the upgrade again from the new slot. In that run
-the running slot is the slot the payload just created, so the baseline and the payload
-are the same tree and the comparison is meaningless.
+*payload was already installed*.
+
+The update fixture installs `ab-upgrade` through `/etc/rc.local`, the update snapshots the
+running layer, and the snapshot inherited that `rc.local`, so the next boot ran the upgrade
+again from the new slot.
+
+In that run the running slot is the slot the payload just created, so the baseline and the
+payload are the same tree and the comparison is meaningless.
 
 Two changes close it from both sides:
 

@@ -16,7 +16,7 @@ how a machine gets a source that the release feed does not carry - without editi
 A plugin is a directory holding one declaration; a check leaves one more file beside it.
 Nothing else is read:
 
-```
+```text
 /etc/ab/plugins.d/<label>/plugin.conf     the declaration, written by a person
 /etc/ab/plugins.d/<label>/.verdict        written by `plugins check`, never by hand
 ```
@@ -37,10 +37,14 @@ wrong is bounded by what it can say, and nothing a plugin declares runs before, 
 an upgrade.
 
 There is exactly one way a plugin reaches apk. For each apk call, one repositories file is
-assembled under `/tmp`: the machine's own feed files in apk's order (`repositories.d/*.list`,
-then `distfeeds.list`, then `repositories`), followed by the feeds of every plugin that a
-transaction may read. apk reads a repositories file top to bottom and the base has to win a tie,
-which is why the plugin lines come last.
+assembled under `/tmp`:
+
+- the machine's own feed files, in apk's order: `repositories.d/*.list`, then `distfeeds.list`,
+  then `repositories`;
+- the feeds of every plugin a transaction may read.
+
+apk reads that file top to bottom, and the base has to win a tie. That is why the plugin lines
+come last.
 
 Those machine files are read and never written. Nothing here edits `/etc/apk/repositories.d` or
 `distfeeds.list`, so the aligner and the follow keep seeing exactly the base they were built to
@@ -54,7 +58,7 @@ place a symlink at, and this tool opens that file as root.
 
 ## The declaration
 
-```
+```text
 api = 1
 kind = packages
 enabled = yes
@@ -86,20 +90,26 @@ something the machine does not implement must not read as a declaration that wor
 `#` starts a comment, blank lines are ignored, and the spaces around `=` are a convention
 rather than a syntax - the parser trims both sides.
 
-The static rules also bound values, not just key names: a label that is not
-`[a-z0-9][a-z0-9_-]*`, an `api` that is not `1`, a `kind` outside the two, an `enabled` that is
-neither `yes` nor `no`, a `kind = source` with no `feed`, a `kind = packages` with no
-`package`, a URL that is not `http(s)` or that carries a blank, a `package` that is not an apk
-package name, a key path outside `/etc/apk/keys/`, and a key file that does not exist. Each of
-them has its own token in [Reason tokens](#reason-tokens), and a declaration wrong in two ways
+The static rules also bound values, not just key names. Each of these is a refusal:
+
+- a label that is not `[a-z0-9][a-z0-9_-]*`;
+- an `api` that is not `1`, a `kind` outside the two, an `enabled` that is neither `yes` nor
+  `no`;
+- a `kind = source` with no `feed`, or a `kind = packages` with no `package`;
+- a URL that is not `http(s)`, or that carries a blank;
+- a `package` that is not an apk package name;
+- a key path outside `/etc/apk/keys/`, or a key file that does not exist.
+
+Each has its own token in [Reason tokens](#reason-tokens). A declaration wrong in two ways
 always answers with the same first one, so a script can branch on the answer.
 
 The two value rules are worth their own sentence, because both exist to keep a declaration from
 meaning more than it says:
 
 * a `package` value is a *word on an `apk add` command line*. `package = -X` is a repository
-  option, and `package = --allow-untrusted` is the one trust check apk still makes; a name with
-  a blank in it is two names. None of them is a package, and each is `plugin-package-invalid`;
+  option, and `package = --allow-untrusted` is the one trust check apk still makes;
+* a name with a blank in it is two names. None of them is a package, and each is
+  `plugin-package-invalid`;
 * a `feed` value becomes one line of the repositories file, and apk splits that line on blanks.
   A URL with a blank in it is therefore two sources, the second of which was never judged, so a
   blank is refused with `plugin-feed-scheme`.
@@ -124,7 +134,7 @@ ab-packages plugins repos                # the repositories file a transaction w
 (`enabled=`), was it checked (`checked=`), and if it was refused, why (`reason=`). A row looks
 like this:
 
-```
+```text
 label=istore kind=packages enabled=no checked=stale reason=none feeds=1 packages=1
 ```
 
@@ -133,29 +143,34 @@ and "the source is out" are things you can look at, rather than an inference fro
 that did not appear. It also prints one line of explanation on stderr, saying how many of the
 lines above came from plugins.
 
-`ab-packages sources <name>` is where an attribution shows: a source that belongs to the feed of
+`ab-packages sources <name>` is where an attribution shows. A source that belongs to the feed of
 an enabled plugin is printed as `source=plugin:<label>` instead of `source=feed`, so a package
-that came from somebody's own tree is never read as one the release ships. apk is the one that
-answers, and apk only knows the files under `/etc/apk` - where a plugin's feeds are, by design,
-in no file. So when a plugin contributes, the same question is asked a second time against the
-file a transaction would read (the machine's own feeds, then the plugin's), and the two answers
-are merged. With nothing declared, the command asks exactly what it always asked.
+from somebody's own tree is never read as one the release ships. With nothing declared, the
+command asks exactly what it always asked.
 
-`apply` follows the rule every other write in this project follows: it prints the plan block,
-asks the one question every write here asks, `Proceed and follow <n> packages? [y/N] ` (with
-`<n>` the number of packages the declaration names), and only `y` (or `--yes`, for a script)
-starts the transaction. A decline writes nothing and exits `0`. A declaration that names no package answers
-`plugin-nothing-to-install` and exits `0`, because a source-only plugin is a working plugin and
-there was simply nothing to install.
+apk is the one that answers, and apk only knows the files under `/etc/apk` - where a plugin's
+feeds are, by design, in no file. So when a plugin contributes, the same question is asked a
+second time against the file a transaction would read: the machine's own feeds, then the
+plugin's. The two answers are merged.
+
+`apply` follows the rule every other write in this project follows. It prints the plan block and
+asks the one question every write here asks: `Proceed and follow <n> packages? [y/N] `, with
+`<n>` the number of packages the declaration names. Only `y` (or `--yes`, for a script) starts
+the transaction, and a decline writes nothing and exits `0`.
+
+A declaration that names no package answers `plugin-nothing-to-install` and exits `0`. A
+source-only plugin is a working plugin, and there was simply nothing to install.
 
 `apply` is bound by the static rules and by nothing else. The shadow question and the
 reachability probe belong to `check`: they are questions about the *follow*, which moves
-packages nobody named, while `apply` moves exactly what was written down. So naming a plugin in
-`apply` is the decision to run it - the packages are installed from the feeds that declaration
-names, whether or not a verdict exists for it - and `plugins check <label>` first is what makes
-that decision an informed one rather than the only reading available. The plan block names the
-plugin and every package before the question is asked, so the transaction is never wider than
-what was on the screen.
+packages nobody named, while `apply` moves exactly what was written down.
+
+So naming a plugin in `apply` is the decision to run it. The packages are installed from the
+feeds that declaration names, whether or not a verdict exists for it.
+
+`plugins check <label>` first is what makes that decision an informed one rather than the only
+reading available. The plan block names the plugin and every package before the question is
+asked, so the transaction is never wider than what was on the screen.
 
 | Exit | Meaning |
 | --- | --- |
@@ -169,9 +184,10 @@ Nothing here writes `/boot/ab/packages`. That record is the verdict of a whole-w
 
 The world is a different file, and `apply` does reach it - through apk, not by itself. `apk add`
 records every name it installs in `/etc/apk/world`, which is how apk remembers that the name was
-asked for, and the transaction `plugins apply` runs is an `apk add` like any other. So a package
-a plugin installed has a world entry from that moment on, and what happens to it when the plugin
-is switched off is in [Turning a plugin off](#turning-a-plugin-off).
+asked for. The transaction `plugins apply` runs is an `apk add` like any other.
+
+So a package a plugin installed has a world entry from that moment on. What happens to it when
+the plugin is switched off is in [Turning a plugin off](#turning-a-plugin-off).
 
 ## check is the only time this machine goes to the network
 
@@ -188,12 +204,12 @@ What a check does, in this order:
    own probe uses. A feed that does not answer is `feed-unreachable`, and the check stops there:
    there is nothing left to compare.
 3. `apk update` into a cache under `/tmp`, then `apk policy` over the bare names the world
-   holds, both against the repositories file this plugin would contribute to. Which source wins
-   is apk's own business, so the ordering of two versions is asked of apk rather than
-   re-implemented here.
-4. the verdict, written to `.verdict`:
+   holds, both against the repositories file this plugin would contribute to.
+4. which source wins is apk's own business, so the ordering of two versions is asked of apk
+   rather than re-implemented here.
+5. the verdict, written to `.verdict`:
 
-```
+```text
 verdict=ok
 reason=none
 checked=2026-11-21T03:12:44Z
@@ -202,10 +218,14 @@ conf=3f2a7c1d4e5b8091a2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607182
 
 The verdict is the answer, not the printed line: it is the file every later transaction reads.
 So a check that cannot write it says `plugin=<label> verdict=ok reason=verdict-unwritable` and
-exits non-zero - an `ok` on screen with no file behind it would be a promise nothing keeps, and
-the next transaction would read whatever the last one left. A *blocked* verdict that cannot be
-written keeps the token it found and gains `verdict-write=failed` on the same line, because the
-refusal is still the answer; only the record of it is missing.
+exits non-zero.
+
+An `ok` on screen with no file behind it would be a promise nothing keeps, and the next
+transaction would read whatever the last one left.
+
+A *blocked* verdict that cannot be written keeps the token it found and gains
+`verdict-write=failed` on the same line, because the refusal is still the answer. Only the
+record of it is missing.
 
 A plugin's feeds take part in a transaction when three things are true at once: `enabled = yes`,
 the verdict says `ok`, and the digest in the verdict is the digest of the declaration as it is
@@ -239,17 +259,20 @@ value.
 
 `allow-shadow = no` is the default, and it answers the question a plugin source creates: does
 it offer a *higher* version of a package the world already holds? If it does, the check blocks
-it with `shadow:<name>` and says which name and which two versions. Why: the follow moves the
-whole world in one `apk upgrade`; a feed that quietly offers `htop 3.4` over the base's `3.3`
-is how a package nobody mentioned moves on the next boot, and the machine that finds out is the
-one that just crossed a release. `allow-shadow = yes` admits the plugin and records
-`shadow-allowed` instead of `none` in the verdict, so "this was accepted on purpose" stays on
-the record. Pinning the base version in the world is usually the better answer than allowing a
-shadow.
+it with `shadow:<name>` and says which name and which two versions.
+
+Why: the follow moves the whole world in one `apk upgrade`. A feed that quietly offers
+`htop 3.4` over the base's `3.3` is how a package nobody mentioned moves on the next boot, and
+the machine that finds out is the one that just crossed a release.
+
+`allow-shadow = yes` admits the plugin and records `shadow-allowed` instead of `none` in the
+verdict, so "this was accepted on purpose" stays on the record. Pinning the base version in the
+world is usually the better answer than allowing a shadow.
 
 `allow-kmod = no` is the default. A package whose name starts with `kmod-`, and a feed whose
-URL contains `/kmods/`, are refused with `plugin-package-kmod` and `plugin-feed-kmods`. Why:
-this device carries its kernel modules in a directory per build
+URL contains `/kmods/`, are refused with `plugin-package-kmod` and `plugin-feed-kmods`.
+
+Why: this device carries its kernel modules in a directory per build
 (`releases/<version>/kmods/<build hash>/kmods`), and a module built for another kernel installs
 cleanly and then fails to load. The visible damage is not the module; it is the machine that
 stops booting after the next base change. `allow-kmod = yes` exists for someone who has read
@@ -257,10 +280,12 @@ what that costs and has a reason.
 
 `arch = noarch` is the default and the only value this release accepts. A feed URL that carries
 an architecture segment (`/x86_64/`, `/x86_64_*/`, `/i386_*/`, `/aarch64_*/`, `/arm_*/`,
-`/mips*/`, `/riscv64*/`) is refused with `plugin-feed-arch`. Why: a tree published per architecture was
-built against that architecture's base, and this project ships one target on one release line.
-Taking a tree built for another base is the failure the aligner and the follow exist to prevent,
-so the default is to refuse rather than to warn.
+`/mips*/`, `/riscv64*/`) is refused with `plugin-feed-arch`.
+
+Why: a tree published per architecture was built against that architecture's base, and this
+project ships one target on one release line. Taking a tree built for another base is the
+failure the aligner and the follow exist to prevent, so the default is to refuse rather than to
+warn.
 
 Two smaller bounds belong here: `key` must name a file that exists under `/etc/apk/keys/`
 (`plugin-key-outside`, `plugin-key-missing`), and there is no way for a declaration to import
@@ -275,12 +300,13 @@ verdict=blocked reason=feed-unreachable`, exit `74`. The plugin contributes noth
 `plugins list` keeps saying so until it is checked again.
 
 **A feed that was fine at check time and is unreachable at transaction time** fails nothing new.
-The verdict still says `ok`, the feed is in the repositories file, apk cannot fetch from it, and
-the transaction ends exactly the way a follow with no network has always ended: the record keeps
+The verdict still says `ok`, the feed is in the repositories file, and apk cannot fetch from it.
+
+The transaction ends exactly the way a follow with no network has always ended: the record keeps
 `follow=pending reason=network`, `ab-slot status` prints the two lines that say to retry with
 `ab-packages update`, and one line is appended to `/boot/ab/plugins.journal`:
 
-```
+```text
 2026-11-21T03:20:07Z plugin-suspended reason=network
 ```
 
@@ -294,33 +320,36 @@ decision, it does not make it.
 nothing new either, and it is not silent. The transaction runs on the machine's own feeds, and
 `/boot/ab/plugins.journal` gains one line per apk call that lost the set:
 
-```
+```text
 2026-11-21T03:20:07Z plugin-skip reason=tmp-unwritable
 ```
 
 One command refuses instead of going ahead: the world prune inside the follow. Asked without a
 declared feed it cannot tell "this release does not offer the name" from "the plugin's feed
-does", and dropping a world entry on half an answer would un-ask a package somebody installed on
-purpose - so it answers `prune-unanswerable` and drops nothing.
+does". Dropping a world entry on half an answer would un-ask a package somebody installed on
+purpose, so it answers `prune-unanswerable` and drops nothing.
 
 Neither failure writes `/etc/apk/repositories.d`, `distfeeds.list` or a world entry. The
-plugin's feeds live in one file under `/tmp` that is rebuilt for every apk call, so a source
-that disappears leaves nothing behind in the machine's own package state - and the next
-transaction with a working network simply reads it again.
+plugin's feeds live in one file under `/tmp` that is rebuilt for every apk call.
+
+A source that disappears therefore leaves nothing behind in the machine's own package state.
+The next transaction with a working network simply reads it again.
 
 ## Turning a plugin off
 
 Two ways, and either one is complete:
 
-```
+```text
 enabled = no                        # in plugin.conf
 rm -rf /etc/ab/plugins.d/<label>     # the whole directory
 ```
 
 Neither needs a new check. `enabled = no` keeps the plugin out of every transaction on the next
-apk call, and a deleted directory has no declaration left to read. `plugins list` keeps
-printing a switched-off plugin - a row with `enabled=no` - because "declared but off" and
-"never here" are different facts, and the second one is not a problem to fix.
+apk call, and a deleted directory has no declaration left to read.
+
+`plugins list` keeps printing a switched-off plugin - a row with `enabled=no` - because
+"declared but off" and "never here" are different facts. The second one is not a problem to
+fix.
 
 What neither of them does is uninstall anything: the packages are apk's, and they stay
 installed. Deleting the directory also deletes the verdict, so a plugin turned back on later
@@ -328,14 +357,19 @@ reads `checked=never` and contributes nothing until it is checked again.
 
 **A world entry does not disappear with the switch, and one path can take it away.** The names
 `apply` installed stay in `/etc/apk/world`, so a follow keeps maintaining them from whatever
-source offers them. The path that removes an entry is the prune inside the follow
-(`ab_packages_follow`, run by the first boot of a new base and by `ab-packages update`): it drops
-world entries *the release does not offer*, judged over the feed set a transaction reads. With
-the plugin switched off that set no longer holds its feed, so a package that only this feed
-carried reads as unoffered and its entry is dropped - the package stays installed, with its
-configuration, and `apk add <name>` (or a revert) puts the entry back. It is the same rule every
-world entry has always obeyed, and it is why the plugin's feeds are not a second package state:
-they decide where a name comes from, not whether the world is allowed to forget it.
+source offers them.
+
+The path that removes an entry is the prune inside the follow (`ab_packages_follow`, run by the
+first boot of a new base and by `ab-packages update`). It drops world entries *the release does
+not offer*, judged over the feed set a transaction reads.
+
+With the plugin switched off that set no longer holds its feed, so a package that only this feed
+carried reads as unoffered and its entry is dropped. The package stays installed, with its
+configuration, and `apk add <name>` (or a revert) puts the entry back.
+
+It is the same rule every world entry has always obeyed, and it is why the plugin's feeds are
+not a second package state: they decide where a name comes from, not whether the world is
+allowed to forget it.
 
 ## Undoing what a plugin installed
 
@@ -351,26 +385,31 @@ packages in the world, undone with the package tools that were already here
 | the whole previous system, packages included | `ab-slot rollback` | returns to the other slot and its own package layer; a base change is this, not a package revert |
 
 `ab-slot packages snapshot` records the machine and, unless told `--no-payloads`, fetches the
-bodies a revert would install. That fetch reads the same feed set a follow reads - the plugin
-feeds included - so a package only a declared feed carries gets a body in the snapshot instead
-of a `payload-gap`, and the offline way back exists for it too.
+bodies a revert would install. That fetch reads the same feed set a follow reads, the plugin
+feeds included.
+
+So a package only a declared feed carries gets a body in the snapshot instead of a
+`payload-gap`, and the offline way back exists for it too.
 
 None of them removes a package. A package installed from a plugin is not "held" by the plugin
 in any way a command could undo selectively: the plugin's name is not recorded on the package,
-and the same package could have come from anywhere. Removing one is apk's own operation -
-`apk del <name>`, which prints a plan and may take dependants with it - and it is deliberately
-not something this project does for you.
+and the same package could have come from anywhere.
+
+Removing one is apk's own operation: `apk del <name>`, which prints a plan and may take
+dependants with it. It is deliberately not something this project does for you.
 
 ## An example: iStore
 
 iStore is a third-party application store for OpenWrt. It appears here as the shape of a real
 declaration, not as a recommendation. **This project does not endorse iStore, does not test it,
-and does not enable it on the device it ships.** The example is `enabled = no`, and it stays off
-until the person who owns the machine turns it on, reads the verdict, and decides. The file is
-kept at [examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf); copy it to
+and does not enable it on the device it ships.**
+
+The example is `enabled = no`, and it stays off until the person who owns the machine turns it
+on, reads the verdict, and decides. The file is kept at
+[examples/plugins/istore/plugin.conf](examples/plugins/istore/plugin.conf); copy it to
 `/etc/ab/plugins.d/istore/plugin.conf` on the machine that should have it.
 
-```
+```text
 /etc/ab/plugins.d/istore/plugin.conf
 
 api = 1
@@ -385,9 +424,9 @@ package name is the one its installer installs. Neither is ours, either can move
 project cannot make them work - which is what `plugins check` is for. Two things about this shape are worth knowing before copying it:
 
 * a feed has to serve an apk index that the apk on this machine can read. A tree that only
-  carries the older package format answers `unverifiable` at check time, and the plugin then
-  contributes nothing - which is the honest answer to "can this machine use this source at
-  all?", rather than an install that fails halfway.
+  carries the older package format answers `unverifiable` at check time.
+* The plugin then contributes nothing, which is the honest answer to "can this machine use this
+  source at all?", rather than an install that fails halfway.
 * a mirror that puts an architecture segment in its path (`.../repo/x86_64/...`) is refused
   while `arch = noarch`. The `all` tree fits the guardrail; an architecture tree does not, and
   would need a release of this project that accepts one.
@@ -408,7 +447,8 @@ to it exactly as it applies to a plugin you wrote yourself.
 ## Reason tokens
 
 Every refusal names one token, and the token is stable, so a script or a runbook can match on
-it. `plugins check` prints `plugin=<label> verdict=blocked reason=<token>` and exits `74`;
+it. `plugins check` prints `plugin=<label> verdict=blocked reason=<token>` and exits `74`.
+
 `plugins apply` prints `ab-packages: refused, reason=<token>` and exits `74` before anything is
 installed.
 
@@ -458,9 +498,10 @@ What is out of scope is as deliberate as what is in it:
 * **no catalogue and no market.** A plugin is a file you wrote or copied, with a label you
   chose. There is no remote list, no search, no GUI.
 * **no editing of the machine's feed files.** `/etc/apk/repositories.d` and `distfeeds.list` are
-  read and never written, and `/boot/ab/packages` is not written by `plugins apply`. The world is
-  the one file of the package state that does move, and this path is not what writes it:
-  `plugins apply` runs one apk transaction, and apk records the names it installs in
+  read and never written, and `/boot/ab/packages` is not written by `plugins apply`.
+* The world is the one file of the package state that does move, and this path is not what
+  writes it.
+* `plugins apply` runs one apk transaction, and apk records the names it installs in
   `/etc/apk/world` exactly as it does for an `apk add` typed by hand.
 * **no silent network.** Only `check` fetches anything, and `apply` runs one apk transaction
   that the person in front of the machine asked for.

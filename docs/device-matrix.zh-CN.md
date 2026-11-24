@@ -12,10 +12,11 @@
 ## 矩阵可以使用的版本
 
 只有一条线：25.x / apk 线。早于 25 的版本会被拒绝，任何来自 opkg 时代的树同样被拒绝，因为
-两个时代不共享包管理器、防火墙模型或内核模块布局。`scripts/ci/upstream-watch.sh` 已经拒绝
-钉住主版本低于 25 的版本，矩阵受同一条规则约束：`matrix.sh` 检查 payload 的
-`platform-release`，并用一行明确的说明拒绝 `-` payload，而不是让它跑起来再在某个看起来像
-产品缺陷的地方失败。
+两个时代不共享包管理器、防火墙模型或内核模块布局。
+
+`scripts/ci/upstream-watch.sh` 已经拒绝钉住主版本低于 25 的版本，矩阵受同一条规则约束。
+`matrix.sh` 检查 payload 的 `platform-release`。它用一行明确的说明拒绝 `-` payload，而不是让它
+跑起来再在某个看起来像产品缺陷的地方失败。
 
 ## 每次跳变后断言什么
 
@@ -28,7 +29,7 @@ A/B 模型只能由真实上游版本证明，而不是靠改写 manifest 里的
 - 共享分区上的用户标记与 `/etc/config` 里的配置标记仍在；
 - 启动日志带 `stage=healthcheck-done result=ok` 与提交行。
 
-最后一条最容易读错：当前这次启动的标记在轮转后位于 `boot-1.log`，所以驱动依次查
+最后一条最容易读错：当前这次启动的标记在轮转后位于 `boot-1.log`。所以驱动依次查
 `boot-0.log`、`boot-1.log`、`ab-slot log --prev`，并记录是哪个文件给出了答案。
 
 ## 运行
@@ -43,16 +44,15 @@ scripts/device/full-test.sh --yes --expect <version> --payload-dir <dir>
 ```
 
 `--payload-dir` 里放名为 `payload-<version>.tar` 的 payload。结果追加写入 `--results`，格式
-为 `case<TAB>verdict<TAB>evidence<TAB>note`，每个用例一行，因此中断的运行靠读文件续跑，而
-不是靠记忆。
+为 `case<TAB>verdict<TAB>evidence<TAB>note`。每个用例一行，因此中断的运行靠读文件续跑，而不是
+靠记忆。
 
 环境取自 `AB_HOST` 与 `AB_KEY`。SSH 调用总是带 `ControlMaster=no`、`ControlPath=none` 与
-被忽略的 `known_hosts`：重刷过的机器会呈现新的主机密钥，而运行驱动的沙箱没有可写的
-`~/.ssh`。
+被忽略的 `known_hosts`。重刷过的机器会呈现新的主机密钥，而运行驱动的沙箱没有可写的 `~/.ssh`。
 
-交互式登录与这些非交互调用是两个问题，它有自己的驱动：`scripts/device/login-probe.sh` 在
-整个会话期间保持客户端 stdin 打开，因为把 `/dev/null` 重定向进 `ssh -tt` 的探针在这个镜像
-上会报假失败（dropbear 2025.89，见 [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)）。
+交互式登录与这些非交互调用是两个问题，它有自己的驱动。`scripts/device/login-probe.sh` 在
+整个会话期间保持客户端 stdin 打开。原因：把 `/dev/null` 重定向进 `ssh -tt` 的探针在这个镜像上
+会报假失败（dropbear 2025.89）。见 [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)。
 
 ## 用户场景
 
@@ -71,11 +71,11 @@ scripts/device/full-test.sh --yes --expect <version> --payload-dir <dir>
 
 两条规则让这些用例诚实：
 
-- **不用旧格式做判断。** 包名来自该版本自己的 apk 索引，配置写成对随镜像文件的改动，因为流传
-  的 23/24 时代片段描述的是 opkg 与另一套防火墙模型。
+- **不用旧格式做判断。** 包名来自该版本自己的 apk 索引。
+- **配置写成对随镜像文件的改动。** 流传的 23/24 时代片段描述的是 opkg 与另一套防火墙模型。
 - **机器留有退路。** S2 在 reload 之前先安排自己的回滚（用 `setsid`，没有它时用
-  `start-stop-daemon -b`），由 `/tmp/ab-scen-net.ok` 确认；两者都安排不了的机器根本不
-  reload，被跳过的那一半记为 FINDING，而不是"没看的通过"。
+  `start-stop-daemon -b`），由 `/tmp/ab-scen-net.ok` 确认。
+- **两者都安排不了的机器根本不 reload。** 被跳过的那一半记为 FINDING，而不是"没看的通过"。
 
 ABI 只报告、不评判：为另一个内核构建的 kmod 在 apk 世界里很正常，因此不匹配记为带重装清单的
 `FINDING:`，从不单独改变结论。
@@ -83,27 +83,30 @@ ABI 只报告、不评判：为另一个内核构建的 kmod 在 apk 世界里�
 ## 社区软件样本
 
 A/B 事务最初是在一台额外软件只有测试套件自己装的五个包的机器上被证明的。真机不是那台机器：
-人们会装 LuCI 主题、软件商店、代理应用，并编辑这些应用自己的 `/etc/config` 文件。这一轮把
-这层东西放到机器上再跳变，只回答一个问题：事务是否仍然提交，样本是否保住自己的配置？
+人们会装 LuCI 主题、软件商店、代理应用，并编辑这些应用自己的 `/etc/config` 文件。
+
+这一轮把这层东西放到机器上再跳变，只回答一个问题：事务是否仍然提交，样本是否保住自己的配置？
 
 - `scripts/device/software-probe.sh` 安装 `tests/fixtures/software-samples.json` 里列出的
-  样本（`--manifest` 覆盖清单，`--sample` 缩小范围）。每个样本行是带落定版本的 PASS，或带
-  原因与重试命令的 GAP：挂掉的第三方源、ABI 与本内核不匹配的内核模块，都是 GAP 而绝非通过。
+  样本（`--manifest` 覆盖清单，`--sample` 缩小范围）。
+- 每个样本行是带落定版本的 PASS，或带原因与重试命令的 GAP。挂掉的第三方源、ABI 与本内核不匹配
+  的内核模块，都是 GAP 而绝非通过。
 - `--baseline <tag>` 在跳变前、`--compare <tag>` 在跳变后，用与其他驱动相同的快照助手记录并
   比较样本自己的配置（比较取值，而不只是文件哈希）。
-- `--cleanup` 移除样本、它们的配置以及它添加的源，让机器回到产品基线。第三方源只写进设备的
-  `/etc/apk/repositories.d/`，绝不写进镜像、payload 或 `scripts/ci/net-defaults.conf.in`。
-- `scripts/device/badconfig-probe.sh` 写入人能造出的同类坏配置（坏的 `daemon.json`、坏的
-  UCI 段、fw4 会告警的防火墙规则、假的订阅 URL），并分别评判两件事：谁拒绝或还原了它，以及
-  还有没有别的东西跟着反应。
+- `--cleanup` 移除样本、它们的配置以及它添加的源，让机器回到产品基线。
+- 第三方源只写进设备的 `/etc/apk/repositories.d/`，绝不写进镜像、payload 或
+  `scripts/ci/net-defaults.conf.in`。
+- `scripts/device/badconfig-probe.sh` 写入人能造出的同类坏配置：坏的 `daemon.json`、坏的 UCI
+  段、fw4 会告警的防火墙规则、假的订阅 URL。
+- 它分别评判两件事：谁拒绝或还原了它，以及还有没有别的东西跟着反应。
 
-两条限制先说清楚：样本清单只覆盖 25.x，且样本是测试 fixture 而不是产品内容——本仓库没有任何
+两条限制先说清楚。样本清单只覆盖 25.x，且样本是测试 fixture 而不是产品内容。本仓库没有任何
 东西依赖它们，发布资产在装或不装样本时逐字节相同。
 
 ## 整套：一种顺序，一个结论
 
-`full-test.sh` 按一种顺序运行上面的驱动——外加两个只回答自己问题的
-（`docker-probe.sh`、`release-verify.sh`）——并把各阶段的结果文件归约成一个结论：
+`full-test.sh` 按一种顺序运行上面的驱动。外加两个只回答自己问题的驱动：
+`docker-probe.sh`、`release-verify.sh`。它把各阶段的结果文件归约成一个结论：
 
 | 阶段 | 回答什么 | `--only` 的用例 |
 |---|---|---|
@@ -122,17 +125,20 @@ A/B 事务最初是在一台额外软件只有测试套件自己装的五个包�
 顺序是依赖顺序：
 
 - **`feed-install` 排在 `matrix` 与 `scenarios` 之前。** feed 必须提供比正在运行的更新的
-  东西，而 matrix 与 scenarios 会把机器带到最新版本，所以排在它们之后的 feed-install 会在
-  一台完全健康的机器上按构造失败。
+  东西。
+- **matrix 与 scenarios 会把机器带到最新版本。** 排在它们之后的 feed-install 会在一台完全
+  健康的机器上按构造失败。
 - **`docker` 是围绕版本跳变的两个阶段，仍然是同一个脚本。** D1 在 matrix 与 scenarios 之前
-  取基线，因为那两次跳变正是基线要活过的东西；D2 与 D3 在跳变之后立即评判同一个存储。两个
-  窗口都指向同一个 `<results>/docker-snapshots` 目录：D1 写 `before.snapshot`，
-  docker-after 读回并写 `after.snapshot`。它保持为一个驱动，是因为跳变两侧的采集与比较必须
-  是同一份代码。
+  取基线，因为那两次跳变正是基线要活过的东西。
+- **D2 与 D3 在跳变之后立即评判同一个存储。** 两个窗口都指向同一个
+  `<results>/docker-snapshots` 目录：D1 写 `before.snapshot`，docker-after 读回并写
+  `after.snapshot`。
+- **它保持为一个驱动。** 跳变两侧的采集与比较必须是同一份代码。
 - **`release` 排在机器阶段之后。** 它不接触机器，但它的行属于同一个结论。
-- **`docker`、`docker-after` 与 `release` 不具破坏性**：D1 在 docker 存储（`@docker`，挂在
-  `/opt/docker`）里保留两个镜像、一个容器、一个提交镜像和一个命名卷，日志写在 `/tmp` 下，
-  不写槽位、不写 ESP 条目、不写启动决定。它们都不切换槽位、不重启，因此无需 `--yes`。
+- **`docker`、`docker-after` 与 `release` 不具破坏性。** D1 在 docker 存储（`@docker`，挂在
+  `/opt/docker`）里保留两个镜像、一个容器、一个提交镜像和一个命名卷，日志写在 `/tmp` 下。
+- **D1 不写槽位、不写 ESP 条目、不写启动决定。**
+- **它们都不切换槽位、不重启**，因此无需 `--yes`。
 
 `power-cut` 按启动路径写它们的方式写下启动路径要读的两个文件——候选标记与中断记录——然后
 重启。那是注入的状态，不是拔掉电源，证据里也这么写；它证明的是决策逻辑与启动接线，而那正是
@@ -145,8 +151,9 @@ A/B 事务最初是在一台额外软件只有测试套件自己装的五个包�
 ## 红线
 
 一次安装写的是机器**没有**在运行的那个槽位。除非正在运行的槽位是已提交槽位且没有排队的候选，
-驱动拒绝安装；在任何时刻只要没有已提交的健康槽位可回退，它中止整次运行（`exit 3`）。破坏性
-用例排在可逆用例之后，失败的用例被记录并搁置：恢复路径是 `ab-slot`，而不是手改
+驱动拒绝安装；在任何时刻只要没有已提交的健康槽位可回退，它中止整次运行（`exit 3`）。
+
+破坏性用例排在可逆用例之后，失败的用例被记录并搁置：恢复路径是 `ab-slot`，而不是手改
 `ab/state.json`。
 
 完全回不来的机器没有自动恢复。`image-install` 产物就是为此存在：刷它，重新开始。

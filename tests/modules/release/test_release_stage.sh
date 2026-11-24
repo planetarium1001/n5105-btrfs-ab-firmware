@@ -122,8 +122,50 @@ assert_eq "$(printf '%s' "$release_yml" | grep -c 'branches:')" "0" \
 
 entry_yml="$(cat .github/workflows/ci.yml)"
 assert_contains "$entry_yml" "workflow_call" "ac-4 the pipeline is callable by the release"
-assert_eq "$(printf '%s' "$entry_yml" | grep -c 'contents: write')" "0" \
-  "ac-4 the ordinary pipeline never gets write access"
+
+# Write access in this file is allowed in exactly one place: the audit job, which appends the
+# platform row to .github/automation-log.md and pushes that row to the default branch. It is
+# not the ordinary pipeline - it only runs for a push to main, and it asks for the permission
+# on the job rather than on the workflow.
+#
+# This replaces "ci.yml mentions `contents: write` zero times", which held while every job in
+# the file only built and validated. Recording a change in the repository is by definition a
+# write, so the zero form could only be kept by deleting the guard. The narrower form below is
+# stricter where it counts: a pull request and a tag build still cannot write, because the
+# one grant is bound to a job that never runs for them.
+#
+# The three clauses are what make "one write" mean "not the ordinary pipeline":
+#   1. exactly one `contents: write` in the file, so a second job cannot quietly acquire one;
+#   2. it is scoped to the `audit:` job block (job-level `permissions:`, not the workflow's);
+#   3. that job's `if:` needs both a push event and the default branch ref.
+# The workflow-level default is checked too: it is what keeps every other job read-only.
+assert_eq "$(printf '%s\n' "$entry_yml" | grep -c 'contents: write')" "1" \
+  "ac-4 exactly one job in ci.yml asks for write access"
+
+# The job block, from its key to the next key at the same indentation.
+audit_job="$(printf '%s\n' "$entry_yml" | awk '
+  /^  [a-z][a-z0-9-]*:$/ {
+    if ($0 == "  audit:") { inside = 1; print; next }
+    if (inside) exit
+  }
+  inside { print }
+')"
+assert_contains "$audit_job" "name: Record the Platform Change" \
+  "ac-4 the write belongs to the platform audit job"
+assert_eq "$(printf '%s\n' "$entry_yml" | awk '
+  /^  [a-z][a-z0-9-]*:$/ { inside = ($0 == "  audit:") }
+  /contents: write/ && !inside { print }
+')" "" "ac-4 no job other than the audit job asks for write access"
+# Six spaces under a job key: the grant is a child of that job's own `permissions:` mapping.
+assert_eq "$(printf '%s\n' "$audit_job" | grep -c '^      contents: write$')" "1" \
+  "ac-4 the write is granted to the job, not to the workflow"
+audit_if="$(printf '%s\n' "$audit_job" | grep -m1 '^    if:')"
+assert_contains "$audit_if" "github.event_name == 'push'" \
+  "ac-4 the writing job only runs on a push"
+assert_contains "$audit_if" "github.ref == 'refs/heads/main'" \
+  "ac-4 and only on the default branch"
+assert_eq "$(printf '%s\n' "$entry_yml" | grep -A1 '^permissions:$' | grep -c 'contents: read')" "1" \
+  "ac-4 the workflow default stays read-only"
 
 # --- ac-5 the install documentation ---------------------------------------
 assert_file_exists docs/install.md "ac-5 the install guide exists"

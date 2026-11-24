@@ -14,9 +14,9 @@
 你需要一台已经从已提交槽位启动、并且通过了健康检查的机器：用 `ab-slot status` 确认，
 它必须报 `p4=ok` 和一个 committed 槽位。你还需要一条能到 feed 的网络路径。
 
-设备侧不新增任何更新状态。本页不会往 `ab/state.json` 里加文件，也不会改变槽位怎么被写：
-`ab-upgrade --feed` 只负责下载 payload、校验它，然后把它交给 `ab-upgrade <payload>`
-走的**同一份**校验与安装代码。
+设备侧不新增任何更新状态。本页不会往 `ab/state.json` 里加文件，也不会改变槽位怎么被写。
+`ab-upgrade --feed` 只负责下载 payload、校验它。然后它把文件交给
+`ab-upgrade <payload>` 走的**同一份**校验与安装代码。
 
 有两件机器必须做得到、但并不保证的事：
 
@@ -63,7 +63,7 @@ ab-upgrade --version
 
 镜像出厂就带一份，指向本仓库自己的 release：
 
-```
+```text
 UPDATE_SOURCE=release
 UPDATE_RELEASE_REPO=planetarium1001/n5105-btrfs-ab-firmware
 UPDATE_RELEASE_BASE=https://github.com
@@ -71,9 +71,15 @@ UPDATE_CHANNEL=stable
 ```
 
 有这份文件，刚刷完的机器不用做任何设置就能回答「有没有更新的版本」，比较的基线就是本仓库
-最新发布的版本。`release` 源拼出的地址是
-`<UPDATE_RELEASE_BASE>/<UPDATE_RELEASE_REPO>/releases/latest/download/index.txt`，所以发布说明、
-payload 和它的摘要都是发布出来的那一份，设备上不生成任何东西。
+最新发布的版本。
+
+`release` 源拼出的地址是：
+
+```text
+<UPDATE_RELEASE_BASE>/<UPDATE_RELEASE_REPO>/releases/latest/download/index.txt
+```
+
+所以发布说明、payload 和它的摘要都是发布出来的那一份，设备上不生成任何东西。
 
 `releases/latest` 有两个直接结果：它永远不会指向预发布，所以 `-rc` 线要自己的 feed；以及
 在这个功能之前发布的版本里没有 `index.txt`，下载会得到 `404`。取件器把 404 与「网络不通」报成同一件事
@@ -82,7 +88,7 @@ payload 和它的摘要都是发布出来的那一份，设备上不生成任何
 
 自建 feed 是另一种源，用法没变：
 
-```
+```text
 UPDATE_SOURCE=feed
 UPDATE_FEED_URL=https://example.org/n5105/feed/v1
 UPDATE_CHANNEL=stable
@@ -100,10 +106,12 @@ UPDATE_VERIFY=sha256
 | `UPDATE_PIN` | 否 | 这台机器自动更新到的最高的 `platform` 版本。由 `ab-upgrade --pin` 写入、`ab-upgrade --unpin` 删除，见[把机器钉在某个发布上](#把机器钉在某个发布上) |
 
 `ab-upgrade --feed-url <url>` 可以在单次调用里覆盖 `UPDATE_FEED_URL`，试一个镜像不必改
-文件。文件本身仍然必须存在。`ab-upgrade --release-repo <owner/name>` 与
-`--release-base <url>` 对 `release` 源做同样的事，用来在写进文件之前先试一次 fork 或代理。
+文件。文件本身仍然必须存在。
 
-`UPDATE_FETCH_CMD` 是给「取件器做不到 feed 需要的事」的机器留的口子：一旦设置，它的值会
+`ab-upgrade --release-repo <owner/name>` 对 `release` 源做同样的事。`--release-base <url>`
+做的是同一件事。这样在写进文件之前，可以先试一次 fork 或代理。
+
+`UPDATE_FETCH_CMD` 是给「取件器做不到 feed 需要的事」的机器留的口子。一旦设置，它的值会
 以 `sh -c "<cmd>" ab-fetch <url> <输出文件>` 运行。测试用的就是它；在特殊传输后面放一台
 机器也用它。
 
@@ -116,19 +124,22 @@ ab-upgrade --feed-check
 这条命令读配置、取索引、把查到的东西打出来。它不写任何东西、不下载 payload、不碰槽位。
 第一行说明这个答案来自哪里，这样「拒绝」和「比较结果」不会被混为一谈：
 
-```
+```text
 source=release feed=https://github.com/planetarium1001/n5105-btrfs-ab-firmware/releases/latest/download
 ```
 
 有更新时它打一行字段顺序固定的机器可读输出：
 
-```
+```text
 platform=0.0.6 platform_available=0.0.8 base=25.12.2 base_available=25.12.2 kernel=6.12.103 kernel_available=6.12.103 span=patch 2 level=Z1 status=update
 ```
 
-`platform` 与 `base` 是运行槽位里的值，`kernel` 是正在跑的内核（`uname -r`）；带
-`_available` 的字段是索引里最新条目给的值。`span` 是 `base` 的差值，写成 `patch N`、`minor N`、`major N` 或 `none`；降级时同一组词带负号
-（`minor -1`）且 `level=downgrade`。`level` 是[风险级别](#风险级别与各自的确认强度)那一节里的级别。
+`platform` 与 `base` 是运行槽位里的值，`kernel` 是正在跑的内核（`uname -r`）；
+带 `_available` 的字段是索引里最新条目给的值。
+
+`span` 是 `base` 的差值，写成 `patch N`、`minor N`、`major N` 或 `none`；
+降级时同一组词带负号 （`minor -1`）且 `level=downgrade`。
+`level` 是[风险级别](#风险级别与各自的确认强度)那一节里的级别。
 
 `status` 说这台机器可以做什么，是要分支判断的那个字段：
 
@@ -149,10 +160,10 @@ ab-upgrade --feed
 ```
 
 命令重复一次上面的查询、打同一行字段，然后显示更新块并请求确认。确认后它把 payload 下到
-`${AB_FEED_DIR:-/tmp/ab-feed}`，按索引核对文件大小与 sha256，然后进入普通安装路径：与
-`ab-upgrade <payload>` 完全相同的 manifest、成员、内核模块、空间、引导器与冲突检查。之后
-机器就与一次本地升级完全一样：非活动槽位被准备好，下次启动试用它，健康检查不过就回到原来
-的槽位。
+`${AB_FEED_DIR:-/tmp/ab-feed}`，按索引核对文件大小与 sha256。然后它进入普通安装路径：与
+`ab-upgrade <payload>` 完全相同的 manifest、成员、内核模块、空间、引导器与冲突检查。
+之后机器就与一次本地升级完全一样：非活动槽位被准备好，下次启动试用它，健康检查不过就回到
+原来的槽位。
 
 | 选项 | 什么时候用 |
 | --- | --- |
@@ -165,26 +176,27 @@ ab-upgrade --feed
 `--direct` 与 `--stepwise` 是 `--feed` 的选项；单独给出属于用法错误，退出 `2`。两个选项
 都可以出现在命令行任意位置。
 
-这条命令写出的行与本地安装写出的行是同一套：按
-[install.zh-CN.md](install.zh-CN.md) 里的做法，把命令用 `tee` 灌进
-`/boot/ab/log/upgrade.log`。拒绝行还会额外镜像到串口控制台，所以一台只有串口的机器也会说
-清楚它为什么停下。
+这条命令写出的行与本地安装写出的行是同一套。照 [install.zh-CN.md](install.zh-CN.md) 做：
+把命令用 `tee` 灌进 `/boot/ab/log/upgrade.log`。拒绝行还会额外镜像到串口控制台，所以一台
+只有串口的机器也会说清楚它为什么停下。
 
 安装成功之后机器还没有变化：用 `ab-slot status` 看到另一个槽位是 `pending`、
 `next=<slot>`，然后重启。用 `apk` 装的包**不会**被这条路更新。让它们对齐到新的 base 是
 另一套操作、另一组命令，因为一个解析不了的包不该把一次已经通过检查的系统更新回滚掉。
 
 **重启之前 `pending` 是目标槽，不是 `none`** —— `pending=none` 是重启后 boot 把切换提交了才有的
-读数。把「重启前 `pending=none`」写进简报，描述的是重启之后的状态；照它判读验收的人会把一次正确的
-安装判成失败。这也正是比较两条稳定状态行时 `pending` 属于「换槽不该移动的字段」的原因
-（见 `scripts/device/lib.sh` 的 `AB_STATUS_FIELDS_STABLE`）：空闲机器在切换前后都答 `none`。
+读数。把「重启前 `pending=none`」写进简报，描述的是重启之后的状态；照它判读验收的人会把一次正确
+的安装判成失败。
+
+比较两条稳定状态行时，`pending` 属于「换槽不该移动的字段」。原因见
+`scripts/device/lib.sh` 的 `AB_STATUS_FIELDS_STABLE`：空闲机器在切换前后都答 `none`。
 
 ## 更新提示说了什么
 
 提示是三行身份加三行判定。除 `Proceed?` 那个问题本身走 stderr（这样 stdout 被重定向到
 文件时它仍然可见）之外，全部写到 stdout，日志能完整留下。
 
-```
+```text
 Update  base     25.12.2 -> 25.12.5
         kernel   6.12.103 -> 6.12.110
         platform 0.0.6 -> 0.0.8
@@ -209,9 +221,10 @@ Proceed? [y/N]
 能继续时才有 `Route` 行。
 
 这一块描述的是系统更新本身。0.0.13 起，payload 里带计划引擎的安装会在它后面再打一个
-`Packages` 块和一个 `Config` 块，并用 `Proceed and follow N packages? [y/N] ` 问包跟随的事
-——一次提问同时回答「换不换系统」和「包跟不跟着走」，因为它本来就是同一个决定。这两块里有什么，
-见 [包怎么跟随一个基底](#包怎么跟随一个基底)。
+`Packages` 块和一个 `Config` 块。它用 `Proceed and follow N packages? [y/N] ` 问包跟随的事。
+
+这一次提问同时回答「换不换系统」和「包跟不跟着走」，因为它本来就是同一个决定。这两块里
+有什么，见 [包怎么跟随一个基底](#包怎么跟随一个基底)。
 
 ## 风险级别与各自的确认强度
 
@@ -228,7 +241,7 @@ Proceed? [y/N]
 
 Z1，只换平台层：`base` 与 `kernel` 都不动，只有我们这一层变了。
 
-```
+```text
 Update  base     25.12.2 -> 25.12.2
         kernel   6.12.103 -> 6.12.103
         platform 0.0.7 -> 0.0.8
@@ -240,7 +253,7 @@ Proceed? [y/N]
 
 Z2，超出覆盖范围的 patch 跳跃：
 
-```
+```text
 Update  base     25.12.2 -> 25.12.9
         kernel   6.12.103 -> 6.12.110
         platform 0.0.6 -> 0.0.8
@@ -253,7 +266,7 @@ Proceed? [y/N]
 
 Y1，前进一条发布线：
 
-```
+```text
 Update  base     25.12.2 -> 25.18.0
         kernel   6.12.103 -> 6.12.140
         platform 0.0.8 -> 0.1.2
@@ -264,14 +277,15 @@ Proceed? [y/N]
 ```
 
 `Tested PARTLY` 这行靠什么支撑：minor 跳跃是 CI 唯一会覆盖的情形——构建上一个正式版，并用
-本发布的 payload 升级它。在 tag 线上这个阶段是门：`release.yml` 声明
-`publish: needs: [build, cross]`，因此跨线升级未被证明的版本不会被发布
-（[ci.zh-CN.md](ci.zh-CN.md)）。
+本发布的 payload 升级它。
+
+在 tag 线上这个阶段是门：`release.yml` 声明 `publish: needs: [build, cross]`。因此跨线升级
+未被证明的版本不会被发布（[ci.zh-CN.md](ci.zh-CN.md)）。
 
 X1，跨一条新的大版本线。这里没有 `y`：没有选路线之前命令直接拒绝，并把两条路线与理由
 一起打出来。
 
-```
+```text
 Update  base     25.12.2 -> 26.0.0
         kernel   6.12.103 -> 6.18.2
         platform 0.0.8 -> 1.0.0
@@ -316,12 +330,13 @@ pin 的效果：
 
 ## 包更新
 
-系统更新换的是一个槽；包是另一个事务，也有自己的回退方式。两者都落在可写层。让包跟上一个新基底
-是升级的一部分，只问一次（见 [包怎么跟随一个基底](#包怎么跟随一个基底)）；下面这些命令是手动的
-那一半——快照，以及你点名要求的版本。
+系统更新换的是一个槽；包是另一个事务，也有自己的回退方式。两者都落在可写层。
+
+让包跟上一个新基底是升级的一部分，只问一次（见 [包怎么跟随一个基底](#包怎么跟随一个基底)）；
+下面这些命令是手动的那一半——快照，以及你点名要求的版本。
 
 给自己的机器加一个来源——那是与「把包搬到新基底上」不同的问题——见
-[plugins.zh-CN.md](plugins.zh-CN.md)：一份 feed 与包名的声明，带自己的护栏。
+[plugins.zh-CN.md](plugins.zh-CN.md)。那是一份 feed 与包名的声明，带自己的护栏。
 
 ```sh
 ab-slot packages list            # 本层已有的快照，新的在前
@@ -330,9 +345,11 @@ ab-slot packages upgrade         # 先快照，再 apk update && apk upgrade
 ab-slot packages revert          # 按最新一份快照回放版本
 ```
 
-`upgrade` 只有在 `ab-slot status` 报 `packages=aligned`（或 `packages=followed`，那是跟随事务
-跑过之后的同一份元数据）时才肯跑：这个字段表示可写层的 `world` 钉着本槽正在跑的内核、`distfeeds`
-指向本槽所在的发布。在旧钉子上直接升包，会为机器并没在跑的内核装模块。
+`upgrade` 只在元数据对齐时才肯跑。`ab-slot status` 必须报 `packages=aligned`。报
+`packages=followed` 也算：后者是跟随事务跑过之后的同一份元数据。
+
+这个字段表示可写层的 `world` 钉着本槽正在跑的内核、`distfeeds` 指向本槽所在的发布。在旧钉子上
+直接升包，会为机器并没在跑的内核装模块。
 
 
 `packages=` 是对当前槽元数据的判定，因此也可能是 `unknown`；旁边的 `packages_reason=` 说明原因：
@@ -348,11 +365,17 @@ ab-slot packages revert          # 按最新一份快照回放版本
 在更新或 rollback 重写之前，`ab-slot packages upgrade` 会因 `unknown` 拒绝：只有元数据描述当前内核与发布时，
 才允许开始包事务。
 
-顺序是**先系统升级、再包升级**。`apk upgrade` 会重写 `/lib/upgrade/*`，这些文件名也是上游 sysupgrade
-接口用的；可写层会因此遮蔽本项目的升级适配器，下一次 payload 安装会在 `platform_upgrade_begin`
-失败。0.0.11 起适配器从软件包遮蔽不了的来源加载，快照启动时把被遮蔽的副本移到
-`/mnt/p4/ab/shadow-backup-<时间戳>/`，并由 `/etc/apk/protected_paths.d/ab-upgrade-adapter.list`
-在 `apk upgrade` 时阻止重写（包里的文件落成 `*.apk-new`，apk 数据库照常前进）。
+顺序是**先系统升级、再包升级**。`apk upgrade` 会重写 `/lib/upgrade/*`，这些文件名也是上游
+sysupgrade 接口用的。可写层会因此遮蔽本项目的升级适配器，下一次 payload 安装会在
+`platform_upgrade_begin` 失败。
+
+0.0.11 起适配器从软件包遮蔽不了的来源加载。快照启动时把被遮蔽的副本移到
+`/mnt/p4/ab/shadow-backup-<时间戳>/`。
+
+`apk upgrade` 不许重写这些路径。拦它的是
+`/etc/apk/protected_paths.d/ab-upgrade-adapter.list`。包里的文件落成 `*.apk-new`，apk 数据库
+照常前进。
+
 已经在上 0.0.11 之前被遮蔽的机器，手工修复见 `docs/install.zh-CN.md`。
 
 那条规则是 `+` 规则，而 `apk-protected_paths(5)` 把 `+` 定义为**条件**保护：只有可见文件的
@@ -363,31 +386,42 @@ ab-slot packages revert          # 按最新一份快照回放版本
 还带警告与非零退出码；要看警告与退出码，不要看表。已经跑在最新版上的机器确实零候选。
 
 一条快照会报 `packages=`、`world=`、`payloads=` 与可选的 `payload-gap=`。`payloads=no` 表示这次
-快照没有带包归档（`--no-payloads`）——**它本身就是答案**，不是缺失，所以不为它另设 `reason=` 字段：
-`reason=none` 说的是「没有任何受限项」，而不带载荷的快照用 `payloads=no` 说明自己。真正数不出来时
-`packages=` 与 `world=` 会报 `unreadable` 而不是 `0`，这样损坏的快照与空快照不会打印成同一行。
+快照没有带包归档（`--no-payloads`）。**它本身就是答案**，不是缺失，所以不为它另设 `reason=` 字段。
+`reason=none` 说的是「没有任何受限项」，不带载荷的快照用 `payloads=no` 说明自己。
 
-快照是 `<layer>/apk/snapshots/` 下的文本：base 与 platform 版本、每个 world 条目、每个已装包及其版本，
-以及让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。只保留最近三份。
+真正数不出来时 `packages=` 与 `world=` 会报 `unreadable` 而不是 `0`，这样损坏的快照与空快照不会
+打印成同一行。
 
-文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`，每个归档一行
-`apkfile <name> <sha256>`：仓库里一个包只留最新那一个版本，所以光有版本清单，能回退的只有源上还在
-的那些。快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。0.0.11 起改为逐包抓取，
-源上已经解析不到的包不会拖垮整组；apk-tools 3 不接受 `apk fetch` 的版本钉子，所以按包名抓、再拿
-下载到的文件和已装版本核对，拿到更新文件的包被丢弃并计入缺失，然后才用一次 `--recursive` 兜底。
-`--no-payloads` 得到只记清单的快照（`payloads=no`）；`payload-incomplete` 表示抓取跑了但没下来
-全部归档，这种快照仍可按版本回退，但不能离线装回。
+快照是 `<layer>/apk/snapshots/` 下的文本。内容是 base 与 platform 版本、每个 world 条目、
+每个已装包及其版本。还有让这条记录自证的计数（`packages=`、`world=`、`payloads=`）。
+只保留最近三份。
+
+文本之外，快照默认把包体本身也留在 `snapshots/snapshot-<id>.d/payloads/`。每个归档一行
+`apkfile <name> <sha256>`，仓库里一个包只留最新那一个版本，所以光有版本清单，能回退的只有
+源上还在的那些。
+
+快照时用 `apk fetch` 把包体取下来，代价约 300 MiB 且需要联网一次。0.0.11 起改为逐包抓取，
+源上已经解析不到的包不会拖垮整组。apk-tools 3 不接受 `apk fetch` 的版本钉子，所以按包名抓，
+再拿下载到的文件和已装版本核对。拿到更新文件的包被丢弃并计入缺失，然后才用一次 `--recursive`
+兜底。
+
+`--no-payloads` 得到只记清单的快照（`payloads=no`）。`payload-incomplete` 表示抓取跑了但没
+下来全部归档，这种快照仍可按版本回退，但不能离线装回。
 
 `revert` 优先用包体：逐个核对快照里的 sha256，然后一次 `apk add` 事务装回。本地归档用
-`--allow-untrusted` 安装，因为设备上没有它们的 keyring；这里的信任来自快照内的摘要清单（写在同一个分区上），
-不是签名。有摘要不符就整体拒绝，不装半套。没有包体时退回归放 `<name>=<version>`——在 apk-tools 3 上
-这同时会把这些版本写进 world，于是机器保持钉住，直到有人再要求 `apk upgrade`。
+`--allow-untrusted` 安装，因为设备上没有它们的 keyring。这里的信任来自快照内的摘要清单（写在
+同一个分区上），不是签名。
+
+有摘要不符就整体拒绝，不装半套。没有包体时退回归放 `<name>=<version>`。在 apk-tools 3 上这同时
+会把这些版本写进 world，于是机器保持钉住，直到有人再要求 `apk upgrade`。
 
 两条路径都只允许在同一个 base 上：跨 base 时那些版本是按另一个内核和 libc 构建的，那件事归
 `ab-slot rollback` 管。源里已经下架的包会被逐条报出来，其余照常回放：`revert result=partial`
-会点名每一个，退出码仍是 0。一个都没回放成功时结论是 `revert result=fail`，退出码 1；快照里没有包时
-是 `revert result=empty`。`failed` 行说的是哪个包，不是原因：apk 说了什么在 `upgrade.log` 里。
-每个结论还会打 `world=<M> matched=<K>`：world 条目数与快照包集合覆盖了多少。
+会点名每一个，退出码仍是 0。
+
+一个都没回放成功时结论是 `revert result=fail`，退出码 1；快照里没有包时是 `revert result=empty`。
+`failed` 行说的是哪个包，不是原因：apk 说了什么在 `upgrade.log` 里。每个结论还会打
+`world=<M> matched=<K>`：world 条目数与快照包集合覆盖了多少。
 
 包这条路有自己的 reason token，同样打在 `ab-slot: refused, reason=<token>` 行上：
 
@@ -416,10 +450,11 @@ ab-slot packages revert          # 按最新一份快照回放版本
 | 机械对齐 | 每次 `ab-upgrade`，一定跑 | 写入新基底、把 `world` 与 feed 列表指向它、判定目标树、预取 | 没有：它是文件操作，而且永不阻断启动 |
 | 包跟随 | 默认，在 `y` 之后与首次启动时 | 对 world 跑一次 `apk upgrade`，让为旧基底构建的包搬到新基底上 | 只影响包：机器照常启动、照常运行 |
 
-跟随是自动的，但不是无条件的。在写槽之前，`ab-upgrade` 会在「即将被引导的那棵树」上判定三个命题
-——钉住的版本与基底一致、apk 能解出这次事务、每个本地包都被归类——然后把结果打成一块计划块：
+跟随是自动的，但不是无条件的。在写槽之前，`ab-upgrade` 会在「即将被引导的那棵树」上判定
+三个命题：钉住的版本与基底一致、apk 能解出这次事务、每个本地包都被归类。它把结果打成一块
+计划块：
 
-```
+```text
 Packages
   - follow     39 to follow, 2 held back, 1 replay from local copies
   - gate       2 of 41 entries are held back; the rest can follow
@@ -442,7 +477,7 @@ feed 可能已经变了。真正发生了什么，看之后的 `/boot/ab/package
 
 机器随后报告的事实放在一行里，`/boot/ab/packages`：
 
-```
+```text
 packages=aligned reason=network follow=pending upgraded=0 kept=24 skipped=local:htop cache=0 version=25.12.2 kernel=kernel=6.12.103 slot=b hint=ab-packages update
 ```
 
@@ -457,10 +492,15 @@ packages=aligned reason=network follow=pending upgraded=0 kept=24 skipped=local:
 | `abandoned` | 网络兜底用完了时间（24 小时） | `ab-packages update` |
 | `never` | 用户选了只升系统 | 下一次升级 |
 
-`ab-slot status` 会把这一对一起打出来——`packages=followed packages_reason=none follow=followed
-reason=none hint=none`——而在还欠一次跟随时，再补两句人话：
+`ab-slot status` 会把这一对一起打出来：
 
+```text
+packages=followed packages_reason=none follow=followed reason=none hint=none
 ```
+
+还欠一次跟随时，它再补两句人话：
+
+```text
 ab-slot: packages were not followed: no usable network
 ab-slot: retry when it is back: ab-packages update
 ```
@@ -470,11 +510,15 @@ ab-slot: retry when it is back: ab-packages update
 
 ## 预取，以及一次不需要网络的首启
 
-下载发生在换基底之前、机器还在跑一个能用的槽的时候。回答 `y` 之后，`ab-upgrade` 先问求解器这个事务
-会动哪些包，再对**这一集**跑 `apk fetch`，取进新槽自己的缓存（`/etc/apk/ab/cache/`，就在将要被引导
-的那一层里）。在这块板子上实测一次跟随是 3,445,041 字节、39 个包——是"要动的集"，不是 316 个包的
-world（对 world 直接 `apk fetch` 要拉约 105 MB）。首次启动随后用完全不需要网络的方式安装已取回的
-本体：
+下载发生在换基底之前、机器还在跑一个能用的槽的时候。
+
+回答 `y` 之后，`ab-upgrade` 先问求解器这个事务会动哪些包。然后它对**这一集**跑 `apk fetch`，
+取进新槽自己的缓存（`/etc/apk/ab/cache/`，就在将要被引导的那一层里）。
+
+在这块板子上实测一次跟随是 3,445,041 字节、39 个包：那是「要动的集」，不是 316 个包的 world。
+对 world 直接 `apk fetch` 要拉约 105 MB。
+
+首次启动随后用完全不需要网络的方式安装已取回的本体：
 
 ```sh
 apk --cache-dir /etc/apk/ab/cache --cache-max-age 100000 \
@@ -483,16 +527,17 @@ apk --cache-dir /etc/apk/ab/cache --cache-max-age 100000 \
 apk del .ab-follow
 ```
 
-仓库提供的本体由仓库索引签名、而不是逐文件签名，所以按文件安装需要 `--allow-untrusted`；它们本来就是
-这样下来的。虚拟条目只存在于事务期间：`apk del` 把 world 逐字恢复，用户没要求过的 world 永远不会多
-一行。认证页、被劫持的 DNS 回答、重启期间的家里断网因此都没有可破坏的东西——实测的离线运行零次网络
-尝试。`--no-prefetch` 跳过下载，
-让首次启动改用网络；预取失败不是升级失败——记录会回落到 `packages=aligned reason=network
-follow=pending`，由网络兜底接手。
+仓库提供的本体由仓库索引签名、而不是逐文件签名，所以按文件安装需要 `--allow-untrusted`。
+它们本来就是这样下来的。虚拟条目只存在于事务期间：`apk del` 把 world 逐字恢复，用户没要求过
+的 world 永远不会多一行。
 
-兜底只在没有预取时用。它先问探针，探针读目标索引的前四个字节给出三种答案：认证页伪造不出 apk 索引
-开头的 `ADBd` 魔数，所以 `ok`、`portal`、`offline` 是靠证据分开的，不是靠一个成功的 HTTP 状态码。
-只有 `ok` 才让事务跑，其它两种等待并重试：
+认证页、被劫持的 DNS 回答、重启期间的家里断网因此都没有可破坏的东西——实测的离线运行零次网络
+尝试。`--no-prefetch` 跳过下载，让首次启动改用网络。预取失败不是升级失败——记录会回落到
+`packages=aligned reason=network follow=pending`，由网络兜底接手。
+
+兜底只在没有预取时用。它先问探针，探针读目标索引的前四个字节给出三种答案。认证页伪造不出
+apk 索引开头的 `ADBd` 魔数，所以 `ok`、`portal`、`offline` 是靠证据分开的，不是靠一个成功的
+HTTP 状态码。只有 `ok` 才让事务跑，其它两种等待并重试：
 
 | 档位 | 什么时候重试 |
 | --- | --- |
@@ -519,7 +564,7 @@ follow=pending`，由网络兜底接手。
 计划块按这个顺序把这些词用作分组标题，记录使用同一套词汇，所以日志里的一行和计划块里的一个分组
 是同一件事。`ab-packages status` 会把它们展开成句子：
 
-```
+```text
 ab-packages: held back by the last follow (local:htop,stale-abi:luci-app-x):
 ab-packages:   htop: no body was kept, so it cannot be replayed; it stays installed at its version
 ab-packages:   luci-app-x: built against another kernel; replaying it would install a module that cannot load
@@ -531,8 +576,10 @@ ab-packages:   luci-app-x: built against another kernel; replaying it would inst
 
 ## 把本地包的本体留住
 
-从本地 `.apk` 文件装上的包没有源。apk 只记下它已安装，从不记它从哪来；而在这台机器上，事务一结束
-本体就没了：`/var` 是 tmpfs，默认的包缓存随重启消失（2026-11-18 实测：一台装了四个本地包的机器上
+从本地 `.apk` 文件装上的包没有源。apk 只记下它已安装，从不记它从哪来；而在这台机器上，
+事务一结束本体就没了。
+
+`/var` 是 tmpfs，默认的包缓存随重启消失（2026-11-18 实测：一台装了四个本地包的机器上
 `find / -name '*.apk'` 什么都没找到）。所以换过基底的机器无法把这种包装回去，记录会写
 `skipped=local:<name>`，而不是假装可以。
 
@@ -543,23 +590,27 @@ ab-packages replay /tmp/htop-3.3.0-r1.apk    # 装它，并在同一步留住本
 ab-packages replay                           # 把所有已留的本体重新装一遍
 ```
 
-留住的包体放在 `/etc/apk/ab/local/<name>-<version>.apk`——在可写层上，与 `world` 和 apk 数据库
-同域，因此随 generation 快照走，也永不碰 `/data`。同一个名字只留一个本体（最高版本），这也正是
-闸门问「本地包能不能重放」时所要找的文件名。
+留住的包体放在 `/etc/apk/ab/local/<name>-<version>.apk`。它在可写层上，与 `world` 和 apk
+数据库同域，因此随 generation 快照走，也永不碰 `/data`。同一个名字只留一个本体（最高版本），
+这也正是闸门问「本地包能不能重放」时所要找的文件名。
 
 四条规则给这个 store 定界：
 
 * 某个名字有源开始提供、**且源提供的版本不低于本体**时，本体才是 `superseded`：先写进
-  `/etc/apk/ab/local/superseded` 这份 journal，再删除本体。源是更好的来源——有人维护、跟着基底走——
-  而 `ab-packages status` 会继续打印那行 journal，所以删除不是静默的。若源只提供更旧的版本，本体
-  保留，journal 写一行 `kept ... reason=source-older`：一个更旧的 feed 版本替代不了机器正在跑的东西；
-* store 受 `AB_PKGS_CACHE_MAX`（默认 256 MiB）约束。超限时先删最旧的、不是当前安装版本的那些本体：
-  机器正在跑的那个版本，才是重放会想要的；
-* 本体的身份来自包自己的元数据，**不来自文件名**：先用 `apk adbdump` 读 v3 包的 `info:` 块，读不到
-  再用 `.PKGINFO`（v2/遗留），都没有才用文件名——而文件名只在"这台机器没有 apk 可问"时才算数。
-  所以任意文件名（`-x86_64`、`_v1.2.3`、`linux-amd64`……）都可以直接交给它，不需要改名。不是 apk 的
-  文件会按种类拒绝：ipk 是 `reason=asset-format-ipk`，`.run`/脚本是 `reason=asset-format-run`；
-* 如果包内元数据与 `apk add --simulate` 都读不出（例如未来 apk 移除了 `adbdump`），可以显式声明身份：
+  `/etc/apk/ab/local/superseded` 这份 journal，再删除本体。源是更好的来源——有人维护、跟着
+  基底走——而 `ab-packages status` 会继续打印那行 journal，所以删除不是静默的；
+* 若源只提供更旧的版本，本体保留，journal 写一行 `kept ... reason=source-older`：一个更旧的
+  feed 版本替代不了机器正在跑的东西；
+* store 受 `AB_PKGS_CACHE_MAX`（默认 256 MiB）约束。超限时先删最旧的、不是当前安装版本的那些
+  本体：机器正在跑的那个版本，才是重放会想要的；
+* 本体的身份来自包自己的元数据，**不来自文件名**：先用 `apk adbdump` 读 v3 包的 `info:` 块，
+  读不到再用 `.PKGINFO`（v2/遗留），都没有才用文件名——而文件名只在"这台机器没有 apk 可问"
+  时才算数；
+* 所以任意文件名（`-x86_64`、`_v1.2.3`、`linux-amd64`……）都可以直接交给它，不需要改名。不是
+  apk 的文件会按种类拒绝：ipk 是 `reason=asset-format-ipk`，`.run`/脚本是
+  `reason=asset-format-run`；
+* 如果包内元数据与 `apk add --simulate` 都读不出（例如未来 apk 移除了 `adbdump`），可以显式
+  声明身份：
 
   ```sh
   ab-packages replay --name minieap --version 0.94.0 /tmp/minieap-0.94.0_x86-64.apk
@@ -570,15 +621,17 @@ ab-packages replay                           # 把所有已留的本体重新装
   这两种拒绝都不写 store——一个没人核对过的名字，会被下一次升级当成真的。
 
 重放就是 `apk add --allow-untrusted <本体>`，没有别的：没有 `--force-*`，没有 `--overwrite`。
-信任来自你留住的那个文件，因为本地归档没有 keyring；包快照里的摘要清单是另一套机制、另一件事。
-接下来由 apk 的保护路径完成对人最重要的那部分：你改过的 `/etc/config/*` 保持原样，包里的副本落在
-它旁边成为 `*.apk-new`（2026-11-18 实测：`apk upgrade dnsmasq-full` 把改过的 `/etc/config/dhcp`
-原样保留，并写出 `dhcp.apk-new`）。这些文件没有人替你合并——见
-[troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)。
+信任来自你留住的那个文件，因为本地归档没有 keyring。包快照里的摘要清单是另一套机制、另一件事。
 
-不在范围内的是：为另一个内核构建的本体（重放它会装上加载不了的模块，所以它是 `stale-abi`，
-保持旧版本已装），以及跨基底——留住的体会重放回它为它构建的那个基底。`/etc/apk/ab/cache/` 是另一个
-目录：它装一次跟随下载的本体，跟随结束时清空。
+接下来由 apk 的保护路径完成对人最重要的那部分。你改过的 `/etc/config/*` 保持原样，包里的副本
+落在它旁边成为 `*.apk-new`。
+
+2026-11-18 实测：`apk upgrade dnsmasq-full` 把改过的 `/etc/config/dhcp` 原样保留。它同时写出
+`dhcp.apk-new`。这些文件没有人替你合并——见 [troubleshooting.zh-CN.md](troubleshooting.zh-CN.md)。
+
+不在范围内的是：为另一个内核构建的本体，以及跨基底。前者重放会装上加载不了的模块，所以它是
+`stale-abi`，保持旧版本已装。跨基底则不行：留住的体会重放回它为它构建的那个基底。
+`/etc/apk/ab/cache/` 是另一个目录：它装一次跟随下载的本体，跟随结束时清空。
 
 ## 包域的命令
 
@@ -604,12 +657,17 @@ ab-packages replay                           # 把所有已留的本体重新装
 
 ## 确认提示
 
-工具提的每个问题都是同一个形状：`Proceed? [y/N] `，包的计划块也这么问，只是把数目写在前面：
-`Proceed and follow N packages? [y/N] `。回车、`n`、`N`、`no` 都是不确认，而不确认不是错误——
-它打一行 `ab-upgrade: declined, nothing was written reason=declined`（包域命令是
-`ab-packages: declined, ...`）并以 `0` 退出。只有 `y`、`Y`、`yes`、`YES` 才算同意；其它任何不算
-回答的输入只是把同一行再打一遍，原地不动。按一下回车就开始写固件是 bug，所以安全答案才是默认；
-脚本要同意就传 `--yes`，不要塞一个 `y` 进管道。
+工具提的每个问题都是同一个形状：`Proceed? [y/N] `。包的计划块也这么问，只是把数目写在
+前面：`Proceed and follow N packages? [y/N] `。
+
+回车、`n`、`N`、`no` 都是不确认，而不确认不是错误。它打一行
+`ab-upgrade: declined, nothing was written reason=declined`。包域命令打的是
+`ab-packages: declined, ...`，同样以 `0` 退出。
+
+只有 `y`、`Y`、`yes`、`YES` 才算同意。其它任何不算回答的输入只是把同一行再打一遍，原地不动。
+
+按一下回车就开始写固件是 bug，所以安全答案才是默认；脚本要同意就传 `--yes`，不要塞一个 `y`
+进管道。
 
 `AB_UPGRADE_ASSUME_TTY=1` 只给测试套件用（它没有终端）：让提示把 stdin 当作终端来读。
 它不改变哪些答案算同意，但确实绕过了 `feed-noninteractive` 的拒绝——所以设了它的管道
@@ -624,7 +682,7 @@ ab-packages replay                           # 把所有已留的本体重新装
 - `/boot/ab/log/`——环形日志，用 `ab-slot log` 打印
 - `/proc/cmdline` 与 `/proc/mounts`——本次启动来自哪个槽位，以及挂载了什么
 
-下文 `<slot>` 是 `a` 或 `b`，`<version>` 是形如 `25.12.2` 的上游版本，`<layer>` 是可写层
+下文 `<slot>` 是 `a` 或 `b`，`<version>` 是形如 `25.12.2` 的上游版本。`<layer>` 是可写层
 名字 `@overlay-<version>`（同一版本第二次使用时追加 `-r<N>`）。
 
 ### 状态文件
@@ -645,7 +703,7 @@ fallback 在前，因此被截断的写入仍会回退到已提交槽位。
 
 ### `ab-slot status` 的字段
 
-`ab-slot status` 在 stdout 打印一行机器可读内容，在 stderr 打印人读摘要，所以
+`ab-slot status` 在 stdout 打印一行机器可读内容，在 stderr 打印人读摘要。所以
 `ab-slot status 2>/dev/null` 只剩那一行。字段顺序固定，末尾的软件包字段只在
 `/boot/ab/packages` 存在时出现。
 
@@ -714,7 +772,7 @@ ab-slot rootfs b
 ## reason 表
 
 每次拒绝都点名一个 token，token 跨版本稳定，脚本或手册可以按它匹配。输出行永远是
-`ab-upgrade: refused, reason=<token>`，而 `1` 输出的是 `ab-upgrade: failed, reason=<token>`。
+`ab-upgrade: refused, reason=<token>`。而 `1` 输出的是 `ab-upgrade: failed, reason=<token>`。
 
 | reason | 退出码 | 含义与怎么办 |
 | --- | --- | --- |
@@ -749,7 +807,7 @@ ab-slot rootfs b
 | `cannot-create-feed-dir` | 1 | 下载目录建不出来。检查 `AB_FEED_DIR` |
 
 payload 下载下来之后可能被拒绝的那些 reason 属于安装器，列在
-[install.zh-CN.md](install.zh-CN.md)：从那一刻起，feed 路径就是本地路径。
+[install.zh-CN.md](install.zh-CN.md)。从那一刻起，feed 路径就是本地路径。
 
 ## 跨度大之前先备份
 
@@ -757,9 +815,10 @@ Z2、Y2、X1 会打一行 `Backup    ab-backup --help   (recommended)`。那只�
 替你调 `ab-backup`，因为它需要目标介质和装得下这个包的空间。
 
 这条更新路径永远能退回**上一个槽位**，因为今天在跑的槽位没有被碰过。但一旦旧发布从 feed 里
-消失，它不能把你退回**上一个发布**，也不能找回你在 `/data` 下改过的文件。三种产物与恢复决策树
-见 [backup.zh-CN.md](backup.zh-CN.md)；更新事务与自动回退见
-[architecture.zh-CN.md](architecture.zh-CN.md)，引导器写到一半被打断见
+消失，它不能把你退回**上一个发布**，也不能找回你在 `/data` 下改过的文件。
+
+三种产物与恢复决策树见 [backup.zh-CN.md](backup.zh-CN.md)。更新事务与自动回退见
+[architecture.zh-CN.md](architecture.zh-CN.md)。引导器写到一半被打断见
 [install.zh-CN.md](install.zh-CN.md)。
 
 ## 自建 feed
@@ -770,7 +829,7 @@ feed 就是一个用 HTTPS 提供的目录，里面放两类东西：`index.txt`
 `index.txt` 故意做成行式的：发布方用 `sha256sum` 加一句 `printf` 就能生成，设备只用 `awk`
 就能读。
 
-```
+```text
 AB-FEED 1
 channel   stable
 generated 2026-11-13T00:00:00Z
@@ -799,7 +858,7 @@ end
 | `url` 可选，写了就要是绝对地址 | 不写时设备用自己的 `UPDATE_FEED_URL` 配 `payload` 解析，这样同一个 feed 才能被镜像 |
 | `notes` 可选 | 条目可以带一个给人看的链接，例如发布页。设备会解析它，此外不做任何事 |
 
-`kernel` 字段是内核**版本**（`6.12.103`），不是内核包（`6.12.103~<源码 hash>-r1`）：包后缀
+`kernel` 字段是内核**版本**（`6.12.103`），不是内核包（`6.12.103~<源码 hash>-r1`）。包后缀
 每次重建都会变，对「跑的是哪个内核」什么也没说。
 
 用流水线已经写出的发布目录生成一份索引：
@@ -812,15 +871,15 @@ scripts/ci/feed-index.sh --out /srv/feed/v1/index.txt \
   --release /srv/releases/v0.0.7
 ```
 
-每个 `--release` 目录是一个已发布的版本，里面必须有 `release-notes.md`（记录平台、上游与
+每个 `--release` 目录是一个已发布的版本。里面必须有 `release-notes.md`（记录平台、上游与
 内核版本）、`SHA256SUMS`，以及它点名的 payload tar。排序由脚本自己做，所以目录以什么顺序
 给出都行。它会重新算每个 payload 的摘要，并且拒绝 `SHA256SUMS` 与旁边文件不一致的目录——
 一份和 payload 对不上的已发布索引，比没有索引更糟。
 
 `scripts/ci/release.sh` 会替你跑这一步：对它知道内核版本的每个发布，把 `index.txt` 加进
-发布资产，所以一次发布本身就是一条 feed 条目，不需要谁手工维护清单。把更早的发布目录通过
+发布资产。所以一次发布本身就是一条 feed 条目，不需要谁手工维护清单。把更早的发布目录通过
 `CI_FEED_HISTORY` 传进去，它们会进同一份索引，`--stepwise` 才有地方逐级走。
 
-还有两件 feed 目前做不到的事：它没有签名（`UPDATE_VERIFY` 给签名模式留了位，但还没有实现），
-以及它带的摘要只和送它来的那条 HTTPS 连接一样可信。这与从发布页用浏览器下载是同一级的信任，
+还有两件 feed 目前做不到的事。它没有签名（`UPDATE_VERIFY` 给签名模式留了位，但还没有实现），
+它带的摘要也只和送它来的那条 HTTPS 连接一样可信。这与从发布页用浏览器下载是同一级的信任，
 也正是 feed 地址必须是 `https://` 的原因。

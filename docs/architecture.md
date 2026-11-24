@@ -33,14 +33,15 @@ the end of the disk on first boot; p1 to p3 never move.
 | GPT PARTNAME | `ab-esp`, `ab-slot-a`, `ab-slot-b`, `ab-data` | the boot code, which matches it against `/sys/class/block/*/uevent` |
 | Filesystem LABEL | `ESP`, `slot-a`, `slot-b`, `data` | humans, and the `blkid` / `lsblk` assertions in the image stages |
 
-PARTNAME keeps the `ab-` prefix because discovery walks every block device on the machine: a
-bare `data` or `esp` would eventually match an unrelated disk and mount the wrong partition.
-Four code paths resolve these names (`initramfs/boot/init`, `/etc/init.d/ab-boot`,
-`/etc/init.d/ab-commit`, `lib/upgrade/platform.sh`), and each falls back to the 1/2/3/4 order
-when no PARTNAME matches, so a missed rename hides behind the fallback instead of failing at
-boot. LABEL carries no version: `@overlay-<version>`, `/etc/platform-release` and
-`ab/state.json` already hold it, and relabelling on every release would add a superblock write
-that power loss can interrupt.
+- PARTNAME keeps the `ab-` prefix because discovery walks every block device on the machine.
+- A bare `data` or `esp` would eventually match an unrelated disk and mount the wrong partition.
+- Four code paths resolve these names, each falling back to the 1/2/3/4 order when no PARTNAME
+  matches: `initramfs/boot/init`, `/etc/init.d/ab-boot`, `/etc/init.d/ab-commit` and
+  `lib/upgrade/platform.sh`.
+- A missed rename therefore hides behind the fallback instead of failing at boot.
+- LABEL carries no version: `@overlay-<version>`, `/etc/platform-release` and `ab/state.json`
+  already hold it.
+- Relabelling on every release would add a superblock write that power loss can interrupt.
 
 p1 holds data only, never executable scripts: FAT32 has no permission bits or symlinks, no
 journal, and scripts stored on the ESP do not roll back with a slot.
@@ -63,9 +64,10 @@ Measured baseline, ImmortalWrt 25.12.2 on x86-64:
 - **p2 = p3 = 128 MiB.** 4.7× the extracted rootfs and 12× its `zstd:6` size; power-of-two
   aligned so ratios are easy to audit; read-only at run time and written only during updates.
 - **p4 = 128 MiB in the image, the rest of the disk after first boot.** The image is 514 MiB:
-  1 MiB alignment, four 128 MiB partitions, 1 MiB tail for the backup GPT. 128 MiB is the floor
-  that keeps the writable layer usable: a 20 MiB payload pushed into `upper` left a 64 MiB
-  filesystem at `used 63/64 MiB`, and overlayfs could not create its `work/` directory.
+  1 MiB alignment, four 128 MiB partitions, 1 MiB tail for the backup GPT.
+  - 128 MiB is the floor that keeps the writable layer usable. A 20 MiB payload pushed into
+    `upper` left a 64 MiB filesystem at `used 63/64 MiB`, and overlayfs could not create its
+    `work/` directory.
 
 ## Filesystems and subvolumes
 
@@ -99,11 +101,16 @@ All subvolumes are top-level. No second-level or nested subvolumes exist. `@dock
 `@swap` must stay independent: snapshots do not recurse into nested subvolumes, and an active
 swapfile prevents snapshotting.
 
-Image assertions: GPT PARTNAME and filesystem LABEL match the table above when read back from
-the image; p1 carries `boot/grub/ab-slot.cfg` with one `set default=` and one `set fallback=`
-line and no `load_env`/`save_env` call; p1 carries `ab/device.json` with the GPT disk GUID and
-four distinct PARTUUIDs that match the table; p2/p3 usage stays under 50%; every entry in
-`btrfs subvolume list` shares the same top level; the `mkfs` arguments match this page exactly.
+Image assertions, re-checked against every image:
+
+- GPT PARTNAME and filesystem LABEL match the table above when read back from the image.
+- p1 carries `boot/grub/ab-slot.cfg` with one `set default=` and one `set fallback=` line, and
+  no `load_env`/`save_env` call.
+- p1 carries `ab/device.json` with the GPT disk GUID and four distinct PARTUUIDs that match the
+  table.
+- p2/p3 usage stays under 50%.
+- Every entry in `btrfs subvolume list` shares the same top level.
+- The `mkfs` arguments match this page exactly.
 
 ## First-boot growth of p4
 
@@ -118,34 +125,45 @@ Growing it takes **two boots**:
 3. **every boot after that** records `result=already-full`, which is the steady state.
 
 **A first boot therefore reboots once by itself, and GRUB will be seen twice.** That is the
-design working: the first boot can only finish the partition table, the second finishes the
-filesystem, and every boot after that is a normal boot.
+design working.
+
+- The first boot can only finish the partition table; the second finishes the filesystem.
+- Every boot after that is a normal boot.
 
 The step that used to run here was `blockdev --rereadpt` (or `partx -u`) straight after the
-table write, on the disk the boot was still using, and a real machine panicked inside that
-window on its first flash. Nothing in the boot path asks the kernel to re-read a partition table any more: **the reboot is the re-read**, because the next boot's kernel parses the GPT at
-device probe time with nothing mounted. The same window is why the reboot is controlled
-(`reboot -f` after the root subvolume is given back and the writes are flushed): a panic there
-leaves no evidence, while a reboot leaves the record of the stage that finished.
+table write. It ran on the disk the boot was still using, and a real machine panicked inside
+that window on its first flash.
+
+Nothing in the boot path asks the kernel to re-read a partition table any more.
+**The reboot is the re-read**, because the next boot's kernel parses the GPT at device probe
+time with nothing mounted.
+
+The same window is why the reboot is controlled: `reboot -f` runs after the root subvolume is
+given back and the writes are flushed. A panic there leaves no evidence, while a reboot leaves
+the record of the stage that finished.
 
 The initramfs half, in order:
 
 1. `sfdisk -d` dumps the partition table; the dump is kept as the pre-change copy.
-2. The decision compares the end of p4 with the last usable LBA (`last-lba`). Equal means
-   `already-full` and nothing is written; short means the new size is
-   `last usable LBA - p4 start + 1`, rounded down to a multiple of the filesystem sectorsize
-   (4096 bytes, 8 sectors). If rounding leaves no gain the state is `already-full`.
-3. Before the table is touched, the p4 root subvolume is mounted at its old geometry and
-   `.ab/partitions.before` plus `result=table-write-pending` are written. The mount is given
-   back immediately. If it cannot be given back the table is not written and the record says
-   `fail:p4-still-mounted`.
-4. Only the `size=` field of the p4 line changes in a copy of the dump; `sfdisk --no-reread`
-   writes it back, relocating the backup GPT as part of the same write. Every other line,
-   including the table UUID and the other three partitions, is written back unchanged.
-5. The table is read back and compared, and `sfdisk --verify` checks both GPT copies. A write
-   that did not land is `fail:table-write-not-verified`; a table that does not verify is
-   `fail:table-verify`; neither reboots. An `sfdisk` without `--verify` is recorded as
-   `verify=unsupported` and the growth continues.
+2. The decision compares the end of p4 with the last usable LBA (`last-lba`).
+   - Equal means `already-full` and nothing is written.
+   - Short means the new size is `last usable LBA - p4 start + 1`, rounded down to a multiple of
+     the filesystem sectorsize (4096 bytes, 8 sectors).
+   - If rounding leaves no gain the state is `already-full`.
+3. Before the table is touched, the p4 root subvolume is mounted at its old geometry.
+   `.ab/partitions.before` and `result=table-write-pending` are written, then the mount is given
+   back immediately.
+   - If the mount cannot be given back, the table is not written and the record says
+     `fail:p4-still-mounted`.
+4. Only the `size=` field of the p4 line changes in a copy of the dump.
+   - `sfdisk --no-reread` writes it back and relocates the backup GPT in the same write.
+   - Every other line, including the table UUID and the other three partitions, is written back
+     unchanged.
+5. The table is read back and compared, and `sfdisk --verify` checks both GPT copies.
+   - A write that did not land is `fail:table-write-not-verified`.
+   - A table that does not verify is `fail:table-verify`; neither reboots.
+   - An `sfdisk` without `--verify` is recorded as `verify=unsupported` and the growth
+     continues.
 6. The root subvolume is mounted again, `result=table-written` is recorded (the buffered
    `.ab/grow.log` is appended first), the mount is given back, writes are flushed, and the
    machine reboots.
@@ -154,7 +172,7 @@ The initramfs half, in order:
 
 The outcome is one line in `<p4 root subvolume>/.ab/grow`:
 
-```
+```text
 result=<token> last_lba=<n>
 ```
 
@@ -167,7 +185,7 @@ result=<token> last_lba=<n>
 | `missing-sfdisk` | `sfdisk` is not in this initramfs; nothing was written |
 | `fail:<token>` | a step failed: `partition-table-read`, `partition-table-write`, `p4-still-mounted`, `table-write-not-verified`, `table-verify`, `table-write-lost`, `resize-mount`, `btrfs-resize` |
 
-A record written by the one-phase firmware is still read correctly: `done` and `already-full`
+A record written by the one-phase firmware is still read verbatim: `done` and `already-full`
 keep their meaning, and a retired `fail:` token reads as "not proven". A machine that was
 already grown reports `already-full` on its first boot with this firmware.
 
@@ -177,18 +195,24 @@ btrfs-progs from the platform layer), and records
 `stage=resize result=<ok|fail:<token>> source=ab-boot` in the p1 ring log. A machine whose
 initramfs resize failed still reaches the end of the disk on that same boot.
 
-Evidence from a boot that died: `ab-boot` writes this boot's ring log to `ab/log/boot-0.log`
-and rotates it to `boot-1.log` on the next boot. The boot that writes the table never reaches
-`ab-boot`, so its evidence is in `.ab/grow`, the append-only `.ab/grow.log`, and `boot-1.log`
-after the following power-on; read `ab-slot log --prev` for a post-mortem and `boot-0.log` only
-for the running boot. The pre-change table is kept at `.ab/partitions.before`, because a copy
-that lived only in the initramfs dies with it. The record lives on the p4 root subvolume, not
-inside a generation layer, so it outlives `@overlay-<version>`.
+Evidence from a boot that died:
 
-Growth only enlarges p4 and is idempotent. The one thing the record decides is the loop guard:
-a `table-written` record for exactly the disk end this boot wants to write, while the table on
-disk still reads shorter, means the write was lost below the filesystem - that boot records
-`fail:table-write-lost` instead of writing and rebooting again.
+- `ab-boot` writes this boot's ring log to `ab/log/boot-0.log` and rotates it to `boot-1.log` on
+  the next boot.
+- The boot that writes the table never reaches `ab-boot`, so its evidence is in `.ab/grow`, the
+  append-only `.ab/grow.log`, and `boot-1.log` after the following power-on.
+- Read `ab-slot log --prev` for a post-mortem, and `boot-0.log` only for the running boot.
+- The pre-change table is kept at `.ab/partitions.before`, because a copy that lived only in the
+  initramfs dies with it.
+- The record lives on the p4 root subvolume, not inside a generation layer, so it outlives
+  `@overlay-<version>`.
+
+Growth only enlarges p4 and is idempotent. The one thing the record decides is the loop guard.
+
+- A `table-written` record for exactly the disk end this boot wants to write says the table was
+  already written once.
+- If the table on disk still reads shorter, the write was lost below the filesystem.
+- That boot records `fail:table-write-lost` instead of writing and rebooting again.
 
 ## Boot chain and layered root
 
@@ -202,9 +226,11 @@ disk still reads shorter, means the write was lost below the filesystem - that b
 5. `switch_root` enters the system; p1 is mounted at `/boot`.
 
 The CI guest assertion is not part of that chain. `/s3-post.sh` re-checks the composed root and
-prints the frozen `S3-RESULT` line; it is injected only when the build sets `AB_CI_HOOKS=1`, so
-a flashed machine never runs CI bookkeeping as PID 1. `scripts/ci/image-verify.sh` reads the
-member table of both initrds back and compares it with the kind `ab/image.json` records.
+prints the frozen `S3-RESULT` line. It is injected only when the build sets `AB_CI_HOOKS=1`, so
+a flashed machine never runs CI bookkeeping as PID 1.
+
+`scripts/ci/image-verify.sh` reads the member table of both initrds back and compares it with the
+kind `ab/image.json` records.
 
 ### Device identity
 
@@ -223,15 +249,20 @@ Resolution order, first answer wins, and a level is used only when it has eviden
 | 4 | mount reverse lookup | `/boot`, `/mnt/p4` and `/data` in the running system; the ESP the initramfs already mounted |
 | 5 | unique candidate | the only non-removable disk whose partitions carry the four filesystem LABELs |
 
-The parent disk is always derived from sysfs: `/sys/class/block/<part>/partition` says the node
-is a partition and `DEVNAME` one directory up is the disk; no code trims a `p` off a name or
-appends a digit. A disk counts only when sysfs reports `DEVTYPE=disk` and `removable=0`. The
-four partitions must resolve to the same disk: a set split over two disks is
-`partitions-split`, a set that exists twice is `ambiguous-disk`, and both leave the partition
-table untouched and keep the boot going. The result is logged as
-`stage=device disk=<dev> method=<cmdline|partuuid|partname|mount|unique>`, and a boot whose disk
-cannot be identified reports the reason and continues without growing or mounting p4 instead of
-powering off.
+The parent disk is always derived from sysfs:
+
+- `/sys/class/block/<part>/partition` says the node is a partition, and `DEVNAME` one directory
+  up is the disk.
+- No code trims a `p` off a name or appends a digit.
+- A disk counts only when sysfs reports `DEVTYPE=disk` and `removable=0`.
+- The four partitions must resolve to the same disk.
+  - A set split over two disks is `partitions-split`.
+  - A set that exists twice is `ambiguous-disk`.
+  - Both leave the partition table untouched and keep the boot going.
+- The result is logged as
+  `stage=device disk=<dev> method=<cmdline|partuuid|partname|mount|unique>`.
+- A boot whose disk cannot be identified reports the reason and continues without growing or
+  mounting p4 instead of powering off.
 
 ### Layers and mount composition
 
@@ -244,7 +275,7 @@ powering off.
 `@platform` is versioned with the slot: it is written during an update and rolls back with the
 slot.
 
-```
+```text
 / = overlay(
       lowerdir=/mnt/@platform:/mnt/@sys,
       upperdir=/mnt/p4/@overlay-25.12.2/upper,
@@ -315,17 +346,19 @@ GRUB cannot read it, so the bootloader gets one derived value in a file of its o
 
 `boot/grub/ab-slot.cfg` holds exactly two GRUB commands, in this order:
 
-```
+```text
 set fallback=<the committed slot>
 set default=<the pending slot, or the committed slot when nothing is pending>
 ```
 
 Every writer derives both values from the state file through one implementation
-(`platform/lib/ab-slot-cfg.sh`), so the build, the state commands, the boot hook and the boot
-failure path cannot disagree. There is no environment block: the GRUB in the ESP is a standalone
-EFI binary with its modules built in and no `env` module. A two-line file that `source` reads
-works on that binary, and `scripts/ci/grub-render.sh --verify-esp` asserts that the loader
-really carries `source`, `test` and `serial` before an image is allowed to boot.
+(`platform/lib/ab-slot-cfg.sh`). The build, the state commands, the boot hook and the boot
+failure path therefore cannot disagree.
+
+There is no environment block: the GRUB in the ESP is a standalone EFI binary with its modules
+built in and no `env` module. A two-line file that `source` reads works on that binary.
+`scripts/ci/grub-render.sh --verify-esp` asserts that the loader really carries `source`, `test`
+and `serial` before an image is allowed to boot.
 
 The menu defines the three entries, sets the committed slot as the build-time default and
 fallback, and only then sources the hint file. GRUB stops reading a script at the first error,
@@ -340,9 +373,10 @@ names.
 
 - `ab-boot` rewrites the hint from the state file on every boot, before anything reads it, so a
   stale hint costs one boot and never a wrong slot.
-- The hint file writes its fallback line first: a write cut short after the first line has
-  written only `set fallback=<committed>`, which is the value the menu already had. No
-  truncation can leave the fallback pointing at the slot being tried.
+- The hint file writes its fallback line first.
+- A write cut short after the first line has written only `set fallback=<committed>`, which is
+  the value the menu already had.
+- No truncation leaves the fallback pointing at the slot being tried.
 
 ### When a new slot does not work
 
@@ -354,22 +388,26 @@ names.
    same fail-safe abandon (`action=fail-safe-abandon`) and only then powers off;
 4. the kernel starts and the boot ends before `ab-commit` decides (power cut, hang): the next
    boot finds the candidate marker, counts the attempt, logs
-   `stage=interrupted … result=retry` and retries. `AB_BOOT_RETRY_MAX` (default 1) bounds the
-   retries, so the boot after the limit clears `pending` and logs
-   `stage=interrupted … result=abandon reason=attempt-limit`.
+   `stage=interrupted … result=retry` and retries.
+   - `AB_BOOT_RETRY_MAX` (default 1) bounds the retries.
+   - The boot after the limit clears `pending` and logs
+     `stage=interrupted … result=abandon reason=attempt-limit`.
 
 `ab-slot rollback` is the manual path: it commits the other slot and moves the hint with it.
 `ab-slot status` reports the hint as `next=<a|b|unknown>`, and `ab-slot next` prints it alone.
 
 ## Update transaction
 
-The writable layer is named after the upstream release it belongs to, `@overlay-<version>`,
-for example `@overlay-25.12.2`. Every update creates a new layer, and no subvolume is ever renamed. A repeat of the same upstream version takes an ordinal suffix,
-`@overlay-25.12.2-r2`, because the platform layer can be rebuilt without the base moving. The
-name is for humans; ordering comes from the integer `generation` in `ab/state.json`, which only
-grows, and reclamation sorts by that number. Consequences: a new layer can be created even if
-the system has never rebooted, rollback only moves a pointer, and steady state needs exactly
-two layers, one per slot.
+The writable layer is named after the upstream release it belongs to, `@overlay-<version>`, for
+example `@overlay-25.12.2`. Every update creates a new layer, and no subvolume is ever renamed.
+
+- A repeat of the same upstream version takes an ordinal suffix, `@overlay-25.12.2-r2`, because
+  the platform layer can be rebuilt without the base moving.
+- The name is for humans. Ordering comes from the integer `generation` in `ab/state.json`, which
+  only grows, and reclamation sorts by that number.
+- A new layer can be created even if the system has never rebooted.
+- Rollback only moves a pointer.
+- Steady state needs exactly two layers, one per slot.
 
 | Event | p4 | p1 state |
 |---|---|---|
@@ -398,9 +436,10 @@ committed slot. The writable layer is the root itself, so there is no separate `
 to measure. Every probe runs, even after one has failed: the log has to name all three in one
 boot, otherwise a slot with two faults costs two boots to explain itself.
 
-`fw4-present` does not look for a daemon: in ImmortalWrt 25.12 `fw4` is a one-shot renderer that
-loads the ruleset and exits, so the observable state is the ruleset itself. `wan-present` needs
-a network configuration to name a device; a seed that fails only logs
+`fw4-present` does not look for a daemon. In ImmortalWrt 25.12 `fw4` is a one-shot renderer that
+loads the ruleset and exits, so the observable state is the ruleset itself.
+
+`wan-present` needs a network configuration to name a device. A seed that fails only logs
 `stage=net-seed result=fail` and lets the boot continue. A configuration that already exists is
 left untouched, which is also how a test supplies its own.
 
@@ -456,7 +495,7 @@ Directory `/boot/ab/log/`, total budget about 350 KiB.
 
 Record fields are frozen as `key=value`:
 
-```
+```text
 stage=<stage> slot=<a|b> upper=<layer> rootfs=<version> result=<ok|fail>
 probe=<overlay-writable|fw4-present|wan-present> result=<pass|fail> [reason=<token>]
 stage=preflight slot=<a|b> result=fail reason=<proc-cmdline-unreadable|proc-mounts-unreadable|sysfs-missing>
@@ -479,7 +518,7 @@ modified. The overlap is computed three ways:
 | `B` | file in the new slot's `@sys` (new default) |
 | `U` | same path in the writable layer (user version) |
 
-```
+```text
 UpstreamChanged = { f : A[f] != B[f] }
 UserChanged     = { f : U exists and U[f] != A[f] }
 Conflicts       = UpstreamChanged ∩ UserChanged
@@ -498,10 +537,12 @@ Conflicts       = UpstreamChanged ∩ UserChanged
 | `U` present, `B` deleted | flag as high risk and require manual review |
 
 Conflicts never block the update and never block boot. Files under `/etc/config/*` are never
-merged line by line: uci has its own grammar and a textual merge produces configurations that
-cannot be loaded. New upstream defaults are introduced through idempotent `/etc/uci-defaults/`
-scripts that only fill missing options and delete themselves after running, so file-level
-conflict detection covers non-uci user files only.
+merged line by line: uci has its own grammar, and a textual merge produces configurations that
+cannot be loaded.
+
+New upstream defaults are introduced through idempotent `/etc/uci-defaults/` scripts. They only
+fill missing options and delete themselves after running, so file-level conflict detection covers
+non-uci user files only.
 
 ## Payload contract
 
@@ -515,10 +556,11 @@ conflict detection covers non-uci user files only.
 | `manifest.json` | this project | 1 396 B (1.4 KiB) |
 
 The six members add up to 23 494 762 B; the payload tar that carries them is 23 500 800 B
-(22.41 MiB), the difference being tar's block padding. An update payload is therefore just over
-20 MiB, and the full disk image is used for first installation only. Those sizes are measured,
-not estimated: they are the members of the published `v0.0.8` payload, and
-`tar -tvf n5105-ab-<upstream>-upgrade.tar` on your own copy prints the same list. Sizes change
+(22.41 MiB). The difference is tar's block padding. An update payload is therefore just over
+20 MiB, and the full disk image is used for first installation only.
+
+Those sizes are measured, not estimated: they are the members of the published `v0.0.8` payload,
+and `tar -tvf n5105-ab-<upstream>-upgrade.tar` on your own copy prints the same list. Sizes change
 from release to release, the shape does not.
 
 `manifest.json` records size and sha256 for every member, together with `format`, the `rootfs`
@@ -533,14 +575,17 @@ version, the `platform` version and the `kernel` package id.
 | `EFI/BOOT/BOOTX64.EFI` | the upstream standalone GRUB EFI binary, byte identical to the one the ESP gets |
 | `boot/grub/grub.cfg` | this project's slot menu, rendered from `scripts/ci/grub.cfg.in` by `scripts/ci/grub-render.sh` |
 
-The manifest describes those bytes in a `bootloader` block: `member`, `loader`, `menu`,
-`loader_bytes` (the ESP headroom rule is `loader_bytes / 1024 + 4096` KiB free), `loader_sha256`
-and `menu_sha256` (the digests the device compares before and after the write), `grub_version`
-(readable evidence beside the digest, never the decision), and `source_image` / `source_sha256`
-(provenance). A build with no boot source produces no `boot.tar` and writes
-`"bootloader": null`; that is a legal payload, and `ab-upgrade` says
-`bootloader absent-in-payload` instead of installing silently. `CI_REQUIRE_BOOTLOADER=1` turns a
-missing boot source into a build failure.
+The manifest describes those bytes in a `bootloader` block:
+
+- `member`, `loader` and `menu`.
+- `loader_bytes`: the ESP headroom rule is `loader_bytes / 1024 + 4096` KiB free.
+- `loader_sha256` and `menu_sha256`: the digests the device compares before and after the write.
+- `grub_version`: readable evidence beside the digest, never the decision.
+- `source_image` / `source_sha256`: provenance.
+
+A build with no boot source produces no `boot.tar` and writes `"bootloader": null`. That is a
+legal payload, and `ab-upgrade` says `bootloader absent-in-payload` instead of installing
+silently. `CI_REQUIRE_BOOTLOADER=1` turns a missing boot source into a build failure.
 
 The member is defined once, in `scripts/ci/boot-member.sh`, sourced by both
 `scripts/ci/payload-build.sh` and `scripts/ci/assemble.sh`, so the test payload and the

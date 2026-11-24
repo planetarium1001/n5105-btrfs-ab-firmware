@@ -36,18 +36,20 @@ Application-level packaging and configuration are out of scope.
 
 The image is 514 MiB and p4 is 128 MiB inside it. On first boot the boot initramfs grows
 **p4 only** to the end of whatever disk the image was written to, then grows the filesystem
-into it; p1, p2 and p3 are never touched and every PARTUUID stays the same. That makes the
-same image usable on any NVMe or SATA disk, and it is why a backup restored onto a larger
-disk simply comes up with the extra space already available.
+into it.
+
+p1, p2 and p3 are never touched and every PARTUUID stays the same. That makes the same image
+usable on any NVMe or SATA disk, and it is why a backup restored onto a larger disk simply
+comes up with the extra space already available.
 
 Two things follow, and both are deliberate:
 
 - **It is idempotent.** The decision is re-evaluated on every boot. Once p4 reaches the end
   of the disk the log says `stage=grow … result=already-full` and nothing is written.
-- **It never shrinks and never guesses.** Restoring a large disk's image onto a smaller
-  disk leaves the table describing space that does not exist; the growth then refuses with
-  `fail:p4-beyond-disk` and leaves the table alone. `ab/log/grow.log` on the ESP records
-  every decision.
+- **It never shrinks and never guesses.** Restoring a large disk's image onto a smaller disk
+  leaves the table describing space that does not exist.
+- The growth then refuses with `fail:p4-beyond-disk` and leaves the table alone.
+  `ab/log/grow.log` on the ESP records every decision.
 
 If you would rather keep unallocated space at the end of the disk (for another system, or a
 spare partition of your own), grow p4 by hand before the first boot and the automatic step
@@ -63,10 +65,11 @@ will find it already full.
 ## Default network
 
 A freshly flashed disk reaches the network on its own. The first boot runs `ab-net-seed`
-(start `S16`, before `network`) only when `/etc/config/network` is absent: it calls the
-upstream `/bin/board_detect` and `/bin/config_generate`, then applies this project's
-defaults. A configuration that already exists -- your own `uci` changes, a test fixture, a
-file an upgrade carried over -- is never rewritten. Details, checks and variants:
+(start `S16`, before `network`) only when `/etc/config/network` is absent. It calls the
+upstream `/bin/board_detect` and `/bin/config_generate`, then applies this project's defaults.
+
+A configuration that already exists -- your own `uci` changes, a test fixture, a file an
+upgrade carried over -- is never rewritten. Details, checks and variants:
 [docs/network.md](docs/network.md).
 
 | Interface | Device | Protocol | Address |
@@ -76,18 +79,20 @@ file an upgrade carried over -- is never rewritten. Details, checks and variants
 | LAN DHCP | dnsmasq on `lan` | — | upstream's `lan` pool, `/etc/config/dhcp` untouched |
 
 **Known limitation: a machine with a single Ethernet port — a QEMU test run, for example — comes
-up LAN-only.** The one port joins `br-lan` and there is no `wan` section at all, so the
-`wan-present` health probe fails on every boot and the slot reports itself unhealthy; that is
-this release's documented behaviour, not a fault, because a slot with no WAN interface cannot
-have a WAN device. A four-port N5105 runs in router mode and is unaffected.
+up LAN-only**. The one port joins `br-lan` and there is no `wan` section at all, so the
+`wan-present` health probe fails on every boot and the slot reports itself unhealthy.
+
+That is this release's documented behaviour, not a fault, because a slot with no WAN interface
+cannot have a WAN device. A four-port N5105 runs in router mode and is unaffected.
 
 - The WAN side accepts **nothing**. The shipped image carries no `allow_ssh_wan` rule: the
   `wan` zone keeps `input 'REJECT'`, `dropbear` keeps upstream's binding to `lan`, and
   LuCI's `80/tcp` is not exposed to the WAN either.
 - One image is the deliberate exception. `n5105-ab-<upstream>-install-wan-ssh.img.gz` adds
   exactly one `22/tcp` rule, for a machine you cannot reach from the LAN and cannot give a
-  keyboard and a monitor. Its first boot prints the three ways to close the rule, and the
-  default image never carries it.
+  keyboard and a monitor.
+- Its first boot prints the three ways to close the rule, and the default image never carries
+  it.
 
 Change the LAN subnet, then reconnect at the new address:
 
@@ -111,8 +116,8 @@ uci commit network
 ```
 
 Close WAN 22 on the `-wan-ssh` image, in the shell or in LuCI under
-**Network -> Firewall -> Traffic Rules** (the rule is named `allow_ssh_wan`; 中文界面为
-网络 -> 防火墙 -> 通信规则):
+**Network -> Firewall -> Traffic Rules**. The rule is named `allow_ssh_wan`.
+In the Chinese UI it is 网络 -> 防火墙 -> 通信规则:
 
 ```sh
 uci delete firewall.allow_ssh_wan
@@ -142,7 +147,7 @@ uci commit firewall
 
 ## Testing
 
-```
+```sh
 ./tests/run.sh                  # every module, parallel by default
 ./tests/run.sh --module design  # one module
 ./tests/run.sh --jobs 8         # bound parallelism
@@ -155,7 +160,7 @@ never hides another.
 
 ## Documentation
 
-Twelve pages, each the single source for one subject; the index is [docs/](docs/README.md).
+Thirteen pages, each the single source for one subject; the index is [docs/](docs/README.md).
 
 To use the firmware:
 
@@ -180,35 +185,42 @@ To change it:
 - [docs/ci.md](docs/ci.md) — the pipeline, the release lines, and the CI text contract
 - [docs/device-matrix.md](docs/device-matrix.md) — driving a real machine through the version
   matrix over SSH
+- [docs/style.md](docs/style.md) — the rules every page follows, and the checker that measures
+  them
 
 ## Status
 
 Design stage. Partition geometry, boot chain, and update transaction are finalized.
 Implementation proceeds through stages S0–S6.
 
-Current version: `0.1.0`, on upstream base `25.12.2`. This is the second preview of N5105 AB
-Firmware, published as `v0.1.0-rc.2`. The A/B transaction, the package follow across a base
-hop and the recovery paths are now measured end to end on the reference machine: 61 checks
-passed and none failed, with the 14 that could not be measured named individually and traced
-to a missing fixture or an unreachable mirror. The entries below are what the preview carries.
+Current version: `0.1.1`, on upstream base `25.12.2`. This is the working-tree version, and it
+is not published: the last published preview is `v0.1.0-rc.2`, which carried `VERSION` `0.1.0`.
+
+That preview measured the A/B transaction, the package follow across a base hop and the
+recovery paths end to end on the reference machine: 61 checks passed and none failed. The 14
+that could not be measured are named individually and traced to a missing fixture or an
+unreachable mirror. The entries below are what that preview carries.
 
 - **An apk protection rule is judged by its premise.** `scripts/device/apk-protection-probe.sh`
-  asks `apk audit --backup` whether apk sees a protected path as unmodified — the premise a
-  `+` rule in `/etc/apk/protected_paths.d/` depends on — so a rule that cannot fire is named
-  on the spot. The device drivers are all POSIX `sh`, the dialect `scripts/ci/verify.sh`
-  lints them in.
+  asks `apk audit --backup` whether apk sees a protected path as unmodified.
+- That is the premise a `+` rule in `/etc/apk/protected_paths.d/` depends on, so a rule that
+  cannot fire is named on the spot.
+- The device drivers are all POSIX `sh`, the dialect `scripts/ci/verify.sh` lints them in.
 - **An A/B slot switch is judged by the data it produces.** `scripts/device/lib.sh` exports
-  three field groups read from archived real-device runs — stable, identity, monitored — so
-  the matrix and scenario drivers no longer fold `committed`, `pending` and `generation` into
-  one class. `ab-slot packages snapshot` stops answering `packages=0` for a record it cannot
-  parse, and the commit path retargets the package record.
+  three field groups read from archived real-device runs: stable, identity, monitored.
+- The matrix and scenario drivers therefore no longer fold `committed`, `pending` and
+  `generation` into one class.
+- `ab-slot packages snapshot` stops answering `packages=0` for a record it cannot parse, and
+  the commit path retargets the package record.
 - **The daily upstream watch fails when discovery fails**, so a broken mirror or index is a red
   job instead of a green one that watched nothing.
 - **The release page is built from the payload manifest**, which retires the `not recorded`
   placeholders on the kernel version and the upstream digests.
-- **The acceptance suite is one command.** `scripts/device/full-test.sh` puts the four broken
-  configurations of S8, the real docker load D1/D2/D3, the version pin (`--case pin`), the
-  package rollback P3/P4 and the release byte checks in one order, under one verdict.
+- **The acceptance suite is one command.** `scripts/device/full-test.sh` runs the four broken
+  configurations of S8, the real docker loads D1/D2/D3 and the version pin (`--case pin`) in
+  one order.
+- It adds the package rollback P3/P4 and the release byte checks to that same order, under one
+  verdict.
 
 Earlier releases introduced the first-boot network generation (`0.0.7`), the payload that
 carries its own bootloader (`0.0.8`) and the health check (`0.0.6`); all three are unchanged.

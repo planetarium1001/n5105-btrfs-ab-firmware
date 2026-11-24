@@ -28,16 +28,17 @@ answered with **install image + data package**, and never with shrinking the ima
 A whole-disk image recorded on a larger disk cannot be written to a smaller one, and the
 failure is not "it boots and then something is wrong later". It happens during the write:
 
-1. `dd` writes sequentially. The primary GPT at LBA 1 lands first; the **backup GPT at the
-   end of the disk** can never be written, because the target device ends before the source
-   offsets do.
+1. `dd` writes sequentially, so the primary GPT at LBA 1 lands first.
+   - The **backup GPT at the end of the disk** can never be written: the target device ends
+     before the source offsets do.
 2. The kernel's GPT parser (`block/partitions/efi.c`, `is_gpt_valid()`) treats
    `last_usable_lba > lastlba` as invalid, and the backup header is not where it should be.
-   The MBR parser then sees the `0xEE` protective partition, which it does not understand,
-   and yields no partitions at all.
-3. With no partition nodes there is nothing to boot: GRUB is not loaded, so **no code on
-   the device runs**. There is no rescue path from inside the machine, and `dmesg` stays
-   silent, which is why this looks like a dead board rather than a full disk.
+   - The MBR parser then sees the `0xEE` protective partition, which it does not understand,
+     and yields no partitions at all.
+3. With no partition nodes there is nothing to boot.
+   - GRUB is not loaded, so **no code on the device runs**.
+   - There is no rescue path from inside the machine, and `dmesg` stays silent.
+   - That is why this looks like a dead board rather than a full disk.
 4. Even if a table could be forced out, btrfs refuses: `device total_bytes > bdev_nr_bytes`
    returns `-EINVAL` and `open_ctree` fails, read-only included.
 
@@ -52,7 +53,7 @@ whole-disk image; do not compare the labels on the boxes.
 Only when the answer is "yes" do the byte-for-byte paths apply. When it is "no", path B is
 the only path, for the reason in §2 - there is no tool that makes a whole-disk image fit.
 
-```
+```text
 Q1  target disk capacity >= original disk capacity?
  |- no  -> path B: install image + data package
  '- yes -> Q2 the original disk still boots?
@@ -137,9 +138,9 @@ rsync -aHAX /mnt/img/@data/ /srv/rescue/
 `Expected:` `losetup` prints the loop device, `partx`/`blkid` show the four partitions,
 `btrfs subvolume list` lists `@data`, and the rescue directory ends up with the data.
 
-`Not available when:` the image is smaller than the disk you want to write it back to
-(that direction works) **or** you want to write it to a *smaller* disk: for that, the image
-is only a source of data, and the target must be rebuilt with path B.
+`Not available when:` the target disk is *smaller* than the one the image came from. Writing the
+image to a disk at least as large works, and that is what Q1 asks. For a smaller disk the image is
+only a source of data, and the target must be rebuilt with path B.
 
 ## 4. `ab-backup` and `ab-restore`
 

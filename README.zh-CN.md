@@ -57,9 +57,11 @@
 ## 默认网络
 
 刷完盘第一次启动就会自己通网。首启只在 `/etc/config/network` 不存在时跑 `ab-net-seed`
-（start `S16`，早于 `network`）：它调用上游的 `/bin/board_detect` 与 `/bin/config_generate`，
-再叠加本项目默认值。已经存在的配置 —— 你自己改的 `uci`、测试夹具、升级带过来的文件 ——
-一律不会被改写。细节、检查命令与变体见 [docs/network.zh-CN.md](docs/network.zh-CN.md)。
+（start `S16`，早于 `network`）。它调用上游的 `/bin/board_detect` 与 `/bin/config_generate`，
+再叠加本项目默认值。
+
+已经存在的配置 —— 你自己改的 `uci`、测试夹具、升级带过来的文件 —— 一律不会被改写。细节、
+检查命令与变体见 [docs/network.zh-CN.md](docs/network.zh-CN.md)。
 
 | 接口 | 设备 | 协议 | 地址 |
 |---|---|---|---|
@@ -128,7 +130,7 @@ uci commit firewall
 
 ## 测试
 
-```
+```sh
 ./tests/run.sh                  # 全部模块，默认并行
 ./tests/run.sh --module design  # 单个模块
 ./tests/run.sh --jobs 8         # 限定并行度
@@ -140,7 +142,7 @@ uci commit firewall
 
 ## 文档
 
-十二篇文档，每篇是它自己主题的唯一来源；索引在 [docs/](docs/README.zh-CN.md)。
+十三篇文档，每篇是它自己主题的唯一来源；索引在 [docs/](docs/README.zh-CN.md)。
 
 使用这套固件：
 
@@ -164,14 +166,18 @@ uci commit firewall
   升级事务与 payload 契约
 - [docs/ci.zh-CN.md](docs/ci.zh-CN.md) —— 流水线、发布线，以及 CI 文本契约
 - [docs/device-matrix.zh-CN.md](docs/device-matrix.zh-CN.md) —— 通过 SSH 驱动真机跑版本矩阵
+- [docs/style.zh-CN.md](docs/style.zh-CN.md) —— 每篇文档要遵守的规则，以及度量它们的检查器
 
 ## 状态
 
 设计阶段。分区几何、启动链与更新事务已定稿，实施按 S0–S6 推进。
 
-当前版本：`0.1.0`，上游 base `25.12.2`。这是 N5105 AB Firmware 的第二个预览版（`v0.1.0-rc.2`）。A/B 事务、
-跨基底跳变后的包跟随、以及回滚与恢复路径，均已在参考机上端到端实测：61 项通过、0 项失败，
-另有 14 项无法测定，逐条注明并归因于夹具缺失或镜像源不可达。下面列出这个预览版包含的内容。
+当前版本：`0.1.1`，上游 base `25.12.2`。这是工作树里的版本，尚未发布。
+
+上一个已发布的预览版是 `v0.1.0-rc.2`，其 `VERSION` 是 `0.1.0`。A/B 事务、跨基底跳变后的包跟随、
+以及回滚与恢复路径，均已在那次预览的参考机上端到端实测：61 项通过、0 项失败。
+
+另有 14 项无法测定，逐条注明并归因于夹具缺失或镜像源不可达。下面列出那个预览版包含的内容。
 
 - **apk 保护规则按前提判定。** `scripts/device/apk-protection-probe.sh` 用
   `apk audit --backup` 问一句：apk 是否把某个受保护路径视作未被改动 —— 这正是

@@ -2,8 +2,9 @@
 # Stage "verify": static checks that do not need any upstream artifact.
 #
 # Checks, in order:
-#   1. `bash -n` on every scripts/ci/*.sh, `sh -n` on the initramfs and guest
-#      assertion scripts (they run in the guest's busybox shell)
+#   1. `bash -n` on every scripts/ci/*.sh; the initramfs, platform and guest assertion
+#      scripts (they run in the guest's busybox shell) are parsed with a real dash where
+#      this host has one, so a bashism fails here and not on the runner after the push
 #   2. `actionlint` on .github/workflows: a workflow that does not parse stops a stage
 #      from starting while still looking present in the tree
 #   3. `shellcheck` on the same files
@@ -34,6 +35,31 @@ ci_require_cmd bash
 
 python_bin="${CI_PYTHON:-python3}"
 ci_require_cmd "${python_bin}"
+
+# The sh lint runs as the gate does on the runner (dash), not as /bin/sh happens to behave
+# here. On macOS /bin/sh is bash in POSIX mode: it parses `<<<`, ${BASH_SOURCE[0]} and
+# `set -o pipefail`, so a file that passes this stage on a laptop can be a syntax error on
+# ubuntu-latest - 2026-11-19, scripts/device/apk-protection-probe.sh, "Syntax error:
+# redirection unexpected", found only after the push. Prefer a real dash, fall back to sh,
+# and say which one was used together with its version, so a green (or red) run explains
+# itself later. CI_SH_BIN is the escape hatch for a host where `dash` is not on PATH.
+sh_bin="${CI_SH_BIN:-}"
+if [ -z "${sh_bin}" ] && ci_have dash; then
+    sh_bin="$(command -v dash)"
+fi
+if [ -z "${sh_bin}" ]; then
+    sh_bin=sh
+fi
+sh_resolved="$(command -v "${sh_bin}" 2>/dev/null || true)"
+[ -n "${sh_resolved}" ] || ci_die "sh not found (set CI_SH_BIN): ${sh_bin}"
+sh_bin="${sh_resolved}"
+# dash answers no --version, so ask it for the version variables it exports and fall back
+# to the package manager. The version is for the log: it never decides the stage verdict.
+sh_version="$("${sh_bin}" -c 'printf "%s" "${BASH_VERSION:-}${DASH_VERSION:-}"' 2>/dev/null || true)"
+if [ -z "${sh_version}" ] && ci_have dpkg-query; then
+    sh_version="$(dpkg-query -W -f='${Version}' dash 2>/dev/null || true)"
+fi
+ci_log "sh syntax check: ${sh_bin} (${sh_version:-version unknown})"
 
 syntax_status="ok"
 # Both lint statuses start at "fail": the checks below can only clear them, so a path
@@ -111,7 +137,7 @@ for path in ${bash_test_scripts[@]+"${bash_test_scripts[@]}"}; do
     fi
 done
 for path in ${init_scripts[@]+"${init_scripts[@]}"}; do
-    if sh -n "${path}"; then
+    if "${sh_bin}" -n "${path}"; then
         ci_log "syntax ok (sh): ${path#"${CI_REPO_ROOT}"/}"
     else
         ci_warn "syntax error: ${path}"

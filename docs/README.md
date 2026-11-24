@@ -2,9 +2,9 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Twelve pages, each the single source for one subject. Every number in them is measured or has an
-explicit rationale, and every threshold, log field and contract is asserted by
-`python3 scripts/check_design.py all`.
+Thirteen pages, each the single source for one subject. Every number in them is measured or has
+an explicit rationale. Every threshold, log field and contract is asserted by
+`python3 scripts/check_design.py all`, and every page follows [style.md](style.md).
 
 Start with [quickstart.md](quickstart.md) if you want to use the firmware. Read
 [architecture.md](architecture.md) and [ci.md](ci.md) if you are changing it.
@@ -29,6 +29,7 @@ Start with [quickstart.md](quickstart.md) if you want to use the firmware. Read
 | [architecture.md](architecture.md) | partition geometry, filesystems and subvolumes, the boot chain, first-boot growth of p4, the slot state machine, the update transaction, health checks, reclamation, logging, conflict detection and the payload contract |
 | [ci.md](ci.md) | every workflow file and when to run it, the five stages, the cross-version stage and upgrade gates, artifacts, local reproduction, the two release lines, the daily upstream watch, interactive debugging, and the CI text contract |
 | [device-matrix.md](device-matrix.md) | driving a real machine through the version matrix over SSH: what each assertion proves, the resume file, the result states, and the red line that keeps a bootable slot |
+| [style.md](style.md) | the rules a page follows: the length limits, the block layout, the pair rule, what the checker skips, and the options of `scripts/check_docs_style.py` |
 
 ## Conventions
 
@@ -46,9 +47,12 @@ python3 scripts/check_design.py all
 ./tests/run.sh --module docs
 ```
 
-Individual design checks: `partitions`, `esp-data-only`, `overlay-layers`, `generation-model`,
-`gc-policy`, `log-ring`, `conflict-model`, `payload-contract`, `links`, `text`,
-`retired-names`, `debug-ssh`, `workflow-expressions`.
+Individual design checks:
+
+- `partitions`, `esp-data-only`, `overlay-layers`, `generation-model`
+- `gc-policy`, `log-ring`, `conflict-model`, `payload-contract`
+- `links`, `text`, `retired-names`, `debug-ssh`
+- `workflow-expressions`, `docs-style`
 
 ## See also
 
