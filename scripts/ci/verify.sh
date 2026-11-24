@@ -48,7 +48,9 @@ if [ -z "${sh_bin}" ] && ci_have dash; then
     sh_bin="$(command -v dash)"
 fi
 if [ -z "${sh_bin}" ]; then
-    sh_bin=sh
+    # Quoted so shellcheck reads an assignment, not a bare command name (SC2209): CI lints
+    # this file at warning severity, and a laptop without shellcheck would not notice.
+    sh_bin="sh"
 fi
 sh_resolved="$(command -v "${sh_bin}" 2>/dev/null || true)"
 [ -n "${sh_resolved}" ] || ci_die "sh not found (set CI_SH_BIN): ${sh_bin}"
