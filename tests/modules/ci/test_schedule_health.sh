@@ -117,9 +117,14 @@ run_out="$(env -u GITHUB_REPOSITORY -u GITHUB_STEP_SUMMARY PATH="$tmp/bin:$PATH"
   sh "$SCRIPT" 2>&1)"
 assert_eq "$?" "2" "ac-5 an unknown repository exits 2 instead of guessing one"
 
-# A PATH that carries the shells the test needs but no gh: the script has to notice the
-# missing client instead of failing for a reason of its own.
-run_out="$(PATH="$tmp/empty-bin:/bin:/usr/bin" GITHUB_REPOSITORY="example/repo" sh "$SCRIPT" 2>&1)"
+# An empty PATH, not `/bin:/usr/bin` minus a stub: the GitHub runner ships gh in
+# `/usr/bin`, so a PATH that carries the usual directories still finds it and the case
+# passes on a laptop (gh lives under /opt/homebrew) while failing on the runner. The shell
+# is named by its absolute path instead, and the script's own check runs before it needs
+# any external command.
+mkdir -p "$tmp/empty-bin"
+run_out="$(env -u GITHUB_REPOSITORY -u GITHUB_STEP_SUMMARY PATH="$tmp/empty-bin" \
+  GITHUB_REPOSITORY="example/repo" /bin/sh "$SCRIPT" 2>&1)"
 assert_eq "$?" "2" "ac-5 a host without gh exits 2 instead of pretending"
 assert_contains "$run_out" "gh is not on PATH" \
   "ac-5 the missing gh is named"
