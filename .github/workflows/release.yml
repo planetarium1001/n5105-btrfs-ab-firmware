@@ -33,11 +33,18 @@ jobs:
   build:
     name: Verify Pipeline - S1 to S5
     uses: ./.github/workflows/ci.yml
+    # A caller's permissions are a ceiling, not a scope: every job of the called workflow has
+    # to fit inside it, and a job that asks for more makes GitHub reject the whole run at
+    # startup - no job list, no log, only "This run likely failed because of a workflow file
+    # issue" (run 45726019172, the same mistake with contents instead of actions).
+    #
+    # Both keys below are what ci.yml's jobs ask for: `actions: read` for the report job's
+    # duration column, `contents: write` for the audit job's automation-log commit. The audit
+    # job runs only on a push to main, so a tag run calls it and skips it - the request still
+    # has to fit inside this ceiling, and the jobs that do run here keep the read-only token
+    # they get from ci.yml's own top-level block.
     permissions:
-      contents: read
-      # ci.yml's report job reads the Actions API for its duration column, and a called
-      # workflow may not ask for a permission its caller does not grant: without this the
-      # run fails at startup and no job ever appears.
+      contents: write
       actions: read
 
   # The cross gate keeps the call it has always had. It is the tag line's original proof and

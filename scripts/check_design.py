@@ -420,6 +420,200 @@ def check_workflow_expressions(problems: Problems) -> None:
             problems.add(rel, f"line {number}: {message}")
 
 
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
+WORKFLOW_REF_PREFIX = "./.github/workflows/"
+JOB_HEADER_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
+# Every key GITHUB_TOKEN can carry. `permissions: read-all` and `permissions: write-all` are
+# the scalar spellings of "all of them", so they are expanded instead of being special-cased
+# at every comparison.
+TOKEN_PERMISSIONS = (
+    "actions", "attestations", "checks", "contents", "deployments", "discussions",
+    "id-token", "issues", "models", "packages", "pages", "pull-requests",
+    "security-events", "statuses",
+)
+PERMISSION_RANK = {"none": 0, "read": 1, "write": 2}
+# What a job gets when neither it nor its file declares anything. GitHub's default for a
+# public repository is a read-only token, and this tree declares a top-level block in every
+# workflow; the fallback is the conservative spelling of that default so a file that forgets
+# its block is judged as read-only rather than as all-powerful.
+DEFAULT_PERMISSIONS = {"contents": "read"}
+
+
+def _permission_block(lines: list[str], index: int, indent: int) -> dict[str, str]:
+    """The permissions declared at `indent`, from the `permissions:` line at `index`.
+
+    Only the two shapes this tree can produce are accepted: a mapping written as indented
+    `key: level` lines, or a scalar (`read-all` / `write-all`). Comments inside the block are
+    skipped, and the block ends at the first line indented at or above its own key.
+    """
+    inline = lines[index].split(":", 1)[1].split("#", 1)[0].strip()
+    if inline.startswith("{"):
+        declared = {}
+        for item in inline.strip("{} ").split(","):
+            key, separator, value = item.partition(":")
+            if separator and key.strip():
+                declared[key.strip()] = value.strip()
+        return declared
+    if inline in ("read-all", "write-all"):
+        level = inline.split("-", 1)[0]
+        return {permission: level for permission in TOKEN_PERMISSIONS}
+    if inline:
+        return dict(DEFAULT_PERMISSIONS)
+    declared = {}
+    for line in lines[index + 1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        key, separator, value = stripped.partition(":")
+        value = value.split("#", 1)[0].strip()
+        if separator and key.strip() and value:
+            declared[key.strip()] = value
+    return declared
+
+
+def _parse_workflow_permissions(text: str) -> tuple[dict[str, str], dict[str, dict]]:
+    """(top-level permissions, {job id: {"permissions": map|None, "uses": ref|None}}).
+
+    A job's `permissions` is None when it declares none, which is not the same as `{}`: the
+    job then inherits the file's top-level block, and that inheritance is what makes a
+    top-level `contents: write` a request in its own right.
+    """
+    lines = text.splitlines()
+    top: dict[str, str] = {}
+    for index, line in enumerate(lines):
+        # Only a column-0 key is the workflow-level block: a job's own block is indented, so
+        # this cannot pick up the wrong one.
+        if line.startswith("permissions:"):
+            top = _permission_block(lines, index, 0)
+            break
+
+    jobs: dict[str, dict] = {}
+    in_jobs = False
+    current: str | None = None
+    for line in lines:
+        if re.match(r"^jobs:\s*(?:#.*)?$", line):
+            in_jobs = True
+            continue
+        if in_jobs and re.match(r"^[A-Za-z_]", line):
+            in_jobs = False
+            current = None
+        if not in_jobs:
+            continue
+        header = JOB_HEADER_RE.match(line)
+        if header:
+            current = header.group(1)
+            jobs[current] = {"permissions": None, "uses": None, "declared": []}
+            continue
+        if current is None:
+            continue
+        jobs[current]["declared"].append(line)
+
+    for job in jobs.values():
+        declared: list[str] = job.pop("declared")
+        for index, line in enumerate(declared):
+            if job["permissions"] is None and re.match(r"^    permissions:\s*(?:#.*)?$", line):
+                job["permissions"] = _permission_block(declared, index, 4)
+            match = re.match(r"^    uses:\s*(\S+)\s*(?:#.*)?$", line)
+            if match:
+                job["uses"] = match.group(1)
+    return top, jobs
+
+
+def _granted(permissions: dict[str, str], permission: str) -> str:
+    return permissions.get(permission, "none")
+
+
+def _capped(ceiling: dict[str, str], grant: dict[str, str]) -> dict[str, str]:
+    """The narrower of two permission maps, key by key."""
+    capped = {}
+    for permission in set(ceiling) | set(grant):
+        left = _granted(ceiling, permission)
+        right = _granted(grant, permission)
+        capped[permission] = left if PERMISSION_RANK[left] <= PERMISSION_RANK[right] else right
+    return capped
+
+
+def _workflow_call_permission_problems(texts: dict[str, str]) -> list[tuple[str, str]]:
+    """(workflow, message) for every called workflow that asks for more than it is granted.
+
+    A caller job's `permissions` is a ceiling, not a scope: every job of the called workflow
+    has to fit inside it, and one that asks for more makes GitHub reject the whole run at
+    startup -- no job list, no log, only "This run likely failed because of a workflow file
+    issue". That is how the daily upstream watch and the tag release line went dead at once
+    (run 45726019172): ci.yml's `audit` job asked for `contents: write`, and both caller jobs
+    granted `contents: read`.
+
+    The ceiling is taken along the whole chain: a workflow called by a workflow called by a
+    push still cannot hand out more than the push granted. `uses:` of a published action is
+    not this repository's workflow and is left alone; `uses:` of a file that is not here is
+    a startup failure of its own.
+    """
+    parsed = {name: _parse_workflow_permissions(text) for name, text in texts.items()}
+    problems: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    # A workflow can be reachable from two callers with two different ceilings, and the second
+    # one can be the narrower one - so the identity of a visit includes the ceiling it was
+    # made under. Ceilings only narrow along a chain, which is what makes a cycle terminate.
+    visited: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
+
+    def report(workflow: str, message: str) -> None:
+        if (workflow, message) not in seen:
+            seen.add((workflow, message))
+            problems.append((workflow, message))
+
+    def walk(workflow: str, ceiling: dict[str, str]) -> None:
+        top, jobs = parsed[workflow]
+        for job_id, job in jobs.items():
+            uses = job["uses"]
+            if not uses or not uses.startswith(WORKFLOW_REF_PREFIX):
+                continue
+            signature = (workflow, job_id, tuple(sorted(ceiling.items())))
+            if signature in visited:
+                continue
+            visited.add(signature)
+            target = uses[len(WORKFLOW_REF_PREFIX):]
+            if target not in parsed:
+                report(workflow, f"job {job_id!r} calls {uses}, which is not a workflow in .github/workflows/")
+                continue
+            grant = job["permissions"] if job["permissions"] is not None else top
+            granted = _capped(ceiling, grant)
+            called_top, called_jobs = parsed[target]
+            for called_id, called_job in called_jobs.items():
+                asked = called_job["permissions"] if called_job["permissions"] is not None else called_top
+                for permission, level in sorted(asked.items()):
+                    allowed = _granted(granted, permission)
+                    if PERMISSION_RANK[level] > PERMISSION_RANK[allowed]:
+                        report(
+                            target,
+                            f"job {called_id!r} asks for {permission}: {level}, "
+                            f"but {workflow} job {job_id!r} grants {permission}: {allowed}",
+                        )
+            walk(target, granted)
+
+    for name in parsed:
+        walk(name, {permission: "write" for permission in TOKEN_PERMISSIONS})
+    return problems
+
+
+def check_reusable_permissions(problems: Problems) -> None:
+    """No called workflow asks for a permission its caller does not grant."""
+    workflows = sorted(WORKFLOWS_DIR.glob("*.yml"))
+    if not workflows:
+        problems.add(".github/workflows", "no workflows found")
+        return
+    texts = {}
+    for path in workflows:
+        rel = str(path.relative_to(ROOT))
+        try:
+            texts[path.name] = path.read_text(encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001 - report instead of crashing
+            problems.add(rel, f"cannot be read: {exc}")
+    for name, message in _workflow_call_permission_problems(texts):
+        problems.add(f".github/workflows/{name}", message)
+
+
 def check_debug_ssh(problems: Problems) -> None:
     """ci-debug.yml stays a manual, bounded, key-gated debugging entry point.
 
@@ -573,6 +767,7 @@ CHECKS = {
     "retired-names": check_retired_tokens,
     "debug-ssh": check_debug_ssh,
     "workflow-expressions": check_workflow_expressions,
+    "reusable-permissions": check_reusable_permissions,
     "docs-style": check_docs_style,
 }
 

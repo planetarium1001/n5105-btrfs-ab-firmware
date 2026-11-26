@@ -400,6 +400,11 @@ report——外加 `schedule-state`，它回答每日 watch 是否还开着。
 
 - **只读 token。** `ci.yml` 声明 `permissions: contents: read`，因此一次 PR 运行只读。唯一
   例外是 `audit` job，它申请 `contents: write`，且只在推送到 `main` 时运行。
+- **caller 的 permissions 是上限。** 被调的 job 不能申请超过调用者授予的权限。越权会让整次运行
+  在启动阶段失败，既没有 job 列表，也没有日志。
+- **本仓库如何满足。** `release.yml` 与 `upstream-watch.yml` 调用 `ci.yml` 时授予
+  `contents: write`。`ci.yml` 的 `audit` job 需要它，且只在推送到 `main` 时运行。
+  `python3 scripts/check_design.py reusable-permissions` 校验全仓调用都落在上限内。
 - **fork PR。** 来自 fork 的 PR 拿到只读的 `GITHUB_TOKEN`，且没有仓库 secret。这张图两样都
   不需要：它从公开镜像站下载，只写在运行内部。
 - **不引入 `pull_request_target`。** 那个事件在基仓库里带着写 token 与 secret 运行，在那里
