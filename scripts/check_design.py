@@ -423,42 +423,42 @@ def check_workflow_expressions(problems: Problems) -> None:
 WORKFLOWS_DIR = ROOT / ".github" / "workflows"
 WORKFLOW_REF_PREFIX = "./.github/workflows/"
 JOB_HEADER_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
-# Every key GITHUB_TOKEN can carry. `permissions: read-all` and `permissions: write-all` are
-# the scalar spellings of "all of them", so they are expanded instead of being special-cased
-# at every comparison.
-TOKEN_PERMISSIONS = (
-    "actions", "attestations", "checks", "contents", "deployments", "discussions",
-    "id-token", "issues", "models", "packages", "pages", "pull-requests",
-    "security-events", "statuses",
-)
+LOCAL_USES_RE = re.compile(r"^\s*-?\s*uses:\s*[\"']?\./\.github/workflows/")
 PERMISSION_RANK = {"none": 0, "read": 1, "write": 2}
-# What a job gets when neither it nor its file declares anything. GitHub's default for a
-# public repository is a read-only token, and this tree declares a top-level block in every
-# workflow; the fallback is the conservative spelling of that default so a file that forgets
-# its block is judged as read-only rather than as all-powerful.
+# `permissions: read-all` and `permissions: write-all` are the scalar spellings of "every
+# permission at this level". They stay the wildcard key and are compared as one: expanding
+# them into a list of names would go stale the next time GitHub adds a permission, and the
+# stale copy is the one that either misses a real over-grant or blocks a valid change.
+WILDCARD = "*"
+# What a job runs with when neither it nor its file declares anything. GitHub's default for a
+# public repository is a read-only token. This tree declares a top-level block in every
+# workflow, so this only decides how a file that forgot its block is judged: read-only, never
+# all-powerful.
 DEFAULT_PERMISSIONS = {"contents": "read"}
 
 
 def _permission_block(lines: list[str], index: int, indent: int) -> dict[str, str]:
     """The permissions declared at `indent`, from the `permissions:` line at `index`.
 
-    Only the two shapes this tree can produce are accepted: a mapping written as indented
-    `key: level` lines, or a scalar (`read-all` / `write-all`). Comments inside the block are
-    skipped, and the block ends at the first line indented at or above its own key.
+    Four shapes are accepted, because they are all the ways a YAML author writes this block:
+    an indented `key: level` mapping, an empty `{}`, an inline flow mapping, and the scalars
+    `read-all` / `write-all`. Comments inside a block are skipped and a block ends at the
+    first line indented at or above its own key.
     """
     inline = lines[index].split(":", 1)[1].split("#", 1)[0].strip()
     if inline.startswith("{"):
         declared = {}
-        for item in inline.strip("{} ").split(","):
+        for item in inline.strip("{").rstrip("}").split(","):
             key, separator, value = item.partition(":")
             if separator and key.strip():
                 declared[key.strip()] = value.strip()
         return declared
     if inline in ("read-all", "write-all"):
-        level = inline.split("-", 1)[0]
-        return {permission: level for permission in TOKEN_PERMISSIONS}
+        return {WILDCARD: inline.split("-", 1)[0]}
     if inline:
-        return dict(DEFAULT_PERMISSIONS)
+        # Reported by `_unparsed_problems`; modelled as granting nothing so nothing downstream
+        # reads a shape this file does not understand as if it had understood it.
+        return {}
     declared = {}
     for line in lines[index + 1:]:
         stripped = line.strip()
@@ -481,7 +481,7 @@ def _parse_workflow_permissions(text: str) -> tuple[dict[str, str], dict[str, di
     top-level `contents: write` a request in its own right.
     """
     lines = text.splitlines()
-    top: dict[str, str] = {}
+    top: dict[str, str] | None = None
     for index, line in enumerate(lines):
         # Only a column-0 key is the workflow-level block: a job's own block is indented, so
         # this cannot pick up the wrong one.
@@ -513,26 +513,74 @@ def _parse_workflow_permissions(text: str) -> tuple[dict[str, str], dict[str, di
     for job in jobs.values():
         declared: list[str] = job.pop("declared")
         for index, line in enumerate(declared):
-            if job["permissions"] is None and re.match(r"^    permissions:\s*(?:#.*)?$", line):
+            # Every spelling of a job-level block: the indented mapping, `{}`, a flow mapping
+            # and `read-all`/`write-all` all start on this line.
+            if job["permissions"] is None and re.match(r"^    permissions:", line):
                 job["permissions"] = _permission_block(declared, index, 4)
-            match = re.match(r"^    uses:\s*(\S+)\s*(?:#.*)?$", line)
+            match = re.match(r"^    uses:\s*(\S+?)\s*(?:#.*)?$", line)
             if match:
-                job["uses"] = match.group(1)
-    return top, jobs
+                job["uses"] = match.group(1).strip("\"'")
+    return (top if top is not None else dict(DEFAULT_PERMISSIONS)), jobs
+
+
+def _unparsed_problems(text: str, jobs: dict[str, dict]) -> list[str]:
+    """Shapes the parser above cannot see, reported instead of silently skipped.
+
+    Silence is the one failure mode that matters here: a call the parser did not see is a
+    call whose ceiling nobody checked, and the run it belongs to dies at startup. So a local
+    `uses:` that did not become a parsed job is a problem, and so is a `permissions:` value
+    this file has no model for.
+    """
+    problems = []
+    lines = text.splitlines()
+    declared_local = sum(1 for line in lines if LOCAL_USES_RE.match(line))
+    parsed_local = sum(1 for job in jobs.values() if job["uses"])
+    if declared_local > parsed_local:
+        problems.append(
+            f"{declared_local - parsed_local} local `uses:` line(s) were not parsed: "
+            "check the indentation and the quoting of the job that carries one"
+        )
+    if "jobs:" in text and not jobs:
+        problems.append("no job could be parsed: job ids are expected to be two-space indented")
+    for number, line in enumerate(lines, start=1):
+        match = re.match(r"^\s*permissions:\s*(\S.*)$", line)
+        if not match:
+            continue
+        value = match.group(1).split("#", 1)[0].strip()
+        if value.startswith("{") or value in ("read-all", "write-all"):
+            continue
+        problems.append(f"line {number}: unrecognised permissions value {value!r}")
+    return problems
 
 
 def _granted(permissions: dict[str, str], permission: str) -> str:
-    return permissions.get(permission, "none")
+    """The level `permissions` grants `permission`, wildcard included."""
+    if permission in permissions:
+        return permissions[permission]
+    if permission == WILDCARD:
+        return "none"
+    return permissions.get(WILDCARD, "none")
+
+
+def _floor(left: str, right: str) -> str:
+    return left if PERMISSION_RANK[left] <= PERMISSION_RANK[right] else right
 
 
 def _capped(ceiling: dict[str, str], grant: dict[str, str]) -> dict[str, str]:
-    """The narrower of two permission maps, key by key."""
+    """The narrower of two permission maps, key by key and on the wildcard."""
     capped = {}
-    for permission in set(ceiling) | set(grant):
-        left = _granted(ceiling, permission)
-        right = _granted(grant, permission)
-        capped[permission] = left if PERMISSION_RANK[left] <= PERMISSION_RANK[right] else right
+    for permission in (set(ceiling) | set(grant)) - {WILDCARD}:
+        level = _floor(_granted(ceiling, permission), _granted(grant, permission))
+        if level != "none":
+            capped[permission] = level
+    wildcard = _floor(ceiling.get(WILDCARD, "none"), grant.get(WILDCARD, "none"))
+    if wildcard != "none":
+        capped[WILDCARD] = wildcard
     return capped
+
+
+def _permission_label(permission: str) -> str:
+    return "every permission" if permission == WILDCARD else permission
 
 
 def _workflow_call_permission_problems(texts: dict[str, str]) -> list[tuple[str, str]]:
@@ -550,18 +598,33 @@ def _workflow_call_permission_problems(texts: dict[str, str]) -> list[tuple[str,
     not this repository's workflow and is left alone; `uses:` of a file that is not here is
     a startup failure of its own.
     """
-    parsed = {name: _parse_workflow_permissions(text) for name, text in texts.items()}
     problems: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    # A workflow can be reachable from two callers with two different ceilings, and the second
-    # one can be the narrower one - so the identity of a visit includes the ceiling it was
-    # made under. Ceilings only narrow along a chain, which is what makes a cycle terminate.
-    visited: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
 
     def report(workflow: str, message: str) -> None:
         if (workflow, message) not in seen:
             seen.add((workflow, message))
             problems.append((workflow, message))
+
+    parsed: dict[str, tuple[dict[str, str], dict[str, dict]]] = {}
+    for name, text in texts.items():
+        top, jobs = _parse_workflow_permissions(text)
+        for message in _unparsed_problems(text, jobs):
+            report(name, message)
+        declared = [("the top-level block", top)]
+        declared += [(f"job {job_id!r}", job["permissions"]) for job_id, job in jobs.items() if job["permissions"] is not None]
+        for where, permissions in declared:
+            for permission, level in list(permissions.items()):
+                if level in PERMISSION_RANK:
+                    continue
+                report(name, f"{where} declares {_permission_label(permission)}: {level}, which is not none/read/write")
+                del permissions[permission]
+        parsed[name] = (top, jobs)
+
+    # A workflow can be reachable from two callers with two different ceilings, and the second
+    # can be the narrower one - so the identity of a visit includes the ceiling it was made
+    # under. Ceilings only narrow along a chain, which is what makes a cycle terminate.
+    visited: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
 
     def walk(workflow: str, ceiling: dict[str, str]) -> None:
         top, jobs = parsed[workflow]
@@ -587,13 +650,13 @@ def _workflow_call_permission_problems(texts: dict[str, str]) -> list[tuple[str,
                     if PERMISSION_RANK[level] > PERMISSION_RANK[allowed]:
                         report(
                             target,
-                            f"job {called_id!r} asks for {permission}: {level}, "
-                            f"but {workflow} job {job_id!r} grants {permission}: {allowed}",
+                            f"job {called_id!r} asks for {_permission_label(permission)}: {level}, "
+                            f"but {workflow} job {job_id!r} grants {_permission_label(permission)}: {allowed}",
                         )
             walk(target, granted)
 
     for name in parsed:
-        walk(name, {permission: "write" for permission in TOKEN_PERMISSIONS})
+        walk(name, {WILDCARD: "write"})
     return problems
 
 

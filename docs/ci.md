@@ -428,8 +428,9 @@ the daily watch is still enabled.
   runs only on a push to `main`.
 - **A caller's permissions are a ceiling.** A called job may not ask for more than the calling
   job grants. One that does fails the run at startup, with no job list and no log.
-- **How this tree fits.** `release.yml` and `upstream-watch.yml` grant `contents: write` to
-  `ci.yml`, whose `audit` job asks for it. `check_design.py reusable-permissions` proves it.
+- **How this tree fits.** `release.yml` and `upstream-watch.yml` grant `contents: write` and
+  `actions: read` to `ci.yml`, because `audit` and `report` ask for them.
+  `check_design.py reusable-permissions` fails on any call that does not fit.
 - **Fork pull requests.** A pull request from a fork gets a read-only `GITHUB_TOKEN` and no
   repository secrets. This graph needs neither: it downloads from the public mirror and writes
   only inside the run.

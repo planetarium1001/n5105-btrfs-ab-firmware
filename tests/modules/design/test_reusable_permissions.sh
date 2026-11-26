@@ -8,11 +8,15 @@
 # issue". That is how the daily upstream watch and the tag release line went dead: ci.yml's
 # `audit` job asks for `contents: write`, and both callers granted only `contents: read`.
 #
+# The guard is only worth having if it sees every shape YAML authors actually write, and if
+# what it cannot see is reported instead of skipped. So half of these cases are spellings:
+# `write-all`, a flow mapping, `{}`, a quoted `uses:`, and an indentation the parser does not
+# follow.
+#
 #   ac-3 the guard rejects a called job that asks for more than the caller grants
-#   ac-3 and accepts the same call once the caller grants it
-#   ac-3 it resolves an inherited ceiling (the called file's top-level block) and a
-#        multi-level chain, and it reports a `uses:` that names a file that does not exist
-#   ac-3 it ignores `uses:` of published actions, which are not this repository's workflows
+#   ac-3 and accepts the same call once the caller grants it, in every spelling of a grant
+#   ac-3 it resolves an inherited ceiling, a multi-level chain and two callers of one workflow
+#   ac-3 it reports what it cannot parse - a shape it silently skipped would be an unchecked call
 #   ac-4 every workflow in the repository passes the guard, and the check is registered
 set -uo pipefail
 
@@ -49,6 +53,10 @@ write_workflow() { # <dir> <file> <heredoc on stdin>
   cat >"$1/$2"
 }
 
+assert_problems() { # <dir> <count> <description>
+  assert_eq "$(guard_dir "$1" | head -n 1)" "$2" "$3"
+}
+
 # --------------------------------------------------------------------------- #
 # ac-3: a write request above the caller's ceiling is the defect
 # --------------------------------------------------------------------------- #
@@ -79,8 +87,7 @@ jobs:
     permissions:
       contents: write
 YAML
-assert_contains "$(guard_dir "$over")" "1" \
-  "ac-3 a called job that asks for more than its caller grants is a problem"
+assert_problems "$over" "1" "ac-3 a called job that asks for more than its caller grants is a problem"
 assert_contains "$(guard_dir "$over")" "contents" \
   "ac-3 the problem names the permission that was not granted"
 
@@ -114,8 +121,7 @@ jobs:
     permissions:
       contents: write
 YAML
-assert_eq "$(guard_dir "$granted" | head -n 1)" "0" \
-  "ac-3 the same call is accepted once the caller grants the write"
+assert_problems "$granted" "0" "ac-3 the same call is accepted once the caller grants the write"
 
 # A job without its own `permissions:` inherits the called file's top-level block, so a
 # top-level write is just as much a request as a job-level one.
@@ -143,8 +149,113 @@ jobs:
   audit:
     runs-on: ubuntu-latest
 YAML
-assert_eq "$(guard_dir "$inherited" | head -n 1)" "1" \
+assert_problems "$inherited" "1" \
   "ac-3 a called file's top-level write is inherited by its jobs and still checked"
+
+# --------------------------------------------------------------------------- #
+# ac-3: every spelling of a job-level block is read, on both sides of the call
+#
+# These are the shapes that made the first version of this guard blind: a job-level
+# `permissions:` written inline was skipped, so the job looked like it inherited `read`.
+# --------------------------------------------------------------------------- #
+
+inline=$tmp/inline
+write_workflow "$inline" caller.yml <<'YAML'
+name: Caller
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  all:
+    uses: ./.github/workflows/all.yml
+    permissions:
+      contents: read
+  flow:
+    uses: ./.github/workflows/flow.yml
+    permissions:
+      contents: read
+YAML
+write_workflow "$inline" all.yml <<'YAML'
+name: All
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions: write-all
+YAML
+write_workflow "$inline" flow.yml <<'YAML'
+name: Flow
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+YAML
+assert_eq "$(guard_dir "$inline" | grep -c 'all.yml: job')" "1" \
+  "ac-3 a job-level 'permissions: write-all' is a write request, not an invisible line"
+assert_eq "$(guard_dir "$inline" | grep -c 'flow.yml: job')" "1" \
+  "ac-3 a job-level flow mapping is a write request too"
+
+wide=$tmp/wide
+write_workflow "$wide" caller.yml <<'YAML'
+name: Caller
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/called.yml
+    permissions: {contents: write}
+YAML
+write_workflow "$wide" called.yml <<'YAML'
+name: Called
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+YAML
+assert_problems "$wide" "0" \
+  "ac-3 a caller's flow-mapping grant is read as a grant, not as the file's read-only default"
+
+nowhere=$tmp/nowhere
+write_workflow "$nowhere" caller.yml <<'YAML'
+name: Caller
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/called.yml
+    permissions: {}
+YAML
+write_workflow "$nowhere" called.yml <<'YAML'
+name: Called
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+YAML
+assert_problems "$nowhere" "1" \
+  "ac-3 an empty grant is no grant: a called job asking for contents: read exceeds it"
 
 # --------------------------------------------------------------------------- #
 # ac-3: chains, missing files and published actions
@@ -205,7 +316,7 @@ jobs:
     permissions:
       contents: read
 YAML
-assert_eq "$(guard_dir "$missing" | head -n 1)" "1" \
+assert_problems "$missing" "1" \
   "ac-3 a uses: that names a workflow that does not exist is a startup failure too"
 
 outside=$tmp/outside
@@ -222,7 +333,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 YAML
-assert_eq "$(guard_dir "$outside" | head -n 1)" "0" \
+assert_problems "$outside" "0" \
   "ac-3 a published action is not one of this repository's workflows"
 
 # One workflow called from two places: the wide caller passing must not hide the narrow
@@ -268,6 +379,95 @@ jobs:
 YAML
 assert_contains "$(guard_dir "$shared")" "narrow.yml" \
   "ac-3 a wide caller does not excuse the narrow caller of the same workflow"
+
+# --------------------------------------------------------------------------- #
+# ac-3: what the guard cannot parse is reported, never skipped
+# --------------------------------------------------------------------------- #
+
+quoted=$tmp/quoted
+write_workflow "$quoted" caller.yml <<'YAML'
+name: Caller
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: "./.github/workflows/called.yml"
+    permissions:
+      contents: read
+YAML
+write_workflow "$quoted" called.yml <<'YAML'
+name: Called
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+YAML
+assert_contains "$(guard_dir "$quoted")" "called.yml" \
+  "ac-3 a quoted uses: is still the call it spells"
+
+indented=$tmp/indented
+write_workflow "$indented" caller.yml <<'YAML'
+name: Caller
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+    build:
+        uses: ./.github/workflows/called.yml
+        permissions:
+            contents: write
+YAML
+write_workflow "$indented" called.yml <<'YAML'
+name: Called
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+YAML
+assert_contains "$(guard_dir "$indented")" "not parsed" \
+  "ac-3 a call the parser cannot follow is reported, because a silent skip is an unchecked call"
+
+typo=$tmp/typo
+write_workflow "$typo" caller.yml <<'YAML'
+name: Caller
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/called.yml
+    permissions:
+      contents: read
+YAML
+write_workflow "$typo" called.yml <<'YAML'
+name: Called
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: readd
+YAML
+assert_contains "$(guard_dir "$typo")" "readd" \
+  "ac-3 a misspelled level is reported with its value instead of crashing the check"
 
 # --------------------------------------------------------------------------- #
 # ac-4: the real tree passes, and the check is wired into the suite

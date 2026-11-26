@@ -332,10 +332,10 @@ jobs:
     # A caller's permissions are a ceiling, not a scope: every job of the called workflow has
     # to fit inside it, and a job that asks for more makes GitHub reject the whole run at
     # startup - no job list, no log, only "This run likely failed because of a workflow file
-    # issue". ci.yml's audit job asks for `contents: write` (it commits one row to
-    # .github/automation-log.md on a push to main) and its report job asks for `actions: read`
-    # (it reads every stage's duration). Both have to be granted here even though neither runs
-    # on a scheduled run: the ceiling is checked before any job's `if:` is evaluated.
+    # issue". ci.yml's report job asks for `actions: read` and does run here, on every
+    # scheduled release; its audit job asks for `contents: write` and never runs here, because
+    # it needs a push to main. The audit request still counts, because the ceiling is checked
+    # before any job's `if:` is evaluated - which is exactly the trap this job fell into.
     permissions:
       contents: write
       actions: read
